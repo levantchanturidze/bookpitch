@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+build
+coverage
+prototype
+public
+package-lock.json
+*.md
+schema.sql

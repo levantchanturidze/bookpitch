@@ -1,0 +1,8 @@
+{
+  "name": "Clinic & Salon Schedule Manager",
+  "description": "An interactive schedule and booking management system for medical clinics and beauty salons, featuring calendars, patient databases, role-based controls, and offline synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
