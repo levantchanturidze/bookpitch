@@ -1,0 +1,401 @@
+// Bookpitch — Prisma schema
+// 1:1 translation of schema.sql (production Postgres schema).
+// Raw SQL for GiST exclusion, triggers, and RLS lives in the migrations
+// folder because Prisma cannot express them.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [pgcrypto, btree_gist, citext]
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum LocationType {
+  clinic
+  salon
+
+  @@map("location_type")
+}
+
+enum UserRole {
+  owner
+  practitioner
+  receptionist
+
+  @@map("user_role")
+}
+
+enum AppointmentStatus {
+  pending
+  confirmed
+  completed
+  cancelled
+
+  @@map("appointment_status")
+}
+
+enum PaymentStatus {
+  unpaid
+  paid
+  refunding
+  refunded
+
+  @@map("payment_status")
+}
+
+enum PaymentMethod {
+  card
+  apple_pay
+  google_pay
+  cash
+
+  @@map("payment_method")
+}
+
+enum MessageChannel {
+  sms
+  email
+
+  @@map("message_channel")
+}
+
+enum MessageState {
+  queued
+  sent
+  failed
+  delivered
+
+  @@map("message_state")
+}
+
+// =============================================================================
+// TENANCY
+// =============================================================================
+
+model Organization {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  locations         Location[]
+  memberships       Membership[]
+  staff             Staff[]
+  services          Service[]
+  customers         Customer[]
+  appointments      Appointment[]
+  payments          Payment[]
+  messageTemplates  MessageTemplate[]
+  messageLog        MessageLog[]
+  notifications     Notification[]
+  auditLog          AuditLog[]
+
+  @@map("organizations")
+}
+
+model Location {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  type           LocationType
+  name           String
+  timezone       String       @default("Asia/Tbilisi")
+  taxRate        Decimal      @default(0) @map("tax_rate") @db.Decimal(5, 4)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staff        Staff[]
+  services     Service[]
+  appointments Appointment[]
+
+  @@index([organizationId], map: "idx_locations_org")
+  @@map("locations")
+}
+
+// =============================================================================
+// IDENTITY & ACCESS
+// =============================================================================
+
+model AppUser {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  authProvider String   @map("auth_provider")
+  authSubject  String   @map("auth_subject")
+  email        String   @db.Citext
+  fullName     String?  @map("full_name")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  memberships   Membership[]
+  staffProfiles Staff[]
+  appointments  Appointment[]
+  auditLog      AuditLog[]
+
+  @@unique([authProvider, authSubject])
+  @@map("app_users")
+}
+
+model Membership {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  role           UserRole
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         AppUser      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId], map: "idx_memberships_user")
+  @@map("memberships")
+}
+
+// =============================================================================
+// STAFF
+// =============================================================================
+
+model Staff {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  locationId     String   @map("location_id") @db.Uuid
+  userId         String?  @map("user_id") @db.Uuid
+  name           String
+  roleTitle      String   @map("role_title")
+  specialty      String?
+  email          String?  @db.Citext
+  phone          String?
+  avatarUrl      String?  @map("avatar_url")
+  calendarColor  String?  @map("calendar_color")
+  rating         Decimal? @db.Decimal(3, 2)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     Location            @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  user         AppUser?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  availability StaffAvailability[]
+  appointments Appointment[]
+
+  @@index([locationId], map: "idx_staff_location")
+  @@map("staff")
+}
+
+model StaffAvailability {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  staffId   String   @map("staff_id") @db.Uuid
+  weekday   Int      @db.SmallInt
+  startTime DateTime @map("start_time") @db.Time(6)
+  endTime   DateTime @map("end_time") @db.Time(6)
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId], map: "idx_availability_staff")
+  @@map("staff_availability")
+}
+
+// =============================================================================
+// SERVICE CATALOG
+// =============================================================================
+
+model Service {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  locationId      String   @map("location_id") @db.Uuid
+  name            String
+  category        String?
+  price           Decimal  @db.Decimal(10, 2)
+  durationMinutes Int      @map("duration_minutes")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     Location      @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+
+  @@index([locationId], map: "idx_services_location")
+  @@map("services")
+}
+
+// =============================================================================
+// CUSTOMERS (patients / clients) — CONTAINS SENSITIVE HEALTH DATA
+// =============================================================================
+
+model Customer {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  email          String?   @db.Citext
+  phone          String?
+  dob            DateTime? @db.Date
+  gender         String?
+  avatarUrl      String?   @map("avatar_url")
+  joinedDate     DateTime  @default(dbgenerated("CURRENT_DATE")) @map("joined_date") @db.Date
+  // Sensitive (health) fields — encryption + audit added in P1.4
+  allergies      String?
+  clinicalNotes  String?   @map("clinical_notes")
+  consentAt      DateTime? @map("consent_at") @db.Timestamptz(6)
+  consentVersion String?   @map("consent_version")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  treatmentHistory TreatmentHistory[]
+  appointments     Appointment[]
+
+  @@index([organizationId], map: "idx_customers_org")
+  @@map("customers")
+}
+
+model TreatmentHistory {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId String    @map("customer_id") @db.Uuid
+  label      String
+  occurredOn DateTime? @map("occurred_on") @db.Date
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId], map: "idx_history_customer")
+  @@map("treatment_history")
+}
+
+// =============================================================================
+// APPOINTMENTS (booking core)
+// =============================================================================
+
+model Appointment {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  locationId     String            @map("location_id") @db.Uuid
+  customerId     String            @map("customer_id") @db.Uuid
+  staffId        String            @map("staff_id") @db.Uuid
+  serviceId      String?           @map("service_id") @db.Uuid
+  startsAt       DateTime          @map("starts_at") @db.Timestamptz(6)
+  endsAt         DateTime          @map("ends_at") @db.Timestamptz(6)
+  serviceName    String            @map("service_name")
+  price          Decimal           @db.Decimal(10, 2)
+  status         AppointmentStatus @default(pending)
+  paymentStatus  PaymentStatus     @default(unpaid) @map("payment_status")
+  notes          String?
+  createdBy      String?           @map("created_by") @db.Uuid
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     Location     @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  staff        Staff        @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  service      Service?     @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  creator      AppUser?     @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  payments     Payment[]
+  messageLog   MessageLog[]
+
+  @@index([locationId, startsAt], map: "idx_appt_location_day")
+  @@index([staffId, startsAt], map: "idx_appt_staff")
+  @@index([customerId], map: "idx_appt_customer")
+  @@map("appointments")
+}
+
+// =============================================================================
+// PAYMENTS
+// =============================================================================
+
+model Payment {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  appointmentId  String?       @map("appointment_id") @db.Uuid
+  method         PaymentMethod
+  gateway        String?
+  gatewayTxnId   String?       @map("gateway_txn_id")
+  amount         Decimal       @db.Decimal(10, 2)
+  taxAmount      Decimal       @default(0) @map("tax_amount") @db.Decimal(10, 2)
+  currency       String        @default("GEL")
+  status         PaymentStatus @default(unpaid)
+  paidAt         DateTime?     @map("paid_at") @db.Timestamptz(6)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointment  Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([appointmentId], map: "idx_payments_appt")
+  @@map("payments")
+}
+
+// =============================================================================
+// MESSAGING & NOTIFICATIONS
+// =============================================================================
+
+model MessageTemplate {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  channel        MessageChannel
+  body           String
+  updatedAt      DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("message_templates")
+}
+
+model MessageLog {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  appointmentId  String?        @map("appointment_id") @db.Uuid
+  channel        MessageChannel
+  toAddress      String         @map("to_address")
+  body           String
+  providerMsgId  String?        @map("provider_msg_id")
+  state          MessageState   @default(queued)
+  scheduledFor   DateTime?      @map("scheduled_for") @db.Timestamptz(6)
+  sentAt         DateTime?      @map("sent_at") @db.Timestamptz(6)
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointment  Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  // NOTE: partial index `WHERE state = 'queued'` added via raw SQL in migration.
+  @@map("message_log")
+}
+
+model Notification {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  title          String
+  body           String?
+  type           String
+  read           Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // NOTE: idx_notifications_org (organization_id, created_at DESC) added via raw SQL.
+  @@map("notifications")
+}
+
+// =============================================================================
+// AUDIT LOG
+// =============================================================================
+
+model AuditLog {
+  id             BigInt   @id @default(autoincrement())
+  organizationId String?  @map("organization_id") @db.Uuid
+  actorUserId    String?  @map("actor_user_id") @db.Uuid
+  action         String
+  entity         String
+  entityId       String?  @map("entity_id") @db.Uuid
+  at             DateTime @default(now()) @db.Timestamptz(6)
+  ip             String?  @db.Inet
+  meta           Json?
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  actor        AppUser?      @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId], map: "idx_audit_entity")
+  @@index([actorUserId, at(sort: Desc)], map: "idx_audit_actor")
+  @@map("audit_log")
+}
