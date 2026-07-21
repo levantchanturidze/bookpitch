@@ -2,7 +2,8 @@ import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import { verify } from '@node-rs/argon2';
 
-import { prismaAdmin, withoutRls } from '@/lib/db';
+import { authConfig } from '@/auth.config';
+import { withoutRls } from '@/lib/db';
 import type { UserRole } from '@prisma/client';
 
 // -----------------------------------------------------------------------------
@@ -29,8 +30,7 @@ declare module '@auth/core/jwt' {
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  session: { strategy: 'jwt' },
-  trustHost: true,
+  ...authConfig,
   providers: [
     Credentials({
       credentials: {
@@ -45,8 +45,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         }
 
         // Login predates any org context — bypass RLS to find the user +
-        // their (first) membership. Multi-org support: expose an org-picker
-        // on sign-in in a later phase; for now pick the first membership.
+        // their (first) membership. Multi-org: expose an org-picker later.
         const user = await withoutRls(async (tx) => {
           return tx.appUser.findUnique({
             where: { email },
@@ -77,10 +76,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
   callbacks: {
+    ...authConfig.callbacks,
     async jwt({ token, user }) {
-      // First call after authorize() — persist org/role into the token.
       if (user) {
-        // The extended shape returned by authorize() above.
         const u = user as {
           id: string;
           email: string;
@@ -103,6 +101,3 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
   },
 });
-
-// Prisma is used indirectly via withoutRls; re-exported so IDEs don't flag it.
-export { prismaAdmin };
