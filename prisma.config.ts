@@ -12,7 +12,10 @@ export default defineConfig({
     seed: 'tsx prisma/seed.ts',
   },
   datasource: {
-    url: process.env.DATABASE_URL,
+    // Migrations must run as a role that can CREATE EXTENSION, DDL, etc.
+    // The application connects as a non-superuser (bookpitch_app) so RLS
+    // actually applies — see prisma/migrations/*_create_app_role.
+    url: process.env.ADMIN_DATABASE_URL ?? process.env.DIRECT_URL,
     shadowDatabaseUrl: process.env.SHADOW_DATABASE_URL,
   },
 });

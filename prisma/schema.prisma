@@ -127,8 +127,10 @@ model AppUser {
   id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   authProvider String   @map("auth_provider")
   authSubject  String   @map("auth_subject")
-  email        String   @db.Citext
+  email        String   @unique @db.Citext
   fullName     String?  @map("full_name")
+  // Set only when authProvider = 'credentials'; null for future SSO users.
+  passwordHash String?  @map("password_hash")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   memberships   Membership[]
