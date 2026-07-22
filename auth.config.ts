@@ -24,6 +24,9 @@ export const authConfig = {
         // Payment gateway webhooks are called by external services and
         // authenticate via HMAC in the handler itself.
         path.startsWith('/api/webhooks') ||
+        // Scheduled workers (Vercel Cron, GitHub Actions, systemd timer…)
+        // authenticate via a bearer secret in the handler.
+        path.startsWith('/api/cron') ||
         // Mock gateway page + its callback are dev-only; a runtime notFound()
         // in the page itself hides them in production.
         path.startsWith('/dev/');

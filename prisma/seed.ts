@@ -46,6 +46,10 @@ function parseHours(hours: string): { start: Date; end: Date } {
 async function main() {
   console.log('→ Resetting all tenant data…');
   await withoutRls(async (tx) => {
+    await tx.messageLog.deleteMany();
+    await tx.messageTemplate.deleteMany();
+    await tx.payment.deleteMany();
+    await tx.appointment.deleteMany();
     await tx.treatmentHistory.deleteMany();
     await tx.staffAvailability.deleteMany();
     await tx.staff.deleteMany();
@@ -173,6 +177,24 @@ async function main() {
       ],
     });
 
+    console.log('→ Seeding default reminder templates…');
+    await tx.messageTemplate.createMany({
+      data: [
+        {
+          organizationId: org.id,
+          channel: 'sms',
+          body:
+            'Hi {PatientName}, reminder: your {ServiceName} with {StaffName} is on {Date} at {Time}. — Grand Medical Suite',
+        },
+        {
+          organizationId: org.id,
+          channel: 'email',
+          body:
+            'Hi {PatientName},\n\nA quick reminder of your upcoming {ServiceName} with {StaffName} on {Date} at {Time}.\n\nSee you then!\nGrand Medical Suite',
+        },
+      ],
+    });
+
     return { org, clinic, salon, ownerId: owner.id, receptionId: reception.id };
   });
 
@@ -283,6 +305,7 @@ async function main() {
     staff: await tx.staff.count(),
     staffAvailability: await tx.staffAvailability.count(),
     appointments: await tx.appointment.count(),
+    messageTemplates: await tx.messageTemplate.count(),
     services: await tx.service.count(),
     customers: await tx.customer.count(),
     treatmentHistory: await tx.treatmentHistory.count(),
