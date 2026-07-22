@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import { Client } from 'pg';
 
 const { authMock } = vi.hoisted(() => ({ authMock: vi.fn() }));
 vi.mock('@/auth', () => ({
@@ -11,7 +10,7 @@ vi.mock('@/auth', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
 const { withoutRls } = await import('@/lib/db');
-const { CHANNEL, notifyEvent } = await import('@/lib/notifications');
+const { notifyEvent } = await import('@/lib/notifications');
 const listRoute = await import('@/app/api/notifications/route');
 const markRoute = await import('@/app/api/notifications/mark-all-read/route');
 const clearRoute = await import('@/app/api/notifications/clear/route');
@@ -67,20 +66,7 @@ describe('notifyEvent + notifications REST', () => {
 
   beforeEach(() => authMock.mockReset());
 
-  it('notifyEvent writes a notifications row + emits pg_notify on CHANNEL', async () => {
-    const connectionString = process.env.ADMIN_DATABASE_URL ?? process.env.DIRECT_URL;
-    const listener = new Client({ connectionString });
-    await listener.connect();
-    await listener.query(`LISTEN ${CHANNEL}`);
-
-    const received: string[] = [];
-    listener.on('notification', (msg) => {
-      if (msg.payload) received.push(msg.payload);
-    });
-
-    // Give the LISTEN a beat to bind.
-    await new Promise((r) => setTimeout(r, 100));
-
+  it('notifyEvent writes a notifications row the next poll will pick up', async () => {
     const event = await withoutRls((tx) =>
       notifyEvent(tx, primaryOrgId, {
         type: 'system',
@@ -90,25 +76,15 @@ describe('notifyEvent + notifications REST', () => {
     );
     trackedIds.push(event.id);
 
-    // Wait a tick for the LISTEN callback to fire.
-    await new Promise((r) => setTimeout(r, 200));
-    await listener.query(`UNLISTEN ${CHANNEL}`);
-    await listener.end();
-
-    expect(received.length).toBeGreaterThan(0);
-    const parsed = received.map((p) => JSON.parse(p));
-    const mine = parsed.find((p) => p.id === event.id);
-    expect(mine).toBeTruthy();
-    expect(mine.orgId).toBe(primaryOrgId);
-    expect(mine.type).toBe('system');
-    expect(mine.title).toBe('test notify');
-
-    // Row also persisted.
+    // Row persisted with sane defaults; the header's 30s poll picks it up.
     const row = await withoutRls((tx) =>
       tx.notification.findUnique({ where: { id: event.id } }),
     );
     expect(row).toBeTruthy();
     expect(row?.read).toBe(false);
+    expect(row?.title).toBe('test notify');
+    expect(row?.body).toBe('body-here');
+    expect(row?.organizationId).toBe(primaryOrgId);
   });
 
   it('GET /api/notifications lists caller org rows in desc order', async () => {

@@ -1,28 +1,17 @@
 import type { PrismaClient } from '@prisma/client';
 
 // -----------------------------------------------------------------------------
-// Notification pub/sub.
+// Notification writer.
 //
-// Every write to `notifications` also issues `pg_notify('bookpitch_events',
-// <payload>)` in the same transaction so the fanout to SSE subscribers is
-// transactionally consistent with the insert. Multi-instance friendly — the
-// database itself is the pub/sub broker (no Redis / no in-process channel).
+// The header bell polls `GET /api/notifications` every 30s (see the
+// useNotifications hook). No SSE, no LISTEN/NOTIFY, no realtime vendor —
+// the spec picks polling for MVP because it's dependency-free and free-tier
+// Postgres has tight connection limits. Upgrade to SSE later if it earns it.
 // -----------------------------------------------------------------------------
-
-export const CHANNEL = 'bookpitch_events';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
 export type NotificationType = 'booking' | 'payment' | 'reminder' | 'system';
-
-export type NotificationEvent = {
-  id: string;
-  orgId: string;
-  type: NotificationType;
-  title: string;
-  body: string | null;
-  createdAt: string;
-};
 
 export type NotifyInput = {
   type: NotificationType;
@@ -31,16 +20,15 @@ export type NotifyInput = {
 };
 
 /**
- * Insert a notifications row for `orgId` and NOTIFY the SSE channel in the
- * same tx. Safe to call from either a `withOrg` (tenant-scoped) OR a
- * `withoutRls` (system) transaction — RLS is set up so both write paths
- * work. Returns the payload that was broadcast.
+ * Insert a notifications row for `orgId`. Safe to call from either a
+ * `withOrg` (tenant-scoped) OR a `withoutRls` (system) transaction — RLS
+ * is set up so both write paths work.
  */
 export async function notifyEvent(
   tx: TxClient,
   orgId: string,
   input: NotifyInput,
-): Promise<NotificationEvent> {
+): Promise<{ id: string; createdAt: string }> {
   const row = await tx.notification.create({
     data: {
       organizationId: orgId,
@@ -49,16 +37,5 @@ export async function notifyEvent(
       body: input.body ?? null,
     },
   });
-  const event: NotificationEvent = {
-    id: row.id,
-    orgId,
-    type: input.type,
-    title: input.title,
-    body: input.body ?? null,
-    createdAt: row.createdAt.toISOString(),
-  };
-  // pg_notify takes a text payload. JSON-encode; consumers parse it back.
-  // Prisma escapes the tagged-template value so this is injection-safe.
-  await tx.$executeRaw`SELECT pg_notify(${CHANNEL}, ${JSON.stringify(event)})`;
-  return event;
+  return { id: row.id, createdAt: row.createdAt.toISOString() };
 }

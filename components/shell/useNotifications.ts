@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type NotificationItem = {
   id: string;
@@ -13,78 +13,66 @@ export type NotificationItem = {
 
 // -----------------------------------------------------------------------------
 // useNotifications — one hook per <Shell>.
-// 1) Fetches the current list via GET /api/notifications.
-// 2) Opens EventSource('/api/notifications/stream') to receive live updates.
-// 3) Exposes markAllRead + clear that hit the REST endpoints and update
-//    local state.
 //
-// EventSource auto-reconnects with backoff — we accept that (dev-server
-// restarts briefly drop then re-attach).
+// Simple polling every 30s (spec: "adequate for this workload and
+// dependency-free"). Pauses when the tab is hidden so we don't burn quota,
+// and forces a refresh the moment the tab regains focus.
+//
+// Upgrade to SSE later if the workload proves it deserves it — the writer
+// already inserts rows synchronously, so no server-side changes needed.
 // -----------------------------------------------------------------------------
 
-type StreamEvent = {
-  id: string;
-  orgId: string;
-  type: NotificationItem['type'];
-  title: string;
-  body: string | null;
-  createdAt: string;
-};
+const POLL_MS = 30_000;
 
 export function useNotifications() {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const abortRef = useRef<AbortController | null>(null);
 
-  // Initial fetch.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/notifications', { cache: 'no-store' });
-        if (!res.ok) throw new Error(`GET /api/notifications: ${res.status}`);
-        const body = (await res.json()) as { notifications: NotificationItem[] };
-        if (!cancelled) setItems(body.notifications);
-      } catch {
-        // If it fails, the stream may still work — keep going.
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  const fetchOnce = useCallback(async () => {
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    try {
+      const res = await fetch('/api/notifications', {
+        cache: 'no-store',
+        signal: ac.signal,
+      });
+      if (!res.ok) return;
+      const body = (await res.json()) as { notifications: NotificationItem[] };
+      // Merge server truth with local read-state so mark-all-read stays
+      // visually applied between polls (the DB flag becomes authoritative
+      // after the next mark-all-read POST + subsequent poll).
+      setItems((prev) => {
+        const readIds = new Set(prev.filter((n) => n.read).map((n) => n.id));
+        return body.notifications.map((n) =>
+          readIds.has(n.id) ? { ...n, read: true } : n,
+        );
+      });
+    } catch {
+      // Network blip / aborted — try again next tick.
+    } finally {
+      if (!ac.signal.aborted) setLoading(false);
+    }
   }, []);
 
-  // Live stream.
   useEffect(() => {
-    // SSR guard — EventSource is browser-only.
     if (typeof window === 'undefined') return;
-    const source = new EventSource('/api/notifications/stream');
-    source.onmessage = (ev) => {
-      try {
-        const event = JSON.parse(ev.data) as StreamEvent;
-        setItems((prev) => {
-          if (prev.some((n) => n.id === event.id)) return prev;
-          return [
-            {
-              id: event.id,
-              type: event.type,
-              title: event.title,
-              body: event.body,
-              read: false,
-              createdAt: event.createdAt,
-            },
-            ...prev,
-          ].slice(0, 30);
-        });
-      } catch {
-        // Malformed — ignore.
-      }
+    fetchOnce();
+    const timer = setInterval(() => {
+      // Skip polls while the tab is hidden — saves DB roundtrips.
+      if (document.visibilityState === 'visible') fetchOnce();
+    }, POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchOnce();
     };
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
-      source.close();
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      abortRef.current?.abort();
     };
-  }, []);
+  }, [fetchOnce]);
 
   const markAllRead = useCallback(async () => {
     setItems((prev) => prev.map((n) => ({ ...n, read: true })));
