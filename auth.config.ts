@@ -20,6 +20,14 @@ export const authConfig = {
       const path = nextUrl.pathname;
       const isPublic =
         path === '/signin' ||
+        // Offline page must load without auth so the SW can serve it when
+        // the browser is offline (session cookies wouldn't reach us anyway).
+        path === '/offline' ||
+        // PWA icons + manifest — browsers fetch these without a session
+        // cookie context, and they should never redirect to /signin.
+        path === '/icon' ||
+        path === '/apple-icon' ||
+        path === '/icon-large' ||
         path.startsWith('/api/auth') ||
         // Payment gateway webhooks are called by external services and
         // authenticate via HMAC in the handler itself.
