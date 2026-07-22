@@ -53,6 +53,14 @@ export class SlotTakenError extends Error {
   }
 }
 
+/** Thrown for FK-guard failures (deleting a location with staff, etc.); 409. */
+export class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConflictError';
+  }
+}
+
 /**
  * Throws if the caller is not signed in. Returns the session otherwise.
  */
@@ -91,6 +99,9 @@ export function withApi<T>(handler: () => Promise<T>): Promise<NextResponse> {
         return NextResponse.json({ error: err.message }, { status: 400 });
       }
       if (err instanceof SlotTakenError) {
+        return NextResponse.json({ error: err.message }, { status: 409 });
+      }
+      if (err instanceof ConflictError) {
         return NextResponse.json({ error: err.message }, { status: 409 });
       }
       throw err;

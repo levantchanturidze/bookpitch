@@ -12,6 +12,7 @@ import {
   LogOut,
   Menu,
   MessageSquare,
+  Settings,
   ShieldCheck,
   Sparkles,
   Stethoscope,
@@ -41,6 +42,7 @@ const ICON_MAP = {
   dollar: DollarSign,
   trending: TrendingUp,
   shield: ShieldCheck,
+  settings: Settings,
 };
 
 function isActivePath(pathname: string, href: string): boolean {

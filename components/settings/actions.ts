@@ -1,0 +1,112 @@
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import type { UserRole } from '@prisma/client';
+import { requireRole } from '@/lib/auth';
+import {
+  type AvailabilityWindow,
+  createLocation,
+  createService,
+  createStaff,
+  deleteLocation,
+  deleteService,
+  deleteStaff,
+  inviteMember,
+  removeMember,
+  setAvailability,
+  updateLocation,
+  updateMemberRole,
+  updateService,
+  updateStaff,
+} from '@/lib/admin';
+
+// Every mutation revalidates all four /settings tabs since some cross-
+// reference each other (deleting a location removes services + staff view).
+const REVALIDATE_ALL = () => {
+  revalidatePath('/settings/locations');
+  revalidatePath('/settings/staff');
+  revalidatePath('/settings/services');
+  revalidatePath('/settings/members');
+  // Also blast the shell so the header switcher picks up new locations.
+  revalidatePath('/', 'layout');
+};
+
+// -------------------- Locations ---------------------------------------------
+export async function createLocationAction(input: unknown) {
+  const session = await requireRole('owner');
+  const result = await createLocation(session, input);
+  REVALIDATE_ALL();
+  return result;
+}
+export async function updateLocationAction(id: string, input: unknown) {
+  const session = await requireRole('owner');
+  const result = await updateLocation(session, id, input);
+  REVALIDATE_ALL();
+  return result;
+}
+export async function deleteLocationAction(id: string) {
+  const session = await requireRole('owner');
+  await deleteLocation(session, id);
+  REVALIDATE_ALL();
+}
+
+// -------------------- Staff --------------------------------------------------
+export async function createStaffAction(input: unknown) {
+  const session = await requireRole('owner');
+  const result = await createStaff(session, input);
+  REVALIDATE_ALL();
+  return result;
+}
+export async function updateStaffAction(id: string, input: unknown) {
+  const session = await requireRole('owner');
+  const result = await updateStaff(session, id, input);
+  REVALIDATE_ALL();
+  return result;
+}
+export async function deleteStaffAction(id: string) {
+  const session = await requireRole('owner');
+  await deleteStaff(session, id);
+  REVALIDATE_ALL();
+}
+export async function setAvailabilityAction(id: string, windows: AvailabilityWindow[]) {
+  const session = await requireRole('owner');
+  await setAvailability(session, id, windows);
+  REVALIDATE_ALL();
+}
+
+// -------------------- Services -----------------------------------------------
+export async function createServiceAction(input: unknown) {
+  const session = await requireRole('owner');
+  const result = await createService(session, input);
+  REVALIDATE_ALL();
+  return result;
+}
+export async function updateServiceAction(id: string, input: unknown) {
+  const session = await requireRole('owner');
+  const result = await updateService(session, id, input);
+  REVALIDATE_ALL();
+  return result;
+}
+export async function deleteServiceAction(id: string) {
+  const session = await requireRole('owner');
+  await deleteService(session, id);
+  REVALIDATE_ALL();
+}
+
+// -------------------- Members ------------------------------------------------
+export async function inviteMemberAction(input: unknown) {
+  const session = await requireRole('owner');
+  const result = await inviteMember(session, input);
+  REVALIDATE_ALL();
+  return result;
+}
+export async function updateMemberRoleAction(membershipId: string, role: UserRole) {
+  const session = await requireRole('owner');
+  await updateMemberRole(session, membershipId, role);
+  REVALIDATE_ALL();
+}
+export async function removeMemberAction(membershipId: string) {
+  const session = await requireRole('owner');
+  await removeMember(session, membershipId);
+  REVALIDATE_ALL();
+}
