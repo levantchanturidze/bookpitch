@@ -6,6 +6,7 @@ import { config as loadEnv } from 'dotenv';
 import { prismaAdmin, withoutRls } from '@/lib/db';
 import { encryptField } from '@/lib/crypto';
 import {
+  INITIAL_APPOINTMENTS,
   INITIAL_PATIENTS,
   INITIAL_STAFF,
   MEDICAL_SERVICES,
@@ -176,6 +177,75 @@ async function main() {
   });
 
   // ---------------------------------------------------------------------------
+  // Sample appointments — anchored to the prototype's INITIAL_APPOINTMENTS
+  // dates (July 20-23, 2026). Enough rows to show the scheduler in a
+  // populated state on first load.
+  // ---------------------------------------------------------------------------
+  await withoutRls(async (tx) => {
+    console.log('→ Seeding sample appointments…');
+    const staffRows = await tx.staff.findMany({
+      where: { organizationId: org.id },
+      select: { id: true, name: true, locationId: true },
+    });
+    const services = await tx.service.findMany({
+      where: { organizationId: org.id },
+      select: { id: true, name: true, price: true, durationMinutes: true, locationId: true },
+    });
+    const customersById = new Map(
+      (await tx.customer.findMany({ where: { organizationId: org.id } })).map((c) => [
+        c.email,
+        c,
+      ]),
+    );
+
+    // Map prototype ids (s1..s5, p1..p5) to real rows by name/email.
+    const staffByProtoId: Record<string, (typeof staffRows)[number]> = {};
+    for (const s of INITIAL_STAFF) {
+      const found = staffRows.find((r) => r.name === s.name);
+      if (found) staffByProtoId[s.id] = found;
+    }
+    const customerByProtoId: Record<string, ReturnType<typeof customersById.get>> = {};
+    for (const p of INITIAL_PATIENTS) {
+      customerByProtoId[p.id] = customersById.get(p.email);
+    }
+
+    let inserted = 0;
+    for (const a of INITIAL_APPOINTMENTS) {
+      const staffRow = staffByProtoId[a.staffId];
+      const customer = customerByProtoId[a.patientId];
+      if (!staffRow || !customer) continue;
+
+      // Prefer the service in the same location as the staff.
+      const service = services.find(
+        (s) => s.name === a.service && s.locationId === staffRow.locationId,
+      );
+      if (!service) continue;
+
+      const startsAt = new Date(`${a.date}T${a.time}:00Z`);
+      const endsAt = new Date(startsAt.getTime() + a.duration * 60_000);
+
+      await tx.appointment.create({
+        data: {
+          organizationId: org.id,
+          locationId: staffRow.locationId,
+          customerId: customer.id,
+          staffId: staffRow.id,
+          serviceId: service.id,
+          startsAt,
+          endsAt,
+          serviceName: service.name,
+          price: service.price,
+          status: a.status,
+          paymentStatus: a.paymentStatus === 'refunding' ? 'refunding' : a.paymentStatus,
+          notes: a.notes,
+        },
+      });
+      inserted++;
+    }
+    console.log(`   inserted ${inserted} appointments`);
+  });
+
+  // ---------------------------------------------------------------------------
   // Isolation Corp — a second organization used by the RLS test to prove
   // that tenant_isolation policies actually reject cross-org reads.
   // ---------------------------------------------------------------------------
@@ -212,6 +282,7 @@ async function main() {
     locations: await tx.location.count(),
     staff: await tx.staff.count(),
     staffAvailability: await tx.staffAvailability.count(),
+    appointments: await tx.appointment.count(),
     services: await tx.service.count(),
     customers: await tx.customer.count(),
     treatmentHistory: await tx.treatmentHistory.count(),

@@ -12,19 +12,14 @@ vi.mock('@/auth', () => ({
   signOut: vi.fn(),
 }));
 
-// Pages read locations from the DB; stub with a fixed shape so we don't need
-// a real org id for the "allowed" case.
+// Pages read locations from the DB; stub with a real uuid so /scheduler
+// (which uses the id in further Prisma queries) doesn't blow up on cast.
+const { locationMock } = vi.hoisted(() => ({ locationMock: vi.fn() }));
 vi.mock('@/lib/active-location', async () => {
   const actual = await vi.importActual<typeof import('@/lib/active-location')>(
     '@/lib/active-location',
   );
-  return {
-    ...actual,
-    loadLocationsForOrg: vi.fn(async () => ({
-      locations: [{ id: 'loc-1', name: 'Grand Medical Suite', type: 'clinic' as const }],
-      active: { id: 'loc-1', name: 'Grand Medical Suite', type: 'clinic' as const },
-    })),
-  };
+  return { ...actual, loadLocationsForOrg: locationMock };
 });
 
 // Dynamic imports so the mocks are in place first.
@@ -58,14 +53,19 @@ function makeSession(role: (typeof ALL_ROLES)[number]) {
 describe('module route access matches NAV_ITEMS.allowedRoles', () => {
   beforeAll(async () => {
     const { withoutRls } = await import('@/lib/db');
-    const [org, owner] = await Promise.all([
+    const [org, owner, location] = await Promise.all([
       withoutRls((tx) => tx.organization.findFirst({ orderBy: { createdAt: 'asc' } })),
       withoutRls((tx) =>
         tx.appUser.findUnique({ where: { email: 'owner@bookpitch.dev' }, select: { id: true } }),
       ),
+      withoutRls((tx) => tx.location.findFirst({ where: { type: 'clinic' } })),
     ]);
     realOrgId = org!.id;
     realUserId = owner!.id;
+    locationMock.mockImplementation(async () => ({
+      locations: [{ id: location!.id, name: location!.name, type: location!.type }],
+      active: { id: location!.id, name: location!.name, type: location!.type },
+    }));
   });
 
   beforeEach(() => authMock.mockReset());

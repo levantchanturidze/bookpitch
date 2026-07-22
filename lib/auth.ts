@@ -45,6 +45,14 @@ export class InvalidInputError extends Error {
   }
 }
 
+/** Thrown when the DB double-booking constraint fires; mapped to 409. */
+export class SlotTakenError extends Error {
+  constructor() {
+    super('slot_taken');
+    this.name = 'SlotTakenError';
+  }
+}
+
 /**
  * Throws if the caller is not signed in. Returns the session otherwise.
  */
@@ -81,6 +89,9 @@ export function withApi<T>(handler: () => Promise<T>): Promise<NextResponse> {
       }
       if (err instanceof InvalidInputError) {
         return NextResponse.json({ error: err.message }, { status: 400 });
+      }
+      if (err instanceof SlotTakenError) {
+        return NextResponse.json({ error: err.message }, { status: 409 });
       }
       throw err;
     });
