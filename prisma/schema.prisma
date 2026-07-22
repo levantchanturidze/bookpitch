@@ -126,14 +126,19 @@ model Location {
 // =============================================================================
 
 model AppUser {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  authProvider String   @map("auth_provider")
-  authSubject  String   @map("auth_subject")
-  email        String   @unique @db.Citext
-  fullName     String?  @map("full_name")
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  authProvider  String    @map("auth_provider")
+  authSubject   String    @map("auth_subject")
+  email         String    @unique @db.Citext
+  fullName      String?   @map("full_name")
+  // Auth.js Prisma adapter surface: name / emailVerified / image.
+  // `name` mirrors fullName; the adapter writes it directly on user upsert.
+  name          String?
+  emailVerified DateTime? @map("email_verified") @db.Timestamptz(6)
+  image         String?
   // Set only when authProvider = 'credentials'; null for future SSO users.
-  passwordHash String?  @map("password_hash")
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  passwordHash  String?   @map("password_hash")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   memberships   Membership[]
   staffProfiles Staff[]
@@ -142,6 +147,18 @@ model AppUser {
 
   @@unique([authProvider, authSubject])
   @@map("app_users")
+}
+
+// Auth.js verification-token store. Powers password reset + magic-link
+// flows. Rows are short-lived: the adapter creates them on request and
+// deletes them on verify.
+model VerificationToken {
+  identifier String
+  token      String   @id
+  expires    DateTime @db.Timestamptz(6)
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
 }
 
 model Membership {

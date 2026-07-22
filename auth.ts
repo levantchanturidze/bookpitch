@@ -1,9 +1,10 @@
 import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
+import { PrismaAdapter } from '@auth/prisma-adapter';
 import { verify } from '@node-rs/argon2';
 
 import { authConfig } from '@/auth.config';
-import { withoutRls } from '@/lib/db';
+import { prismaAdmin, withoutRls } from '@/lib/db';
 import type { UserRole } from '@prisma/client';
 
 // -----------------------------------------------------------------------------
@@ -31,6 +32,10 @@ declare module '@auth/core/jwt' {
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
+  // Prisma adapter owns user CRUD + VerificationTokens (password reset,
+  // magic links). Sessions themselves stay JWT — the Credentials provider
+  // requires the JWT strategy per Auth.js docs.
+  adapter: PrismaAdapter(prismaAdmin),
   providers: [
     Credentials({
       credentials: {
