@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { requireRole, SlotTakenError } from '@/lib/auth';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
+import { notifyEvent } from '@/lib/notifications';
 import {
   assertCustomerInOrg,
   assertStaffAtLocation,
@@ -56,6 +57,11 @@ export async function bookAppointmentAction(input: AppointmentCreateInput) {
         },
       });
       await writeAudit(tx, session, 'create', 'appointment', row.id);
+      await notifyEvent(tx, session.organizationId, {
+        type: 'booking',
+        title: 'New appointment booked',
+        body: `${row.customer.name} · ${row.serviceName} with ${row.staff.name} on ${row.startsAt.toISOString().slice(0, 10)} at ${row.startsAt.toISOString().slice(11, 16)}`,
+      });
       return toAppointmentDto(row);
     });
     revalidatePath('/scheduler');
@@ -120,6 +126,16 @@ export async function updateAppointmentAction(id: string, input: AppointmentUpda
       await writeAudit(tx, session, 'update', 'appointment', id, {
         fields: Object.keys(parsed),
       });
+
+      // Only broadcast on meaningful status transitions — otherwise the feed
+      // is noisy on every notes edit.
+      if (parsed.status && parsed.status !== existing.status) {
+        await notifyEvent(tx, session.organizationId, {
+          type: 'booking',
+          title: `Appointment ${parsed.status}`,
+          body: `${row.customer.name} · ${row.serviceName} with ${row.staff.name}`,
+        });
+      }
       return toAppointmentDto(row);
     });
     if (appointment) revalidatePath('/scheduler');

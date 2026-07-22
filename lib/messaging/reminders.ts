@@ -2,6 +2,7 @@ import type { MessageChannel, PrismaClient } from '@prisma/client';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
+import { notifyEvent } from '@/lib/notifications';
 import { getEmailProvider, getSmsProvider } from './index';
 import {
   DEFAULT_EMAIL_SUBJECT,
@@ -141,6 +142,11 @@ export async function sendForAppointment(
             reminder: { channel, provider: providerName, providerMsgId: result.providerMsgId },
           },
         },
+      });
+      await notifyEvent(tx, appt.organizationId, {
+        type: 'reminder',
+        title: `Reminder sent (${channel})`,
+        body: `${appt.customer.name} · ${appt.serviceName}`,
       });
       return { channel, outcome: 'sent' };
     } catch (err) {

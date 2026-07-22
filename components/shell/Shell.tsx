@@ -22,6 +22,7 @@ import type { UserRole } from '@prisma/client';
 
 import { NAV_ITEMS, labelFor, type NavItem } from './nav-items';
 import { setActiveLocationAction, signOutAction } from './actions';
+import { useNotifications } from './useNotifications';
 import type { ActiveLocation } from '@/lib/active-location';
 
 type Props = {
@@ -306,9 +307,10 @@ function LocationSwitcher({
 }
 
 // ---------------------------------------------------------------------------
-// Notification bell — empty placeholder; real feed lands in P3.1.
+// Notification bell — live feed via SSE (P3.1).
 // ---------------------------------------------------------------------------
 function NotificationBell({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const { items, unreadCount, markAllRead, clear } = useNotifications();
   return (
     <div className="relative">
       <button
@@ -318,6 +320,11 @@ function NotificationBell({ open, onToggle }: { open: boolean; onToggle: () => v
         aria-label="Notifications"
       >
         <Bell className="h-4 w-4" />
+        {unreadCount > 0 && (
+          <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full border-2 border-white bg-rose-500 px-1 font-mono text-[8px] font-bold text-white">
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </span>
+        )}
       </button>
       <AnimatePresence>
         {open && (
@@ -329,9 +336,52 @@ function NotificationBell({ open, onToggle }: { open: boolean; onToggle: () => v
               exit={{ opacity: 0, y: 10, scale: 0.95 }}
               className="absolute right-0 z-50 mt-2 w-80 rounded-2xl border border-slate-100 bg-white p-4 shadow-xl"
             >
-              <p className="pb-3 text-xs font-bold text-slate-800">Operational Log</p>
-              <div className="py-8 text-center text-xs text-slate-400">
-                Live notification feed lands in P3.1.
+              <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-3">
+                <p className="text-xs font-bold text-slate-800">Operational Log</p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={markAllRead}
+                    className="text-[10px] text-teal-600 hover:underline"
+                  >
+                    Mark all read
+                  </button>
+                  <button
+                    onClick={clear}
+                    className="text-[10px] text-slate-400 hover:text-slate-600"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <div className="max-h-[280px] space-y-2 overflow-y-auto pr-1">
+                {items.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-slate-400">
+                    No recent activity.
+                  </div>
+                ) : (
+                  items.map((n) => (
+                    <div
+                      key={n.id}
+                      className={`rounded-xl border p-2.5 text-[11px] leading-relaxed transition ${
+                        n.read
+                          ? 'border-slate-100 bg-slate-50 text-slate-500'
+                          : 'border-teal-100 bg-teal-50/40 font-medium text-slate-800'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-1">
+                        <span className="text-[11px] font-bold text-slate-800">
+                          {n.title}
+                        </span>
+                        <span className="font-mono text-[9px] text-slate-400">
+                          {formatRelative(n.createdAt)}
+                        </span>
+                      </div>
+                      {n.body && (
+                        <p className="mt-0.5 text-[10px] text-slate-500">{n.body}</p>
+                      )}
+                    </div>
+                  ))
+                )}
               </div>
             </motion.div>
           </>
@@ -339,6 +389,16 @@ function NotificationBell({ open, onToggle }: { open: boolean; onToggle: () => v
       </AnimatePresence>
     </div>
   );
+}
+
+function formatRelative(iso: string): string {
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const secs = Math.max(0, Math.round((now - then) / 1000));
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m`;
+  if (secs < 86_400) return `${Math.round(secs / 3600)}h`;
+  return `${Math.round(secs / 86_400)}d`;
 }
 
 // ---------------------------------------------------------------------------

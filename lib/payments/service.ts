@@ -2,6 +2,7 @@ import type { Payment, PrismaClient } from '@prisma/client';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
+import { notifyEvent } from '@/lib/notifications';
 import { getGateway } from './gateway';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
@@ -138,6 +139,11 @@ export async function settleCash(
       method: 'cash',
       appointmentId,
     });
+    await notifyEvent(tx, session.organizationId, {
+      type: 'payment',
+      title: 'Cash payment recorded',
+      body: `${Number(appt.price).toFixed(2)} GEL — ${appt.serviceName}`,
+    });
     return toPaymentDto(payment);
   });
 }
@@ -200,6 +206,11 @@ export async function applyWebhook(
         entityId: payment.id,
         meta: { webhook: 'paid', gatewayTxnId, appointmentId: payment.appointmentId },
       },
+    });
+    await notifyEvent(tx, payment.organizationId, {
+      type: 'payment',
+      title: 'Payment received',
+      body: `${Number(payment.amount).toFixed(2)} ${payment.currency} settled via ${payment.gateway ?? 'gateway'}`,
     });
     return 'applied';
   });
