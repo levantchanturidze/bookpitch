@@ -116,7 +116,9 @@ async function main() {
           specialty: s.specialty,
           email: s.email,
           phone: s.phone,
-          avatarUrl: s.avatar,
+          // Avatar URL intentionally NOT seeded — MVP uses generated
+          // initials only (no file uploads). Column left in place for
+          // future use.
           calendarColor: s.color,
           rating: s.rating,
           availability: {
@@ -140,7 +142,7 @@ async function main() {
           phone: p.phone,
           dob: new Date(p.dob),
           gender: p.gender,
-          avatarUrl: p.avatar,
+          // Avatar URL intentionally NOT seeded — MVP uses initials.
           joinedDate: new Date(p.joinedDate),
           allergies: encryptField(p.allergies),
           clinicalNotes: encryptField(p.notes),

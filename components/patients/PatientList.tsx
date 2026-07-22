@@ -825,25 +825,15 @@ function Field({
 
 function Avatar({
   name,
-  url,
   size = 'md',
 }: {
   name: string;
-  url: string | null;
+  // `url` kept as a no-op prop so call sites don't need updating right
+  // now — MVP always renders initials per spec (no file uploads yet).
+  url?: string | null;
   size?: 'md' | 'lg';
 }) {
   const cls = size === 'lg' ? 'w-16 h-16 rounded-2xl text-lg' : 'w-10 h-10 rounded-full text-xs';
-  if (url) {
-    return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={url}
-        alt={name}
-        referrerPolicy="no-referrer"
-        className={`${cls} border border-slate-100 bg-slate-50 object-cover`}
-      />
-    );
-  }
   const initials = name.slice(0, 2).toUpperCase();
   return (
     <div
