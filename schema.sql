@@ -306,14 +306,31 @@ END $$;
 -- =============================================================================
 -- ROW-LEVEL SECURITY  (tenant isolation, if using Supabase / Postgres RLS)
 -- =============================================================================
--- Enable RLS on every tenant-owned table and add a policy that limits rows to
--- the caller's organization. Example for `customers` (repeat per table). The
--- app must set the request's org, e.g. via a JWT claim read by current_setting.
+-- Tenant isolation is enforced in two layers:
+--   1. The application's scoped data-access layer (mandatory) — every query
+--      takes organization_id from the server session, never from user input.
+--   2. RLS below (defence in depth) — so an application bug alone cannot leak
+--      one clinic's patients to another.
 --
--- ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
--- CREATE POLICY tenant_isolation ON customers
---   USING (organization_id = (auth.jwt() ->> 'org_id')::uuid);
+-- Because authentication runs in our own code (Auth.js) rather than a platform
+-- that injects JWT claims into Postgres, the org is passed per transaction as a
+-- session variable:
 --
--- With RLS, tenant separation is enforced by the database itself — a bug in
--- application code cannot leak one clinic's patients to another.
+--   BEGIN;
+--   SET LOCAL app.current_org_id = '<uuid-from-session>';
+--   ... queries ...
+--   COMMIT;
+--
+-- Policy shape (repeat for every tenant-owned table):
+--
+--   ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
+--   ALTER TABLE customers FORCE  ROW LEVEL SECURITY;
+--   CREATE POLICY tenant_isolation ON customers
+--     USING (organization_id = current_setting('app.current_org_id', true)::uuid);
+--
+-- TWO REQUIREMENTS, easy to miss:
+--   * The application must connect as a NON-OWNER role. A table's owner (and
+--     any superuser) bypasses RLS unless FORCE ROW LEVEL SECURITY is set.
+--   * SET LOCAL only lasts for the transaction, which is what we want with a
+--     pooled connection — it cannot leak into another request's queries.
 -- =============================================================================
