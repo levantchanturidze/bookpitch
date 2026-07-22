@@ -18,7 +18,15 @@ export const authConfig = {
     // Auth.js to redirect to `pages.signIn`.
     authorized({ auth, request: { nextUrl } }) {
       const path = nextUrl.pathname;
-      const isPublic = path === '/signin' || path.startsWith('/api/auth');
+      const isPublic =
+        path === '/signin' ||
+        path.startsWith('/api/auth') ||
+        // Payment gateway webhooks are called by external services and
+        // authenticate via HMAC in the handler itself.
+        path.startsWith('/api/webhooks') ||
+        // Mock gateway page + its callback are dev-only; a runtime notFound()
+        // in the page itself hides them in production.
+        path.startsWith('/dev/');
       if (isPublic) return true;
       return !!auth?.user;
     },
