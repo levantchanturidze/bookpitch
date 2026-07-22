@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { requireRole } from '@/lib/auth';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
+import { anonymizeCustomer, exportCustomerData, type CustomerExport } from '@/lib/gdpr';
 import {
   buildCreateData,
   buildUpdateData,
@@ -97,4 +98,20 @@ export async function addTreatmentHistoryAction(customerId: string, label: strin
     occurredOn: history.occurredOn ? history.occurredOn.toISOString().slice(0, 10) : null,
     createdAt: history.createdAt.toISOString(),
   };
+}
+
+// -----------------------------------------------------------------------------
+// GDPR — owner-only actions used by the Patients detail pane.
+// -----------------------------------------------------------------------------
+
+export async function exportCustomerAction(customerId: string): Promise<CustomerExport> {
+  const session = await requireRole('owner');
+  return exportCustomerData(session, customerId);
+}
+
+export async function anonymizeCustomerAction(customerId: string): Promise<{ ok: true }> {
+  const session = await requireRole('owner');
+  await anonymizeCustomer(session, customerId, 'gdpr');
+  revalidatePath('/patients');
+  return { ok: true };
 }

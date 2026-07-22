@@ -4,7 +4,7 @@ export type NavItem = {
   id: string;
   href: string;
   label: string | { clinic: string; salon: string };
-  icon: 'calendar' | 'users' | 'message' | 'dollar' | 'trending';
+  icon: 'calendar' | 'users' | 'message' | 'dollar' | 'trending' | 'shield';
   allowedRoles: UserRole[];
 };
 
@@ -45,6 +45,13 @@ export const NAV_ITEMS: NavItem[] = [
     href: '/analytics',
     label: 'Business intelligence',
     icon: 'trending',
+    allowedRoles: ['owner'],
+  },
+  {
+    id: 'audit',
+    href: '/audit',
+    label: 'Audit log',
+    icon: 'shield',
     allowedRoles: ['owner'],
   },
 ];

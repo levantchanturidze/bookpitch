@@ -6,6 +6,7 @@ import { InvalidInputError, requireRole } from '@/lib/auth';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { runReminderTick, sendNowForSession } from '@/lib/messaging/reminders';
+import { runRetentionTick } from '@/lib/gdpr';
 
 // Server Actions used by the /reminders page. Each mirrors an API concept and
 // revalidates the page so the message-log table + upcoming list refresh.
@@ -69,4 +70,31 @@ export async function runTickAction() {
   const session = await requireRole('owner');
   await runReminderTick(session.organizationId);
   revalidatePath('/reminders');
+}
+
+export async function saveRetentionYearsAction(fd: FormData) {
+  const session = await requireRole('owner');
+  const raw = String(fd.get('years') ?? '');
+  const years = Number(raw);
+  if (!Number.isInteger(years) || years < 1 || years > 30) {
+    throw new InvalidInputError('years must be an integer between 1 and 30');
+  }
+  await withOrg(session.organizationId, async (tx) => {
+    await tx.organization.update({
+      where: { id: session.organizationId },
+      data: { customerRetentionYears: years },
+    });
+    await writeAudit(tx, session, 'update', 'customer', null, {
+      setting: 'customerRetentionYears',
+      years,
+    });
+  });
+  revalidatePath('/reminders');
+}
+
+export async function runRetentionTickAction() {
+  const session = await requireRole('owner');
+  await runRetentionTick(session.organizationId);
+  revalidatePath('/reminders');
+  revalidatePath('/patients');
 }

@@ -13,9 +13,10 @@ export default async function RemindersPage() {
   const data = await withOrg(session.organizationId, async (tx) => {
     const org = await tx.organization.findUnique({
       where: { id: session.organizationId },
-      select: { reminderLeadHours: true },
+      select: { reminderLeadHours: true, customerRetentionYears: true },
     });
     const leadHours = org?.reminderLeadHours ?? 24;
+    const retentionYears = org?.customerRetentionYears ?? 7;
 
     const templates = await tx.messageTemplate.findMany({
       where: { organizationId: session.organizationId },
@@ -50,6 +51,7 @@ export default async function RemindersPage() {
 
     return {
       leadHours,
+      retentionYears,
       smsBody,
       emailBody,
       upcoming: upcomingRows.map((a) => ({
@@ -87,6 +89,7 @@ export default async function RemindersPage() {
   return (
     <RemindersView
       leadHours={data.leadHours}
+      retentionYears={data.retentionYears}
       smsBody={data.smsBody}
       emailBody={data.emailBody}
       upcoming={data.upcoming}

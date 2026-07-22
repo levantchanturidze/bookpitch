@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from 'react';
 import {
   Calendar,
+  Download,
   Info,
   Mail,
   Phone,
@@ -12,6 +13,7 @@ import {
   ShieldCheck,
   Trash2,
   UserPlus,
+  UserX,
   X,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -19,14 +21,17 @@ import { motion, AnimatePresence } from 'motion/react';
 import type { CustomerDetailDto } from '@/lib/customers';
 import {
   addTreatmentHistoryAction,
+  anonymizeCustomerAction,
   createCustomerAction,
   deleteCustomerAction,
+  exportCustomerAction,
   updateCustomerAction,
 } from './actions';
 
 type Props = {
   customers: CustomerDetailDto[];
   locationType: 'clinic' | 'salon';
+  isOwner: boolean;
 };
 
 type FormState = {
@@ -51,7 +56,7 @@ const EMPTY_FORM: FormState = {
   consent: false,
 };
 
-export default function PatientList({ customers, locationType }: Props) {
+export default function PatientList({ customers, locationType, isOwner }: Props) {
   const isClinic = locationType === 'clinic';
   const accent = isClinic ? 'teal' : 'pink';
   const labelSingular = isClinic ? 'Patient' : 'Client';
@@ -235,6 +240,7 @@ export default function PatientList({ customers, locationType }: Props) {
             active={active}
             isClinic={isClinic}
             accent={accent}
+            isOwner={isOwner}
             onEdit={() => setFormOpen('edit')}
             onDelete={() => setConfirmDeleteId(active.id)}
             onAddHistory={(label) => handleAddHistory(active.id, label)}
@@ -316,6 +322,7 @@ function PatientDetail({
   active,
   isClinic,
   accent,
+  isOwner,
   onEdit,
   onDelete,
   onAddHistory,
@@ -324,6 +331,7 @@ function PatientDetail({
   active: CustomerDetailDto;
   isClinic: boolean;
   accent: 'teal' | 'pink';
+  isOwner: boolean;
   onEdit: () => void;
   onDelete: () => void;
   onAddHistory: (label: string) => void;
@@ -477,8 +485,125 @@ function PatientDetail({
               Appointment integration lands in P1.5.
             </p>
           </div>
+
+          {isOwner && <GdprPanel customerId={active.id} customerName={active.name} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// GDPR panel (owner-only) — export PII as JSON, or anonymize the record.
+// -----------------------------------------------------------------------------
+function GdprPanel({
+  customerId,
+  customerName,
+}: {
+  customerId: string;
+  customerName: string;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  const handleExport = () => {
+    setError(null);
+    startTransition(async () => {
+      try {
+        const data = await exportCustomerAction(customerId);
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `customer-${customerId}-export.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    });
+  };
+
+  const handleAnonymize = () => {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await anonymizeCustomerAction(customerId);
+        setConfirming(false);
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    });
+  };
+
+  return (
+    <div className="rounded-xl border border-amber-100 bg-amber-50/40 p-4">
+      <span className="mb-2 block font-mono text-[10px] font-bold tracking-wider text-amber-800 uppercase">
+        GDPR
+      </span>
+      <p className="mb-3 text-[11px] text-amber-900/80">
+        Owner-only. Both actions write to the audit log.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          disabled={isPending}
+          onClick={handleExport}
+          className="flex items-center gap-1 rounded-lg border border-amber-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-amber-900 transition hover:bg-amber-50 disabled:opacity-40"
+        >
+          <Download className="h-3 w-3" />
+          Export data
+        </button>
+        <button
+          disabled={isPending}
+          onClick={() => setConfirming(true)}
+          className="flex items-center gap-1 rounded-lg border border-rose-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-rose-700 transition hover:bg-rose-50 disabled:opacity-40"
+        >
+          <UserX className="h-3 w-3" />
+          Anonymize (GDPR)
+        </button>
+      </div>
+      {error && (
+        <p className="mt-2 rounded-lg bg-rose-50 px-2 py-1.5 text-[11px] text-rose-700">
+          {error}
+        </p>
+      )}
+      <AnimatePresence>
+        {confirming && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-6 shadow-lg"
+            >
+              <h3 className="text-base font-bold text-slate-800">Anonymize {customerName}?</h3>
+              <p className="mt-2 text-xs text-slate-500">
+                This redacts name, contact fields, allergies, and clinical notes. Appointment and
+                payment history stays intact. The action is logged in the audit trail and cannot
+                be undone.
+              </p>
+              <div className="mt-5 flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setConfirming(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAnonymize}
+                  disabled={isPending}
+                  className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
+                >
+                  {isPending ? 'Anonymizing…' : 'Anonymize'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from 'react';
 import type { MessageChannel, MessageState } from '@prisma/client';
-import { Clock, MailCheck, MessageSquare, Play, Send } from 'lucide-react';
+import { Clock, MailCheck, MessageSquare, Play, Send, ShieldCheck } from 'lucide-react';
 import {
   DEFAULT_EMAIL_TEMPLATE,
   DEFAULT_SMS_TEMPLATE,
@@ -11,8 +11,10 @@ import {
   type TemplateVars,
 } from '@/lib/messaging/templates';
 import {
+  runRetentionTickAction,
   runTickAction,
   saveLeadHoursAction,
+  saveRetentionYearsAction,
   saveTemplateAction,
   sendNowAction,
 } from './actions';
@@ -41,6 +43,7 @@ type LogEntry = {
 
 type Props = {
   leadHours: number;
+  retentionYears: number;
   smsBody: string | null;
   emailBody: string | null;
   upcoming: UpcomingAppointment[];
@@ -59,6 +62,7 @@ const SAMPLE_HINT: TemplateVars = {
 
 export default function RemindersView({
   leadHours,
+  retentionYears,
   smsBody,
   emailBody,
   upcoming,
@@ -100,6 +104,8 @@ export default function RemindersView({
       <UpcomingCard upcoming={upcoming} canRunTick={canRunTick} />
 
       <LogCard log={log} />
+
+      {canRunTick && <RetentionCard initial={retentionYears} />}
     </div>
   );
 }
@@ -363,6 +369,68 @@ function LogCard({ log }: { log: LogEntry[] }) {
           </tbody>
         </table>
       )}
+    </section>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Retention (owner-only). Sets the customer PII retention window and can run
+// the retention tick manually. Real prod deploy hooks POST /api/cron/retention
+// on a daily schedule via Vercel Cron / GitHub Actions.
+// -----------------------------------------------------------------------------
+function RetentionCard({ initial }: { initial: number }) {
+  const [years, setYears] = useState(String(initial));
+  const [isPendingSave, startSave] = useTransition();
+  const [isPendingTick, startTick] = useTransition();
+  return (
+    <section className="rounded-2xl border border-amber-100 bg-amber-50/40 p-6">
+      <div className="mb-3 flex items-center gap-2">
+        <div className="rounded-lg bg-amber-50 p-2 text-amber-700">
+          <ShieldCheck className="h-4 w-4" />
+        </div>
+        <div>
+          <h3 className="text-sm font-bold text-slate-800">Customer PII retention</h3>
+          <p className="text-[11px] text-slate-500">
+            Customers idle beyond this window are anonymized when the retention tick runs.
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <form action={(fd) => startSave(() => saveRetentionYearsAction(fd))} className="flex items-end gap-2">
+          <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+            Retention
+            <div className="mt-1 flex items-center gap-1">
+              <input
+                name="years"
+                value={years}
+                onChange={(e) => setYears(e.target.value)}
+                type="number"
+                min={1}
+                max={30}
+                className="w-16 rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm font-bold text-slate-800"
+              />
+              <span className="text-[11px] text-slate-500">years</span>
+            </div>
+          </label>
+          <button
+            type="submit"
+            disabled={isPendingSave || years === String(initial)}
+            className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-slate-800 disabled:opacity-40"
+          >
+            {isPendingSave ? 'Saving…' : 'Save'}
+          </button>
+        </form>
+        <form action={() => startTick(() => runRetentionTickAction())} className="ml-auto">
+          <button
+            type="submit"
+            disabled={isPendingTick}
+            className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
+          >
+            <Play className="h-3 w-3" />
+            {isPendingTick ? 'Running…' : 'Run retention tick'}
+          </button>
+        </form>
+      </div>
     </section>
   );
 }

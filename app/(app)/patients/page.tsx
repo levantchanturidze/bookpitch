@@ -24,5 +24,11 @@ export default async function PatientsPage() {
     return rows.map(toCustomerDetailDto);
   });
 
-  return <PatientList customers={customers} locationType={active.type} />;
+  return (
+    <PatientList
+      customers={customers}
+      locationType={active.type}
+      isOwner={session.role === 'owner'}
+    />
+  );
 }
