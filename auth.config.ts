@@ -29,6 +29,8 @@ export const authConfig = {
         path === '/apple-icon' ||
         path === '/icon-large' ||
         path.startsWith('/api/auth') ||
+        // Uptime probe — no session cookie, no PII in the response.
+        path === '/api/health' ||
         // Payment gateway webhooks are called by external services and
         // authenticate via HMAC in the handler itself.
         path.startsWith('/api/webhooks') ||

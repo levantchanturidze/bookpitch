@@ -1,0 +1,33 @@
+# Throwaway local Postgres for destructive migration experiments.
+# Not the source of truth — the hosted EU-region database is. See
+# ARCHITECTURE.md §2 and CLAUDE_CODE_PROMPTS.md P1.1.
+#
+# Usage:
+#   docker compose up -d
+#   export DATABASE_URL="postgresql://bookpitch@localhost:5433/bookpitch_dev?schema=public"
+#   npx prisma migrate deploy
+#   npm run db:seed
+#
+# Port 5433 (not 5432) so it never clashes with a locally-installed
+# Postgres you might already be running.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bookpitch-throwaway
+    environment:
+      POSTGRES_USER: bookpitch
+      POSTGRES_PASSWORD: bookpitch
+      POSTGRES_DB: bookpitch_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - bookpitch-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bookpitch -d bookpitch_dev"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  bookpitch-pg:
