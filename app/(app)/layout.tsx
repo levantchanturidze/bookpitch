@@ -24,13 +24,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         select: { name: true },
       }),
     ),
-    loadLocationsForOrg(session.organizationId),
+    loadLocationsForOrg(session.organizationId), // redirects to /signin if empty
   ]);
 
-  if (!organization) {
-    // Session's org disappeared — safest to sign the user out.
-    redirect('/signin');
-  }
+  if (!organization) redirect('/signin');
 
   return (
     <Shell

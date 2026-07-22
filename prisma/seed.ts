@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { config as loadEnv } from 'dotenv';
 
 import { prismaAdmin, withoutRls } from '@/lib/db';
+import { encryptField } from '@/lib/crypto';
 import {
   INITIAL_PATIENTS,
   INITIAL_STAFF,
@@ -124,7 +125,7 @@ async function main() {
       });
     }
 
-    console.log('→ Seeding customers + treatment history…');
+    console.log('→ Seeding customers + treatment history (allergies + notes encrypted)…');
     for (const p of INITIAL_PATIENTS) {
       await tx.customer.create({
         data: {
@@ -136,8 +137,10 @@ async function main() {
           gender: p.gender,
           avatarUrl: p.avatar,
           joinedDate: new Date(p.joinedDate),
-          allergies: p.allergies,
-          clinicalNotes: p.notes,
+          allergies: encryptField(p.allergies),
+          clinicalNotes: encryptField(p.notes),
+          consentAt: new Date(),
+          consentVersion: '1.0',
           treatmentHistory: { create: p.history.map((label) => ({ label })) },
         },
       });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { NAV_ITEMS } from '@/components/shell/nav-items';
 import { ForbiddenError, UnauthenticatedError } from '@/lib/auth';
 
@@ -38,18 +38,36 @@ const pages: Record<string, () => Promise<{ default: () => Promise<unknown> }>> 
 
 const ALL_ROLES = ['owner', 'practitioner', 'receptionist'] as const;
 
+// Some pages (like /patients since P1.4) touch the DB and write audit_log —
+// they need a REAL orgId + userId that satisfies the FKs. Pull them once
+// from the seeded state.
+let realOrgId = '';
+let realUserId = '';
+
 function makeSession(role: (typeof ALL_ROLES)[number]) {
   return {
     user: {
-      id: '11111111-1111-1111-1111-111111111111',
+      id: realUserId,
       email: `${role}@example.dev`,
-      organizationId: '22222222-2222-2222-2222-222222222222',
+      organizationId: realOrgId,
       role,
     },
   };
 }
 
 describe('module route access matches NAV_ITEMS.allowedRoles', () => {
+  beforeAll(async () => {
+    const { withoutRls } = await import('@/lib/db');
+    const [org, owner] = await Promise.all([
+      withoutRls((tx) => tx.organization.findFirst({ orderBy: { createdAt: 'asc' } })),
+      withoutRls((tx) =>
+        tx.appUser.findUnique({ where: { email: 'owner@bookpitch.dev' }, select: { id: true } }),
+      ),
+    ]);
+    realOrgId = org!.id;
+    realUserId = owner!.id;
+  });
+
   beforeEach(() => authMock.mockReset());
 
   for (const item of NAV_ITEMS) {

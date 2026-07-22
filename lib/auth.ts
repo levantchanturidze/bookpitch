@@ -37,6 +37,14 @@ export class ForbiddenError extends Error {
   }
 }
 
+/** Thrown by input parsers; mapped to 400 by withApi. */
+export class InvalidInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidInputError';
+  }
+}
+
 /**
  * Throws if the caller is not signed in. Returns the session otherwise.
  */
@@ -70,6 +78,9 @@ export function withApi<T>(handler: () => Promise<T>): Promise<NextResponse> {
       }
       if (err instanceof ForbiddenError) {
         return NextResponse.json({ error: err.message }, { status: 403 });
+      }
+      if (err instanceof InvalidInputError) {
+        return NextResponse.json({ error: err.message }, { status: 400 });
       }
       throw err;
     });

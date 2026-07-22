@@ -1,4 +1,5 @@
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { withOrg } from '@/lib/db';
 import type { LocationType } from '@prisma/client';
 
@@ -28,9 +29,10 @@ export async function loadLocationsForOrg(orgId: string): Promise<{
     }),
   );
 
-  if (locations.length === 0) {
-    throw new Error(`No locations for org ${orgId}`);
-  }
+  // Session references an org with no locations (probably deleted). Bounce
+  // to /signin so the user gets a fresh JWT. redirect() throws NEXT_REDIRECT
+  // so this function never returns in that case.
+  if (locations.length === 0) redirect('/signin');
 
   const jar = await cookies();
   const cookieId = jar.get(COOKIE_NAME)?.value;
