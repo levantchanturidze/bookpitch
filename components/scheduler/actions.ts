@@ -17,6 +17,7 @@ import {
   type AppointmentCreateInput,
   type AppointmentUpdateInput,
 } from '@/lib/appointments';
+import { draftAppointment, type DraftAppointmentResult } from '@/lib/assistant/draft';
 
 // Mirror the /api/appointments endpoints but skip the HTTP hop for internal
 // UI callers. Same withOrg + writeAudit pattern. revalidatePath refreshes
@@ -144,4 +145,17 @@ export async function updateAppointmentAction(id: string, input: AppointmentUpda
     if (isExclusionViolation(err)) throw new SlotTakenError();
     throw err;
   }
+}
+
+// -----------------------------------------------------------------------------
+// Natural-language assistant — turns a prompt into a validated draft the UI
+// pre-fills. Actual booking still goes through bookAppointmentAction so the
+// GiST exclusion constraint stays the source of truth.
+// -----------------------------------------------------------------------------
+export async function draftAppointmentAction(
+  locationId: string,
+  prompt: string,
+): Promise<DraftAppointmentResult> {
+  const session = await requireRole('owner', 'practitioner', 'receptionist');
+  return draftAppointment(session, locationId, prompt);
 }

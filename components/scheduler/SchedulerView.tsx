@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import type { AppointmentDto } from '@/lib/appointments';
 import type { AppointmentStatus, PaymentStatus } from '@prisma/client';
 import { bookAppointmentAction, updateAppointmentAction } from './actions';
+import AssistantModal from './AssistantModal';
 
 // -----------------------------------------------------------------------------
 // Types passed by the server component.
@@ -74,6 +75,8 @@ export default function SchedulerView(props: Props) {
   const [filterStaff, setFilterStaff] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [bookOpen, setBookOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantDraft, setAssistantDraft] = useState<BookingInput | null>(null);
   const [selected, setSelected] = useState<AppointmentDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -174,17 +177,26 @@ export default function SchedulerView(props: Props) {
             <Legend color="bg-blue-500" label="Completed" />
             <Legend color="bg-rose-500" label="Cancelled" />
           </div>
-          <button
-            onClick={() => setBookOpen(true)}
-            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium text-white shadow-sm transition ${
-              accent === 'teal'
-                ? 'bg-teal-600 hover:bg-teal-700 hover:shadow-teal-100'
-                : 'bg-pink-600 hover:bg-pink-700 hover:shadow-pink-100'
-            }`}
-          >
-            <Plus className="h-4 w-4" />
-            Book Appointment
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setAssistantOpen(true)}
+              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+            >
+              <Sparkles className="h-4 w-4" />
+              Assistant
+            </button>
+            <button
+              onClick={() => setBookOpen(true)}
+              className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium text-white shadow-sm transition ${
+                accent === 'teal'
+                  ? 'bg-teal-600 hover:bg-teal-700 hover:shadow-teal-100'
+                  : 'bg-pink-600 hover:bg-pink-700 hover:shadow-pink-100'
+              }`}
+            >
+              <Plus className="h-4 w-4" />
+              Book Appointment
+            </button>
+          </div>
         </div>
       </section>
 
@@ -274,11 +286,61 @@ export default function SchedulerView(props: Props) {
             accent={accent}
             isPending={isPending}
             error={error}
+            prefill={assistantDraft}
             onCancel={() => {
               setBookOpen(false);
+              setAssistantDraft(null);
               setError(null);
             }}
-            onSubmit={handleBook}
+            onSubmit={(v) => {
+              handleBook(v);
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ----------- Assistant modal (natural-language booking) --------------- */}
+      <AnimatePresence>
+        {assistantOpen && (
+          <AssistantModal
+            locationId={location.id}
+            accent={accent}
+            onCancel={() => setAssistantOpen(false)}
+            onConfirm={(d) => {
+              setAssistantOpen(false);
+              startTransition(async () => {
+                try {
+                  await bookAppointmentAction({
+                    locationId: location.id,
+                    customerId: d.customerId,
+                    staffId: d.staffId,
+                    serviceId: d.serviceId,
+                    startsAt: d.startsAt,
+                    notes: d.notes,
+                  });
+                } catch (err) {
+                  const msg = (err as Error).message;
+                  setError(
+                    msg === 'slot_taken'
+                      ? 'That time slot is already taken by another appointment.'
+                      : msg,
+                  );
+                }
+              });
+            }}
+            onEdit={(prefill) => {
+              setAssistantOpen(false);
+              setAssistantDraft({
+                customerId: prefill.customerId ?? '',
+                staffId: prefill.staffId ?? '',
+                serviceId: prefill.serviceId ?? '',
+                date: prefill.date,
+                time: prefill.time,
+                notes: prefill.notes,
+              });
+              setSelectedDate(prefill.date);
+              setBookOpen(true);
+            }}
           />
         )}
       </AnimatePresence>
@@ -600,6 +662,7 @@ function BookingModal({
   accent,
   isPending,
   error,
+  prefill,
   onCancel,
   onSubmit,
 }: {
@@ -611,17 +674,20 @@ function BookingModal({
   accent: 'teal' | 'pink';
   isPending: boolean;
   error: string | null;
+  prefill?: BookingInput | null;
   onCancel: () => void;
   onSubmit: (v: BookingInput) => void;
 }) {
-  const [values, setValues] = useState<BookingInput>({
-    customerId: '',
-    staffId: '',
-    serviceId: '',
-    date,
-    time: '10:00',
-    notes: '',
-  });
+  const [values, setValues] = useState<BookingInput>(
+    prefill ?? {
+      customerId: '',
+      staffId: '',
+      serviceId: '',
+      date,
+      time: '10:00',
+      notes: '',
+    },
+  );
   const activeService = services.find((s) => s.id === values.serviceId);
 
   return (
