@@ -48,6 +48,11 @@ export default function SignInForm() {
         <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{state.error}</p>
       )}
       <SubmitButton />
+      <p className="pt-1 text-center text-xs text-slate-500">
+        <a href="/reset" className="font-semibold text-slate-700 hover:underline">
+          Forgot password?
+        </a>
+      </p>
     </form>
   );
 }

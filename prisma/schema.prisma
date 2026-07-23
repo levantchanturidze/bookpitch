@@ -140,6 +140,9 @@ model AppUser {
   image         String?
   // Set only when authProvider = 'credentials'; null for future SSO users.
   passwordHash  String?   @map("password_hash")
+  // Bumped on password reset / admin revocation. JWTs carrying an older
+  // value are rejected by the session() callback in auth.ts.
+  sessionVersion Int      @default(1) @map("session_version")
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   memberships   Membership[]

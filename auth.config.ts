@@ -20,6 +20,9 @@ export const authConfig = {
       const path = nextUrl.pathname;
       const isPublic =
         path === '/signin' ||
+        // Password reset landing page — needs to be reachable without a
+        // session (that's the whole point).
+        path === '/reset' ||
         // Offline page must load without auth so the SW can serve it when
         // the browser is offline (session cookies wouldn't reach us anyway).
         path === '/offline' ||
