@@ -67,10 +67,10 @@ disable this — it's the only proof the backup chain works.
 
 ## What the scripts don't do
 
-- **No off-EU copies.** If you point `--destination` at a US bucket the
-  script will happily upload; the residency guard is you reading this
-  section. Consider adding an IAM policy on the bucket that only allows
-  `eu-*` regions.
+- **No off-EU copies.** The `verify-eu-residency.sh` script + the
+  `.github/workflows/residency-audit.yml` monthly cron catch a
+  misconfigured bucket after the fact. For belt-and-braces, add an
+  IAM policy on the bucket that only allows `eu-*` regions.
 - **No key rotation.** Rotating `BACKUP_PASSPHRASE` means old backups
   become undecryptable — plan for it.
 - **No PITR.** These are logical dumps, not WAL archives. If you need
