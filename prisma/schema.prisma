@@ -468,7 +468,7 @@ model RateLimit {
 // =============================================================================
 
 model AuditLog {
-  id             BigInt   @id @default(autoincrement())
+  id             BigInt   @default(autoincrement())
   organizationId String?  @map("organization_id") @db.Uuid
   actorUserId    String?  @map("actor_user_id") @db.Uuid
   action         String
@@ -481,7 +481,13 @@ model AuditLog {
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
   actor        AppUser?      @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
+  // Composite PK — Postgres declarative partitioning requires the
+  // partition key (`at`) to be included in every unique constraint.
+  // The id sequence still guarantees per-row uniqueness in practice.
+  @@id([at, id])
   @@index([entity, entityId], map: "idx_audit_entity")
   @@index([actorUserId, at(sort: Desc)], map: "idx_audit_actor")
+  @@index([at(sort: Desc)], map: "idx_audit_at")
+  @@index([organizationId, at(sort: Desc)], map: "idx_audit_org_at")
   @@map("audit_log")
 }
