@@ -23,6 +23,10 @@ export const authConfig = {
         // Password reset landing page — needs to be reachable without a
         // session (that's the whole point).
         path === '/reset' ||
+        // Self-service org onboarding — the whole point is that the caller
+        // has no account yet.
+        path === '/signup' ||
+        path === '/api/onboard' ||
         // Offline page must load without auth so the SW can serve it when
         // the browser is offline (session cookies wouldn't reach us anyway).
         path === '/offline' ||
