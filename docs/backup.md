@@ -38,10 +38,16 @@ export BACKUP_DEST="s3://bookpitch-backups-eu/$(date +%Y%m%d)/bookpitch.sql.gpg"
 ./scripts/backup-db.sh "$BACKUP_DEST"
 ```
 
-Wire it to a schedule you control — GitHub Actions cron, systemd
-timer, Vercel cron hitting a small handler that shells out. The
-destination filename should include the date so successive backups
-don't overwrite each other.
+A GitHub Actions cron is checked in at `.github/workflows/backup.yml`
+(daily 02:00 UTC). It needs these repo secrets:
+
+- `DIRECT_URL` — production Postgres URL (no `?schema=` query string).
+- `BACKUP_PASSPHRASE` — GPG symmetric passphrase.
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — S3 writer.
+- `BACKUP_S3_URI` — e.g. `s3://bookpitch-backups-eu`.
+
+The workflow writes to `${BACKUP_S3_URI}/YYYY/MM/DD/bookpitch-HHMMSS.sql.gpg`
+so successive runs never collide.
 
 ## Restore drill (do this at least monthly)
 
@@ -53,6 +59,11 @@ Expected output ends with row counts and a `1` for the
 `no_staff_double_booking` constraint. If either the decrypt or the
 `psql -v ON_ERROR_STOP=1` step fails, the backup is corrupt — treat
 that as an incident.
+
+The GitHub Actions workflow at `.github/workflows/restore-drill.yml`
+runs this automatically on the 3rd of each month against the previous
+day's S3 backup. A failure fails the workflow (email + red X). Do not
+disable this — it's the only proof the backup chain works.
 
 ## What the scripts don't do
 

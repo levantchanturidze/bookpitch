@@ -1,0 +1,52 @@
+name: Nightly database backup
+
+# Runs at 02:00 UTC daily (03:00 Tbilisi in winter, 04:00 in summer). The
+# actual backup script strips Prisma-only query params, encrypts with GPG
+# symmetric AES-256, and uploads to the configured EU S3 bucket. Nothing
+# leaves the EU: bucket region must be eu-central-* (see docs/backup.md).
+#
+# Required repo secrets:
+#   DIRECT_URL              — Postgres connection URL (no ?schema=…)
+#   BACKUP_PASSPHRASE       — GPG symmetric passphrase
+#   AWS_ACCESS_KEY_ID       — S3 IAM user (write-only into the backup bucket)
+#   AWS_SECRET_ACCESS_KEY
+#   BACKUP_S3_URI           — e.g. s3://bookpitch-backups-eu
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v5
+
+      - name: Install pg_dump matching prod major (16) + gpg + awscli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg awscli
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+
+      - name: Run backup
+        env:
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: eu-central-1
+        run: |
+          set -euo pipefail
+          DEST="${{ secrets.BACKUP_S3_URI }}/$(date -u +%Y/%m/%d)/bookpitch-$(date -u +%H%M%S).sql.gpg"
+          echo "→ writing to $DEST"
+          ./scripts/backup-db.sh "$DEST"
+
+      - name: Notify on failure
+        if: failure()
+        run: echo "::error::Nightly backup failed — check the run log and re-run manually via workflow_dispatch."

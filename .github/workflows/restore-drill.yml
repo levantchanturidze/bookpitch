@@ -1,0 +1,52 @@
+name: Monthly restore drill
+
+# Actually restores the latest backup into an ephemeral Postgres. This is
+# the ONLY thing that proves the backup chain works — a backup you can't
+# restore is just wasted S3 bytes. Runs on the 3rd of each month at 02:00
+# UTC so the previous day's backup is guaranteed to be present.
+#
+# Uses the restore-db.sh script; failure means the alarm fires (job fails
+# → red X in Actions → GH email to repo owners). Do not silence.
+
+on:
+  schedule:
+    - cron: '0 2 3 * *'
+  workflow_dispatch:
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v5
+
+      - name: Install gpg + awscli
+        run: sudo apt-get update && sudo apt-get install -y gnupg awscli
+
+      - name: Locate yesterday's backup on S3
+        id: locate
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: eu-central-1
+        run: |
+          set -euo pipefail
+          # Look one day back to be safe on time-zone boundaries.
+          PREFIX="${{ secrets.BACKUP_S3_URI }}/$(date -u -d 'yesterday' +%Y/%m/%d)/"
+          echo "prefix=$PREFIX"
+          LATEST=$(aws s3 ls "$PREFIX" | awk '{print $4}' | sort | tail -n1)
+          test -n "$LATEST" || { echo "::error::no backup found under $PREFIX"; exit 1; }
+          echo "src=$PREFIX$LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: Run restore drill
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: eu-central-1
+        run: ./scripts/restore-db.sh "${{ steps.locate.outputs.src }}"
+
+      - name: Notify on failure
+        if: failure()
+        run: echo "::error::Monthly restore drill failed — the current backup chain is NOT proven to be recoverable. Investigate immediately."
