@@ -9,6 +9,7 @@ on:
     - cron: '*/15 * * * *'
     - cron: '3 * * * *'
     - cron: '17 2 * * *'
+    - cron: '0 8 * * 1'
   workflow_dispatch:
 
 jobs:
@@ -54,6 +55,22 @@ jobs:
           set -euo pipefail
           code=$(curl -s -o /tmp/out -w '%{http_code}' \
             -X POST "${{ secrets.APP_URL }}/api/cron/retention" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}")
+          echo "http=$code"
+          cat /tmp/out
+          test "$code" -lt 300
+
+  audit-digest:
+    # Mondays at 08:00 UTC. Emails a 7-day audit rollup to every owner.
+    if: github.event.schedule == '0 8 * * 1' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: POST /api/cron/audit-digest
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /tmp/out -w '%{http_code}' \
+            -X POST "${{ secrets.APP_URL }}/api/cron/audit-digest" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}")
           echo "http=$code"
           cat /tmp/out
