@@ -8,6 +8,7 @@ on:
   schedule:
     - cron: '*/15 * * * *'
     - cron: '3 * * * *'
+    - cron: '17 2 * * *'
   workflow_dispatch:
 
 jobs:
@@ -36,6 +37,23 @@ jobs:
           set -euo pipefail
           code=$(curl -s -o /tmp/out -w '%{http_code}' \
             -X POST "${{ secrets.APP_URL }}/api/cron/housekeeping" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}")
+          echo "http=$code"
+          cat /tmp/out
+          test "$code" -lt 300
+
+  retention:
+    # Nightly at 02:17 UTC. Anonymizes customers past
+    # Organization.customerRetentionYears.
+    if: github.event.schedule == '17 2 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: POST /api/cron/retention
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /tmp/out -w '%{http_code}' \
+            -X POST "${{ secrets.APP_URL }}/api/cron/retention" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}")
           echo "http=$code"
           cat /tmp/out
