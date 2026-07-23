@@ -98,7 +98,13 @@ export function withApi<T>(handler: () => Promise<T>): Promise<NextResponse> {
       const body = await handler();
       const res = NextResponse.json(body);
       res.headers.set('x-request-id', requestId);
-      log.info('api', { durationMs: Date.now() - startedAt, status: 200 });
+      const durationMs = Date.now() - startedAt;
+      // Latency budget: warn at 1s, error at 3s. Adjust via env.
+      const warnMs = Number(process.env.LATENCY_WARN_MS ?? 1000);
+      const errorMs = Number(process.env.LATENCY_ERROR_MS ?? 3000);
+      if (durationMs >= errorMs) log.error('api.slow', { durationMs, status: 200 });
+      else if (durationMs >= warnMs) log.warn('api.slow', { durationMs, status: 200 });
+      else log.info('api', { durationMs, status: 200 });
       return res;
     } catch (err) {
       const res = mapError(err);

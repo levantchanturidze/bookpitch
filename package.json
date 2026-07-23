@@ -24,6 +24,7 @@
     "@node-rs/argon2": "^2.0.2",
     "@prisma/adapter-pg": "^7.9.0",
     "@prisma/client": "^7.9.0",
+    "@sentry/nextjs": "^10.67.0",
     "dotenv": "^17.4.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.42.2",
