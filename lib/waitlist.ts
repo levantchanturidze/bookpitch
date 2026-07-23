@@ -1,0 +1,133 @@
+import type { PrismaClient } from '@prisma/client';
+import { withOrg, withoutRls } from '@/lib/db';
+import { InvalidInputError, type ActiveSession } from '@/lib/auth';
+import { notifyEvent } from '@/lib/notifications';
+import { log } from '@/lib/logger';
+
+type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+
+// -----------------------------------------------------------------------------
+// Customer waitlist.
+//
+// A row means: "customer wants an appointment matching (staffId?, serviceId?,
+// locationId?) sometime in [preferredFrom, preferredTo]".
+// When a booked slot opens (appointment status flips to cancelled), we find
+// entries whose (staff, service, location, window) covers the freed slot and
+// notify the org. Actually sending an SMS/email to the waitlist customer is
+// intentionally out of scope for MVP — the notification tells staff, who
+// then reach out via their existing channel. Keeps the abuse surface small.
+// -----------------------------------------------------------------------------
+
+export type AddInput = {
+  customerId: string;
+  locationId?: string;
+  staffId?: string;
+  serviceId?: string;
+  preferredFrom: Date;
+  preferredTo: Date;
+  notes?: string;
+};
+
+export async function addToWaitlist(
+  session: ActiveSession,
+  input: AddInput,
+): Promise<{ id: string }> {
+  if (input.preferredFrom >= input.preferredTo) {
+    throw new InvalidInputError('preferredFrom must be before preferredTo');
+  }
+  return withOrg(session.organizationId, async (tx) => {
+    // Sanity: customer must exist in this org (RLS makes this trivial).
+    const customer = await tx.customer.findUnique({
+      where: { id: input.customerId },
+      select: { id: true },
+    });
+    if (!customer) throw new InvalidInputError('unknown customer');
+    const row = await tx.waitlist.create({
+      data: {
+        organizationId: session.organizationId,
+        customerId: input.customerId,
+        locationId: input.locationId ?? null,
+        staffId: input.staffId ?? null,
+        serviceId: input.serviceId ?? null,
+        preferredFrom: input.preferredFrom,
+        preferredTo: input.preferredTo,
+        notes: input.notes ?? null,
+      },
+    });
+    return { id: row.id };
+  });
+}
+
+export async function listWaitlist(session: ActiveSession) {
+  return withOrg(session.organizationId, (tx) =>
+    tx.waitlist.findMany({
+      where: { status: { in: ['pending', 'notified'] } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    }),
+  );
+}
+
+export async function removeFromWaitlist(session: ActiveSession, id: string): Promise<void> {
+  await withOrg(session.organizationId, (tx) => tx.waitlist.delete({ where: { id } }));
+}
+
+/**
+ * Called after an appointment is cancelled. Finds pending waitlist entries
+ * whose (staff, service, location, window) covers the freed slot and marks
+ * them notified. Emits one notification per match with a rollup at the end.
+ *
+ * Uses withoutRls because the caller may already be inside its own withOrg
+ * transaction; running a second nested transaction would deadlock in some
+ * drivers. The org boundary is enforced by the passed appointment.
+ */
+export async function notifyWaitlistForCancelled(
+  cancelledOrgId: string,
+  cancelled: {
+    id: string;
+    staffId: string;
+    serviceId: string | null;
+    locationId: string;
+    startsAt: Date;
+    endsAt: Date;
+  },
+): Promise<{ matched: number }> {
+  const matched = await withoutRls(async (tx: TxClient) => {
+    const rows = await tx.waitlist.findMany({
+      where: {
+        organizationId: cancelledOrgId,
+        status: 'pending',
+        preferredFrom: { lte: cancelled.startsAt },
+        preferredTo: { gte: cancelled.endsAt },
+        AND: [
+          { OR: [{ staffId: null }, { staffId: cancelled.staffId }] },
+          { OR: [{ serviceId: null }, { serviceId: cancelled.serviceId }] },
+          { OR: [{ locationId: null }, { locationId: cancelled.locationId }] },
+        ],
+      },
+      include: { organization: { select: { id: true } } },
+    });
+    if (!rows.length) return 0;
+
+    await tx.waitlist.updateMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      data: { status: 'notified', notifiedAt: new Date() },
+    });
+
+    // Single rolled-up notification — one bell for staff, not N bells.
+    await notifyEvent(tx, cancelledOrgId, {
+      type: 'waitlist',
+      title: `Slot opened — ${rows.length} waitlist match${rows.length === 1 ? '' : 'es'}`,
+      body: `${cancelled.startsAt.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
+    });
+    return rows.length;
+  });
+  if (matched > 0) {
+    log.info('waitlist.notified', {
+      organizationId: cancelledOrgId,
+      appointmentId: cancelled.id,
+      matched,
+    });
+  }
+  return { matched };
+}

@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   Bell,
   Calendar,
+  Clock,
   DollarSign,
   Lock,
   LogOut,
@@ -44,6 +45,7 @@ const ICON_MAP = {
   trending: TrendingUp,
   shield: ShieldCheck,
   settings: Settings,
+  clock: Clock,
 };
 
 function isActivePath(pathname: string, href: string): boolean {

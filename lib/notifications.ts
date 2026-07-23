@@ -11,7 +11,7 @@ import type { PrismaClient } from '@prisma/client';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
-export type NotificationType = 'booking' | 'payment' | 'reminder' | 'system';
+export type NotificationType = 'booking' | 'payment' | 'reminder' | 'system' | 'waitlist';
 
 export type NotifyInput = {
   type: NotificationType;

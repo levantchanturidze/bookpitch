@@ -4,7 +4,7 @@ export type NavItem = {
   id: string;
   href: string;
   label: string | { clinic: string; salon: string };
-  icon: 'calendar' | 'users' | 'message' | 'dollar' | 'trending' | 'shield' | 'settings';
+  icon: 'calendar' | 'users' | 'message' | 'dollar' | 'trending' | 'shield' | 'settings' | 'clock';
   allowedRoles: UserRole[];
 };
 
@@ -32,6 +32,13 @@ export const NAV_ITEMS: NavItem[] = [
     label: 'Reminders',
     icon: 'message',
     allowedRoles: ['owner', 'receptionist'],
+  },
+  {
+    id: 'waitlist',
+    href: '/waitlist',
+    label: 'Waitlist',
+    icon: 'clock',
+    allowedRoles: ['owner', 'practitioner', 'receptionist'],
   },
   {
     id: 'billing',

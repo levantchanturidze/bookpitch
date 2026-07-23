@@ -113,6 +113,7 @@ model Organization {
   assistantUsage    AssistantUsage[]
   rateLimits        RateLimit[]
   invitations       Invitation[]
+  waitlist          Waitlist[]
 
   @@map("organizations")
 }
@@ -433,6 +434,27 @@ model AssistantUsage {
 
   @@id([organizationId, yearMonth])
   @@map("assistant_usage")
+}
+
+model Waitlist {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  customerId     String    @map("customer_id") @db.Uuid
+  locationId     String?   @map("location_id") @db.Uuid
+  staffId        String?   @map("staff_id") @db.Uuid
+  serviceId      String?   @map("service_id") @db.Uuid
+  preferredFrom  DateTime  @map("preferred_from") @db.Timestamptz(6)
+  preferredTo    DateTime  @map("preferred_to") @db.Timestamptz(6)
+  status         String    @default("pending")
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  notifiedAt     DateTime? @map("notified_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status], map: "idx_waitlist_org_status")
+  @@index([organizationId, status, preferredFrom, preferredTo], map: "idx_waitlist_matcher")
+  @@map("waitlist")
 }
 
 model Invitation {

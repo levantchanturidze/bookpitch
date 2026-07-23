@@ -11,6 +11,7 @@ import {
   parseUpdateInput,
   toAppointmentDto,
 } from '@/lib/appointments';
+import { notifyWaitlistForCancelled } from '@/lib/waitlist';
 
 // PATCH /api/appointments/[id]
 // Reschedule (startsAt / staffId / serviceId), or status/paymentStatus changes.
@@ -79,6 +80,24 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       });
 
       if (!appointment) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+      // Cancel-transition fan-out: notify anyone waiting on this slot.
+      // Fire-and-catch — a waitlist failure never blocks the cancel.
+      if (input.status === 'cancelled') {
+        try {
+          await notifyWaitlistForCancelled(session.organizationId, {
+            id: appointment.id,
+            staffId: appointment.staffId,
+            serviceId: appointment.serviceId,
+            locationId: appointment.locationId,
+            startsAt: new Date(appointment.startsAt),
+            endsAt: new Date(appointment.endsAt),
+          });
+        } catch {
+          /* swallow — audit + retention are unaffected */
+        }
+      }
+
       return { appointment };
     } catch (err) {
       if (isExclusionViolation(err)) throw new SlotTakenError();
