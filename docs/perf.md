@@ -47,6 +47,43 @@ it doesn't need one.
 3. The proposed index is small (partial where possible) and the update
    frequency on the table is low relative to reads.
 
+## Read replicas
+
+`lib/db.ts` exposes three Prisma clients:
+
+- `prismaApp`    — writes + tenant-scoped reads. Runs as `bookpitch_app`
+  under RLS via `withOrg(orgId, tx => …)`.
+- `prismaAdmin`  — bypasses RLS. Login lookup, cron jobs, system tasks
+  via `withoutRls(tx => …)`.
+- `prismaReplica` — read-only, points at `DATABASE_REPLICA_URL` when
+  set (falls back to `prismaApp` when unset so dev never breaks).
+
+Use `withOrgReplica(orgId, tx => …)` for surfaces that can tolerate
+replica lag:
+
+- `/analytics` — daily / weekly rollups. Sub-second lag doesn't change
+  what's on screen.
+- `/audit` — the viewer. Same reasoning.
+
+**Do NOT use `withOrgReplica` for read-then-write within one request.**
+The replica may not have the row you just wrote yet. Use `withOrg` for
+those.
+
+Wire more surfaces one at a time as we tighten p95:
+
+1. Grep for `withOrg\(` on the read side (no writes inside the tx).
+2. Confirm the surface is monotonic: nothing in it needs "read your own
+   write" freshness.
+3. Swap to `withOrgReplica` in a small PR + benchmark.
+
+On Neon: create replica endpoints under the same project; the URL shape
+is identical to the primary + a different endpoint id. Replicas inherit
+RLS + `bookpitch_app` grants automatically.
+
+On Supabase: the read-replica feature is on the Team plan; set
+`DATABASE_REPLICA_URL` to the replica connection string once it's
+provisioned.
+
 ## When to drop an index
 
 Check `pg_stat_user_indexes` for `idx_scan = 0` after a month of traffic —

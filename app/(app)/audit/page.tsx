@@ -1,5 +1,5 @@
 import { requireRole } from '@/lib/auth';
-import { withOrg } from '@/lib/db';
+import { withOrgReplica } from '@/lib/db';
 import { queryAudit } from '@/lib/audit-query';
 import AuditView from '@/components/audit/AuditView';
 
@@ -25,7 +25,7 @@ export default async function AuditPage({
   const from = s('from');
   const to = s('to');
 
-  const rows = await withOrg(session.organizationId, (tx) =>
+  const rows = await withOrgReplica(session.organizationId, (tx) =>
     queryAudit(tx, {
       customerId: customer || null,
       actorUserId: actor || null,

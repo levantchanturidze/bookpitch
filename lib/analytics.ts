@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import type { ActiveSession } from '@/lib/auth';
-import { withOrg } from '@/lib/db';
+import { withOrgReplica } from '@/lib/db';
 
 // -----------------------------------------------------------------------------
 // Analytics — single-transaction metric computation so every KPI on the page
@@ -245,7 +245,7 @@ export async function computeMetrics(
   locationId: string,
   refDate: Date = new Date(),
 ): Promise<Metrics> {
-  return withOrg(session.organizationId, async (tx) => {
+  return withOrgReplica(session.organizationId, async (tx) => {
     const location = await tx.location.findFirst({
       where: { id: locationId },
       select: { id: true, name: true, type: true },
@@ -307,7 +307,7 @@ export async function dailyRoster(
   locationId: string,
   refDate: Date = new Date(),
 ): Promise<RosterRow[]> {
-  return withOrg(session.organizationId, async (tx) => {
+  return withOrgReplica(session.organizationId, async (tx) => {
     const day = utcStartOfDay(refDate);
     const dayEnd = addDays(day, 1);
     const weekday = day.getUTCDay();
