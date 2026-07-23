@@ -73,9 +73,37 @@ disable this — it's the only proof the backup chain works.
   IAM policy on the bucket that only allows `eu-*` regions.
 - **No key rotation.** Rotating `BACKUP_PASSPHRASE` means old backups
   become undecryptable — plan for it.
-- **No PITR.** These are logical dumps, not WAL archives. If you need
-  point-in-time recovery, use the provider's paid tier (Neon PITR,
-  Supabase PITR) in addition to this.
+- **PITR is layered on top, not replaced.** These are logical dumps —
+  they recover a *day*. Point-in-time recovery on the provider (Neon's
+  history retention, Supabase Pro's PITR) recovers a *minute*. Enable
+  both; verify PITR is on via `.github/workflows/pitr-audit.yml`, which
+  runs `scripts/verify-pitr.sh` monthly and fails loudly on a
+  disabled / short-window configuration.
+
+## Point-In-Time Recovery (provider-side)
+
+Enabled at the platform level; there is no app code to configure. The
+`pitr-audit.yml` workflow polls the provider API monthly to confirm the
+retention window has not been shortened or disabled.
+
+- **Neon**: PITR is the `history_retention_seconds` on a project.
+  Default is 24h on the free tier, 7d on Launch, 30d on Scale. Extend
+  via the Neon console → Settings → Point-in-time restore.
+- **Supabase**: PITR is a Pro-plan add-on. Enable via Dashboard →
+  Database → Backups. Default retention is 7d (Pro), 28d (Team).
+
+Required repo secrets for the audit workflow:
+
+- `PITR_PROVIDER` = `neon` or `supabase`
+- Neon: `NEON_API_KEY`, `NEON_PROJECT_ID`
+- Supabase: `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`
+
+Optional repo variables:
+
+- `PITR_MIN_HOURS` — minimum acceptable retention window. Defaults to
+  24. Bump to 168 (7d) once we're on a paid tier.
+- `SUPABASE_PITR_HOURS` — provider doesn't expose this on the backups
+  API, so we take it from a variable matched to the plan tier.
 
 ## Emergency restore (real incident)
 
