@@ -100,6 +100,7 @@ model Organization {
   auditLog          AuditLog[]
   assistantUsage    AssistantUsage[]
   rateLimits        RateLimit[]
+  invitations       Invitation[]
 
   @@map("organizations")
 }
@@ -417,6 +418,24 @@ model AssistantUsage {
 
   @@id([organizationId, yearMonth])
   @@map("assistant_usage")
+}
+
+model Invitation {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  email          String    @db.Citext
+  role           UserRole
+  tokenHash      String    @unique(map: "invitations_token_unique") @map("token_hash")
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(6)
+  status         String    @default("pending")
+  invitedBy      String?   @map("invited_by") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status], map: "idx_invitations_org_status")
+  @@map("invitations")
 }
 
 model RateLimit {
