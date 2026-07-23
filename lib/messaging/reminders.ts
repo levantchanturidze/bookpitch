@@ -4,6 +4,7 @@ import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
 import { getEmailProvider, getSmsProvider } from './index';
+import { RateLimit } from '@/lib/rate-limit';
 import {
   DEFAULT_EMAIL_SUBJECT,
   DEFAULT_EMAIL_TEMPLATE,
@@ -96,6 +97,11 @@ export async function sendForAppointment(
       });
       return { channel, outcome: 'skipped_missing_contact' };
     }
+
+    // Per-minute per-org cap. Prevents a runaway cron / bug from firing
+    // a burst of SMS billable to the org. Errors surface as `failed` in
+    // the outcome — the caller updates the appointment card accordingly.
+    await RateLimit.messaging(appt.organizationId);
 
     // 1) Insert queued row first (idempotency anchor).
     const queued = await tx.messageLog.create({

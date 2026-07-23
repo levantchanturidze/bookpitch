@@ -99,6 +99,7 @@ model Organization {
   notifications     Notification[]
   auditLog          AuditLog[]
   assistantUsage    AssistantUsage[]
+  rateLimits        RateLimit[]
 
   @@map("organizations")
 }
@@ -413,6 +414,19 @@ model AssistantUsage {
 
   @@id([organizationId, yearMonth])
   @@map("assistant_usage")
+}
+
+model RateLimit {
+  organizationId String   @map("organization_id") @db.Uuid
+  bucket         String
+  windowStart    DateTime @map("window_start") @db.Timestamptz(0)
+  count          Int      @default(0)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, bucket, windowStart])
+  @@index([windowStart], map: "idx_rate_limit_window")
+  @@map("rate_limit")
 }
 
 // =============================================================================

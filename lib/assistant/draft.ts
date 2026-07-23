@@ -3,6 +3,7 @@ import { withOrg } from '@/lib/db';
 import { assertStaffAtLocation, assertWithinAvailability, loadServiceForLocation } from '@/lib/appointments';
 import { getAssistant, type AssistantContext, type AssistantResult } from './model';
 import { consumeAssistantQuota } from './quota';
+import { RateLimit } from '@/lib/rate-limit';
 
 // -----------------------------------------------------------------------------
 // draftAppointment — the server pipeline the /api and Server Action call.
@@ -32,8 +33,11 @@ export async function draftAppointment(
     throw new InvalidInputError('prompt is too short');
   }
 
-  // Reserve one call against the monthly cap BEFORE loading org context —
-  // otherwise a rate-limited caller could still enumerate customers.
+  // Per-minute rate limit runs FIRST — a burst-abuser is a bigger risk
+  // than the monthly cap alone, and this avoids burning cap quota.
+  await RateLimit.assistant(session.organizationId);
+  // Then the monthly cap. Both hit BEFORE loading org context so a
+  // throttled caller can't enumerate customers.
   await consumeAssistantQuota(session.organizationId);
 
   const ctx: AssistantContext = await withOrg(session.organizationId, async (tx) => {
