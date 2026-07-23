@@ -1,0 +1,48 @@
+name: k6 load test
+
+# Runs the k6 scheduler-read scenario against staging. Public paths only;
+# no session / no writes. Gated on STAGING_URL secret — if unset the job
+# no-ops so forks don't fail.
+#
+# The public-booking scenario is intentionally NOT wired here — it
+# creates real appointments. Run it manually against a throwaway org
+# when you actually want to load-test the write path.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 0'
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if STAGING_URL not set
+        id: gate
+        run: |
+          if [ -z "${{ secrets.STAGING_URL }}" ]; then
+            echo "STAGING_URL secret is empty — skipping load test."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: grafana/setup-k6-action@v1
+        if: steps.gate.outputs.run == 'true'
+
+      - name: Run scheduler-read scenario
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BASE_URL: ${{ secrets.STAGING_URL }}
+          PUBLIC_SLUG: ${{ secrets.STAGING_PUBLIC_SLUG }}
+        run: k6 run --summary-export=/tmp/summary.json k6/scheduler-read.js
+
+      - name: Upload summary
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-summary
+          path: /tmp/summary.json
