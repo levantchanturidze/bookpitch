@@ -92,6 +92,10 @@ model Organization {
   stripeSubscriptionId     String?   @unique(map: "idx_org_stripe_subscription") @map("stripe_subscription_id")
   currentPeriodEnd         DateTime? @map("current_period_end") @db.Timestamptz(6)
 
+  // Feature flags — see lib/features.ts. JSONB so new flags land in
+  // code, not migrations. Absent key = disabled.
+  features                 Json      @default("{}") @db.JsonB
+
   createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
