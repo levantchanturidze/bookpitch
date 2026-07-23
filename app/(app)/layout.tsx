@@ -31,7 +31,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <Shell
-      session={{ email: session.email, role: session.role }}
+      session={{
+        email: session.email,
+        role: session.role,
+        organizationId: session.organizationId,
+      }}
       organizationName={organization.name}
       locations={locations}
       activeLocation={active}

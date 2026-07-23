@@ -26,9 +26,10 @@ import { NAV_ITEMS, labelFor, type NavItem } from './nav-items';
 import { setActiveLocationAction, signOutAction } from './actions';
 import { useNotifications } from './useNotifications';
 import type { ActiveLocation } from '@/lib/active-location';
+import OrgSwitcher from './OrgSwitcher';
 
 type Props = {
-  session: { email: string; role: UserRole };
+  session: { email: string; role: UserRole; organizationId: string };
   organizationName: string;
   locations: ActiveLocation[];
   activeLocation: ActiveLocation;
@@ -99,6 +100,10 @@ export default function Shell({
             </div>
 
             <LocationSwitcher locations={locations} activeLocation={activeLocation} />
+            <OrgSwitcher
+              activeName={organizationName}
+              activeOrganizationId={session.organizationId}
+            />
           </div>
 
           <div className="flex items-center gap-2">

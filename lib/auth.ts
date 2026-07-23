@@ -12,16 +12,23 @@ export type ActiveSession = {
 
 /**
  * Returns the active session or `null`. Server-only.
+ *
+ * When the caller has a bp_active_org cookie naming a valid membership,
+ * the returned org/role reflect that org instead of the JWT default.
  */
 export async function getSession(): Promise<ActiveSession | null> {
   const session = await auth();
   if (!session?.user) return null;
-  return {
+  const base: ActiveSession = {
     userId: session.user.id,
     organizationId: session.user.organizationId,
     role: session.user.role,
     email: session.user.email,
   };
+  // Dynamic import — the cookies() API only works in request scope, and
+  // this module is imported by other places (auth.ts init) where it isn't.
+  const { resolveActiveOrg } = await import('@/lib/org-switch');
+  return resolveActiveOrg(base);
 }
 
 export class UnauthenticatedError extends Error {
