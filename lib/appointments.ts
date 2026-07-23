@@ -8,6 +8,7 @@ import type {
   Staff,
 } from '@prisma/client';
 import { InvalidInputError, SlotTakenError } from '@/lib/auth';
+import { isValidIcd10 } from '@/lib/icd10';
 export { SlotTakenError };
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
@@ -82,6 +83,8 @@ export type AppointmentUpdateInput = {
   status?: AppointmentStatus;
   paymentStatus?: PaymentStatus;
   notes?: string | null;
+  icd10Code?: string | null;
+  icd10Description?: string | null;
 };
 
 function requireUuid(v: unknown, field: string): string {
@@ -135,6 +138,15 @@ export function parseUpdateInput(body: unknown): AppointmentUpdateInput {
   }
   if (b.notes !== undefined) {
     out.notes = typeof b.notes === 'string' ? b.notes.trim() || null : null;
+  }
+  if (b.icd10Code !== undefined) {
+    const raw = typeof b.icd10Code === 'string' ? b.icd10Code.trim() : '';
+    if (raw && !isValidIcd10(raw)) throw new InvalidInputError('icd10Code shape is invalid');
+    out.icd10Code = raw || null;
+  }
+  if (b.icd10Description !== undefined) {
+    out.icd10Description =
+      typeof b.icd10Description === 'string' ? b.icd10Description.trim() || null : null;
   }
   return out;
 }

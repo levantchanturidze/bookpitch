@@ -283,6 +283,10 @@ model Customer {
   clinicalNotes  String?   @map("clinical_notes")
   consentAt      DateTime? @map("consent_at") @db.Timestamptz(6)
   consentVersion String?   @map("consent_version")
+  // Insurance carrier + policy number for claim exports. Nullable —
+  // patients without insurance leave both empty.
+  insurerName            String? @map("insurer_name")
+  insurancePolicyNumber  String? @map("insurance_policy_number")
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
@@ -291,6 +295,7 @@ model Customer {
   appointments     Appointment[]
 
   @@index([organizationId], map: "idx_customers_org")
+  @@index([organizationId, insurerName], map: "idx_customers_org_insurer")
   @@map("customers")
 }
 
@@ -325,6 +330,10 @@ model Appointment {
   status         AppointmentStatus @default(pending)
   paymentStatus  PaymentStatus     @default(unpaid) @map("payment_status")
   notes          String?
+  // Insurance / claim export support — see lib/insurance.ts.
+  // Both nullable: not every visit is billable to an insurer.
+  icd10Code        String? @map("icd10_code")
+  icd10Description String? @map("icd10_description")
   createdBy      String?           @map("created_by") @db.Uuid
   createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)

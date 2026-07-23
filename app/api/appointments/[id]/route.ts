@@ -67,6 +67,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
             ...(input.status !== undefined ? { status: input.status } : {}),
             ...(input.paymentStatus !== undefined ? { paymentStatus: input.paymentStatus } : {}),
             ...(input.notes !== undefined ? { notes: input.notes } : {}),
+            ...(input.icd10Code !== undefined ? { icd10Code: input.icd10Code } : {}),
+            ...(input.icd10Description !== undefined
+              ? { icd10Description: input.icd10Description }
+              : {}),
           },
           include: {
             customer: { select: { id: true, name: true, phone: true, avatarUrl: true } },
