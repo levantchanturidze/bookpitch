@@ -131,7 +131,9 @@ export default function Shell({
           </div>
         </aside>
 
-        <main className="space-y-6 lg:col-span-9">{children}</main>
+        <main id="main" tabIndex={-1} className="space-y-6 lg:col-span-9">
+          {children}
+        </main>
       </div>
 
       {/* -------------------------------------------------------------------- */}

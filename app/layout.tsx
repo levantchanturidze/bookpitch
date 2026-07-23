@@ -38,10 +38,18 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang={process.env.LOCALE ?? 'ka'}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        {/* Skip link — first focusable element. Keyboard users tab once
+            and jump straight past the header into the main region. */}
+        <a
+          href="#main"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-slate-900 focus:px-3 focus:py-2 focus:text-sm focus:text-white"
+        >
+          Skip to main content
+        </a>
         {children}
         <ServiceWorkerRegistrar />
       </body>
