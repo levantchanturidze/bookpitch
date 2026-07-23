@@ -84,6 +84,14 @@ model Organization {
   name                     String
   reminderLeadHours        Int      @default(24) @map("reminder_lead_hours") @db.SmallInt
   customerRetentionYears   Int      @default(7) @map("customer_retention_years") @db.SmallInt
+
+  // SaaS subscription — see billing migration + lib/billing/*.
+  plan                     String    @default("free")
+  planStatus               String    @default("active") @map("plan_status")
+  stripeCustomerId         String?   @unique(map: "idx_org_stripe_customer") @map("stripe_customer_id")
+  stripeSubscriptionId     String?   @unique(map: "idx_org_stripe_subscription") @map("stripe_subscription_id")
+  currentPeriodEnd         DateTime? @map("current_period_end") @db.Timestamptz(6)
+
   createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 

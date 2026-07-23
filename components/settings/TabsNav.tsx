@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Building, Users, Wrench, UserCog } from 'lucide-react';
+import { Building, Users, Wrench, UserCog, CreditCard } from 'lucide-react';
 
 const TABS = [
   { href: '/settings/locations', label: 'Locations', icon: Building },
   { href: '/settings/staff', label: 'Staff', icon: Users },
   { href: '/settings/services', label: 'Services', icon: Wrench },
   { href: '/settings/members', label: 'Members', icon: UserCog },
+  { href: '/settings/billing', label: 'Billing', icon: CreditCard },
 ];
 
 export default function TabsNav() {
