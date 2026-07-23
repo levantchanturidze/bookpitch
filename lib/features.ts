@@ -42,9 +42,14 @@ export async function isFeatureEnabled(orgId: string, name: FlagName): Promise<b
 
 export async function setFeature(orgId: string, name: FlagName, on: boolean): Promise<void> {
   const current = await loadFlags(orgId);
-  const next = { ...current, [name]: on };
+  const next: Record<string, unknown> = { ...current, [name]: on };
   await withoutRls((tx) =>
-    tx.organization.update({ where: { id: orgId }, data: { features: next } }),
+    tx.organization.update({
+      where: { id: orgId },
+      // Prisma's Json input type is stricter than Record<string, unknown>;
+      // the values here are all booleans so the cast is safe.
+      data: { features: next as import('@prisma/client').Prisma.InputJsonValue },
+    }),
   );
   cache.set(orgId, { flags: next, at: Date.now() });
 }

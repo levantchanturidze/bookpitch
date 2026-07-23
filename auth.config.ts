@@ -30,6 +30,9 @@ export const authConfig = {
         // Invitation acceptance — invitee doesn't have a session yet.
         path === '/invite' ||
         path === '/api/invitations/accept' ||
+        // Public booking widget — customer has no session.
+        path.startsWith('/book/') ||
+        path === '/api/public/book' ||
         // Offline page must load without auth so the SW can serve it when
         // the browser is offline (session cookies wouldn't reach us anyway).
         path === '/offline' ||

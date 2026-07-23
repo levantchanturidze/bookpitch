@@ -124,6 +124,9 @@ model Location {
   name           String
   timezone       String       @default("Asia/Tbilisi")
   taxRate        Decimal      @default(0) @map("tax_rate") @db.Decimal(5, 4)
+  // Public booking widget: null = disabled; when set, /book/<publicSlug>
+  // renders the customer-facing booking page for this location.
+  publicSlug     String?      @unique(map: "idx_locations_public_slug") @map("public_slug")
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
 
