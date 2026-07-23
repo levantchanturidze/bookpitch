@@ -11,7 +11,7 @@
 // so shells never get stuck.
 // -----------------------------------------------------------------------------
 
-const CACHE_VERSION = 'bookpitch-v1';
+const CACHE_VERSION = 'bookpitch-v2';
 const SHELL_URLS = [
   '/',
   '/scheduler',
@@ -120,4 +120,53 @@ self.addEventListener('fetch', (event) => {
       })(),
     );
   }
+});
+
+// -----------------------------------------------------------------------------
+// Web Push. Payload shape: { title, body, url? }. Bodies are counts /
+// generic phrases only — the sender in lib/push.ts is what enforces the
+// "no PHI on lock screens" rule, but the SW is defensive too and never
+// renders `data` (which could contain arbitrary text from an attacker).
+// -----------------------------------------------------------------------------
+
+self.addEventListener('push', (event) => {
+  let payload = { title: 'Bookpitch', body: 'You have a new notification.' };
+  try {
+    if (event.data) {
+      const parsed = event.data.json();
+      if (parsed && typeof parsed.title === 'string' && typeof parsed.body === 'string') {
+        payload = { title: parsed.title, body: parsed.body, url: parsed.url };
+      }
+    }
+  } catch {
+    /* fall through to defaults */
+  }
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      icon: '/icon',
+      badge: '/icon',
+      data: { url: payload.url ?? '/' },
+    }),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = event.notification.data && event.notification.data.url;
+  event.waitUntil(
+    (async () => {
+      const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const c of clientsList) {
+        if ('focus' in c) {
+          await c.focus();
+          if (target && 'navigate' in c) {
+            try { await c.navigate(target); } catch { /* ignore */ }
+          }
+          return;
+        }
+      }
+      if (self.clients.openWindow) await self.clients.openWindow(target || '/');
+    })(),
+  );
 });

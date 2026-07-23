@@ -166,6 +166,7 @@ model AppUser {
   staffProfiles Staff[]
   appointments  Appointment[]
   auditLog      AuditLog[]
+  pushSubscriptions PushSubscription[]
 
   @@unique([authProvider, authSubject])
   @@map("app_users")
@@ -174,6 +175,22 @@ model AppUser {
 // Auth.js verification-token store. Powers password reset + magic-link
 // flows. Rows are short-lived: the adapter creates them on request and
 // deletes them on verify.
+model PushSubscription {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  endpoint   String   @unique(map: "push_subscription_endpoint_unique")
+  p256dh     String
+  auth       String
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "idx_push_subscription_user")
+  @@map("push_subscription")
+}
+
 model VerificationToken {
   identifier String
   token      String   @id
