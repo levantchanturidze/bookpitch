@@ -98,6 +98,7 @@ model Organization {
   messageLog        MessageLog[]
   notifications     Notification[]
   auditLog          AuditLog[]
+  assistantUsage    AssistantUsage[]
 
   @@map("organizations")
 }
@@ -396,6 +397,22 @@ model Notification {
 
   // NOTE: idx_notifications_org (organization_id, created_at DESC) added via raw SQL.
   @@map("notifications")
+}
+
+// =============================================================================
+// ASSISTANT USAGE — per-org monthly LLM call counter
+// =============================================================================
+
+model AssistantUsage {
+  organizationId String   @map("organization_id") @db.Uuid
+  yearMonth      Int      @map("year_month")
+  count          Int      @default(0)
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, yearMonth])
+  @@map("assistant_usage")
 }
 
 // =============================================================================

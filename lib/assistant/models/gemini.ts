@@ -10,7 +10,14 @@ import type {
 // Requires GOOGLE_API_KEY (grab a free one at aistudio.google.com/apikey).
 // Uses gemini-2.5-flash (fast + cheap; enough for a structured extraction
 // like this). responseSchema pins the shape so we never parse free-form text.
+//
+// Hardening: 15s per-attempt timeout + one retry with 500ms backoff on
+// transient failures (timeout, 5xx, network). Non-transient errors — bad
+// API key, invalid input, quota — surface immediately.
 // -----------------------------------------------------------------------------
+
+const REQUEST_TIMEOUT_MS = 15_000;
+const RETRY_DELAY_MS = 500;
 
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
@@ -51,17 +58,20 @@ export class GeminiAssistant implements AppointmentAssistant {
     const systemPreamble = buildPreamble(ctx);
     const userTurn = `Reference date (UTC): ${ctx.referenceDate}\nUser request: ${prompt}`;
 
-    const res = await client.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [
-        { role: 'user', parts: [{ text: systemPreamble + '\n\n' + userTurn }] },
-      ],
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: RESPONSE_SCHEMA,
-        temperature: 0.2,
-      },
-    });
+    const call = () =>
+      client.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          { role: 'user', parts: [{ text: systemPreamble + '\n\n' + userTurn }] },
+        ],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: RESPONSE_SCHEMA,
+          temperature: 0.2,
+        },
+      });
+
+    const res = await withTimeoutAndRetry(call);
 
     const text = res.text ?? '';
     let parsed: ModelResponse;
@@ -121,6 +131,44 @@ function buildPreamble(ctx: AssistantContext): string {
     `Customers (short list):`,
     ...ctx.customers.slice(0, 30).map((c) => `  - ${c.name}`),
   ].join('\n');
+}
+
+async function withTimeoutAndRetry<T>(fn: () => Promise<T>): Promise<T> {
+  const attempt = () =>
+    new Promise<T>((resolve, reject) => {
+      const t = setTimeout(
+        () => reject(new Error('Gemini call timed out after 15s')),
+        REQUEST_TIMEOUT_MS,
+      );
+      fn().then(
+        (v) => {
+          clearTimeout(t);
+          resolve(v);
+        },
+        (err) => {
+          clearTimeout(t);
+          reject(err);
+        },
+      );
+    });
+  try {
+    return await attempt();
+  } catch (err) {
+    if (!isTransient(err)) throw err;
+    await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+    return await attempt();
+  }
+}
+
+function isTransient(err: unknown): boolean {
+  const msg = (err as Error | undefined)?.message?.toLowerCase() ?? '';
+  if (msg.includes('timed out')) return true;
+  if (msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('enetunreach'))
+    return true;
+  // Google SDK surfaces HTTP status on err.status in some paths.
+  const status = (err as { status?: number } | undefined)?.status;
+  if (status && status >= 500 && status < 600) return true;
+  return false;
 }
 
 function findByName<T extends { id: string; name: string }>(
