@@ -1,0 +1,42 @@
+name: Scheduled crons
+
+# Reminders every 15 min; housekeeping hourly.
+# Both endpoints authenticate via bearer CRON_SECRET (repo secret).
+# APP_URL must be the deployed origin.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+    - cron: '3 * * * *'
+  workflow_dispatch:
+
+jobs:
+  reminders:
+    if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST /api/cron/reminders
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /tmp/out -w '%{http_code}' \
+            -X POST "${{ secrets.APP_URL }}/api/cron/reminders" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}")
+          echo "http=$code"
+          cat /tmp/out
+          test "$code" -lt 300
+
+  housekeeping:
+    if: github.event.schedule == '3 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST /api/cron/housekeeping
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /tmp/out -w '%{http_code}' \
+            -X POST "${{ secrets.APP_URL }}/api/cron/housekeeping" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}")
+          echo "http=$code"
+          cat /tmp/out
+          test "$code" -lt 300
