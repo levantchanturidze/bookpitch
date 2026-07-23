@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import type { UserRole } from '@prisma/client';
+import { log, newRequestId, updateRequestContext, withRequestContext } from '@/lib/logger';
 
 export type ActiveSession = {
   userId: string;
@@ -86,24 +87,57 @@ export async function requireRole(...roles: UserRole[]): Promise<ActiveSession> 
  * routes don't need repetitive try/catch. Any other error is re-thrown.
  */
 export function withApi<T>(handler: () => Promise<T>): Promise<NextResponse> {
-  return handler()
-    .then((body) => NextResponse.json(body))
-    .catch((err) => {
-      if (err instanceof UnauthenticatedError) {
-        return NextResponse.json({ error: err.message }, { status: 401 });
+  const requestId = newRequestId();
+  return withRequestContext({ requestId }, async () => {
+    const startedAt = Date.now();
+    try {
+      const session = await getSession().catch(() => null);
+      if (session) {
+        updateRequestContext({ orgId: session.organizationId, actorUserId: session.userId });
       }
-      if (err instanceof ForbiddenError) {
-        return NextResponse.json({ error: err.message }, { status: 403 });
+      const body = await handler();
+      const res = NextResponse.json(body);
+      res.headers.set('x-request-id', requestId);
+      log.info('api', { durationMs: Date.now() - startedAt, status: 200 });
+      return res;
+    } catch (err) {
+      const res = mapError(err);
+      res.headers.set('x-request-id', requestId);
+      if (res.status >= 500) {
+        log.error('api', {
+          durationMs: Date.now() - startedAt,
+          status: res.status,
+          error: (err as Error).message,
+        });
+      } else {
+        log.warn('api', {
+          durationMs: Date.now() - startedAt,
+          status: res.status,
+        });
       }
-      if (err instanceof InvalidInputError) {
-        return NextResponse.json({ error: err.message }, { status: 400 });
-      }
-      if (err instanceof SlotTakenError) {
-        return NextResponse.json({ error: err.message }, { status: 409 });
-      }
-      if (err instanceof ConflictError) {
-        return NextResponse.json({ error: err.message }, { status: 409 });
-      }
-      throw err;
-    });
+      if (res.status >= 500) throw err;
+      return res;
+    }
+  });
+}
+
+function mapError(err: unknown): NextResponse {
+  if (err instanceof UnauthenticatedError) {
+    return NextResponse.json({ error: err.message }, { status: 401 });
+  }
+  if (err instanceof ForbiddenError) {
+    return NextResponse.json({ error: err.message }, { status: 403 });
+  }
+  if (err instanceof InvalidInputError) {
+    return NextResponse.json({ error: err.message }, { status: 400 });
+  }
+  if (err instanceof SlotTakenError) {
+    return NextResponse.json({ error: err.message }, { status: 409 });
+  }
+  if (err instanceof ConflictError) {
+    return NextResponse.json({ error: err.message }, { status: 409 });
+  }
+  // Unknown: mark as 500 in the response we build for logging purposes; the
+  // caller re-throws so the platform surfaces the stack trace.
+  return NextResponse.json({ error: 'internal_error' }, { status: 500 });
 }
