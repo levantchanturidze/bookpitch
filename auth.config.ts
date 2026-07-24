@@ -1,12 +1,12 @@
 import type { NextAuthConfig } from 'next-auth';
 
 /**
- * Edge-safe subset of the Auth.js config. Split from `auth.ts` so it can be
- * imported by `middleware.ts` (which runs on the Edge runtime and cannot use
- * Node-only modules like the Postgres driver or the argon2 native addon).
+ * Slim subset of the Auth.js config imported by `proxy.ts` (Next 16's Node
+ * Proxy — formerly `middleware.ts` on Edge). Kept minimal so the proxy
+ * bundle stays small: no Postgres driver, no argon2 native addon.
  *
- * The Credentials provider + DB lookup live in `auth.ts` and only run in the
- * Node runtime (Route Handlers).
+ * The Credentials provider + DB lookup live in `auth.ts` and only run
+ * inside Route Handlers where full Node capabilities are available.
  */
 export const authConfig = {
   providers: [], // populated in auth.ts
@@ -14,7 +14,7 @@ export const authConfig = {
   trustHost: true,
   pages: { signIn: '/signin' },
   callbacks: {
-    // Runs in middleware on every matched request. Returning false tells
+    // Runs inside proxy.ts on every matched request. Returning false tells
     // Auth.js to redirect to `pages.signIn`.
     authorized({ auth, request: { nextUrl } }) {
       const path = nextUrl.pathname;
