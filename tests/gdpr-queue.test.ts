@@ -50,9 +50,11 @@ describe('recentDsrActivity — SLA clock + customer-name resolution', () => {
   });
 
   afterAll(async () => {
+    // audit_log is append-only in prod (spec §9.11). Escape hatch to
+    // free the FK grip before hard-deleting the fixture org.
+    const { resetAuditForOrgs } = await import('./helpers/audit-reset');
+    await resetAuditForOrgs([orgId]);
     await withoutRls(async (tx) => {
-      if (plantedIds.length)
-        await tx.auditLog.deleteMany({ where: { id: { in: plantedIds } } });
       await tx.customer.delete({ where: { id: customerId } });
       await tx.organization.delete({ where: { id: orgId } });
     });

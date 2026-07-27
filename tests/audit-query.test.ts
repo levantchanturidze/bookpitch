@@ -77,9 +77,12 @@ describe('queryAudit — filters + ordering + customerName resolution', () => {
   });
 
   afterAll(async () => {
+    // audit_log is append-only in prod (spec §9.11). Wipe this org's
+    // audit rows via the dev-only escape hatch so the fixture user/org
+    // can be hard-deleted.
+    const { resetAuditForOrgs } = await import('./helpers/audit-reset');
+    await resetAuditForOrgs([orgId]);
     await withoutRls(async (tx) => {
-      if (plantedIds.length)
-        await tx.auditLog.deleteMany({ where: { id: { in: plantedIds } } });
       await tx.customer.delete({ where: { id: customerId } });
       await tx.membership.deleteMany({ where: { userId: actorId } });
       await tx.appUser.delete({ where: { id: actorId } });

@@ -146,9 +146,10 @@ describe('GDPR + audit-query', () => {
         await withoutRls((tx) => tx.staff.delete({ where: { id: staff.id } }));
         await withoutRls((tx) => tx.service.delete({ where: { id: service.id } }));
         await withoutRls((tx) => tx.location.delete({ where: { id: location.id } }));
-        await withoutRls((tx) =>
-          tx.auditLog.deleteMany({ where: { organizationId: org.id } }),
-        );
+        // audit_log is append-only in prod (spec §9.11); dev-only escape
+        // hatch releases the FK grip on the fixture user + org.
+        const { resetAuditForOrgs } = await import('./helpers/audit-reset');
+        await resetAuditForOrgs([org.id]);
         await withoutRls((tx) => tx.appUser.delete({ where: { id: user.id } }));
         await withoutRls((tx) => tx.organization.delete({ where: { id: org.id } }));
       });

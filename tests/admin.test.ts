@@ -92,7 +92,10 @@ describe('admin CRUD × 4 surfaces', () => {
       await withoutRls((tx) =>
         tx.membership.deleteMany({ where: { organizationId: { in: [orgId, otherOrgId] } } }),
       );
-      await withoutRls((tx) => tx.auditLog.deleteMany({ where: { organizationId: { in: [orgId, otherOrgId] } } }));
+      // audit_log is append-only in prod (spec §9.11); dev-only escape
+      // hatch releases the FK grip so the fixture users + orgs can go.
+      const { resetAuditForOrgs } = await import('./helpers/audit-reset');
+      await resetAuditForOrgs([orgId, otherOrgId]);
       await withoutRls((tx) => tx.appUser.deleteMany({ where: { id: { in: trackedUserIds } } }));
       await withoutRls((tx) => tx.organization.deleteMany({ where: { id: { in: [orgId, otherOrgId] } } }));
     });
