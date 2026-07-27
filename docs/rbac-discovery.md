@@ -522,7 +522,117 @@ Order is otherwise sensible for this codebase because:
 
 ---
 
-## 9. Open questions — MUST be answered before Phase 1 starts
+## 9. Open questions — answered 2026-07-27
+
+Answers are the source of truth for Phase 1 onwards. Where a question was
+answered by the repo itself (not a user decision), the source is cited.
+
+### Answered
+
+**Q1. Cutover / downtime tolerance.** Downtime OK. Prod has 2 users, 1
+org, 0 customers, 0 appointments — effectively pre-launch. Phase 2 may
+hold a lock, backfill, swap enum→role_id in a single window. **No
+dual-write is required.**
+
+**Q2. Production row counts** (Supabase `bookpitch-prod`, Frankfurt,
+queried 2026-07-27 via `.env.supabase`):
+```
+app_users            2
+organizations        1
+memberships          2  (1 owner + 1 receptionist, same org)
+staff                0
+customers            0
+appointments         0
+audit_log           12
+invitations          0
+multi_org_users      0
+orgs_without_owner   0
+duplicate_emails     0
+```
+Migration is trivial at this size. Backfill = a handful of UPDATEs.
+
+**Q3. `locations` → `branches`.** Rename `locations` → `branches` and
+move `type` up to `organizations.vertical`. The one prod org
+(`Grand Medical & Aurora Spa Group`) currently has mixed clinic+salon
+locations — that data point disappears at cutover since prod has 0
+customers/appointments to worry about. **Consequences for Phase 1:**
+- Add `organizations.vertical` (`clinic|salon|fitness|mixed`).
+- Drop `location_type` enum after rename; branches don't carry a type.
+- Spec role `BRANCH_MANAGER` keeps its name (matches spec §4.2).
+- Dev seed's two-location org gets `vertical = 'mixed'` (or is split
+  into two orgs — decision belongs to Phase 1).
+
+**Q4. DB provider.** Supabase — project `cglqphbebckvpeyisqqb`, region
+`aws-0-eu-central-1` (Frankfurt). Custom `bookpitch_app` role exists in
+prod (confirmed by `.env.supabase` DATABASE_URL). Direct/admin
+connection uses the `postgres` superuser. Spec §7.2 (SUPER_ADMIN
+break-glass) will need to co-exist with Supabase's `service_role` key —
+the app never uses it, but its existence is a platform-level fact.
+
+**Q5. Support-team usage today.** None. Grep across `app/`, `lib/`,
+`docs/` returns zero hits for support/impersonation code. **Defer
+spec §7.1 (SUPPORT_AGENT + impersonation UI) to v2** per spec §11.
+Phase 1 still adds `organizations.allow_support_impersonation` column
+(default false) so the schema is ready when we build the flow.
+
+**Q6. Redis-backed permissions cache.** Skip in Phase 3. Bookpitch has
+no Redis today, and the permission lookup for a request will be a
+single indexed join. Add the cache in Phase 5 if load metrics justify
+it — cheaper to defer than to bring up new infra prematurely.
+
+**Q7. `sessionVersion` cache TTL (5s).** Acceptable. It's the
+invalidation window for both password reset (already fine) and role
+changes (also fine — a 5s stale window on a role demotion is well
+within reasonable UX). Revisit if we ever grant role changes to a
+customer-facing flow.
+
+**Q8. `bp_active_org` cookie behavior post-Phase 3.** **Re-issue JWT on
+switch.** Switching org triggers a sign-out/sign-in cycle that mints a
+fresh JWT with the new `organizationId + role + permissions_version`.
+The cookie stops carrying an authorization-relevant claim. This means
+`resolveActiveOrg` (`lib/org-switch.ts:70`) is deleted in Phase 3;
+`app/api/session/switch/route.ts` becomes "sign out, then sign in with
+new org context" (Auth.js supports this via `signIn()` with credentials
+that include an `orgId` selector, or via a custom `updateSession`
+callback).
+
+**Q9. SUPER_ADMIN seed.** Seed `levaaani@gmail.com` as the initial
+SUPER_ADMIN in Phase 1. Policy: MFA required (spec §7.2 "root account
+pattern"), 2FA (ideally hardware key) enforced before any break-glass
+operation, login alert emitted on every SUPER_ADMIN sign-in. The
+account also keeps its `ORG_OWNER` membership in `Grand Medical &
+Aurora Spa Group` for day-to-day work — the two are separate rows
+(platform-plane row on `app_users.platform_role_id`, org-plane row on
+`memberships`). Spec §7.2 recommends a distinct daily-use account
+eventually; deferred to when the team grows past one person.
+
+**Q10. Extensions installed in prod** (queried 2026-07-27):
+```
+btree_gist, citext, pg_stat_statements, pgcrypto, plpgsql,
+supabase_vault, uuid-ossp
+```
+Dev has only `btree_gist, citext, pgcrypto` — production adds
+`pg_stat_statements` (query stats, harmless), `supabase_vault`
+(Supabase's secret storage — unused by app, provider-installed),
+`uuid-ossp` (legacy UUID gen, unused; we use `pgcrypto.gen_random_uuid`).
+No `pgaudit`. **No impact on Phase 1** — the RLS setup already assumes
+plain Postgres, and Supabase's extras don't interfere.
+
+### Consequences for the phase plan
+
+- Phase 2 becomes a single maintenance-window migration; no dual-write
+  code needs to be written.
+- Phase 1 must add `organizations.vertical`,
+  `organizations.allow_support_impersonation`, `app_users.platform_role_id`,
+  and the platform-role seed row for `levaaani@gmail.com`.
+- Phase 3 deletes `resolveActiveOrg` and reshapes the org switcher
+  around JWT re-issuance.
+- Phase 5 (platform plane) still ships, but `SUPPORT_AGENT` impersonation
+  UI is deferred to v2; the schema column ships in Phase 1.
+
+---
+
+## 9-legacy. Original open questions (kept for provenance)
 
 1. **What is the cutover / downtime tolerance in production?**
    Zero-downtime, off-hours maintenance window, or "we can take the app
