@@ -59,6 +59,10 @@ describe('public booking widget', () => {
   });
 
   afterAll(async () => {
+    // audit_log has NO ACTION FK to organizations; must clear this org's
+    // audit rows before we can delete the org itself (spec §9.11).
+    const { resetAuditForOrgs } = await import('./helpers/audit-reset');
+    await resetAuditForOrgs([orgId]);
     await withoutRls(async (tx) => {
       await tx.appointment.deleteMany({ where: { organizationId: orgId } });
       await tx.customer.deleteMany({ where: { organizationId: orgId } });

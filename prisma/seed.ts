@@ -5,6 +5,7 @@ import { config as loadEnv } from 'dotenv';
 
 import { prismaAdmin, withoutRls } from '@/lib/db';
 import { encryptField } from '@/lib/crypto';
+import { seedRbac } from './rbac-seed';
 import {
   INITIAL_APPOINTMENTS,
   INITIAL_PATIENTS,
@@ -44,22 +45,41 @@ function parseHours(hours: string): { start: Date; end: Date } {
 }
 
 async function main() {
+  // Reference data first — roles/permissions must exist before we can
+  // populate anything that FKs into `roles` (e.g. a SUPER_ADMIN seed row
+  // on app_users.platform_role_id, added in a follow-up commit).
+  console.log('→ Seeding RBAC reference data (roles + permissions)…');
+  await seedRbac();
+
   console.log('→ Resetting all tenant data…');
-  await withoutRls(async (tx) => {
-    await tx.messageLog.deleteMany();
-    await tx.messageTemplate.deleteMany();
-    await tx.payment.deleteMany();
-    await tx.appointment.deleteMany();
-    await tx.treatmentHistory.deleteMany();
-    await tx.staffAvailability.deleteMany();
-    await tx.staff.deleteMany();
-    await tx.customer.deleteMany();
-    await tx.service.deleteMany();
-    await tx.location.deleteMany();
-    await tx.membership.deleteMany();
-    await tx.appUser.deleteMany();
-    await tx.organization.deleteMany();
-  });
+  // audit_log FKs to app_users + organizations are NO ACTION (spec §9.11
+  // — audit rows survive their actor). Deleting a seeded user would fail
+  // if it has any audit history. Since this is a dev seed, use the
+  // documented escape hatch: DISABLE the append-only triggers on the
+  // superuser connection, wipe audit_log along with everything else,
+  // then re-enable. Production never runs `prisma db seed`.
+  await prismaAdmin.$executeRawUnsafe('ALTER TABLE "audit_log" DISABLE TRIGGER USER');
+  try {
+    await withoutRls(async (tx) => {
+      // audit_log first so downstream FKs (app_users, organizations) can go.
+      await tx.auditLog.deleteMany();
+      await tx.messageLog.deleteMany();
+      await tx.messageTemplate.deleteMany();
+      await tx.payment.deleteMany();
+      await tx.appointment.deleteMany();
+      await tx.treatmentHistory.deleteMany();
+      await tx.staffAvailability.deleteMany();
+      await tx.staff.deleteMany();
+      await tx.customer.deleteMany();
+      await tx.service.deleteMany();
+      await tx.location.deleteMany();
+      await tx.membership.deleteMany();
+      await tx.appUser.deleteMany();
+      await tx.organization.deleteMany();
+    });
+  } finally {
+    await prismaAdmin.$executeRawUnsafe('ALTER TABLE "audit_log" ENABLE TRIGGER USER');
+  }
 
   const passwordHash = await hash(DEV_PASSWORD);
 

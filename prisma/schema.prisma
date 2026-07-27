@@ -96,10 +96,19 @@ model Organization {
   // code, not migrations. Absent key = disabled.
   features                 Json      @default("{}") @db.JsonB
 
+  // ---- Spec §3 additions (RBAC Phase 1). Backfill in Phase 2.
+  vertical                    String?  // clinic|salon|fitness|mixed — CHECK in migration
+  legalName                   String?  @map("legal_name")
+  brandName                   String?  @map("brand_name")
+  status                      String   @default("active") // trial|active|suspended|archived
+  ownerUserId                 String?  @map("owner_user_id") @db.Uuid
+  allowSupportImpersonation   Boolean  @default(false) @map("allow_support_impersonation")
+
   createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   locations         Location[]
+  branches          Branch[]
   memberships       Membership[]
   staff             Staff[]
   services          Service[]
@@ -114,7 +123,11 @@ model Organization {
   rateLimits        RateLimit[]
   invitations       Invitation[]
   waitlist          Waitlist[]
+  customRoles       Role[]
+  ownerUser         AppUser? @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
 
+  @@index([status], map: "idx_org_status")
+  @@index([ownerUserId], map: "idx_org_owner_user_id")
   @@map("organizations")
 }
 
@@ -135,6 +148,8 @@ model Location {
   staff        Staff[]
   services     Service[]
   appointments Appointment[]
+  // Reverse of Branch.legacyLocation — Phase 2 sets one Branch per Location.
+  branch       Branch?       @relation("BranchLegacyLocation")
 
   @@index([organizationId], map: "idx_locations_org")
   @@map("locations")
@@ -160,15 +175,31 @@ model AppUser {
   // Bumped on password reset / admin revocation. JWTs carrying an older
   // value are rejected by the session() callback in auth.ts.
   sessionVersion Int      @default(1) @map("session_version")
+
+  // ---- Spec §3 additions (RBAC Phase 1).
+  status         String    @default("active") // active|locked|deleted (CHECK in migration)
+  locale         String?
+  mfaEnabled     Boolean   @default(false) @map("mfa_enabled")
+  lastLoginAt    DateTime? @map("last_login_at") @db.Timestamptz(6)
+  // Platform-plane role (SUPER_ADMIN, PLATFORM_ADMIN, …). NULL for
+  // org-plane-only users — that is, everyone today.
+  platformRoleId String?   @map("platform_role_id") @db.Uuid
+
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  memberships   Membership[]
-  staffProfiles Staff[]
-  appointments  Appointment[]
-  auditLog      AuditLog[]
-  pushSubscriptions PushSubscription[]
+  memberships           Membership[]
+  staffProfiles         Staff[]
+  appointments          Appointment[]
+  auditLog              AuditLog[]     @relation("AuditActor")
+  auditLogOnBehalfOf    AuditLog[]     @relation("AuditOnBehalfOf")
+  pushSubscriptions     PushSubscription[]
+  platformRole          Role?          @relation("UserPlatformRole", fields: [platformRoleId], references: [id], onDelete: SetNull)
+  ownedOrganizations    Organization[] @relation("OrganizationOwner")
+  invitationsSent       Membership[]   @relation("MembershipInviter")
 
   @@unique([authProvider, authSubject])
+  @@index([status], map: "idx_app_users_status")
+  @@index([platformRoleId], map: "idx_app_users_platform_role")
   @@map("app_users")
 }
 
@@ -204,14 +235,31 @@ model Membership {
   id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizationId String   @map("organization_id") @db.Uuid
   userId         String   @map("user_id") @db.Uuid
+  // Legacy enum column. Kept alive through Phase 4; contracted much later.
   role           UserRole
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  // ---- Spec §3 additions (RBAC Phase 1). role_id backfilled in Phase 2.
+  roleId            String?   @map("role_id") @db.Uuid
+  status            String    @default("active") // invited|active|suspended|removed
+  isBookable        Boolean   @default(false) @map("is_bookable")
+  invitedByUserId   String?   @map("invited_by_user_id") @db.Uuid
+  joinedAt          DateTime? @map("joined_at") @db.Timestamptz(6)
+
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         AppUser      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleRef      Role?        @relation("MembershipRole", fields: [roleId], references: [id], onDelete: Restrict)
+  invitedBy    AppUser?     @relation("MembershipInviter", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  branches     MembershipBranch[]
 
+  // Existing invariant (one enum-role per user per org). Kept until Contract.
   @@unique([organizationId, userId])
   @@index([userId], map: "idx_memberships_user")
+  @@index([organizationId, status], map: "idx_memberships_org_status")
+  // Future canonical uniqueness — partial (only enforces once role_id is
+  // backfilled), so it does not collide with the legacy unique above.
+  // Prisma cannot express partial unique indexes; the DB migration
+  // (20260727160000_rbac_memberships_columns) creates it directly.
   @@map("memberships")
 }
 
@@ -529,16 +577,120 @@ model AuditLog {
   ip             String?  @db.Inet
   meta           Json?
 
+  // ---- Spec §7.1 additions (RBAC Phase 1). Populated by Phase 5.
+  onBehalfOfUserId       String?  @map("on_behalf_of_user_id") @db.Uuid
+  userAgent              String?  @map("user_agent")
+  reason                 String?
+  impersonationSessionId String?  @map("impersonation_session_id") @db.Uuid
+  breakGlassSessionId    String?  @map("break_glass_session_id") @db.Uuid
+
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  actor        AppUser?      @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  actor        AppUser?      @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  onBehalfOf   AppUser?      @relation("AuditOnBehalfOf", fields: [onBehalfOfUserId], references: [id], onDelete: SetNull)
 
   // Composite PK — Postgres declarative partitioning requires the
   // partition key (`at`) to be included in every unique constraint.
   // The id sequence still guarantees per-row uniqueness in practice.
+  //
+  // APPEND-ONLY: UPDATE and DELETE are blocked at the DB level (trigger +
+  // revoked grants). See 20260727170000_rbac_audit_log_append_only. Do
+  // not add Prisma methods that would call .update() or .delete() on
+  // this model — they will always raise at runtime.
   @@id([at, id])
   @@index([entity, entityId], map: "idx_audit_entity")
   @@index([actorUserId, at(sort: Desc)], map: "idx_audit_actor")
   @@index([at(sort: Desc)], map: "idx_audit_at")
   @@index([organizationId, at(sort: Desc)], map: "idx_audit_org_at")
   @@map("audit_log")
+}
+
+// =============================================================================
+// RBAC (spec §3) — permissions live in the database.
+// =============================================================================
+
+model Role {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key            String
+  displayName    String   @map("display_name")
+  plane          String   // platform | organization | consumer (CHECK in migration)
+  rank           Int
+  // NULL = system template. When set, this is a custom role owned by an
+  // organization (Phase 6 feature). Two partial unique indexes in the
+  // migration enforce (key) globally for system rows and (org_id, key)
+  // for custom rows — Prisma cannot express partial uniques, so they
+  // live in SQL only.
+  organizationId String?  @map("organization_id") @db.Uuid
+  isSystem       Boolean  @default(false) @map("is_system")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization       Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions        RolePermission[]
+  memberships        Membership[]     @relation("MembershipRole")
+  platformRoleUsers  AppUser[]        @relation("UserPlatformRole")
+
+  @@index([plane], map: "idx_roles_plane")
+  @@map("roles")
+}
+
+model Permission {
+  key         String   @id
+  resource    String
+  action      String
+  scope       String?  // own|branch|org|platform|limited|unlimited|any|basic|contact|full
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  roles       RolePermission[]
+
+  @@index([resource], map: "idx_permissions_resource")
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId        String   @map("role_id") @db.Uuid
+  permissionKey String   @map("permission_key")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionKey], references: [key], onDelete: Cascade)
+
+  @@id([roleId, permissionKey])
+  @@index([permissionKey], map: "idx_role_permissions_permission")
+  @@map("role_permissions")
+}
+
+// Branch = future replacement for Location (Phase 2 backfills 1:1).
+// EXPAND: coexists with Location until Contract, months later.
+model Branch {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  name              String
+  address           String?
+  timezone          String   @default("Asia/Tbilisi")
+  status            String   @default("active") // active|inactive (CHECK)
+  // Back-pointer to the Location this branch was migrated from. Set
+  // during Phase 2; NULL for branches created after Contract.
+  legacyLocationId  String?  @unique(map: "branches_legacy_location_id_unique") @map("legacy_location_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  organization  Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  legacyLocation Location?         @relation("BranchLegacyLocation", fields: [legacyLocationId], references: [id], onDelete: SetNull)
+  memberships   MembershipBranch[]
+
+  @@index([organizationId], map: "idx_branches_org")
+  @@map("branches")
+}
+
+model MembershipBranch {
+  membershipId String   @map("membership_id") @db.Uuid
+  branchId     String   @map("branch_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([membershipId, branchId])
+  @@index([branchId], map: "idx_membership_branches_branch")
+  @@map("membership_branches")
 }

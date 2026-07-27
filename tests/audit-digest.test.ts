@@ -66,9 +66,12 @@ describe('audit digest builder', () => {
   });
 
   afterAll(async () => {
+    // audit_log is append-only in prod (spec §9.11). This test's
+    // fixtures include audit rows that pin the fixture org + user via
+    // NO ACTION FK; wipe them via the dev-only escape hatch first.
+    const { resetAuditForOrgs } = await import('./helpers/audit-reset');
+    await resetAuditForOrgs([orgId]);
     await withoutRls(async (tx) => {
-      if (plantedIds.length)
-        await tx.auditLog.deleteMany({ where: { id: { in: plantedIds } } });
       await tx.membership.deleteMany({ where: { organizationId: orgId } });
       await tx.appUser.delete({ where: { id: actorId } });
       await tx.customer.delete({ where: { id: customerId } });
