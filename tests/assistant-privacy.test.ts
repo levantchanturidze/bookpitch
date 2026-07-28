@@ -118,7 +118,6 @@ describe('assistant privacy — no PHI in the context handed to the model', () =
         {
           userId,
           organizationId: orgId,
-          role: 'owner',
           email: 'probe@bookpitch.dev',
         },
         clinicLocationId,

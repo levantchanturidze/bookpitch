@@ -1,4 +1,5 @@
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { listInsurers } from '@/lib/insurance';
 import InsuranceView from './InsuranceView';
 
@@ -6,8 +7,9 @@ export const metadata = { title: 'Insurance · Bookpitch' };
 export const dynamic = 'force-dynamic';
 
 export default async function InsurancePage() {
-  const session = await requireRole('owner');
-  const insurers = await listInsurers(session);
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'service.manage', { organizationId: ctx.activeOrganizationId! }, 'insurance');
+  const insurers = await listInsurers(ctxToSession(ctx));
   return (
     <div className="space-y-6">
       <div>

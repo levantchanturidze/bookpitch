@@ -2,7 +2,8 @@
 
 import { revalidatePath } from 'next/cache';
 import type { MessageChannel } from '@prisma/client';
-import { InvalidInputError, requireRole } from '@/lib/auth';
+import { InvalidInputError, ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { runReminderTick, sendNowForSession } from '@/lib/messaging/reminders';
@@ -11,8 +12,14 @@ import { runRetentionTick } from '@/lib/gdpr';
 // Server Actions used by the /reminders page. Each mirrors an API concept and
 // revalidates the page so the message-log table + upcoming list refresh.
 
+async function ctxFor(permission: string, module: string) {
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, permission, { organizationId: ctx.activeOrganizationId! }, module);
+  return ctxToSession(ctx);
+}
+
 export async function saveTemplateAction(fd: FormData) {
-  const session = await requireRole('owner', 'receptionist');
+  const session = await ctxFor('booking.update', 'reminders');
   const channel = String(fd.get('channel') ?? '') as MessageChannel;
   const body = String(fd.get('body') ?? '').trim();
   if (channel !== 'sms' && channel !== 'email') {
@@ -43,7 +50,7 @@ export async function saveTemplateAction(fd: FormData) {
 }
 
 export async function saveLeadHoursAction(fd: FormData) {
-  const session = await requireRole('owner', 'receptionist');
+  const session = await ctxFor('booking.update', 'reminders');
   const raw = String(fd.get('hours') ?? '');
   const hours = Number(raw);
   if (!Number.isInteger(hours) || hours < 1 || hours > 168) {
@@ -59,7 +66,7 @@ export async function saveLeadHoursAction(fd: FormData) {
 }
 
 export async function sendNowAction(fd: FormData) {
-  const session = await requireRole('owner', 'receptionist');
+  const session = await ctxFor('booking.update', 'reminders');
   const appointmentId = String(fd.get('appointmentId') ?? '');
   if (!appointmentId) throw new InvalidInputError('appointmentId is required');
   await sendNowForSession(session, appointmentId);
@@ -67,13 +74,13 @@ export async function sendNowAction(fd: FormData) {
 }
 
 export async function runTickAction() {
-  const session = await requireRole('owner');
+  const session = await ctxFor('org.settings.update:org', 'reminders');
   await runReminderTick(session.organizationId);
   revalidatePath('/reminders');
 }
 
 export async function saveRetentionYearsAction(fd: FormData) {
-  const session = await requireRole('owner');
+  const session = await ctxFor('org.settings.update:org', 'reminders');
   const raw = String(fd.get('years') ?? '');
   const years = Number(raw);
   if (!Number.isInteger(years) || years < 1 || years > 30) {
@@ -93,7 +100,7 @@ export async function saveRetentionYearsAction(fd: FormData) {
 }
 
 export async function runRetentionTickAction() {
-  const session = await requireRole('owner');
+  const session = await ctxFor('client.export', 'reminders');
   await runRetentionTick(session.organizationId);
   revalidatePath('/reminders');
   revalidatePath('/patients');

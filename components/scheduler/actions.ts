@@ -1,7 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { requireRole, SlotTakenError } from '@/lib/auth';
+import { ctxToSession, SlotTakenError } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
@@ -24,7 +25,9 @@ import { draftAppointment, type DraftAppointmentResult } from '@/lib/assistant/d
 // the server-rendered scheduler list.
 
 export async function bookAppointmentAction(input: AppointmentCreateInput) {
-  const session = await requireRole('owner', 'practitioner', 'receptionist');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'booking.create', { organizationId: ctx.activeOrganizationId! }, 'appointments');
+  const session = ctxToSession(ctx);
   const parsed = parseCreateInput(input);
   const startsAt = new Date(parsed.startsAt);
 
@@ -74,8 +77,13 @@ export async function bookAppointmentAction(input: AppointmentCreateInput) {
 }
 
 export async function updateAppointmentAction(id: string, input: AppointmentUpdateInput) {
-  const session = await requireRole('owner', 'practitioner', 'receptionist');
+  const ctx = await requireAuthContext();
   const parsed = parseUpdateInput(input);
+  // Cancel transitions warrant the stronger cancel permission. Pass base
+  // action key — can() walks :org → :branch → :own for scope resolution.
+  const needed = parsed.status === 'cancelled' ? 'booking.cancel' : 'booking.update';
+  requirePermission(ctx, needed, { organizationId: ctx.activeOrganizationId! }, 'appointments');
+  const session = ctxToSession(ctx);
 
   try {
     const appointment = await withOrg(session.organizationId, async (tx) => {
@@ -156,6 +164,7 @@ export async function draftAppointmentAction(
   locationId: string,
   prompt: string,
 ): Promise<DraftAppointmentResult> {
-  const session = await requireRole('owner', 'practitioner', 'receptionist');
-  return draftAppointment(session, locationId, prompt);
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'assistant');
+  return draftAppointment(ctxToSession(ctx), locationId, prompt);
 }

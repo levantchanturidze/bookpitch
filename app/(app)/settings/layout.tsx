@@ -1,11 +1,14 @@
-import { requireRole } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import TabsNav from '@/components/settings/TabsNav';
 
 export const metadata = { title: 'Settings · Bookpitch' };
 
-// Owner-only wrapper for every /settings/* page. Middleware + role gate.
+// Wrapper for every /settings/* page. Middleware handles unauth; this layer
+// enforces the org-settings permission. Individual pages add more specific
+// checks (e.g. staff.update on /settings/staff).
 export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
-  await requireRole('owner');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'org.settings.update:org', { organizationId: ctx.activeOrganizationId! }, 'settings');
   return (
     <div className="space-y-6">
       <header className="rounded-2xl border border-slate-200 bg-white p-6">

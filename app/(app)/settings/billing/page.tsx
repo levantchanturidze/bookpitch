@@ -1,4 +1,5 @@
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { getBilling } from '@/lib/billing/service';
 import BillingView from './BillingView';
 
@@ -6,7 +7,9 @@ export const metadata = { title: 'Billing · Bookpitch' };
 export const dynamic = 'force-dynamic';
 
 export default async function BillingPage() {
-  const session = await requireRole('owner');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'org.billing.read', { organizationId: ctx.activeOrganizationId! }, 'billing');
+  const session = ctxToSession(ctx);
   const { org, effective, plans } = await getBilling(session);
 
   return (

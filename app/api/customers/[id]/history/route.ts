@@ -1,13 +1,16 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { InvalidInputError, requireRole, withApi } from '@/lib/auth';
+import { InvalidInputError, ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 
 // POST /api/customers/[id]/history → append one treatment_history entry.
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'client.read:full', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    const session = ctxToSession(ctx);
     const { id } = await params;
     const body = (await req.json().catch(() => null)) as
       | { label?: unknown; occurredOn?: unknown }

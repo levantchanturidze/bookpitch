@@ -1,12 +1,14 @@
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { listLocations } from '@/lib/admin';
 import LocationsPanel, { type LocationRow } from '@/components/settings/LocationsPanel';
 
 export const dynamic = 'force-dynamic';
 
 export default async function SettingsLocationsPage() {
-  const session = await requireRole('owner');
-  const rows = await listLocations(session);
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'org.branch.manage', { organizationId: ctx.activeOrganizationId! }, 'admin');
+  const rows = await listLocations(ctxToSession(ctx));
   const locations: LocationRow[] = rows.map((l) => ({
     id: l.id,
     type: l.type,

@@ -14,7 +14,6 @@ const {
   createService,
   createStaff,
   deleteLocation,
-  inviteMember,
   listLocations,
   listMembers,
   listStaff,
@@ -22,6 +21,10 @@ const {
   setAvailability,
   updateMemberRole,
 } = await import('@/lib/admin');
+// Phase 4: inviteMember (password-directly path) was removed. New invitations
+// go through the token flow in `lib/invitations.ts`, tested in
+// tests/invitations.test.ts.
+const { createInvitation } = await import('@/lib/invitations');
 
 // -----------------------------------------------------------------------------
 // Fixture: dedicated org so the tests don't churn the primary demo data.
@@ -167,21 +170,14 @@ describe('admin CRUD × 4 surfaces', () => {
     });
   });
 
-  it('inviteMember creates app_user + membership (or reuses existing)', async () => {
+  it('createInvitation sends a token-based invite (Phase 4 replacement for inviteMember)', async () => {
     const email = `invited-${Date.now()}@example.dev`;
-    const result = await inviteMember(ownerSession, {
-      email,
-      role: 'receptionist',
-      tempPassword: 'firstpass1',
-    });
-    trackedUserIds.push(result.userId);
+    const result = await createInvitation(ownerSession, { email, role: 'receptionist' });
+    expect(result.url).toMatch(/token=/);
 
-    const list = await listMembers(ownerSession);
-    expect(list.some((m) => m.userId === result.userId)).toBe(true);
-
-    // Re-inviting the same email into the same org → 400-ish InvalidInputError.
+    // Re-inviting the same email while a pending invitation exists → InvalidInputError.
     await expect(
-      inviteMember(ownerSession, { email, role: 'practitioner', tempPassword: 'anotherpw2' }),
+      createInvitation(ownerSession, { email, role: 'practitioner' }),
     ).rejects.toMatchObject({ name: 'InvalidInputError' });
   });
 

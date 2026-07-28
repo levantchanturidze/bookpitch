@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { requireRole, SlotTakenError, withApi } from '@/lib/auth';
+import { ctxToSession, SlotTakenError, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import {
@@ -19,7 +20,14 @@ import { notifyWaitlistForCancelled } from '@/lib/waitlist';
 // double-booking guard reruns on every write that could conflict.
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    // Cancel = PATCH { status: 'cancelled' } — use the stronger cancel perm
+    // when the caller is trying to cancel. Otherwise it's an update. We pass
+    // the BASE key (no scope suffix); can() walks :org → :branch → :own.
+    const raw = (await req.clone().json().catch(() => null)) as { status?: unknown } | null;
+    const requiredPerm = raw?.status === 'cancelled' ? 'booking.cancel' : 'booking.update';
+    requirePermission(ctx, requiredPerm, { organizationId: ctx.activeOrganizationId! }, 'appointments');
+    const session = ctxToSession(ctx);
     const { id } = await params;
     const input = parseUpdateInput(await req.json().catch(() => null));
 

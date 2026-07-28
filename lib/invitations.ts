@@ -37,9 +37,8 @@ export async function createInvitation(
   session: ActiveSession,
   input: CreateInvitationInput,
 ): Promise<CreateInvitationResult> {
-  if (session.role !== 'owner') {
-    throw new InvalidInputError('only owners may invite staff');
-  }
+  // Authorization is the caller's responsibility (route handler must call
+  // requirePermission(ctx, 'staff.invite', ...)). Service trusts its input.
   const email = input.email.trim().toLowerCase();
   if (!email || !email.includes('@')) throw new InvalidInputError('email is invalid');
   const role = input.role;
@@ -174,9 +173,7 @@ export async function revokeInvitation(
   session: ActiveSession,
   id: string,
 ): Promise<void> {
-  if (session.role !== 'owner') {
-    throw new InvalidInputError('only owners may revoke invitations');
-  }
+  // Authorization enforced by caller via requirePermission(ctx, 'staff.invite').
   await withOrg(session.organizationId, (tx) =>
     tx.invitation.update({
       where: { id },

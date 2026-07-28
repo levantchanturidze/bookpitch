@@ -14,8 +14,9 @@
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset --force",
     "db:studio": "prisma studio",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:guards",
     "test:watch": "vitest",
+    "test:guards": "tsx scripts/check-guards.ts",
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",
     "postinstall": "prisma generate"

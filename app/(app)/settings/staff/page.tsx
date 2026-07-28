@@ -1,11 +1,14 @@
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { listLocations, listStaff } from '@/lib/admin';
 import StaffPanel, { type LocationRef, type StaffRow } from '@/components/settings/StaffPanel';
 
 export const dynamic = 'force-dynamic';
 
 export default async function SettingsStaffPage() {
-  const session = await requireRole('owner');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'staff.update', { organizationId: ctx.activeOrganizationId! }, 'admin');
+  const session = ctxToSession(ctx);
   const [staffRows, locationRows] = await Promise.all([
     listStaff(session),
     listLocations(session),

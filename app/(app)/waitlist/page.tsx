@@ -1,4 +1,5 @@
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { listWaitlist } from '@/lib/waitlist';
 import WaitlistView from './WaitlistView';
@@ -7,7 +8,9 @@ export const metadata = { title: 'Waitlist · Bookpitch' };
 export const dynamic = 'force-dynamic';
 
 export default async function WaitlistPage() {
-  const session = await requireRole('owner', 'practitioner', 'receptionist');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'booking.read', { organizationId: ctx.activeOrganizationId! }, 'waitlist');
+  const session = ctxToSession(ctx);
   const [rows, customers, staff, services] = await Promise.all([
     listWaitlist(session),
     withOrg(session.organizationId, (tx) =>

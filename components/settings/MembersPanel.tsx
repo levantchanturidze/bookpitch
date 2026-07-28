@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import type { UserRole } from '@prisma/client';
-import { KeyRound, Plus, Trash2 } from 'lucide-react';
+import { Link2, Plus, Trash2 } from 'lucide-react';
 import {
   inviteMemberAction,
   removeMemberAction,
@@ -30,22 +30,16 @@ export default function MembersPanel({
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const [tempPasswordShown, setTempPasswordShown] = useState<{
-    email: string;
-    password: string;
-  } | null>(null);
+  // Phase 4: admins send invitation LINKS, never passwords. Show the URL
+  // so the sender can copy-paste in case email delivery fails / isn't set up.
+  const [inviteUrl, setInviteUrl] = useState<{ email: string; url: string } | null>(null);
 
-  const invite = (input: {
-    email: string;
-    role: UserRole;
-    fullName: string | null;
-    tempPassword: string;
-  }) => {
+  const invite = (input: { email: string; role: UserRole }) => {
     setError(null);
     startTransition(async () => {
       try {
-        await inviteMemberAction(input);
-        setTempPasswordShown({ email: input.email, password: input.tempPassword });
+        const result = await inviteMemberAction(input);
+        setInviteUrl({ email: input.email, url: result.url });
         setAdding(false);
       } catch (err) {
         setError((err as Error).message);
@@ -90,23 +84,23 @@ export default function MembersPanel({
       {error && (
         <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
       )}
-      {tempPasswordShown && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+      {inviteUrl && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs text-emerald-900">
           <div className="flex items-start gap-2">
-            <KeyRound className="mt-0.5 h-4 w-4 shrink-0" />
+            <Link2 className="mt-0.5 h-4 w-4 shrink-0" />
             <div className="flex-1">
-              <p className="font-bold">Copy this temporary password — it&apos;s shown once.</p>
+              <p className="font-bold">Invitation sent to <span className="font-mono">{inviteUrl.email}</span></p>
               <p className="mt-1">
-                Send it to <span className="font-mono">{tempPasswordShown.email}</span> out-of-band.
-                They can sign in with it and (in a later release) reset their password.
+                They&apos;ll receive an email with a link to accept. If email delivery is
+                delayed, copy the link below and send it out-of-band:
               </p>
-              <p className="mt-2 rounded-lg bg-white px-3 py-2 font-mono text-sm text-slate-900">
-                {tempPasswordShown.password}
+              <p className="mt-2 rounded-lg bg-white px-3 py-2 font-mono text-[11px] break-all text-slate-900">
+                {inviteUrl.url}
               </p>
             </div>
             <button
-              onClick={() => setTempPasswordShown(null)}
-              className="text-[10px] text-amber-700 hover:underline"
+              onClick={() => setInviteUrl(null)}
+              className="text-[10px] text-emerald-700 hover:underline"
             >
               Dismiss
             </button>
@@ -197,25 +191,18 @@ function InviteForm({
 }: {
   isPending: boolean;
   onCancel: () => void;
-  onSubmit: (v: {
-    email: string;
-    role: UserRole;
-    fullName: string | null;
-    tempPassword: string;
-  }) => void;
+  onSubmit: (v: { email: string; role: UserRole }) => void;
 }) {
   const [email, setEmail] = useState('');
-  const [fullName, setFullName] = useState('');
   const [role, setRole] = useState<UserRole>('receptionist');
-  const [tempPassword, setTempPassword] = useState(randomPassword());
 
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit({ email, role, fullName: fullName || null, tempPassword });
+        onSubmit({ email, role });
       }}
-      className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-5"
+      className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-4"
     >
       <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase md:col-span-2">
         Email
@@ -225,14 +212,6 @@ function InviteForm({
           type="email"
           required
           className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 font-mono text-xs font-normal text-slate-800"
-        />
-      </label>
-      <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
-        Full name
-        <input
-          value={fullName}
-          onChange={(e) => setFullName(e.target.value)}
-          className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 text-xs font-normal text-slate-800"
         />
       </label>
       <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
@@ -249,17 +228,7 @@ function InviteForm({
           ))}
         </select>
       </label>
-      <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
-        Temp password
-        <input
-          value={tempPassword}
-          onChange={(e) => setTempPassword(e.target.value)}
-          required
-          minLength={8}
-          className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 font-mono text-xs font-normal text-slate-800"
-        />
-      </label>
-      <div className="flex items-end justify-end gap-2 md:col-span-5">
+      <div className="flex items-end justify-end gap-2 md:col-span-4">
         <button
           type="button"
           onClick={onCancel}
@@ -272,16 +241,9 @@ function InviteForm({
           disabled={isPending}
           className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-40"
         >
-          {isPending ? 'Inviting…' : 'Send invite'}
+          {isPending ? 'Sending…' : 'Send invitation link'}
         </button>
       </div>
     </form>
   );
-}
-
-function randomPassword(): string {
-  const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let out = '';
-  for (let i = 0; i < 12; i++) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
 }

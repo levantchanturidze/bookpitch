@@ -12,17 +12,11 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 const { withoutRls } = await import('@/lib/db');
 const routeList = await import('@/app/api/appointments/route');
 const routeItem = await import('@/app/api/appointments/[id]/route');
+const { mockJwt } = await import('./helpers/session');
+const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 
-type SessionRole = 'owner' | 'practitioner' | 'receptionist';
-function mkSession(orgId: string, userId: string, role: SessionRole = 'owner') {
-  return {
-    user: {
-      id: userId,
-      email: `${role}@example.dev`,
-      organizationId: orgId,
-      role,
-    },
-  };
+async function mkSession(orgId: string, userId: string) {
+  return mockJwt(userId, orgId);
 }
 
 async function jsonBody<T = unknown>(res: Response): Promise<T> {
@@ -88,13 +82,16 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
     }
   });
 
-  beforeEach(() => authMock.mockReset());
+  beforeEach(() => {
+    authMock.mockReset();
+    __clearAuthContextCache();
+  });
 
   async function book(
     startsAt: string,
     overrides: Partial<{ staffId: string; customerId: string; serviceId: string }> = {},
   ) {
-    authMock.mockResolvedValue(mkSession(primaryOrgId, primaryOwnerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
     return routeList.POST(
       req('http://x/api/appointments', {
         method: 'POST',
@@ -153,7 +150,7 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
     createdIds.push(createdBody.appointment.id);
 
     // Cancel it via PATCH.
-    authMock.mockResolvedValue(mkSession(primaryOrgId, primaryOwnerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
     const cancel = await routeItem.PATCH(
       req(`http://x/api/appointments/${createdBody.appointment.id}`, {
         method: 'PATCH',
@@ -215,7 +212,13 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
   });
 
   it('list scoped to org — isolation org sees zero of primary org rows', async () => {
-    authMock.mockResolvedValue(mkSession(isolationOrgId, primaryOwnerId));
+    // Phase 4: mockJwt requires a REAL (userId, orgId) pair — a JWT that
+    // claims a foreign org for a user who isn't a member of it can't be
+    // minted. Use the isolation org's own owner as the caller.
+    const isoOwner = await withoutRls(tx => tx.appUser.findUniqueOrThrow({
+      where: { email: 'isolation@bookpitch.dev' }, select: { id: true },
+    }));
+    authMock.mockResolvedValue(await mkSession(isolationOrgId, isoOwner.id));
     const res = await routeList.GET(
       req(
         `http://x/api/appointments?from=${encodeURIComponent(iso(1, 0))}&to=${encodeURIComponent(iso(30, 23))}`,

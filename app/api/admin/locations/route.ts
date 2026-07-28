@@ -1,18 +1,21 @@
 import type { NextRequest } from 'next/server';
-import { requireRole, withApi } from '@/lib/auth';
+import { ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { createLocation, listLocations } from '@/lib/admin';
 
 export async function GET() {
   return withApi(async () => {
-    const session = await requireRole('owner');
-    return { locations: await listLocations(session) };
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'org.branch.manage', { organizationId: ctx.activeOrganizationId! }, 'admin');
+    return { locations: await listLocations(ctxToSession(ctx)) };
   });
 }
 
 export async function POST(req: NextRequest) {
   return withApi(async () => {
-    const session = await requireRole('owner');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'org.branch.manage', { organizationId: ctx.activeOrganizationId! }, 'admin');
     const body = await req.json().catch(() => null);
-    return { location: await createLocation(session, body) };
+    return { location: await createLocation(ctxToSession(ctx), body) };
   });
 }

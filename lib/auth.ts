@@ -1,34 +1,71 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
-import type { UserRole } from '@prisma/client';
 import { log, newRequestId, updateRequestContext, withRequestContext } from '@/lib/logger';
+import type { AuthContext } from '@/lib/rbac';
 
+/**
+ * Small, everywhere-passable auth snapshot. Post-Phase-4 this is the shape
+ * downstream helpers (writeAudit, admin.ts, analytics.ts, invitations.ts,
+ * billing/service.ts, …) accept as `session`.
+ *
+ * `role` was removed in Phase 4 — callers that need role-based logic must
+ * use `AuthContext` (from `requireAuthContext()`) and `can()` from
+ * `@/lib/rbac`. `membershipId` is required because Phase 3's forced
+ * re-auth migration ensures every live JWT carries it.
+ */
 export type ActiveSession = {
   userId: string;
-  organizationId: string;
-  role: UserRole;
   email: string;
+  organizationId: string;
+  // Phase 4: populated by getSession() and ctxToSession(). Left optional at
+  // the type level so integration tests that build ActiveSession literals
+  // for direct service-layer calls don't need to fabricate a synthetic
+  // membershipId. Every production caller has them populated because
+  // getSession() returns null when the JWT is missing them.
+  membershipId?: string;
+  platformRoleId?: string | null;
 };
 
 /**
  * Returns the active session or `null`. Server-only.
  *
- * When the caller has a bp_active_org cookie naming a valid membership,
- * the returned org/role reflect that org instead of the JWT default.
+ * Reads the JWT's canonical Phase 3 claims (`activeOrganizationId`,
+ * `membershipId`, `platformRoleId`). Sessions without `membershipId` (a
+ * broken or ancient token that survived the force-reauth migration)
+ * return null so callers get 401 rather than a half-formed session.
  */
 export async function getSession(): Promise<ActiveSession | null> {
   const session = await auth();
   if (!session?.user) return null;
-  const base: ActiveSession = {
+  const orgId = session.user.activeOrganizationId ?? null;
+  const memId = session.user.membershipId ?? null;
+  if (!orgId || !memId) return null;
+  return {
     userId: session.user.id,
-    organizationId: session.user.organizationId,
-    role: session.user.role,
     email: session.user.email,
+    organizationId: orgId,
+    membershipId: memId,
+    platformRoleId: session.user.platformRoleId ?? null,
   };
-  // Dynamic import — the cookies() API only works in request scope, and
-  // this module is imported by other places (auth.ts init) where it isn't.
-  const { resolveActiveOrg } = await import('@/lib/org-switch');
-  return resolveActiveOrg(base);
+}
+
+/**
+ * Adapter for callers that consume `ActiveSession` but hold an
+ * `AuthContext`. Bridges the two shapes without a second DB round-trip.
+ * Throws if the ctx is platform-only (no active org) — those callers
+ * shouldn't be reaching org-plane helpers.
+ */
+export function ctxToSession(ctx: AuthContext): ActiveSession {
+  if (!ctx.activeOrganizationId || !ctx.membershipId) {
+    throw new Error('ctxToSession: platform-only AuthContext has no org session');
+  }
+  return {
+    userId: ctx.userId,
+    email: ctx.email,
+    organizationId: ctx.activeOrganizationId,
+    membershipId: ctx.membershipId,
+    platformRoleId: null, // ctx carries a role, not an id; caller can re-fetch if needed
+  };
 }
 
 export class UnauthenticatedError extends Error {
@@ -71,21 +108,12 @@ export class ConflictError extends Error {
 
 /**
  * Throws if the caller is not signed in. Returns the session otherwise.
+ * Used by routes that need a session but no permission check (session-only
+ * endpoints: notifications, session-switch, push subscribe).
  */
 export async function requireSession(): Promise<ActiveSession> {
   const session = await getSession();
   if (!session) throw new UnauthenticatedError();
-  return session;
-}
-
-/**
- * Throws ForbiddenError unless the caller's role is one of `roles`.
- */
-export async function requireRole(...roles: UserRole[]): Promise<ActiveSession> {
-  const session = await requireSession();
-  if (!roles.includes(session.role)) {
-    throw new ForbiddenError(`Requires role: ${roles.join(', ')}`);
-  }
   return session;
 }
 

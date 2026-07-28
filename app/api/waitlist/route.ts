@@ -1,5 +1,6 @@
 import type { NextRequest } from 'next/server';
-import { requireRole, withApi, InvalidInputError } from '@/lib/auth';
+import { ctxToSession, withApi, InvalidInputError } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { addToWaitlist, listWaitlist } from '@/lib/waitlist';
 
 export const runtime = 'nodejs';
@@ -8,8 +9,9 @@ export const dynamic = 'force-dynamic';
 // GET /api/waitlist — staff-visible.
 export async function GET() {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
-    const rows = await listWaitlist(session);
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'booking.read', { organizationId: ctx.activeOrganizationId! }, 'waitlist');
+    const rows = await listWaitlist(ctxToSession(ctx));
     return { waitlist: rows };
   });
 }
@@ -18,14 +20,15 @@ export async function GET() {
 //                     preferredFrom, preferredTo, notes? }
 export async function POST(req: NextRequest) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'booking.create', { organizationId: ctx.activeOrganizationId! }, 'waitlist');
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) throw new InvalidInputError('invalid body');
     const iso = (k: string) => (typeof body[k] === 'string' ? new Date(String(body[k])) : null);
     const preferredFrom = iso('preferredFrom');
     const preferredTo = iso('preferredTo');
     if (!preferredFrom || !preferredTo) throw new InvalidInputError('window is required');
-    return addToWaitlist(session, {
+    return addToWaitlist(ctxToSession(ctx), {
       customerId: String(body.customerId ?? ''),
       locationId: body.locationId ? String(body.locationId) : undefined,
       staffId: body.staffId ? String(body.staffId) : undefined,

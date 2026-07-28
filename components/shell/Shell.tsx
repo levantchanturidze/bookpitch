@@ -21,8 +21,6 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import type { UserRole } from '@prisma/client';
-
 import { NAV_ITEMS, labelFor, type NavItem } from './nav-items';
 import { setActiveLocationAction, signOutAction } from './actions';
 import { useNotifications } from './useNotifications';
@@ -30,10 +28,21 @@ import type { ActiveLocation } from '@/lib/active-location';
 import OrgSwitcher from './OrgSwitcher';
 
 type Props = {
-  session: { email: string; role: UserRole; organizationId: string };
+  session: {
+    email: string;
+    organizationId: string;
+    /** Human-readable role tag for the header pill. e.g. 'Owner', 'Provider'. */
+    roleDisplay: string;
+  };
   organizationName: string;
   locations: ActiveLocation[];
   activeLocation: ActiveLocation;
+  /**
+   * Nav ids the caller has permission to see (computed server-side in
+   * app/(app)/layout.tsx via `can()`). Items not in this set render as
+   * greyed / locked entries; items in the set are clickable.
+   */
+  visibleNavIds: ReadonlySet<string>;
   children: React.ReactNode;
 };
 
@@ -58,6 +67,7 @@ export default function Shell({
   organizationName,
   locations,
   activeLocation,
+  visibleNavIds,
   children,
 }: Props) {
   const pathname = usePathname();
@@ -112,7 +122,7 @@ export default function Shell({
             <NotificationBell open={notifOpen} onToggle={() => setNotifOpen((v) => !v)} />
             <UserMenu
               email={session.email}
-              role={session.role}
+              roleDisplay={session.roleDisplay}
               open={userMenuOpen}
               onToggle={() => setUserMenuOpen((v) => !v)}
             />
@@ -131,7 +141,7 @@ export default function Shell({
             </span>
             <SidebarNav
               accent={accent}
-              role={session.role}
+              visibleNavIds={visibleNavIds}
               locationType={activeLocation.type}
               pathname={pathname}
             />
@@ -175,7 +185,7 @@ export default function Shell({
                 </div>
                 <SidebarNav
                   accent={accent}
-                  role={session.role}
+                  visibleNavIds={visibleNavIds}
                   locationType={activeLocation.type}
                   pathname={pathname}
                   onNavigate={() => setMobileOpen(false)}
@@ -197,13 +207,13 @@ export default function Shell({
 // ---------------------------------------------------------------------------
 function SidebarNav({
   accent,
-  role,
+  visibleNavIds,
   locationType,
   pathname,
   onNavigate,
 }: {
   accent: 'teal' | 'pink';
-  role: UserRole;
+  visibleNavIds: ReadonlySet<string>;
   locationType: 'clinic' | 'salon';
   pathname: string;
   onNavigate?: () => void;
@@ -215,7 +225,7 @@ function SidebarNav({
           key={item.id}
           item={item}
           accent={accent}
-          allowed={item.allowedRoles.includes(role)}
+          allowed={visibleNavIds.has(item.id)}
           active={isActivePath(pathname, item.href)}
           label={labelFor(item, locationType)}
           onNavigate={onNavigate}
@@ -419,12 +429,12 @@ function formatRelative(iso: string): string {
 // ---------------------------------------------------------------------------
 function UserMenu({
   email,
-  role,
+  roleDisplay,
   open,
   onToggle,
 }: {
   email: string;
-  role: UserRole;
+  roleDisplay: string;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -439,7 +449,7 @@ function UserMenu({
           {initials}
         </span>
         <span className="hidden font-mono text-[10px] tracking-wider text-slate-400 uppercase sm:inline">
-          {role}
+          {roleDisplay}
         </span>
       </button>
       <AnimatePresence>
@@ -455,7 +465,7 @@ function UserMenu({
               <div className="border-b border-slate-100 pb-3">
                 <p className="text-xs font-bold text-slate-800">{email}</p>
                 <p className="mt-0.5 font-mono text-[10px] tracking-wider text-slate-400 uppercase">
-                  {role}
+                  {roleDisplay}
                 </p>
               </div>
               <form action={signOutAction}>

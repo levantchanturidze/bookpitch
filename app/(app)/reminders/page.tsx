@@ -1,4 +1,5 @@
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission, can } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { loadLocationsForOrg } from '@/lib/active-location';
 import RemindersView from '@/components/reminders/RemindersView';
@@ -7,8 +8,13 @@ export const metadata = { title: 'Reminders · Bookpitch' };
 export const dynamic = 'force-dynamic';
 
 export default async function RemindersPage() {
-  const session = await requireRole('owner', 'receptionist');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'booking.update', { organizationId: ctx.activeOrganizationId! }, 'reminders');
+  const session = ctxToSession(ctx);
   const { active } = await loadLocationsForOrg(session.organizationId);
+  // UI-branching: only callers who can edit org-level settings can trigger
+  // the reminder tick. Phase 0 §8.2 called out the old `session.role === 'owner'`.
+  const canRunTick = can(ctx, 'org.settings.update:org', { organizationId: ctx.activeOrganizationId! });
 
   const data = await withOrg(session.organizationId, async (tx) => {
     const org = await tx.organization.findUnique({
@@ -95,7 +101,7 @@ export default async function RemindersPage() {
       upcoming={data.upcoming}
       log={data.log}
       sampleVars={data.sampleAppointment}
-      canRunTick={session.role === 'owner'}
+      canRunTick={canRunTick}
     />
   );
 }

@@ -1,22 +1,36 @@
-import type { UserRole } from '@prisma/client';
+import type { PermissionKey } from '@/lib/rbac';
 
 export type NavItem = {
   id: string;
   href: string;
   label: string | { clinic: string; salon: string };
   icon: 'calendar' | 'users' | 'message' | 'dollar' | 'trending' | 'shield' | 'settings' | 'clock';
-  allowedRoles: UserRole[];
+  /**
+   * Permission required to see this nav entry (spec §5). The server-side
+   * layout evaluates `can(ctx, requiredPermission)` per item and passes
+   * the result down as `visibleNavIds` to the client Shell.
+   *
+   * A missing perm hides the entry entirely — Shell never renders a
+   * disabled/greyed link. Route-level guards enforce independently, so
+   * link visibility is a UX signal, not the authorization.
+   */
+  requiredPermission: PermissionKey;
 };
 
-// Single source of truth for the sidebar + route-level role guards.
-// Keep the roles here in sync with the requireRole() calls in each page.tsx.
+// Cast helper — `perm()` is the branded-string constructor from lib/rbac.
+// Inlined here so nav-items has no cross-package runtime dep.
+const p = (s: string): PermissionKey => s as PermissionKey;
+
+// Single source of truth for the sidebar. Paired with each page's
+// `requirePermission()` call at the route boundary — the mapping is
+// documented in docs/rbac-enforcement-audit.md §15.
 export const NAV_ITEMS: NavItem[] = [
   {
     id: 'scheduler',
     href: '/scheduler',
     label: 'Scheduler',
     icon: 'calendar',
-    allowedRoles: ['owner', 'practitioner', 'receptionist'],
+    requiredPermission: p('booking.read'),
   },
   {
     id: 'patients',
@@ -24,49 +38,49 @@ export const NAV_ITEMS: NavItem[] = [
     // Label follows active location type — the prototype's clinic/salon relabel.
     label: { clinic: 'Patients', salon: 'Clients' },
     icon: 'users',
-    allowedRoles: ['owner', 'practitioner', 'receptionist'],
+    requiredPermission: p('client.read:contact'),
   },
   {
     id: 'reminders',
     href: '/reminders',
     label: 'Reminders',
     icon: 'message',
-    allowedRoles: ['owner', 'receptionist'],
+    requiredPermission: p('booking.update'),
   },
   {
     id: 'waitlist',
     href: '/waitlist',
     label: 'Waitlist',
     icon: 'clock',
-    allowedRoles: ['owner', 'practitioner', 'receptionist'],
+    requiredPermission: p('booking.read'),
   },
   {
     id: 'billing',
     href: '/billing',
     label: 'Billing & POS',
     icon: 'dollar',
-    allowedRoles: ['owner', 'receptionist'],
+    requiredPermission: p('payment.charge'),
   },
   {
     id: 'analytics',
     href: '/analytics',
     label: 'Business intelligence',
     icon: 'trending',
-    allowedRoles: ['owner'],
+    requiredPermission: p('report.branch'),
   },
   {
     id: 'audit',
     href: '/audit',
     label: 'Audit log',
     icon: 'shield',
-    allowedRoles: ['owner'],
+    requiredPermission: p('audit.read'),
   },
   {
     id: 'settings',
     href: '/settings',
     label: 'Settings',
     icon: 'settings',
-    allowedRoles: ['owner'],
+    requiredPermission: p('org.settings.update:org'),
   },
 ];
 

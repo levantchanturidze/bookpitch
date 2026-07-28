@@ -1,13 +1,16 @@
-import { requireRole, withApi } from '@/lib/auth';
+import { ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 
 /**
- * Sample owner-only endpoint used by the RBAC test in P1.2.
- * The real API routes land in P1.4 / P1.5. This exists purely to verify the
- * requireRole() guard is enforced server-side.
+ * Sample endpoint used by the RBAC test suite to verify the guard is
+ * enforced server-side. Requires a permission that only owners hold by
+ * default (`org.settings.update:org`), so a receptionist/provider hitting
+ * this endpoint gets 403.
  */
 export async function GET() {
   return withApi(async () => {
-    const session = await requireRole('owner');
-    return { ok: true, session };
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'org.settings.update:org', { organizationId: ctx.activeOrganizationId! }, 'dev');
+    return { ok: true, session: ctxToSession(ctx) };
   });
 }

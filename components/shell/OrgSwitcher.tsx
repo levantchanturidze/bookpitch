@@ -6,7 +6,10 @@ import { Building2, Check, ChevronDown } from 'lucide-react';
 type Membership = {
   organizationId: string;
   organizationName: string;
-  role: 'owner' | 'practitioner' | 'receptionist';
+  /** Phase 3 role key (ORG_OWNER, PROVIDER, FRONT_DESK, …). */
+  roleKey: string | null;
+  /** Legacy enum kept in the API response for display continuity. */
+  legacyRole: 'owner' | 'practitioner' | 'receptionist';
 };
 
 // Compact dropdown next to the org name. Only appears when the user has
@@ -76,7 +79,7 @@ export default function OrgSwitcher({
             >
               <span>
                 <span className="block font-semibold">{m.organizationName}</span>
-                <span className="text-[10px] uppercase text-slate-400">{m.role}</span>
+                <span className="text-[10px] uppercase text-slate-400">{m.roleKey ?? m.legacyRole}</span>
               </span>
               {m.organizationId === activeOrganizationId && (
                 <Check className="h-3.5 w-3.5 text-emerald-600" />
