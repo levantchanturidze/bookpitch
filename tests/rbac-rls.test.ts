@@ -38,13 +38,19 @@ describe('RLS coverage across every tenant table', () => {
         ORDER BY c.relname`,
     );
 
-    // Two categories of exemption:
+    // Three categories of exemption:
     //   • audit_log partitions — the parent enforces RLS; partitions inherit.
     //   • roles / permissions / role_permissions — reference data, RLS-free
     //     by design (docs/rbac-schema-notes.md §3.2). Custom-role isolation
     //     is enforced at query time by the seed/admin writers.
+    //   • impersonation_sessions / break_glass_sessions — platform-plane
+    //     bookkeeping (Phase 5 §8). Queried only by lib/rbac/context.ts
+    //     with prismaAdmin; not exposed to org-plane callers.
     // Any other table missing RLS is a defect.
-    const EXEMPT_REFERENCE = new Set(['roles', 'permissions', 'role_permissions']);
+    const EXEMPT_REFERENCE = new Set([
+      'roles', 'permissions', 'role_permissions',
+      'impersonation_sessions', 'break_glass_sessions',
+    ]);
     const missing = rows.filter(r =>
       !/^audit_log_\d{4}_\d{2}$/.test(r.table_name)
       && r.table_name !== 'audit_log_default'

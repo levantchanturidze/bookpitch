@@ -35,22 +35,50 @@ export function can(
     return ctx.platformPermissions.has(p);
   }
 
-  // 2. Org-plane operations require an active org membership.
-  if (!ctx.membershipId || !ctx.activeOrganizationId) return false;
+  // Phase 5: break-glass session unlocks reads across tenant boundaries
+  // for SUPER_ADMIN (spec §7.2). The session may target one org or be
+  // org-agnostic; we only bypass tenant isolation when the target
+  // matches (or is unrestricted). Writes and destructive actions are
+  // still bound by the permission set — break-glass is a read lever.
+  const bgTarget = ctx.breakGlass?.targetOrganizationId ?? null;
+  const bgReaches =
+    ctx.isBreakGlass &&
+    (!resource?.organizationId || bgTarget === null || bgTarget === resource.organizationId);
 
-  // 2a. Suspended / archived orgs deny everything org-plane.
-  if (ctx.organizationStatus === 'suspended' || ctx.organizationStatus === 'archived') {
+  // 2. Org-plane operations normally require an active org membership.
+  //    Break-glass on reads is the exception — a platform-only SUPER_ADMIN
+  //    with an active break-glass session may read PII and clinical data
+  //    from the targeted org even without a membership row.
+  if (!ctx.membershipId || !ctx.activeOrganizationId) {
+    if (bgReaches && isBreakGlassReadableKey(String(p))) return true;
+    return false;
+  }
+
+  // 2a. Suspended / archived orgs deny everything org-plane. Break-glass
+  //     overrides so SUPER_ADMIN can inspect a suspended org (fraud triage,
+  //     deletion prep).
+  if ((ctx.organizationStatus === 'suspended' || ctx.organizationStatus === 'archived') &&
+      !bgReaches) {
     return false;
   }
 
   // 2b. Tenant isolation. If the caller asserted a resource in a different
   //     org, refuse without ever consulting the permission set. This is the
   //     line spec §10 comments call "the single most important check".
+  //     Break-glass with a matching target is the audited exception.
   if (resource?.organizationId && resource.organizationId !== ctx.activeOrganizationId) {
+    if (bgReaches) return true;
     return false;
   }
 
-  // 3. Impersonation restrictions. Populated by Phase 5.
+  // 2c. Break-glass short-circuit for clinical + PII reads (spec §7.2 —
+  //     the whole point of the lever). Placed AFTER tenant isolation so
+  //     the resource must live inside the break-glass target (or be
+  //     unrestricted). Every such read is audited via withPlatformApi.
+  if (bgReaches && isBreakGlassReadableKey(String(p))) return true;
+
+  // 3. Impersonation restrictions (spec §7.1 rule 5). Populated set,
+  //    defined in lib/rbac/impersonation.ts.
   if (ctx.isImpersonating && RESTRICTED_DURING_IMPERSONATION.has(p)) {
     return false;
   }
@@ -85,5 +113,18 @@ export function can(
   //     don't take a scope suffix — presence in the set is the whole check.
   if (granted.has(p)) return true;
 
+  return false;
+}
+
+/**
+ * Keys that break-glass exposes latently — reads of client PII and
+ * clinical records that a role without a matching org membership would
+ * normally never reach. See spec §7.2. Kept as a small, explicit list
+ * rather than "any org-plane read" so break-glass never accidentally
+ * grants a mutation.
+ */
+function isBreakGlassReadableKey(p: string): boolean {
+  if (p.startsWith('clinical_note.read')) return true;
+  if (p === 'client.read:basic' || p === 'client.read:contact' || p === 'client.read:full') return true;
   return false;
 }

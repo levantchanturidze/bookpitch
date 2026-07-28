@@ -5,6 +5,8 @@ import { verify } from '@node-rs/argon2';
 
 import { authConfig } from '@/auth.config';
 import { prismaAdmin, withoutRls } from '@/lib/db';
+import { getEmailProvider } from '@/lib/messaging';
+import { log } from '@/lib/logger';
 
 // -----------------------------------------------------------------------------
 // JWT + Session shape (Phase 4).
@@ -68,6 +70,30 @@ export function __clearSessionVersionCache(): void {
   sessionVersionCache.clear();
 }
 
+/**
+ * Fire-and-forget alert email when a platform-role user signs in.
+ * Recipient: SECURITY_ALERT_EMAIL if set, otherwise the caller themselves
+ * (so at minimum the account owner gets an alert to their own inbox and
+ * can notice an unexpected login). Never throws — a provider failure
+ * shouldn't block sign-in.
+ */
+async function alertOnPlatformLogin(userId: string, email: string): Promise<void> {
+  const alertTo = process.env.SECURITY_ALERT_EMAIL ?? email;
+  try {
+    const provider = getEmailProvider();
+    await provider.send(
+      alertTo,
+      '[Bookpitch] Platform-role sign-in',
+      `A platform-role user just signed in.\n\n` +
+      `User: ${email} (${userId})\n` +
+      `At: ${new Date().toISOString()}\n\n` +
+      `If this wasn't you, reset your password and rotate any credentials.`,
+    );
+  } catch (err) {
+    log.warn('auth.platform_login_alert_failed', { err: (err as Error).message });
+  }
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   adapter: PrismaAdapter(prismaAdmin),
@@ -107,6 +133,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!ok) return null;
 
         const membership = user.memberships[0];
+
+        // Phase 5 spec §7.2 "root account pattern": SUPER_ADMIN /
+        // PLATFORM_ADMIN logins send a security alert email. Best-effort
+        // — a provider outage never blocks a valid signin.
+        if (user.platformRoleId) {
+          void alertOnPlatformLogin(user.id, user.email);
+        }
+
         return {
           id: user.id,
           email: user.email,
