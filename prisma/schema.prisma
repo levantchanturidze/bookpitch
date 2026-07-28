@@ -627,9 +627,30 @@ model Role {
   permissions        RolePermission[]
   memberships        Membership[]     @relation("MembershipRole")
   platformRoleUsers  AppUser[]        @relation("UserPlatformRole")
+  // Phase 3 lattice edges. `canManage` = roles this role can manage;
+  // `managedBy` = roles that can manage this one. See lib/rbac/rank.ts.
+  canManage          RoleCanManage[]  @relation("RoleCanManage_Parent")
+  managedBy          RoleCanManage[]  @relation("RoleCanManage_Child")
 
   @@index([plane], map: "idx_roles_plane")
   @@map("roles")
+}
+
+// Phase 3: role management lattice. Numeric rank alone can't distinguish
+// FRONT_DESK and PROVIDER (both rank 40); this table is the explicit
+// adjacency list that lib/rbac/rank.ts::canManageRoleAssignment combines
+// with the rank check.
+model RoleCanManage {
+  parentRoleId String   @map("parent_role_id") @db.Uuid
+  childRoleId  String   @map("child_role_id")  @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  parent Role @relation("RoleCanManage_Parent", fields: [parentRoleId], references: [id], onDelete: Cascade)
+  child  Role @relation("RoleCanManage_Child",  fields: [childRoleId],  references: [id], onDelete: Cascade)
+
+  @@id([parentRoleId, childRoleId])
+  @@index([parentRoleId], map: "idx_role_can_manage_parent")
+  @@map("role_can_manage")
 }
 
 model Permission {

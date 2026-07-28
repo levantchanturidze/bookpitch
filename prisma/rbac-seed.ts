@@ -428,24 +428,105 @@ async function upsertRolePermissions() {
 }
 
 // -----------------------------------------------------------------------------
+// Role management lattice (Phase 3) — spec §4.2.
+//
+// Ranks aren't a chain — FRONT_DESK and PROVIDER both sit at rank 40 but
+// operate in different domains. lib/rbac/rank.ts::canManageRoleAssignment
+// requires BOTH numeric rank AND an edge in this lattice.
+//
+// Only org-plane edges seeded here for MVP. Platform-plane management
+// (SUPER_ADMIN → PLATFORM_ADMIN / SUPPORT_AGENT / BILLING_MANAGER) is
+// also included because the same helper covers it.
+// -----------------------------------------------------------------------------
+const CAN_MANAGE: Record<string, ReadonlyArray<string>> = {
+  // Platform plane
+  SUPER_ADMIN: ['PLATFORM_ADMIN', 'BILLING_MANAGER', 'SUPPORT_AGENT'],
+  PLATFORM_ADMIN: ['SUPPORT_AGENT'],
+  // BILLING_MANAGER, SUPPORT_AGENT — no one below them; empty.
+
+  // Org plane
+  ORG_OWNER: [
+    'ORG_ADMIN', 'BRANCH_MANAGER',
+    'SENIOR_PROVIDER', 'FRONT_DESK', 'PROVIDER',
+    'ACCOUNTANT', 'MARKETING',
+  ],
+  ORG_ADMIN: [
+    'BRANCH_MANAGER',
+    'SENIOR_PROVIDER', 'FRONT_DESK', 'PROVIDER',
+    'ACCOUNTANT', 'MARKETING',
+  ],
+  BRANCH_MANAGER: ['FRONT_DESK', 'PROVIDER'],
+  SENIOR_PROVIDER: ['PROVIDER'],
+  // FRONT_DESK, PROVIDER, ACCOUNTANT, MARKETING — peer or leaf; empty.
+
+  // Consumer plane
+  // CLIENT: not RBAC-managed (spec §4.3).
+};
+
+async function upsertRoleCanManage() {
+  const roles = await prismaAdmin.role.findMany({
+    where: { organizationId: null, isSystem: true },
+    select: { id: true, key: true },
+  });
+  const idByKey = new Map(roles.map(r => [r.key, r.id]));
+
+  // Compute desired edges as a Set for two-way sync.
+  const wantEdges = new Set<string>();
+  for (const [parentKey, childKeys] of Object.entries(CAN_MANAGE)) {
+    const parentId = idByKey.get(parentKey);
+    if (!parentId) throw new Error(`RBAC seed: role ${parentKey} not found`);
+    for (const childKey of childKeys) {
+      const childId = idByKey.get(childKey);
+      if (!childId) throw new Error(`RBAC seed: role ${childKey} not found`);
+      wantEdges.add(`${parentId} ${childId}`);
+    }
+  }
+
+  const existing = await prismaAdmin.roleCanManage.findMany({
+    select: { parentRoleId: true, childRoleId: true },
+  });
+  const existingSet = new Set(existing.map(e => `${e.parentRoleId} ${e.childRoleId}`));
+
+  const toAdd = [...wantEdges].filter(k => !existingSet.has(k));
+  const toRemove = existing.filter(e => !wantEdges.has(`${e.parentRoleId} ${e.childRoleId}`));
+
+  if (toAdd.length > 0) {
+    await prismaAdmin.roleCanManage.createMany({
+      data: toAdd.map(k => {
+        const [parentRoleId, childRoleId] = k.split(' ');
+        return { parentRoleId, childRoleId };
+      }),
+      skipDuplicates: true,
+    });
+  }
+  for (const e of toRemove) {
+    await prismaAdmin.roleCanManage.delete({
+      where: { parentRoleId_childRoleId: { parentRoleId: e.parentRoleId, childRoleId: e.childRoleId } },
+    });
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Main entry.
 // -----------------------------------------------------------------------------
 export async function seedRbac(): Promise<void> {
   await upsertRoles();
   await upsertPermissions();
   await upsertRolePermissions();
+  await upsertRoleCanManage();
 }
 
 // If invoked directly (npx tsx prisma/rbac-seed.ts), run + disconnect.
 if (import.meta.url === `file://${process.argv[1]}`) {
   seedRbac()
     .then(async () => {
-      const [roleCount, permCount, rpCount] = await Promise.all([
+      const [roleCount, permCount, rpCount, edgeCount] = await Promise.all([
         prismaAdmin.role.count({ where: { isSystem: true } }),
         prismaAdmin.permission.count(),
         prismaAdmin.rolePermission.count(),
+        prismaAdmin.roleCanManage.count(),
       ]);
-      console.log('✔ RBAC seed complete:', { roleCount, permCount, rpCount });
+      console.log('✔ RBAC seed complete:', { roleCount, permCount, rpCount, edgeCount });
     })
     .catch((err) => {
       console.error(err);

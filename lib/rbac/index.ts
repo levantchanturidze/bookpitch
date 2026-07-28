@@ -1,0 +1,16 @@
+// -----------------------------------------------------------------------------
+// RBAC Phase 3 — public API.
+//
+// Import from `@/lib/rbac`, not from the sub-modules directly. Phase 4 will
+// use this barrel when swapping requireRole() → requirePermission() across
+// the codebase.
+// -----------------------------------------------------------------------------
+
+export { can } from './can';
+export { requireAuthContext, requirePermission } from './guard';
+export { canManageRoleAssignment } from './rank';
+export { buildAuthContext } from './context';
+export { perm } from './types';
+export type {
+  AuthContext, Resource, Plane, Scope, PermissionKey,
+} from './types';
