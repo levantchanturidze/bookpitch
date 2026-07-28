@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import Shell from '@/components/shell/Shell';
+import PlatformSessionBanner from '@/components/shell/PlatformSessionBanner';
 import { UnauthenticatedError } from '@/lib/auth';
 import { requireAuthContext, can } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
@@ -43,18 +44,27 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   );
 
   return (
-    <Shell
-      session={{
-        email: ctx.email,
-        organizationId: orgId,
-        roleDisplay: ctx.roleKey ?? '',
-      }}
-      organizationName={organization.name}
-      locations={locations}
-      activeLocation={active}
-      visibleNavIds={visibleNavIds}
-    >
-      {children}
-    </Shell>
+    <>
+      {/* Phase 5: platform-session banners (impersonation / break-glass)
+          rendered ABOVE the Shell so they're visible before any org content
+          — see docs/rbac-spec.md §7.1 rule 4 and §7.2 rule 5. */}
+      <PlatformSessionBanner
+        impersonation={ctx.impersonation ? { expiresAt: ctx.impersonation.expiresAt.toISOString() } : null}
+        breakGlass={ctx.breakGlass ? { expiresAt: ctx.breakGlass.expiresAt.toISOString() } : null}
+      />
+      <Shell
+        session={{
+          email: ctx.email,
+          organizationId: orgId,
+          roleDisplay: ctx.roleKey ?? '',
+        }}
+        organizationName={organization.name}
+        locations={locations}
+        activeLocation={active}
+        visibleNavIds={visibleNavIds}
+      >
+        {children}
+      </Shell>
+    </>
   );
 }

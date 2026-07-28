@@ -71,7 +71,30 @@ export async function buildAuthContext(
   const hit = CACHE.get(key);
   if (hit && now - hit.at < TTL_MS) return hit.ctx;
 
-  const platformPermissions = await loadPlatformPermissions(user.platformRoleId);
+  // Fetch platform-plane data + active platform sessions in parallel.
+  // Phase 5: impersonation + break-glass presence changes can() semantics,
+  // so both are looked up per AuthContext build. Cached with the ctx.
+  const [platformPermissions, activeImpersonation, activeBreakGlass] = await Promise.all([
+    loadPlatformPermissions(user.platformRoleId),
+    loadActiveImpersonation(userId),
+    loadActiveBreakGlass(userId),
+  ]);
+
+  const impersonation = activeImpersonation
+    ? {
+        sessionId: activeImpersonation.id,
+        onBehalfOfUserId: activeImpersonation.onBehalfOfUserId,
+        organizationId: activeImpersonation.organizationId,
+        expiresAt: activeImpersonation.expiresAt,
+      }
+    : null;
+  const breakGlass = activeBreakGlass
+    ? {
+        sessionId: activeBreakGlass.id,
+        expiresAt: activeBreakGlass.expiresAt,
+        targetOrganizationId: activeBreakGlass.targetOrganizationId,
+      }
+    : null;
 
   let ctx: AuthContext;
   if (!membershipId) {
@@ -85,12 +108,16 @@ export async function buildAuthContext(
       permissions: new Set(),
       platformPermissions,
       branchIds: new Set(),
-      isImpersonating: false,
+      impersonation,
+      isImpersonating: impersonation !== null,
+      breakGlass,
+      isBreakGlass: breakGlass !== null,
       sessionVersion: user.sessionVersion,
       organizationStatus: null,
     };
   } else {
-    const built = await buildOrgContext(user, membershipId, platformPermissions);
+    const built = await buildOrgContext(user, membershipId, platformPermissions,
+                                        impersonation, breakGlass);
     if (!built) return null;
     ctx = built;
   }
@@ -115,10 +142,54 @@ async function loadPlatformPermissions(
   return new Set(rows.map(r => perm(r.permissionKey)));
 }
 
+/**
+ * Active impersonation session for this user, if any. Uses the partial
+ * index `idx_impersonation_sessions_actor_active` so this is O(1) even
+ * as history grows. Filters expired-but-not-ended rows at read time —
+ * a housekeeping sweep will eventually flip their ended_at, but we
+ * cannot rely on it having run.
+ */
+async function loadActiveImpersonation(userId: string) {
+  const now = new Date();
+  return prismaAdmin.impersonationSession.findFirst({
+    where: {
+      actorUserId: userId,
+      endedAt: null,
+      expiresAt: { gt: now },
+    },
+    select: {
+      id: true,
+      onBehalfOfUserId: true,
+      organizationId: true,
+      expiresAt: true,
+    },
+    orderBy: { startedAt: 'desc' },
+  });
+}
+
+async function loadActiveBreakGlass(userId: string) {
+  const now = new Date();
+  return prismaAdmin.breakGlassSession.findFirst({
+    where: {
+      actorUserId: userId,
+      endedAt: null,
+      expiresAt: { gt: now },
+    },
+    select: {
+      id: true,
+      expiresAt: true,
+      targetOrganizationId: true,
+    },
+    orderBy: { startedAt: 'desc' },
+  });
+}
+
 async function buildOrgContext(
   user: { id: string; email: string; sessionVersion: number },
   membershipId: string,
   platformPermissions: ReadonlySet<PermissionKey>,
+  impersonation: AuthContext['impersonation'],
+  breakGlass: AuthContext['breakGlass'],
 ): Promise<AuthContext | null> {
   const membership = await prismaAdmin.membership.findUnique({
     where: { id: membershipId },
@@ -157,7 +228,10 @@ async function buildOrgContext(
     permissions,
     platformPermissions,
     branchIds: new Set(membership.branches.map(b => b.branchId)),
-    isImpersonating: false,
+    impersonation,
+    isImpersonating: impersonation !== null,
+    breakGlass,
+    isBreakGlass: breakGlass !== null,
     sessionVersion: user.sessionVersion,
     organizationStatus: membership.organization.status as AuthContext['organizationStatus'],
   };

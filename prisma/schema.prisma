@@ -125,6 +125,8 @@ model Organization {
   waitlist          Waitlist[]
   customRoles       Role[]
   ownerUser         AppUser? @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  impersonationSessions ImpersonationSession[]
+  breakGlassSessions    BreakGlassSession[]
 
   @@index([status], map: "idx_org_status")
   @@index([ownerUserId], map: "idx_org_owner_user_id")
@@ -196,6 +198,9 @@ model AppUser {
   platformRole          Role?          @relation("UserPlatformRole", fields: [platformRoleId], references: [id], onDelete: SetNull)
   ownedOrganizations    Organization[] @relation("OrganizationOwner")
   invitationsSent       Membership[]   @relation("MembershipInviter")
+  impersonationSessionsStarted ImpersonationSession[] @relation("ImpersonationActor")
+  impersonationSessionsTarget  ImpersonationSession[] @relation("ImpersonationTarget")
+  breakGlassSessions           BreakGlassSession[]
 
   @@unique([authProvider, authSubject])
   @@index([status], map: "idx_app_users_status")
@@ -714,4 +719,61 @@ model MembershipBranch {
   @@id([membershipId, branchId])
   @@index([branchId], map: "idx_membership_branches_branch")
   @@map("membership_branches")
+}
+
+// =============================================================================
+// PLATFORM SESSIONS (Phase 5 — spec §7.1 impersonation, §7.2 break-glass)
+// =============================================================================
+
+// Time-bounded impersonation session. Actor is a platform-plane user
+// (PLATFORM_ADMIN typically); onBehalfOf is the org-plane user whose
+// account the actor is inside. Populated into ctx.impersonation by
+// lib/rbac/context.ts on every request.
+model ImpersonationSession {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId       String   @map("actor_user_id") @db.Uuid
+  onBehalfOfUserId  String   @map("on_behalf_of_user_id") @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  reason            String
+  ticketId          String   @map("ticket_id")
+  startedAt         DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
+  expiresAt         DateTime @map("expires_at") @db.Timestamptz(6)
+  endedAt           DateTime? @map("ended_at") @db.Timestamptz(6)
+  endedReason       String?  @map("ended_reason")
+  ip                String?  @db.Inet
+  userAgent         String?  @map("user_agent")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  actor         AppUser      @relation("ImpersonationActor", fields: [actorUserId], references: [id], onDelete: NoAction)
+  onBehalfOf    AppUser      @relation("ImpersonationTarget", fields: [onBehalfOfUserId], references: [id], onDelete: NoAction)
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: NoAction)
+
+  // idx_impersonation_sessions_actor_active is a partial index
+  // (WHERE ended_at IS NULL) declared in the migration; Prisma can't
+  // express partial indexes.
+  @@index([organizationId, startedAt], map: "idx_impersonation_sessions_org")
+  @@map("impersonation_sessions")
+}
+
+// SUPER_ADMIN-only break-glass session (spec §7.2). Password re-auth
+// required to start; every read during the window is audited with
+// break_glass_session_id.
+model BreakGlassSession {
+  id                     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId            String   @map("actor_user_id") @db.Uuid
+  targetOrganizationId   String?  @map("target_organization_id") @db.Uuid
+  reason                 String
+  ticketId               String   @map("ticket_id")
+  startedAt              DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
+  expiresAt              DateTime @map("expires_at") @db.Timestamptz(6)
+  endedAt                DateTime? @map("ended_at") @db.Timestamptz(6)
+  endedReason            String?  @map("ended_reason")
+  ip                     String?  @db.Inet
+  userAgent              String?  @map("user_agent")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  actor        AppUser       @relation(fields: [actorUserId], references: [id], onDelete: NoAction)
+  organization Organization? @relation(fields: [targetOrganizationId], references: [id], onDelete: NoAction)
+
+  @@map("break_glass_sessions")
 }

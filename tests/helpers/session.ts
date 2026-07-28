@@ -42,3 +42,39 @@ export async function mockJwt(
     },
   };
 }
+
+/**
+ * Phase 5: mock a JWT for a platform-plane user. No membershipId /
+ * activeOrganizationId — platform accounts operate cross-tenant via
+ * impersonation and break-glass. lib/auth.getSession() returns null for
+ * this shape (correctly — session-scoped org-plane helpers can't run for
+ * a platform-only user), but requireAuthContext() builds a valid
+ * platform-only AuthContext with ctx.platformPermissions populated.
+ *
+ * Note: getSession() null means routes wrapped ONLY in withApi never
+ * proceed. Phase 5 routes use withPlatformApi which calls
+ * requireAuthContext directly, so platform-only sessions pass.
+ */
+export async function mockPlatformJwt(email: string): Promise<{
+  user: {
+    id: string;
+    email: string;
+    activeOrganizationId: null;
+    membershipId: null;
+    platformRoleId: string | null;
+  };
+}> {
+  const user = await prismaAdmin.appUser.findUniqueOrThrow({
+    where: { email },
+    select: { id: true, email: true, platformRoleId: true },
+  });
+  return {
+    user: {
+      id: user.id,
+      email: user.email,
+      activeOrganizationId: null,
+      membershipId: null,
+      platformRoleId: user.platformRoleId,
+    },
+  };
+}

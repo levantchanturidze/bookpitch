@@ -75,8 +75,33 @@ export type AuthContext = {
    */
   readonly branchIds: ReadonlySet<string>;
 
-  /** Impersonation state. Always false in Phase 3; Phase 5 populates. */
+  /**
+   * Active impersonation session (spec §7.1). NULL when the caller is
+   * signed in as themselves. When set, the actor is a platform-plane
+   * user operating on behalf of `onBehalfOfUserId` inside
+   * `organizationId`. `isImpersonating` mirrors `impersonation !== null`
+   * for callers that only need the boolean.
+   */
+  readonly impersonation: {
+    readonly sessionId: string;
+    readonly onBehalfOfUserId: string;
+    readonly organizationId: string;
+    readonly expiresAt: Date;
+  } | null;
   readonly isImpersonating: boolean;
+
+  /**
+   * Active break-glass session (spec §7.2). Only SUPER_ADMIN can start
+   * one. Presence changes can()'s org-plane behaviour: reads of PII and
+   * clinical records that would otherwise deny are allowed, and every
+   * such read is audited with `break_glass_session_id`.
+   */
+  readonly breakGlass: {
+    readonly sessionId: string;
+    readonly expiresAt: Date;
+    readonly targetOrganizationId: string | null;
+  } | null;
+  readonly isBreakGlass: boolean;
 
   /** Session version at build time. Used by the cache to detect staleness. */
   readonly sessionVersion: number;

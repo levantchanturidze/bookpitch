@@ -131,7 +131,10 @@ describe('can()', () => {
         permissions: new Set() as ReadonlySet<ReturnType<typeof perm>>,
         platformPermissions: new Set([perm('platform.org.suspend')]) as ReadonlySet<ReturnType<typeof perm>>,
         branchIds: new Set() as ReadonlySet<string>,
+        impersonation: null,
         isImpersonating: false,
+        breakGlass: null,
+        isBreakGlass: false,
         sessionVersion: 1,
         organizationStatus: null,
       } as const;

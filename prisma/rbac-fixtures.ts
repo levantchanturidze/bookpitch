@@ -187,6 +187,43 @@ export async function seedRbacFixtures(): Promise<void> {
   const moon = await upsertUser('moonlight@bp.test', 'Moon Lighter', passwordHash);
   await upsertMembership(moon.id, grand.id, UserRole.practitioner);
   await upsertMembership(moon.id, split.id, UserRole.practitioner);
+
+  // ---- Phase 5 platform users (spec §4.1) ----
+  // Each maps to one platform-plane role. No org memberships — platform
+  // accounts operate cross-tenant via impersonation / break-glass.
+  await ensurePlatformUser('superadmin@bp.test', 'SUPER_ADMIN', passwordHash, { mfa: true });
+  await ensurePlatformUser('platform-admin@bp.test', 'PLATFORM_ADMIN', passwordHash);
+  await ensurePlatformUser('support@bp.test', 'SUPPORT_AGENT', passwordHash);
+  await ensurePlatformUser('billing@bp.test', 'BILLING_MANAGER', passwordHash);
+}
+
+async function ensurePlatformUser(
+  email: string, roleKey: string, passwordHash: string,
+  opts: { mfa?: boolean } = {},
+) {
+  const role = await prismaAdmin.role.findFirstOrThrow({
+    where: { key: roleKey, organizationId: null },
+    select: { id: true },
+  });
+  const existing = await prismaAdmin.appUser.findUnique({ where: { email } });
+  if (existing) {
+    await prismaAdmin.appUser.update({
+      where: { id: existing.id },
+      data: { platformRoleId: role.id, mfaEnabled: opts.mfa ?? false, passwordHash },
+    });
+    return existing;
+  }
+  return prismaAdmin.appUser.create({
+    data: {
+      authProvider: 'credentials',
+      authSubject: email,
+      email,
+      fullName: `Platform ${roleKey}`,
+      passwordHash,
+      platformRoleId: role.id,
+      mfaEnabled: opts.mfa ?? false,
+    },
+  });
 }
 
 // If invoked directly, run + disconnect.

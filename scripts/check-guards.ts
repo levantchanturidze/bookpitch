@@ -54,7 +54,8 @@ function walk(dir: string, out: string[] = []): string[] {
 
 function isTarget(rel: string): boolean {
   if (rel.startsWith('app/api/') && rel.endsWith('/route.ts')) return true;
-  if (rel.startsWith('app/(app)/') && (rel.endsWith('/page.tsx') || rel.endsWith('/layout.tsx'))) return true;
+  if ((rel.startsWith('app/(app)/') || rel.startsWith('app/(platform)/'))
+      && (rel.endsWith('/page.tsx') || rel.endsWith('/layout.tsx'))) return true;
   return false;
 }
 
@@ -62,6 +63,7 @@ function main() {
   const files = [
     ...walk(path.join(ROOT, 'app', 'api')),
     ...walk(path.join(ROOT, 'app', '(app)')),
+    ...walk(path.join(ROOT, 'app', '(platform)')),
   ].map(f => path.relative(ROOT, f));
 
   const targets = files.filter(isTarget);

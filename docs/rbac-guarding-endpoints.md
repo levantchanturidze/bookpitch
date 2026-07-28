@@ -270,3 +270,112 @@ and produces false denies for callers with a stronger scope.
 Exception: tier-suffixed keys (`client.read:contact`, `client.read:full`,
 `payment.discount:limited`) are terminal — pass them verbatim. `can()`
 doesn't walk tiers.
+
+---
+
+## Phase 5 — Platform-plane routes
+
+### The platform wrapper
+
+Every route under `app/api/platform/**` uses `withPlatformApi` instead of
+plain `withApi`:
+
+```ts
+import { withPlatformApi } from '@/lib/platform/api';
+import { requirePermission } from '@/lib/rbac';
+
+export async function GET() {
+  return withPlatformApi('org.list', async (ctx) => {
+    requirePermission(ctx, 'platform.analytics.read', undefined, 'platform');
+    return { orgs: await listOrganizations() };
+  });
+}
+```
+
+The first argument is a stable per-endpoint action label (`org.list`,
+`org.detail`, `audit.query`). If the caller has an active break-glass
+session, the wrapper writes an `audit_log` row on successful return
+tagged `break_glass.read.<action>` with `break_glass_session_id` —
+spec §7.2 rule 6. Never call `withPlatformApi` for mutations that would
+also be captured by an explicit audit row (double-audit is harmless but
+noisy).
+
+### Gating a destructive action
+
+Spec §9 rule 9 requires password re-entry for destructive actions.
+Standard pattern:
+
+```ts
+import { requireFreshPassword } from '@/lib/platform/password-reauth';
+
+export async function POST(req: NextRequest, { params }: ...) {
+  return withPlatformApi('org.suspend', async (ctx) => {
+    requirePermission(ctx, 'platform.org.suspend', undefined, 'platform');
+    requireFreshPassword(ctx.userId);         // ← 403 unless verified <60s ago
+    // …destructive work…
+  });
+}
+```
+
+Client-side flow:
+1. UI prompts the caller for their password.
+2. UI POSTs to `/api/platform/reauth` with `{ password }`.
+3. UI immediately POSTs the destructive action; the guard sees the
+   fresh marker and allows.
+
+`freshAuth()` in `components/platform/OrgDetail.tsx` is the reference
+implementation.
+
+### Starting an impersonation
+
+Callers with `platform.impersonate` (SUPER_ADMIN + PLATFORM_ADMIN by
+default) can start a session:
+
+```ts
+POST /api/platform/impersonate
+{ organizationId, targetUserId, reason, ticketId }
+```
+
+Fails 400 when `organizations.allow_support_impersonation=false` unless
+the caller is in an active break-glass session (spec §6.1 override).
+On success, bumps caller's sessionVersion; within ~5s the AuthContext
+cache rebuilds and `ctx.impersonation` is populated. The `(app)/Shell`
+renders `PlatformSessionBanner` when either flag is set — the caller
+sees the amber banner on every org-plane page.
+
+Restricted permissions during the session are defined in
+`lib/rbac/impersonation.ts::RESTRICTED_DURING_IMPERSONATION`. Attempts
+to perform a restricted action fall through `can()` to `false` and
+return 403 as normal.
+
+### Starting a break-glass
+
+SUPER_ADMIN only. Requires password re-verification IN THE REQUEST,
+not just via `/api/platform/reauth` — the flow does its own verify:
+
+```ts
+POST /api/platform/break-glass
+{ password, reason, ticketId, targetOrganizationId? }
+```
+
+TODO: 2FA/TOTP is not enforced yet (see
+`docs/rbac-schema-notes.md §8.3`). When we install `otplib`, the
+`password` field becomes `{ password, totpCode }` and the flow refuses
+without both.
+
+### Testing the impersonation-blocked-action path
+
+`tests/platform-impersonation.test.ts` "RESTRICTED perms deny during
+impersonation" is the reference — insert an impersonation_sessions row
+for the caller, build a JWT that also carries an org membership so the
+caller's ctx has ORG_OWNER perms, then assert `can(ctx, 'org.delete',
+...)` returns false while the session is active. `beforeEach` cleans
+the sessions table so cross-test pollution can't cause a flake.
+
+### The NO_GUARD_ALLOWLIST doesn't apply here
+
+Every platform route MUST call `requirePermission`. There is no
+password-reset-style "reachable without auth" exception on the platform
+side. `scripts/check-guards.ts` scans `app/(platform)/**` +
+`app/api/platform/**` alongside the org-plane routes.
+

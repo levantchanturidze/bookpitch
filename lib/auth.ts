@@ -106,6 +106,14 @@ export class ConflictError extends Error {
   }
 }
 
+/** Thrown when a route can't find the resource; mapped to 404 by withApi. */
+export class NotFoundError extends Error {
+  constructor(message = 'Not found') {
+    super(message);
+    this.name = 'NotFoundError';
+  }
+}
+
 /**
  * Throws if the caller is not signed in. Returns the session otherwise.
  * Used by routes that need a session but no permission check (session-only
@@ -177,6 +185,9 @@ function mapError(err: unknown): NextResponse {
   }
   if (err instanceof ConflictError) {
     return NextResponse.json({ error: err.message }, { status: 409 });
+  }
+  if (err instanceof NotFoundError) {
+    return NextResponse.json({ error: err.message }, { status: 404 });
   }
   // Unknown: mark as 500 in the response we build for logging purposes; the
   // caller re-throws so the platform surfaces the stack trace.

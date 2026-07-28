@@ -452,3 +452,108 @@ Trade-off: one extra HTTP round-trip on org switch. In return: no
 cookie/JWT drift, no request-time DB lookup for the active org, and the
 AuthContext cache stays keyed on a stable JWT payload.
 
+## 8. Phase 5 additions
+
+Three additive migrations and a new library subtree activate the
+platform-plane surface. Spec §4.1, §6.1, §7.1, §7.2.
+
+### 8.1. Sessions tables (migration 20260728130000)
+
+`impersonation_sessions` (spec §7.1) and `break_glass_sessions` (§7.2)
+carry the time-bounded state of an active platform-support operation.
+Both:
+
+- Are queried by `lib/rbac/context.ts::buildAuthContext` once per
+  session build via `Promise.all` with `platformPermissions`. Bounded by
+  the same 30s AuthContext cache — no extra per-request work for callers
+  without an active session.
+- Have a partial index on `actor_user_id WHERE ended_at IS NULL` so the
+  active-session lookup is O(1) as history grows.
+- FK to `app_users` and `organizations` with `ON DELETE NO ACTION`.
+  Session rows outlive the entities they touch, same evidentiary
+  argument as `audit_log`. Deleting a user with impersonation history
+  needs the same escape hatch as deleting one with audit history: mask,
+  don't purge.
+- No RLS. They're platform bookkeeping — queried only by
+  `prismaAdmin`-scoped code. `tests/rbac-rls.test.ts` allowlist has both.
+
+### 8.2. Break-glass read audit
+
+Spec §7.2 rule 6: every read during a break-glass session is audited.
+Implementation: `lib/platform/api.ts::withPlatformApi` wraps every
+platform-plane route handler. On successful return, if
+`ctx.breakGlass !== null`, it calls
+`auditBreakGlassRead(ctx, action)` which inserts one `audit_log` row
+tagged with `break_glass_session_id`. The action string is a stable
+per-endpoint label (`org.list`, `org.detail`, `audit.query`, …).
+
+Audit-write failure is swallowed (`.catch()`) — the response has
+already succeeded from the caller's perspective, and preferring a lost
+audit row over a false 500 keeps the operational signal clean. In
+practice a Postgres write failing here means something much worse is
+happening.
+
+### 8.3. Password re-auth without TOTP
+
+`lib/platform/password-reauth.ts::verifyPasswordFresh` argon2-compares
+the caller's password and marks the userId "verified" for 60 seconds in
+a per-Node-process `Map`. Callers gate destructive actions with
+`requireFreshPassword(userId)`. Break-glass activation uses the same
+primitive with `throwOnBadPassword: true`.
+
+Rate-limited at 5 attempts / rolling minute per userId using an
+in-memory counter. Cross-process attacks (a fleet of processes each
+allowing 5) are unaddressed at MVP — a Redis-backed limiter is the v2
+fix when we add Redis for the AuthContext cache.
+
+**No TOTP / hardware key yet** — spec §7.2 rule 3 asks for both
+password AND 2FA. `app_users.mfa_enabled` is `true` for SUPER_ADMIN as
+a marker for the day we install `otplib` and wire enrollment. The
+signature of `verifyPasswordFresh` is designed for the extension: a
+future `totpCode?: string` parameter checked against a `mfa_totp_secret`
+column, gated on `mfa_enabled`. Break-glass sets the flag to `true`;
+password re-auth for destructive actions can leave it `false` unless a
+per-user policy tightens it. Contract stays backwards compatible.
+
+### 8.4. Login alerts
+
+`auth.ts::authorize()` fires a fire-and-forget email to
+`SECURITY_ALERT_EMAIL` (or the caller's own email if unset) when a
+platform-role user signs in. Prevents "silent" compromise of SUPER_ADMIN
+/ PLATFORM_ADMIN accounts. Email delivery failure never blocks the
+sign-in — the alert is best-effort by design.
+
+Spec §7.2's "root account pattern" also suggests IP allowlist for
+SUPER_ADMIN. Deferred: we don't have a good place to configure that yet
+(would want per-role policy rows in a config table). Add when the
+platform team has more than one operator.
+
+### 8.5. `can()` break-glass semantics
+
+Extended in Phase 5 to grant reads across tenant boundaries when
+`ctx.breakGlass !== null` (spec §7.2). Two changes to the eval order:
+
+1. **Platform-only session with break-glass** — `client.read:*` and
+   `clinical_note.read:*` return true even without a membership, as
+   long as `resource.organizationId` matches
+   `ctx.breakGlass.targetOrganizationId` (or the session is
+   platform-wide, `targetOrganizationId=null`).
+2. **Suspended/archived org override** — a caller in break-glass can
+   read a suspended org's data (fraud triage, deletion prep). Writes
+   still require a membership; break-glass is a read lever.
+
+The set of "break-glass readable" keys is a small, explicit list
+(`isBreakGlassReadableKey` in `lib/rbac/can.ts`) — deliberately narrower
+than "everything the caller can imagine". Writes are never granted by
+break-glass, only latent read permissions on PII/clinical data are
+exposed.
+
+### 8.6. Impersonation restrictions
+
+`lib/rbac/impersonation.ts::RESTRICTED_DURING_IMPERSONATION` was empty
+in Phase 3; Phase 5 populates it with the four categories from spec
+§7.1 rule 5 (destructive, bulk exports, billing, clinical). Test
+override (`__setRestrictedDuringImpersonation`) preserved so specific
+tests can probe narrower sets.
+
+
