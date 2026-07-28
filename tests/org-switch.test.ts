@@ -1,28 +1,26 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
-const cookieStore = new Map<string, string>();
-
+// next-auth pulls in `next/server` at import time; the test doesn't touch
+// auth() so mock it out to keep the module graph clean.
 vi.mock('@/auth', () => ({
   auth: vi.fn(),
   handlers: {},
   signIn: vi.fn(),
   signOut: vi.fn(),
-}));
-vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
-vi.mock('next/headers', () => ({
-  cookies: async () => ({
-    get: (name: string) =>
-      cookieStore.has(name) ? { name, value: cookieStore.get(name)! } : undefined,
-    set: (name: string, value: string) => cookieStore.set(name, value),
-    delete: (name: string) => cookieStore.delete(name),
-  }),
+  __clearSessionVersionCache: vi.fn(),
 }));
 
-const { withoutRls } = await import('@/lib/db');
-const { listUserMemberships, switchActiveOrg, resolveActiveOrg } = await import(
-  '@/lib/org-switch'
-);
+const { withoutRls, prismaAdmin } = await import('@/lib/db');
+const { listUserMemberships, switchActiveOrg } = await import('@/lib/org-switch');
 const { InvalidInputError } = await import('@/lib/auth');
+
+// -----------------------------------------------------------------------------
+// Phase 3: switchActiveOrg no longer manipulates the bp_active_org cookie.
+// It verifies the target membership and bumps sessionVersion; the client
+// then re-signs-in with orgId as a credential to mint a new JWT.
+//
+// resolveActiveOrg is gone entirely. The JWT is the single source of truth.
+// -----------------------------------------------------------------------------
 
 describe('org switcher', () => {
   let orgA: string;
@@ -59,7 +57,6 @@ describe('org switcher', () => {
   });
 
   afterAll(async () => {
-    cookieStore.clear();
     await withoutRls(async (tx) => {
       await tx.membership.deleteMany({ where: { userId } });
       await tx.appUser.delete({ where: { id: userId } });
@@ -69,45 +66,26 @@ describe('org switcher', () => {
     });
   });
 
-  it('lists both memberships in join order', async () => {
+  it('lists both memberships in join order, with legacy role labels', async () => {
     const ms = await listUserMemberships(userId);
     expect(ms.length).toBe(2);
-    expect(ms.map((m) => m.role).sort()).toEqual(['owner', 'practitioner']);
+    expect(ms.map((m) => m.legacyRole).sort()).toEqual(['owner', 'practitioner']);
   });
 
   it('switchActiveOrg refuses an org the user is not a member of', async () => {
     await expect(switchActiveOrg(userId, orgUnrelated)).rejects.toBeInstanceOf(
       InvalidInputError,
     );
-    expect(cookieStore.get('bp_active_org')).toBeUndefined();
   });
 
-  it('switchActiveOrg sets the cookie for a valid membership', async () => {
+  it('switchActiveOrg bumps sessionVersion for a valid membership', async () => {
+    const before = await prismaAdmin.appUser.findUniqueOrThrow({
+      where: { id: userId }, select: { sessionVersion: true },
+    });
     await switchActiveOrg(userId, orgB);
-    expect(cookieStore.get('bp_active_org')).toBe(orgB);
-  });
-
-  it('resolveActiveOrg prefers the cookie org and adjusts role', async () => {
-    cookieStore.set('bp_active_org', orgB);
-    const resolved = await resolveActiveOrg({
-      userId,
-      organizationId: orgA,
-      role: 'owner',
-      email: 'x@y.z',
+    const after = await prismaAdmin.appUser.findUniqueOrThrow({
+      where: { id: userId }, select: { sessionVersion: true },
     });
-    expect(resolved.organizationId).toBe(orgB);
-    expect(resolved.role).toBe('practitioner');
-  });
-
-  it('resolveActiveOrg falls back to JWT org when the cookie is stale', async () => {
-    cookieStore.set('bp_active_org', orgUnrelated);
-    const resolved = await resolveActiveOrg({
-      userId,
-      organizationId: orgA,
-      role: 'owner',
-      email: 'x@y.z',
-    });
-    expect(resolved.organizationId).toBe(orgA);
-    expect(resolved.role).toBe('owner');
+    expect(after.sessionVersion).toBe(before.sessionVersion + 1);
   });
 });

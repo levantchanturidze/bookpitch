@@ -6,6 +6,7 @@ import { config as loadEnv } from 'dotenv';
 import { prismaAdmin, withoutRls } from '@/lib/db';
 import { encryptField } from '@/lib/crypto';
 import { seedRbac } from './rbac-seed';
+import { seedRbacFixtures } from './rbac-fixtures';
 import {
   INITIAL_APPOINTMENTS,
   INITIAL_PATIENTS,
@@ -320,6 +321,9 @@ async function main() {
     });
     return { isolationOrg: iso };
   });
+
+  console.log('→ Seeding Phase 3 multi-tenant fixtures (Split, Solo, Moonlighter)…');
+  await seedRbacFixtures();
 
   const counts = await withoutRls(async (tx) => ({
     organizations: await tx.organization.count(),

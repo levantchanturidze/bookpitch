@@ -354,3 +354,101 @@ Local dev DB, `Postgres 16.14`:
 Not yet verified (Phase 2 work):
 - Migrations against a full copy of production data.
 - Reconciliation between old and new columns after backfill.
+
+## 7. Phase 3 additions
+
+Two additive migrations + a JWT-shape change on top of Phase 1/2.
+
+### 7.1. `role_can_manage` table (migration 20260728100000)
+
+Rank alone can't distinguish FRONT_DESK and PROVIDER (both rank 40 but
+operating in different domains — spec §4.2 lattice warning).
+`lib/rbac/rank.ts::canManageRoleAssignment` combines both:
+
+1. Numeric: `actor.rank > target.rank` (strict `>` blocks same-rank peers)
+2. Explicit lattice edge in `role_can_manage`
+
+The lattice is data-driven and seeded by `prisma/rbac-seed.ts::upsertRoleCanManage`
+per spec §4.2. Current edges:
+
+```
+SUPER_ADMIN     → PLATFORM_ADMIN, BILLING_MANAGER, SUPPORT_AGENT
+PLATFORM_ADMIN  → SUPPORT_AGENT
+ORG_OWNER       → ORG_ADMIN, BRANCH_MANAGER, SENIOR_PROVIDER,
+                  FRONT_DESK, PROVIDER, ACCOUNTANT, MARKETING
+ORG_ADMIN       → BRANCH_MANAGER, SENIOR_PROVIDER, FRONT_DESK,
+                  PROVIDER, ACCOUNTANT, MARKETING
+BRANCH_MANAGER  → FRONT_DESK, PROVIDER
+SENIOR_PROVIDER → PROVIDER
+```
+
+CHECK constraint on the table forbids self-loops (no role manages itself,
+per spec §9 rule 3). CASCADE on both role FKs so deleting a role removes
+its edges rather than orphaning them.
+
+### 7.2. Force re-auth on Phase 3 deploy (migration 20260728110000)
+
+Phase 3 changes the JWT payload shape (adds `activeOrganizationId`,
+`membershipId`, `platformRoleId`). Rather than write a compat shim for
+the old shape, we invalidate every live JWT by bumping
+`app_users.sessionVersion`. The `session()` callback in `auth.ts`
+rejects any JWT whose sessionVersion is stale (5s TTL cache), so users
+re-authenticate on their next request.
+
+Phase 0 Q1 accepted this cost: prod has 2 users, sub-5s re-auth is
+imperceptible. Rollback decrements symmetrically (worst case one extra
+forced re-auth per user — harmless).
+
+### 7.3. AuthContext cache design
+
+In-memory `Map<key, {ctx, at}>` in `lib/rbac/context.ts`, 30s TTL,
+1000-entry bound. Key: `m:${membershipId}:${sessionVersion}` for
+org-plane contexts, `u:${userId}:${sessionVersion}` for platform-only.
+
+Deviates from the spec's "Redis-backed with permissions_version"
+prescription — Phase 0 Q6 chose to defer Redis. Consequences we accept:
+
+- **Worst-case stale window: 30s.** A role/permission change (a Phase 6
+  admin edit that will exist someday) propagates to every session,
+  everywhere, within 30s. Users won't notice.
+- **No cross-Node coherence.** Each Node process holds its own cache.
+  Vercel's Node runtime spawns processes on demand; the cache is
+  per-instance. Fine at MVP scale; will need re-thinking with fleet
+  scaling.
+- **sessionVersion bump = instant invalidation.** Any code path that needs
+  faster than 30s (org switch, password reset) bumps `sessionVersion`
+  and the next call rebuilds. This is why the org-switch flow works.
+
+If load metrics justify it, Phase 5 can add a `roles.permissions_version`
+column + JWT claim + a Redis cache. Signature stays stable.
+
+### 7.4. Solo-practitioner two-role limitation
+
+Spec §2.3 wants a solo doc to hold ORG_OWNER + PROVIDER as two
+distinct memberships in the same org. Phase 1 added the partial unique
+`(user_id, organization_id, role_id)` (WHERE role_id IS NOT NULL) that
+allows this. But the legacy unique `(organization_id, user_id)` from
+before RBAC still exists and forbids it — every membership row still
+carries a legacy `role` enum, and one enum row per (org, user).
+
+MVP behavior: solo doc gets ONE membership row (enum='owner',
+role_id=ORG_OWNER). The PROVIDER hat is not modelled as a separate
+membership yet. `prisma/rbac-fixtures.ts::solo@bp.test` reflects this.
+
+Fix path: Phase 4 relaxes the legacy unique when it swaps write paths off
+the enum column. At that point the seed can add the second (PROVIDER)
+membership row and the tests in `tests/rbac-fixtures.test.ts` can assert
+the two-role invariant. Tracked as a Phase 4 follow-up.
+
+### 7.5. Org-switch is now a re-sign-in
+
+`lib/org-switch.ts::switchActiveOrg` no longer touches cookies. It verifies
+the target membership and bumps `sessionVersion`; the frontend follows
+with `signIn('credentials', { orgId })` and Auth.js mints a fresh JWT
+with the new membership selected. `resolveActiveOrg` was deleted along
+with the `bp_active_org` cookie.
+
+Trade-off: one extra HTTP round-trip on org switch. In return: no
+cookie/JWT drift, no request-time DB lookup for the active org, and the
+AuthContext cache stays keyed on a stable JWT payload.
+

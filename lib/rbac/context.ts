@@ -1,0 +1,164 @@
+// -----------------------------------------------------------------------------
+// RBAC Phase 3 — AuthContext construction with 30s in-memory cache.
+//
+// Cache design (Phase 0 Q6 answer: no Redis, in-memory is enough for MVP):
+//   • Key: `${membershipId}:${sessionVersion}`. Bumping sessionVersion
+//     (password reset, role change, admin revoke) evicts naturally on next
+//     lookup. Membership deletion produces a lookup miss + a null return.
+//   • TTL: 30s. Even without a version bump, the cache is stale-bound to
+//     30s, so a role-permissions change (Phase 6 admin edit) propagates
+//     within 30s to every session, everywhere.
+//   • Bounded size: 1000 entries. LRU-lite — on insert when full, drop the
+//     oldest entry. Good enough for a Node process serving a small SaaS.
+//
+// This module uses prismaAdmin (BYPASSRLS) because it queries across the
+// membership → role → permissions graph, which requires reads on rows that
+// don't sit inside an org context yet (users, platform roles).
+// -----------------------------------------------------------------------------
+
+import { prismaAdmin } from '@/lib/db';
+import type { AuthContext, PermissionKey } from './types';
+import { perm } from './types';
+
+type CacheEntry = { ctx: AuthContext; at: number };
+const CACHE = new Map<string, CacheEntry>();
+const TTL_MS = 30_000;
+const MAX = 1_000;
+
+function cacheKey(membershipId: string | null, sessionVersion: number, userId: string): string {
+  return membershipId
+    ? `m:${membershipId}:${sessionVersion}`
+    : `u:${userId}:${sessionVersion}`;
+}
+
+/** Test-only helper. Do not call from application code. */
+export function __clearAuthContextCache(): void {
+  CACHE.clear();
+}
+
+/**
+ * Build (or return from cache) the AuthContext for the given user and
+ * membership. Returns null when:
+ *   • The user doesn't exist or has status != 'active'
+ *   • The membership doesn't exist or its status != 'active'
+ *   • The membership doesn't belong to the user
+ *
+ * Suspended-org and impersonation-restriction handling live in can(); this
+ * function still populates the ctx for a suspended org so guards can log
+ * the denial with useful info. Deleted orgs produce a null return.
+ *
+ * membershipId is nullable — callers with a platform-only session (no
+ * active org) pass null and get an AuthContext with `permissions=empty`,
+ * `platformPermissions=populated`.
+ */
+export async function buildAuthContext(
+  userId: string,
+  membershipId: string | null,
+): Promise<AuthContext | null> {
+  // We need sessionVersion for the cache key. One extra column read is cheap
+  // and lets us fail closed on a stale JWT even if the caller forgot to
+  // check it.
+  const user = await prismaAdmin.appUser.findUnique({
+    where: { id: userId },
+    select: {
+      id: true, email: true, status: true, sessionVersion: true, platformRoleId: true,
+    },
+  });
+  if (!user || user.status !== 'active') return null;
+
+  const key = cacheKey(membershipId, user.sessionVersion, userId);
+  const now = Date.now();
+  const hit = CACHE.get(key);
+  if (hit && now - hit.at < TTL_MS) return hit.ctx;
+
+  const platformPermissions = await loadPlatformPermissions(user.platformRoleId);
+
+  let ctx: AuthContext;
+  if (!membershipId) {
+    ctx = {
+      userId: user.id,
+      email: user.email,
+      membershipId: null,
+      activeOrganizationId: null,
+      roleKey: null,
+      roleRank: 0,
+      permissions: new Set(),
+      platformPermissions,
+      branchIds: new Set(),
+      isImpersonating: false,
+      sessionVersion: user.sessionVersion,
+      organizationStatus: null,
+    };
+  } else {
+    const built = await buildOrgContext(user, membershipId, platformPermissions);
+    if (!built) return null;
+    ctx = built;
+  }
+
+  // Bounded insert: if we'd overflow, drop the oldest entry.
+  if (CACHE.size >= MAX) {
+    const oldestKey = CACHE.keys().next().value;
+    if (oldestKey !== undefined) CACHE.delete(oldestKey);
+  }
+  CACHE.set(key, { ctx, at: now });
+  return ctx;
+}
+
+async function loadPlatformPermissions(
+  platformRoleId: string | null,
+): Promise<ReadonlySet<PermissionKey>> {
+  if (!platformRoleId) return new Set();
+  const rows = await prismaAdmin.rolePermission.findMany({
+    where: { roleId: platformRoleId },
+    select: { permissionKey: true },
+  });
+  return new Set(rows.map(r => perm(r.permissionKey)));
+}
+
+async function buildOrgContext(
+  user: { id: string; email: string; sessionVersion: number },
+  membershipId: string,
+  platformPermissions: ReadonlySet<PermissionKey>,
+): Promise<AuthContext | null> {
+  const membership = await prismaAdmin.membership.findUnique({
+    where: { id: membershipId },
+    select: {
+      id: true,
+      userId: true,
+      organizationId: true,
+      status: true,
+      roleId: true,
+      organization: { select: { status: true } },
+      roleRef: { select: { key: true, rank: true } },
+      branches: { select: { branchId: true } },
+    },
+  });
+  if (!membership) return null;
+  if (membership.userId !== user.id) return null;                 // wrong user
+  if (membership.status !== 'active') return null;                // suspended / removed
+  if (!membership.organization) return null;                      // org deleted
+  if (!membership.roleId || !membership.roleRef) return null;     // role_id NULL — pre-backfill
+
+  const permRows = await prismaAdmin.rolePermission.findMany({
+    where: { roleId: membership.roleId },
+    select: { permissionKey: true },
+  });
+  const permissions: ReadonlySet<PermissionKey> = new Set(
+    permRows.map(r => perm(r.permissionKey)),
+  );
+
+  return {
+    userId: user.id,
+    email: user.email,
+    membershipId: membership.id,
+    activeOrganizationId: membership.organizationId,
+    roleKey: membership.roleRef.key,
+    roleRank: membership.roleRef.rank,
+    permissions,
+    platformPermissions,
+    branchIds: new Set(membership.branches.map(b => b.branchId)),
+    isImpersonating: false,
+    sessionVersion: user.sessionVersion,
+    organizationStatus: membership.organization.status as AuthContext['organizationStatus'],
+  };
+}
