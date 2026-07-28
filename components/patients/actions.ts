@@ -1,7 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { anonymizeCustomer, exportCustomerData, type CustomerExport } from '@/lib/gdpr';
@@ -23,7 +24,9 @@ import {
 // -----------------------------------------------------------------------------
 
 export async function createCustomerAction(input: CustomerCreateInput) {
-  const session = await requireRole('owner', 'practitioner', 'receptionist');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'client.create', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  const session = ctxToSession(ctx);
   const parsed = parseCreateInput(input);
 
   const customer = await withOrg(session.organizationId, async (tx) => {
@@ -39,7 +42,9 @@ export async function createCustomerAction(input: CustomerCreateInput) {
 }
 
 export async function updateCustomerAction(id: string, input: CustomerUpdateInput) {
-  const session = await requireRole('owner', 'practitioner', 'receptionist');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  const session = ctxToSession(ctx);
   const parsed = parseUpdateInput(input);
   const { data, fields } = buildUpdateData(parsed);
 
@@ -56,7 +61,9 @@ export async function updateCustomerAction(id: string, input: CustomerUpdateInpu
 export async function deleteCustomerAction(id: string): Promise<
   { ok: true } | { ok: false; reason: 'has_appointments' | 'not_found' }
 > {
-  const session = await requireRole('owner', 'practitioner', 'receptionist');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'client.merge', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  const session = ctxToSession(ctx);
 
   const result = await withOrg(session.organizationId, async (tx) => {
     const existing = await tx.customer.findUnique({ where: { id }, select: { id: true } });
@@ -77,7 +84,9 @@ export async function deleteCustomerAction(id: string): Promise<
 }
 
 export async function addTreatmentHistoryAction(customerId: string, label: string) {
-  const session = await requireRole('owner', 'practitioner', 'receptionist');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'client.read:full', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  const session = ctxToSession(ctx);
   const trimmed = label.trim();
   if (!trimmed) throw new Error('label is required');
 
@@ -105,13 +114,15 @@ export async function addTreatmentHistoryAction(customerId: string, label: strin
 // -----------------------------------------------------------------------------
 
 export async function exportCustomerAction(customerId: string): Promise<CustomerExport> {
-  const session = await requireRole('owner');
-  return exportCustomerData(session, customerId);
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'client.export', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  return exportCustomerData(ctxToSession(ctx), customerId);
 }
 
 export async function anonymizeCustomerAction(customerId: string): Promise<{ ok: true }> {
-  const session = await requireRole('owner');
-  await anonymizeCustomer(session, customerId, 'gdpr');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'client.export', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  await anonymizeCustomer(ctxToSession(ctx), customerId, 'gdpr');
   revalidatePath('/patients');
   return { ok: true };
 }

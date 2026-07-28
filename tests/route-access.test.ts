@@ -31,73 +31,114 @@ const pages: Record<string, () => Promise<{ default: () => Promise<unknown> }>> 
   analytics: () => import('@/app/(app)/analytics/page'),
 };
 
-const ALL_ROLES = ['owner', 'practitioner', 'receptionist'] as const;
+// Phase 4 mapping: fixture users → expected can() outcome per nav id.
+// Each fixture user resolves to a real membership so buildAuthContext
+// returns a real ctx. If a role gains/loses a permission in a Phase 6
+// admin edit, this test tells us which pages need attention.
+type FixtureUser = { email: string; roleKey: string; canByNavId: Record<string, boolean> };
 
-// Some pages (like /patients since P1.4) touch the DB and write audit_log —
-// they need a REAL orgId + userId that satisfies the FKs. Pull them once
-// from the seeded state.
-let realOrgId = '';
-let realUserId = '';
+const USERS: FixtureUser[] = [
+  {
+    email: 'split-owner@bp.test',
+    roleKey: 'ORG_OWNER',
+    canByNavId: {
+      scheduler: true,  patients: true, reminders: true, billing: true, analytics: true,
+    },
+  },
+  {
+    email: 'moonlight@bp.test',
+    roleKey: 'PROVIDER',
+    // PROVIDER's grants are booking.*:own, client.read:contact, report.own.
+    // Nav mappings from audit doc: scheduler=booking.read:branch (no),
+    // patients=client.read:contact (yes), reminders=booking.update:org (no),
+    // billing=payment.charge (no by default per rbac-seed ⚙️), analytics=report.branch (no).
+    canByNavId: {
+      scheduler: false, patients: true,  reminders: false, billing: false, analytics: false,
+    },
+  },
+  {
+    email: 'splitmgr@bp.test',
+    roleKey: 'BRANCH_MANAGER',
+    canByNavId: {
+      // BRANCH_MANAGER: booking.read:branch YES, client.read:contact YES,
+      // booking.update:branch YES (list-mode / no resource), payment.charge YES,
+      // report.branch YES.
+      scheduler: true, patients: true, reminders: true, billing: true, analytics: true,
+    },
+  },
+];
 
-function makeSession(role: (typeof ALL_ROLES)[number]) {
+async function jwtFor(email: string) {
+  const { prismaAdmin } = await import('@/lib/db');
+  const user = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
+  const membership = await prismaAdmin.membership.findFirstOrThrow({
+    where: { userId: user.id, organization: { name: 'Split Practice' } },
+  }).catch(async () =>
+    // Some users only have a Grand Medical membership; fall back.
+    prismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } }),
+  );
   return {
     user: {
-      id: realUserId,
-      email: `${role}@example.dev`,
-      organizationId: realOrgId,
-      role,
+      id: user.id,
+      email: user.email,
+      activeOrganizationId: membership.organizationId,
+      membershipId: membership.id,
+      platformRoleId: null,
+      organizationId: membership.organizationId,
+      role: membership.role,
     },
   };
 }
 
-describe('module route access matches NAV_ITEMS.allowedRoles', () => {
+describe('page-level guards match NAV_ITEMS.requiredPermission', () => {
   beforeAll(async () => {
-    const { withoutRls } = await import('@/lib/db');
-    const [org, owner, location] = await Promise.all([
-      withoutRls((tx) => tx.organization.findFirst({ orderBy: { createdAt: 'asc' } })),
-      withoutRls((tx) =>
-        tx.appUser.findUnique({ where: { email: 'owner@bookpitch.dev' }, select: { id: true } }),
-      ),
-      withoutRls((tx) => tx.location.findFirst({ where: { type: 'clinic' } })),
-    ]);
-    realOrgId = org!.id;
-    realUserId = owner!.id;
+    const { prismaAdmin } = await import('@/lib/db');
+    const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
+    await seedRbacFixtures();
+
+    // The fixture users all resolve to Split Practice memberships (see
+    // jwtFor). Use Split's own location so pages that dereference
+    // `active.id` in a withOrg query actually find it — a location from a
+    // different org would be filtered by RLS.
+    const loc = await prismaAdmin.location.findFirstOrThrow({
+      where: { organization: { name: 'Split Practice' } },
+    });
     locationMock.mockImplementation(async () => ({
-      locations: [{ id: location!.id, name: location!.name, type: location!.type }],
-      active: { id: location!.id, name: location!.name, type: location!.type },
+      locations: [{ id: loc.id, name: loc.name, type: loc.type }],
+      active: { id: loc.id, name: loc.name, type: loc.type },
     }));
   });
 
-  beforeEach(() => authMock.mockReset());
+  beforeEach(async () => {
+    authMock.mockReset();
+    const { __clearAuthContextCache } = await import('@/lib/rbac/context');
+    __clearAuthContextCache();
+  });
 
-  for (const item of NAV_ITEMS) {
-    const load = pages[item.id];
-    if (!load) continue;
+  for (const user of USERS) {
+    describe(`user ${user.email} (${user.roleKey})`, () => {
+      for (const item of NAV_ITEMS) {
+        const load = pages[item.id];
+        if (!load) continue;
+        const shouldAllow = user.canByNavId[item.id];
 
-    describe(`/${item.id}`, () => {
-      for (const role of ALL_ROLES) {
-        const shouldAllow = item.allowedRoles.includes(role);
-
-        it(`${role} → ${shouldAllow ? 'renders' : 'ForbiddenError'}`, async () => {
-          authMock.mockResolvedValue(makeSession(role));
+        it(`/${item.id} → ${shouldAllow ? 'renders' : 'ForbiddenError'}`, async () => {
+          authMock.mockResolvedValue(await jwtFor(user.email));
           const { default: Page } = await load();
-
           if (shouldAllow) {
             const result = await Page();
-            // Page function returns a React element (object). Not throwing =
-            // guard passed and downstream work ran.
             expect(result).toBeDefined();
           } else {
             await expect(Page()).rejects.toBeInstanceOf(ForbiddenError);
           }
         });
       }
-
-      it('anonymous → UnauthenticatedError', async () => {
-        authMock.mockResolvedValue(null);
-        const { default: Page } = await load();
-        await expect(Page()).rejects.toBeInstanceOf(UnauthenticatedError);
-      });
     });
   }
+
+  it('anonymous → UnauthenticatedError on /scheduler', async () => {
+    authMock.mockResolvedValue(null);
+    const { default: Page } = await pages.scheduler();
+    await expect(Page()).rejects.toBeInstanceOf(UnauthenticatedError);
+  });
 });

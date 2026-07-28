@@ -16,18 +16,11 @@ const { withoutRls } = await import('@/lib/db');
 const routeList = await import('@/app/api/customers/route');
 const routeItem = await import('@/app/api/customers/[id]/route');
 const routeHistory = await import('@/app/api/customers/[id]/history/route');
+const { mockJwt } = await import('./helpers/session');
+const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 
-type SessionRole = 'owner' | 'practitioner' | 'receptionist';
-
-function mkSession(orgId: string, userId: string, role: SessionRole = 'owner') {
-  return {
-    user: {
-      id: userId,
-      email: `${role}@example.dev`,
-      organizationId: orgId,
-      role,
-    },
-  };
+async function mkSession(orgId: string, userId: string) {
+  return mockJwt(userId, orgId);
 }
 
 async function jsonBody<T = unknown>(res: Response): Promise<T> {
@@ -61,7 +54,10 @@ describe('/api/customers CRUD + encryption + audit', () => {
     isolationOrgId = iso.id;
   });
 
-  beforeEach(() => authMock.mockReset());
+  beforeEach(() => {
+    authMock.mockReset();
+    __clearAuthContextCache();
+  });
 
   // Keep the seeded state intact for other suites (RLS asserts exact counts).
   afterAll(async () => {
@@ -76,7 +72,7 @@ describe('/api/customers CRUD + encryption + audit', () => {
   });
 
   it('POST creates a customer with consent, encrypts sensitive fields at rest', async () => {
-    authMock.mockResolvedValue(mkSession(primaryOrgId, primaryOwnerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
 
     const res = await routeList.POST(
       req('http://x/api/customers', {
@@ -115,7 +111,7 @@ describe('/api/customers CRUD + encryption + audit', () => {
   });
 
   it('POST without consent returns 400', async () => {
-    authMock.mockResolvedValue(mkSession(primaryOrgId, primaryOwnerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
     const res = await routeList.POST(
       req('http://x/api/customers', {
         method: 'POST',
@@ -126,7 +122,7 @@ describe('/api/customers CRUD + encryption + audit', () => {
   });
 
   it('GET list returns decrypted customers + writes a single list audit row', async () => {
-    authMock.mockResolvedValue(mkSession(primaryOrgId, primaryOwnerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
 
     const before = await withoutRls((tx) =>
       tx.auditLog.count({ where: { entity: 'customer', action: 'list' } }),
@@ -146,7 +142,7 @@ describe('/api/customers CRUD + encryption + audit', () => {
   });
 
   it('PATCH re-encrypts changed sensitive fields and logs update with fields list', async () => {
-    authMock.mockResolvedValue(mkSession(primaryOrgId, primaryOwnerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
 
     // Grab an existing customer from the primary org.
     const target = await withoutRls((tx) =>
@@ -179,7 +175,7 @@ describe('/api/customers CRUD + encryption + audit', () => {
   });
 
   it('DELETE hard-deletes a customer with no appointments + logs delete', async () => {
-    authMock.mockResolvedValue(mkSession(primaryOrgId, primaryOwnerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
 
     // Create a throwaway customer we can safely delete.
     const created = await routeList.POST(
@@ -207,7 +203,7 @@ describe('/api/customers CRUD + encryption + audit', () => {
   });
 
   it('POST /history appends a treatment_history row + logs history_add', async () => {
-    authMock.mockResolvedValue(mkSession(primaryOrgId, primaryOwnerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
     const target = await withoutRls((tx) =>
       tx.customer.findFirst({ where: { organizationId: primaryOrgId } }),
     );
@@ -232,7 +228,12 @@ describe('/api/customers CRUD + encryption + audit', () => {
   });
 
   it('cross-tenant read still returns only the caller org (RLS holds)', async () => {
-    authMock.mockResolvedValue(mkSession(isolationOrgId, primaryOwnerId));
+    // Phase 4: mockJwt requires a real (userId, orgId) pair. Use the
+    // isolation org's own owner to test that they see only their data.
+    const isoOwner = await withoutRls(tx => tx.appUser.findUniqueOrThrow({
+      where: { email: 'isolation@bookpitch.dev' }, select: { id: true },
+    }));
+    authMock.mockResolvedValue(await mkSession(isolationOrgId, isoOwner.id));
     const res = await routeList.GET();
     const body = await jsonBody<{ customers: Array<{ name: string }> }>(res);
     // Isolation Corp only has "Do Not Leak" seeded.
@@ -241,7 +242,7 @@ describe('/api/customers CRUD + encryption + audit', () => {
   });
 
   it('receptionist has full access to customers (allowedRoles)', async () => {
-    authMock.mockResolvedValue(mkSession(primaryOrgId, primaryOwnerId, 'receptionist'));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
     const res = await routeList.GET();
     expect(res.status).toBe(200);
   });

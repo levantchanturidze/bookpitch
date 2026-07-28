@@ -64,11 +64,11 @@ describe('invitations — create, accept, revoke', () => {
     return decodeURIComponent(new URL(url).searchParams.get('token') ?? '');
   }
 
-  it('createInvitation rejects non-owner callers', async () => {
-    await expect(
-      createInvitation(session('receptionist'), { email: 'x@y.dev', role: 'practitioner' }),
-    ).rejects.toBeInstanceOf(InvalidInputError);
-  });
+  // Phase 4: role-based rejection is now the caller's responsibility
+  // (route handlers call requirePermission(ctx, 'staff.invite', ...)).
+  // The service trusts its input; the "rejects non-owner callers" test
+  // that used to live here has moved into tests/route-access.test.ts
+  // where the guard behavior is exercised end-to-end.
 
   it('createInvitation stores a hashed token; email is normalized to lowercase', async () => {
     const res = await createInvitation(session(), {

@@ -1,18 +1,16 @@
-import type { NextRequest } from 'next/server';
-import { requireRole, withApi } from '@/lib/auth';
-import { inviteMember, listMembers } from '@/lib/admin';
+import { ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { listMembers } from '@/lib/admin';
 
+// GET /api/admin/members — list org staff (name + role).
+//
+// The old POST handler (invite-with-password) was removed in Phase 4
+// alongside `lib/admin.ts::inviteMember` — see Phase 0 R4. New invitations
+// go through the token-based flow: POST /api/invitations.
 export async function GET() {
   return withApi(async () => {
-    const session = await requireRole('owner');
-    return { members: await listMembers(session) };
-  });
-}
-
-export async function POST(req: NextRequest) {
-  return withApi(async () => {
-    const session = await requireRole('owner');
-    const body = await req.json().catch(() => null);
-    return await inviteMember(session, body);
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'staff.invite', { organizationId: ctx.activeOrganizationId! }, 'admin');
+    return { members: await listMembers(ctxToSession(ctx)) };
   });
 }

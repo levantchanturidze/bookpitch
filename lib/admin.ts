@@ -1,5 +1,4 @@
 import type { LocationType, UserRole } from '@prisma/client';
-import { hash } from '@node-rs/argon2';
 import { ConflictError, InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
@@ -359,28 +358,11 @@ export type MemberRow = {
   createdAt: string;
 };
 
-export type InviteInput = {
-  email: string;
-  role: UserRole;
-  fullName?: string | null;
-  tempPassword: string;
-};
-
-function parseInviteInput(body: unknown): InviteInput {
-  if (!body || typeof body !== 'object') throw new InvalidInputError('body must be an object');
-  const b = body as Record<string, unknown>;
-  const email = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    throw new InvalidInputError('email must be a valid address');
-  }
-  const role = b.role as UserRole;
-  if (!USER_ROLES.includes(role)) throw new InvalidInputError('role must be owner|practitioner|receptionist');
-  const tempPassword = typeof b.tempPassword === 'string' ? b.tempPassword : '';
-  if (tempPassword.length < 8) throw new InvalidInputError('tempPassword must be >= 8 chars');
-  const fullName =
-    typeof b.fullName === 'string' && b.fullName.trim() ? b.fullName.trim() : null;
-  return { email, role, tempPassword, fullName };
-}
+// inviteMember + its InviteInput / parseInviteInput / tempPassword flow were
+// removed in Phase 4 (Phase 0 R4). New invitations go through the token-based
+// flow: components/settings/actions.ts::inviteMemberAction → lib/invitations.ts.
+// The spec invariant (§9 rule 4: admins never set passwords) is now the only
+// path.
 
 export async function listMembers(session: ActiveSession): Promise<MemberRow[]> {
   // Memberships table is RLS-scoped to the org; app_users itself isn't.
@@ -397,55 +379,6 @@ export async function listMembers(session: ActiveSession): Promise<MemberRow[]> 
       role: m.role,
       createdAt: m.createdAt.toISOString(),
     }));
-  });
-}
-
-export async function inviteMember(session: ActiveSession, body: unknown) {
-  const input = parseInviteInput(body);
-  const passwordHash = await hash(input.tempPassword);
-
-  // The user might already exist (existing member of another org). Use
-  // withoutRls to see all app_users — app_users itself has no RLS anyway
-  // but we need to write memberships in this org context.
-  return withoutRls(async (tx) => {
-    const existing = await tx.appUser.findUnique({ where: { email: input.email } });
-    const user =
-      existing ??
-      (await tx.appUser.create({
-        data: {
-          authProvider: 'credentials',
-          authSubject: input.email,
-          email: input.email,
-          fullName: input.fullName,
-          passwordHash,
-        },
-      }));
-
-    // Reject duplicate membership in THIS org — the DB unique constraint
-    // would fire anyway; we surface a nicer error.
-    const dup = await tx.membership.findFirst({
-      where: { organizationId: session.organizationId, userId: user.id },
-    });
-    if (dup) throw new InvalidInputError('user is already a member of this org');
-
-    const membership = await tx.membership.create({
-      data: {
-        organizationId: session.organizationId,
-        userId: user.id,
-        role: input.role,
-      },
-    });
-    await tx.auditLog.create({
-      data: {
-        organizationId: session.organizationId,
-        actorUserId: session.userId,
-        action: 'create',
-        entity: 'staff',
-        entityId: user.id,
-        meta: { member: true, role: input.role, wasExistingUser: !!existing },
-      },
-    });
-    return { membershipId: membership.id, userId: user.id };
   });
 }
 

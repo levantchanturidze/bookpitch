@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { requireRole, InvalidInputError } from '@/lib/auth';
+import { ctxToSession, InvalidInputError } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { buildClaimsExport, renderClaimsCsv } from '@/lib/insurance';
 import { log } from '@/lib/logger';
 
@@ -9,13 +10,15 @@ export const dynamic = 'force-dynamic';
 
 // GET /api/insurance/export?from=YYYY-MM-DD&to=YYYY-MM-DD&insurer=<name>
 //
-// Owner-only. Returns a CSV attachment ready to submit to the named
-// insurer (or all insurers when omitted). Missing/invalid dates → 400.
+// Returns a CSV attachment ready to submit to the named insurer (or all
+// insurers when omitted). Missing/invalid dates → 400.
 //
 // Not wrapped in withApi because we return text/csv, not JSON.
 export async function GET(req: NextRequest) {
   try {
-    const session = await requireRole('owner');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'report.export', { organizationId: ctx.activeOrganizationId! }, 'insurance');
+    const session = ctxToSession(ctx);
     const url = new URL(req.url);
     const fromStr = url.searchParams.get('from') ?? '';
     const toStr = url.searchParams.get('to') ?? '';

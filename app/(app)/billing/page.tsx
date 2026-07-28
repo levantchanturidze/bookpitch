@@ -1,4 +1,5 @@
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { loadLocationsForOrg } from '@/lib/active-location';
 import BillingList, { type BillingRow } from '@/components/billing/BillingList';
@@ -7,7 +8,9 @@ export const metadata = { title: 'Billing · Bookpitch' };
 export const dynamic = 'force-dynamic';
 
 export default async function BillingPage() {
-  const session = await requireRole('owner', 'receptionist');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'payment.charge', { organizationId: ctx.activeOrganizationId! }, 'billing');
+  const session = ctxToSession(ctx);
   const { active } = await loadLocationsForOrg(session.organizationId);
 
   const rows: BillingRow[] = await withOrg(session.organizationId, async (tx) => {

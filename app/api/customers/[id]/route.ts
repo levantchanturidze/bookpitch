@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { requireRole, withApi } from '@/lib/auth';
+import { ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import {
@@ -13,7 +14,9 @@ import {
 // GET /api/customers/[id] → detail + treatment_history.
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    const session = ctxToSession(ctx);
     const { id } = await params;
 
     const customer = await withOrg(session.organizationId, async (tx) => {
@@ -36,7 +39,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 // PATCH /api/customers/[id] → partial update; encrypts changed sensitive fields.
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    const session = ctxToSession(ctx);
     const { id } = await params;
     const input = parseUpdateInput(await req.json().catch(() => null));
     const { data, fields } = buildUpdateData(input);
@@ -59,7 +64,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 // of losing the audit trail. Soft-delete / anonymization arrives in P3.3.
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'client.merge', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    const session = ctxToSession(ctx);
     const { id } = await params;
 
     const result = await withOrg(session.organizationId, async (tx) => {

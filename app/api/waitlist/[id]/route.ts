@@ -1,4 +1,5 @@
-import { requireRole, withApi } from '@/lib/auth';
+import { ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { removeFromWaitlist } from '@/lib/waitlist';
 
 export const runtime = 'nodejs';
@@ -10,9 +11,10 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'booking.update', { organizationId: ctx.activeOrganizationId! }, 'waitlist');
     const { id } = await params;
-    await removeFromWaitlist(session, id);
+    await removeFromWaitlist(ctxToSession(ctx), id);
     return { ok: true };
   });
 }

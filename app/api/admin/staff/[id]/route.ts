@@ -1,21 +1,24 @@
 import type { NextRequest } from 'next/server';
-import { requireRole, withApi } from '@/lib/auth';
+import { ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { deleteStaff, updateStaff } from '@/lib/admin';
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
-    const session = await requireRole('owner');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'staff.update', { organizationId: ctx.activeOrganizationId! }, 'admin');
     const { id } = await params;
     const body = await req.json().catch(() => null);
-    return { staff: await updateStaff(session, id, body) };
+    return { staff: await updateStaff(ctxToSession(ctx), id, body) };
   });
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
-    const session = await requireRole('owner');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'staff.deactivate', { organizationId: ctx.activeOrganizationId! }, 'admin');
     const { id } = await params;
-    await deleteStaff(session, id);
+    await deleteStaff(ctxToSession(ctx), id);
     return { ok: true };
   });
 }

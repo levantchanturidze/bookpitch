@@ -1,4 +1,5 @@
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrgReplica } from '@/lib/db';
 import { queryAudit } from '@/lib/audit-query';
 import AuditView from '@/components/audit/AuditView';
@@ -13,7 +14,9 @@ export default async function AuditPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const session = await requireRole('owner');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'audit.read', { organizationId: ctx.activeOrganizationId! }, 'audit');
+  const session = ctxToSession(ctx);
   const sp = await searchParams;
   const s = (k: string) =>
     typeof sp[k] === 'string' && (sp[k] as string).trim().length > 0 ? (sp[k] as string) : '';

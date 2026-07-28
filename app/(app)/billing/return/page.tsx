@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { CheckCircle2, Clock, XCircle } from 'lucide-react';
-import { requireRole } from '@/lib/auth';
+import { ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 
 export const metadata = { title: 'Payment · Bookpitch' };
@@ -14,7 +15,9 @@ export default async function BillingReturnPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const session = await requireRole('owner', 'receptionist');
+  const ctx = await requireAuthContext();
+  requirePermission(ctx, 'payment.charge', { organizationId: ctx.activeOrganizationId! }, 'billing');
+  const session = ctxToSession(ctx);
   const sp = await searchParams;
   const paymentId = typeof sp.paymentId === 'string' ? sp.paymentId : '';
 

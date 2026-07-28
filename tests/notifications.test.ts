@@ -14,16 +14,11 @@ const { notifyEvent } = await import('@/lib/notifications');
 const listRoute = await import('@/app/api/notifications/route');
 const markRoute = await import('@/app/api/notifications/mark-all-read/route');
 const clearRoute = await import('@/app/api/notifications/clear/route');
+const { mockJwt } = await import('./helpers/session');
+const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 
-function mkSession(orgId: string, userId: string) {
-  return {
-    user: {
-      id: userId,
-      email: 'owner@example.dev',
-      organizationId: orgId,
-      role: 'owner' as const,
-    },
-  };
+async function mkSession(orgId: string, userId: string) {
+  return mockJwt(userId, orgId);
 }
 
 async function jsonBody<T = unknown>(res: Response): Promise<T> {
@@ -64,7 +59,10 @@ describe('notifyEvent + notifications REST', () => {
     }
   });
 
-  beforeEach(() => authMock.mockReset());
+  beforeEach(() => {
+    authMock.mockReset();
+    __clearAuthContextCache();
+  });
 
   it('notifyEvent writes a notifications row the next poll will pick up', async () => {
     const event = await withoutRls((tx) =>
@@ -88,7 +86,7 @@ describe('notifyEvent + notifications REST', () => {
   });
 
   it('GET /api/notifications lists caller org rows in desc order', async () => {
-    authMock.mockResolvedValue(mkSession(primaryOrgId, ownerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, ownerId));
     const res = await listRoute.GET();
     expect(res.status).toBe(200);
     const body = await jsonBody<{ notifications: Array<{ id: string }> }>(res);
@@ -96,7 +94,11 @@ describe('notifyEvent + notifications REST', () => {
   });
 
   it('cross-tenant list stays 0 for isolation org (RLS)', async () => {
-    authMock.mockResolvedValue(mkSession(isolationOrgId, ownerId));
+    // Phase 4: real (userId, orgId) pair required. Use isolation's own owner.
+    const isoOwner = await withoutRls(tx => tx.appUser.findUniqueOrThrow({
+      where: { email: 'isolation@bookpitch.dev' }, select: { id: true },
+    }));
+    authMock.mockResolvedValue(await mkSession(isolationOrgId, isoOwner.id));
     const res = await listRoute.GET();
     const body = await jsonBody<{ notifications: unknown[] }>(res);
     expect(body.notifications.length).toBe(0);
@@ -109,7 +111,7 @@ describe('notifyEvent + notifications REST', () => {
     );
     trackedIds.push(created.id);
 
-    authMock.mockResolvedValue(mkSession(primaryOrgId, ownerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, ownerId));
     const res = await markRoute.POST();
     expect(res.status).toBe(200);
 
@@ -129,7 +131,7 @@ describe('notifyEvent + notifications REST', () => {
     );
     trackedIds.push(inPrimary.id, inIsolation.id);
 
-    authMock.mockResolvedValue(mkSession(primaryOrgId, ownerId));
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, ownerId));
     const res = await clearRoute.POST();
     expect(res.status).toBe(200);
 

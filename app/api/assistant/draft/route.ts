@@ -1,12 +1,14 @@
 import type { NextRequest } from 'next/server';
-import { InvalidInputError, requireRole, withApi } from '@/lib/auth';
+import { InvalidInputError, ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { draftAppointment } from '@/lib/assistant/draft';
 
 // POST /api/assistant/draft
 // Body: { prompt: string, locationId: string, referenceDate?: string }
 export async function POST(req: NextRequest) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'assistant');
     const body = (await req.json().catch(() => null)) as {
       prompt?: unknown;
       locationId?: unknown;
@@ -18,6 +20,6 @@ export async function POST(req: NextRequest) {
     if (!locationId) throw new InvalidInputError('locationId is required');
     const referenceDate =
       typeof body?.referenceDate === 'string' ? new Date(body.referenceDate) : new Date();
-    return draftAppointment(session, locationId, prompt, referenceDate);
+    return draftAppointment(ctxToSession(ctx), locationId, prompt, referenceDate);
   });
 }

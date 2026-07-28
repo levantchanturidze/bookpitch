@@ -44,9 +44,7 @@ export async function startCheckout(
   session: ActiveSession,
   planId: PlanId,
 ): Promise<{ url: string }> {
-  if (session.role !== 'owner') {
-    throw new InvalidInputError('only owners can change the plan');
-  }
+  // Authorization enforced by caller via requirePermission(ctx, 'org.billing.manage').
   const plan = planFromId(planId);
   if (plan.id === 'free') throw new InvalidInputError('free is not a checkoutable plan');
   if (!plan.stripePriceId) {

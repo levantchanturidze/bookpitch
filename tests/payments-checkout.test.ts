@@ -12,6 +12,8 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 const { withoutRls } = await import('@/lib/db');
 const routeCheckout = await import('@/app/api/payments/checkout/route');
 const routeCash = await import('@/app/api/payments/cash/route');
+const { mockJwt } = await import('./helpers/session');
+const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 
 import type { NextRequest } from 'next/server';
 function req(url: string, init: RequestInit): NextRequest {
@@ -22,8 +24,8 @@ async function jsonBody<T = unknown>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-function mkSession(orgId: string, userId: string, role: 'owner' | 'receptionist' = 'owner') {
-  return { user: { id: userId, email: `${role}@example.dev`, organizationId: orgId, role } };
+async function mkSession(orgId: string, userId: string) {
+  return mockJwt(userId, orgId);
 }
 
 describe('/api/payments/{checkout,cash}', () => {
@@ -67,10 +69,10 @@ describe('/api/payments/{checkout,cash}', () => {
     );
   });
 
-  beforeEach(() => authMock.mockReset());
+  beforeEach(() => { authMock.mockReset(); __clearAuthContextCache(); });
 
   it('checkout creates an unpaid payment + returns a mock-gateway redirect URL', async () => {
-    authMock.mockResolvedValue(mkSession(orgId, userId));
+    authMock.mockResolvedValue(await mkSession(orgId, userId));
     const res = await routeCheckout.POST(
       req('http://x/api/payments/checkout', {
         method: 'POST',
@@ -94,7 +96,7 @@ describe('/api/payments/{checkout,cash}', () => {
 
   it('checkout rejects already-paid appointments (400)', async () => {
     // Flip the appointment to paid via a cash settlement first.
-    authMock.mockResolvedValue(mkSession(orgId, userId));
+    authMock.mockResolvedValue(await mkSession(orgId, userId));
     const cashRes = await routeCash.POST(
       req('http://x/api/payments/cash', {
         method: 'POST',
@@ -105,7 +107,7 @@ describe('/api/payments/{checkout,cash}', () => {
     const cashBody = await jsonBody<{ payment: { id: string } }>(cashRes);
     createdPaymentIds.push(cashBody.payment.id);
 
-    authMock.mockResolvedValue(mkSession(orgId, userId));
+    authMock.mockResolvedValue(await mkSession(orgId, userId));
     const res = await routeCheckout.POST(
       req('http://x/api/payments/checkout', {
         method: 'POST',
@@ -124,7 +126,7 @@ describe('/api/payments/{checkout,cash}', () => {
       }),
     );
 
-    authMock.mockResolvedValue(mkSession(orgId, userId, 'receptionist'));
+    authMock.mockResolvedValue(await mkSession(orgId, userId));
     const res = await routeCash.POST(
       req('http://x/api/payments/cash', {
         method: 'POST',

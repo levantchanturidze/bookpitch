@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { InvalidInputError, requireRole, withApi } from '@/lib/auth';
+import { InvalidInputError, ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import {
@@ -19,7 +20,9 @@ import {
 // -----------------------------------------------------------------------------
 export async function GET(req: NextRequest) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'booking.read', { organizationId: ctx.activeOrganizationId! }, 'appointments');
+    const session = ctxToSession(ctx);
     const url = new URL(req.url);
     const locationId = url.searchParams.get('locationId') ?? undefined;
     const from = url.searchParams.get('from'); // ISO
@@ -62,7 +65,9 @@ export async function GET(req: NextRequest) {
 // -----------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
   return withApi(async () => {
-    const session = await requireRole('owner', 'practitioner', 'receptionist');
+    const ctx = await requireAuthContext();
+    requirePermission(ctx, 'booking.create', { organizationId: ctx.activeOrganizationId! }, 'appointments');
+    const session = ctxToSession(ctx);
     const input = parseCreateInput(await req.json().catch(() => null));
 
     const startsAt = new Date(input.startsAt);
