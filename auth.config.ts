@@ -60,7 +60,16 @@ export const authConfig = {
         path.startsWith('/dev/');
       if (isPublic) return true;
       if (auth?.user) return true;
-      return NextResponse.redirect(new URL('/signin', nextUrl.origin));
+      const res = NextResponse.redirect(new URL('/signin', nextUrl.origin));
+      // Auth.js otherwise sets a `__Secure-authjs.callback-url` cookie
+      // holding the origin URL so the sign-in page can bounce the user
+      // back after login. The sign-in server action already redirects to
+      // `/` unconditionally, so this cookie is unused noise. Expire both
+      // names (secure prefix for HTTPS, plain for HTTP dev) so the browser
+      // drops any existing value.
+      res.cookies.set('__Secure-authjs.callback-url', '', { maxAge: 0, path: '/' });
+      res.cookies.set('authjs.callback-url', '', { maxAge: 0, path: '/' });
+      return res;
     },
   },
 } satisfies NextAuthConfig;
