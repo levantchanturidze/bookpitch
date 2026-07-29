@@ -379,3 +379,105 @@ password-reset-style "reachable without auth" exception on the platform
 side. `scripts/check-guards.ts` scans `app/(platform)/**` +
 `app/api/platform/**` alongside the org-plane routes.
 
+---
+
+## Phase 6 — Org-plane policy
+
+### Per-org toggles
+
+`ctx.orgToggles` carries the four Phase 6 toggle fields (populated by
+`buildAuthContext` from `organizations.features` JSONB). `can()`
+consults specific fields for the three gated permissions:
+
+| Permission | Role | Toggle |
+|---|---|---|
+| `clinical_note.read:any` | PROVIDER | `providerClinicalNotesOthers` |
+| `report.financial:org` | PROVIDER | `providerFinancialReports` |
+| `client.read:full` | FRONT_DESK | `frontdeskClientFullHistory` |
+
+Toggle-off returns `false` from `can()` regardless of scope resolution
+— the role's default grant is `false` when the toggle is off, `true`
+when on. Consumers don't need to consult toggles directly; a plain
+`requirePermission(ctx, key, ...)` does the right thing.
+
+The fourth toggle (`frontdeskDiscountCeiling`, numeric) is NOT a scope
+check. Payment code calls
+`assertDiscountWithinCeiling(orgId, actorRoleKey, discountAmount)` from
+`lib/payments/service.ts` before persisting a discount. Passing a
+non-FRONT_DESK role is a no-op.
+
+### Branch scoping for BRANCH_MANAGER
+
+When a caller with `ctx.branchIds.size > 0` hits a list endpoint,
+filter the query to their scope:
+
+```ts
+import { scopedLocationIds } from '@/lib/rbac';
+
+const scoped = await scopedLocationIds(ctx);   // string[] | null
+if (scoped && userLocationId && !scoped.includes(userLocationId)) {
+  throw new InvalidInputError('locationId is outside your branch scope');
+}
+const whereLocation =
+  userLocationId ? { locationId: userLocationId }
+  : scoped ? { locationId: { in: scoped } }
+  : {};
+```
+
+`null` means the caller has org-wide reach (ORG_OWNER, ORG_ADMIN,
+FRONT_DESK with empty branch scope). Non-null means "must filter to
+these locations". Empty array is intentional — a BRANCH_MANAGER with
+zero linked branches sees zero rows.
+
+Currently applied to `/api/appointments` GET and `/api/waitlist` GET.
+Analytics + insurance export are left to a future audit — spec §6.2
+grants `report.financial:org` to owners only, so BRANCH_MANAGER never
+reaches those endpoints and scope-filtering is defensive rather than
+required.
+
+### Admin guardrails composition
+
+`updateMemberRole` and `removeMember` layer four checks in order:
+
+1. **Self-mutation refused** — you can't change or remove your own row.
+2. **Rank + lattice** via `canManageRoleAssignment(actorCtx, targetKey)`
+   — checked against BOTH the new role (in updateMemberRole) AND the
+   target's current role. An ORG_ADMIN can't touch an ORG_OWNER.
+3. **Last-owner protection** via `assertNotLastOwner` — spec §9 rule 1.
+   Runs inside the tx.
+4. **Session-version bump** on the target user after a successful
+   write — spec §9 rule 10. Their JWT gets rejected within 5s.
+
+The rank check happens BEFORE the tx (buildAuthContext needs its own
+connection); the last-owner check + write + session bump run INSIDE
+one tx. Any exception aborts the whole thing.
+
+### Ownership transfer flow
+
+Two-step (`lib/admin/ownership-transfer.ts`):
+
+- `nominateTransfer(session, toUserId)` — current owner nominates a
+  member. Writes an `ownership_transfers` row (7-day expiry), notifies
+  the nominee (in-app + email), bumps the nominee's sessionVersion
+  so their client sees the notification within 5s.
+- `acceptTransfer(session, transferId)` — nominee accepts. Single tx
+  swaps `organizations.owner_user_id`, promotes nominee to ORG_OWNER,
+  demotes previous owner to ORG_ADMIN, bumps both sessionVersions,
+  writes audit rows for both role changes.
+- `declineTransfer(session, transferId, reason)` — nominee declines.
+- `revokeTransfer(session, transferId)` — nominator revokes their own
+  pending transfer.
+
+Expired rows are handled lazily on `acceptTransfer` — a stale pending
+row past `expires_at` is flipped to `status='expired'` and the accept
+is refused. A housekeeping cron can also sweep for cleanliness.
+
+### CLIENT-plane (deferred to v3)
+
+Spec §11 v3. No consumer-facing routes exist today. `can()`'s `:own`
+scope resolution correctly requires `resource.ownerUserId ===
+ctx.userId` — a CLIENT role with only `booking.read:own` cannot pass
+a check that doesn't match. Reachable in Phase 6 through the existing
+`can()` test coverage.
+
+

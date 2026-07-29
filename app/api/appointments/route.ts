@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { InvalidInputError, ctxToSession, withApi } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePermission, scopedLocationIds } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import {
@@ -35,10 +35,23 @@ export async function GET(req: NextRequest) {
       throw new InvalidInputError('from/to must be ISO dates');
     }
 
+    // Phase 6: branch scoping. When the caller has populated
+    // ctx.branchIds (BRANCH_MANAGER), constrain the query to the
+    // location IDs those branches correspond to — otherwise a
+    // parameter-less list would leak every branch's data.
+    const scoped = await scopedLocationIds(ctx);
+    if (scoped && locationId && !scoped.includes(locationId)) {
+      throw new InvalidInputError('locationId is outside your branch scope');
+    }
+    const locationFilter =
+      locationId ? { locationId }
+      : scoped ? { locationId: { in: scoped } }
+      : {};
+
     const appointments = await withOrg(session.organizationId, async (tx) => {
       const rows = await tx.appointment.findMany({
         where: {
-          ...(locationId ? { locationId } : {}),
+          ...locationFilter,
           startsAt: { gte: fromDate, lt: toDate },
         },
         include: {

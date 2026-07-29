@@ -58,10 +58,26 @@ export async function addToWaitlist(
   });
 }
 
-export async function listWaitlist(session: ActiveSession) {
+export async function listWaitlist(
+  session: ActiveSession,
+  opts: { scopedLocationIds?: string[] | null } = {},
+) {
   return withOrg(session.organizationId, (tx) =>
     tx.waitlist.findMany({
-      where: { status: { in: ['pending', 'notified'] } },
+      where: {
+        status: { in: ['pending', 'notified'] },
+        // Phase 6 branch scoping. Waitlist entries have an optional
+        // locationId (customers can be "flexible") — include:
+        //   • rows in the caller's scoped locations
+        //   • rows with no locationId (flexible)
+        // A BRANCH_MANAGER shouldn't get to poach a flexible customer
+        // out of another branch's queue; the receiving-side workflow
+        // still filters by the actor's branches when converting to
+        // an appointment.
+        ...(opts.scopedLocationIds
+          ? { OR: [{ locationId: null }, { locationId: { in: opts.scopedLocationIds } }] }
+          : {}),
+      },
       orderBy: { createdAt: 'desc' },
       take: 200,
     }),

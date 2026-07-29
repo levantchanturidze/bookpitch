@@ -10,6 +10,7 @@ import {
   CreditCard,
   ShieldCheck,
   FileText,
+  KeyRound,
 } from 'lucide-react';
 
 const TABS = [
@@ -17,6 +18,7 @@ const TABS = [
   { href: '/settings/staff', label: 'Staff', icon: Users },
   { href: '/settings/services', label: 'Services', icon: Wrench },
   { href: '/settings/members', label: 'Members', icon: UserCog },
+  { href: '/settings/permissions', label: 'Permissions', icon: KeyRound },
   { href: '/settings/billing', label: 'Billing', icon: CreditCard },
   { href: '/settings/privacy', label: 'Privacy', icon: ShieldCheck },
   { href: '/settings/insurance', label: 'Insurance', icon: FileText },

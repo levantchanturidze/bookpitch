@@ -135,19 +135,30 @@ export async function seedRbacFixtures(): Promise<void> {
   const downtown = await upsertBranch(split.id, 'Downtown');
   const uptown   = await upsertBranch(split.id, 'Uptown');
   const airport  = await upsertBranch(split.id, 'Airport');
-  // Legacy `locations` compat — `analytics.computeMetrics` and other pages
-  // still read from `locations`. Give Split Practice one so those queries
-  // don't 404 in tests. Phase 2 sync trigger creates a matching branch,
-  // but we already have branches via upsertBranch above; the extra branch
-  // it creates is harmless (legacy_location_id disambiguates them).
-  const existingSplitLoc = await prismaAdmin.location.findFirst({
+  // Legacy `locations` compat — analytics and other pages still read
+  // from `locations`. Give Split Practice one so those queries don't
+  // 404 in tests. Phase 6: link the Downtown branch to this legacy
+  // location so `scopedLocationIds(ctx)` for the BRANCH_MANAGER
+  // resolves to a real location id.
+  let splitLoc = await prismaAdmin.location.findFirst({
     where: { organizationId: split.id },
   });
-  if (!existingSplitLoc) {
-    await prismaAdmin.location.create({
+  if (!splitLoc) {
+    splitLoc = await prismaAdmin.location.create({
       data: { organizationId: split.id, type: 'clinic', name: 'Split Downtown Loc' },
     });
   }
+  // Phase 2 sync trigger auto-creates a branch that shadow-links to
+  // this location. Redirect the pointer to the manager-scoped Downtown
+  // branch instead, so scopedLocationIds resolves cleanly.
+  const shadow = await prismaAdmin.branch.findFirst({
+    where: { organizationId: split.id, legacyLocationId: splitLoc.id, name: { not: 'Downtown' } },
+  });
+  if (shadow) await prismaAdmin.branch.delete({ where: { id: shadow.id } });
+  await prismaAdmin.branch.updateMany({
+    where: { id: downtown.id, legacyLocationId: null },
+    data: { legacyLocationId: splitLoc.id },
+  });
 
   const owner = await upsertUser('split-owner@bp.test', 'Split Owner', passwordHash);
   await upsertMembership(owner.id, split.id, UserRole.owner);

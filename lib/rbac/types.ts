@@ -109,4 +109,18 @@ export type AuthContext = {
   /** Org lifecycle status. Suspended/archived → can() denies everything
    *  spec §9 rule ("suspended organization → deny", CLAUDE.md invariant 2). */
   readonly organizationStatus: 'trial' | 'active' | 'suspended' | 'archived' | null;
+
+  /**
+   * Phase 6 per-org toggles (spec §6.2 ⚙️ cells). Populated for the
+   * active org; DEFAULT_TOGGLES for platform-only sessions. can()
+   * consults specific fields when evaluating the three gated
+   * permissions (provider financial reports, provider clinical notes,
+   * front-desk full history). See lib/rbac/toggles.ts.
+   */
+  readonly orgToggles: {
+    readonly providerFinancialReports: boolean;
+    readonly providerClinicalNotesOthers: boolean;
+    readonly frontdeskClientFullHistory: boolean;
+    readonly frontdeskDiscountCeiling: number;
+  };
 };
