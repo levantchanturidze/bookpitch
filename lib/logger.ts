@@ -56,13 +56,14 @@ function emit(level: Level, msg: string, fields?: Record<string, unknown>) {
     ...(fields ?? {}),
   };
   // Vercel + Datadog + Sentry-Log-drain all ingest a single JSON line.
-  // stdout for info/debug, stderr for warn/error so the platform surfaces
-  // them separately.
+  // console.error → stderr, console.log → stdout so the platform surfaces
+  // warn/error separately. Uses `console.*` instead of `process.stdout` so
+  // the same code runs on the Node and Edge runtimes.
   const s = JSON.stringify(line);
   if (level === 'warn' || level === 'error') {
-    process.stderr.write(s + '\n');
+    console.error(s);
   } else {
-    process.stdout.write(s + '\n');
+    console.log(s);
   }
 }
 
