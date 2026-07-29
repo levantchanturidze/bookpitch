@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomUUID } from 'node:crypto';
 
 // -----------------------------------------------------------------------------
 // Structured logger + request context (orgId, requestId, actorUserId).
@@ -23,7 +22,9 @@ export type LogContext = {
 const storage = new AsyncLocalStorage<LogContext>();
 
 export function newRequestId(): string {
-  return randomUUID();
+  // Web Crypto API — available on both Node 19+ and the Edge Runtime,
+  // unlike `node:crypto` which the Edge Runtime rejects at build time.
+  return globalThis.crypto.randomUUID();
 }
 
 export function withRequestContext<T>(ctx: LogContext, fn: () => T): T {
