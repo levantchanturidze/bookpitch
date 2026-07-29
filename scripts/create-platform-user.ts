@@ -99,9 +99,21 @@ async function main() {
   }
 
   // Password: prefer env var (BOOKPITCH_ADMIN_PASSWORD) so the caller
-  // can pipe safely from automation; fall back to the interactive prompt
-  // for humans on a TTY. Env-var path skips the confirm step by design —
-  // the caller is responsible for typing it right the first time.
+  // can drive this script from automation without wrestling with a
+  // muted-stdout readline prompt. Env-var path skips the confirm step
+  // by design — the caller is responsible for typing it right the
+  // first time.
+  //
+  // SECURITY NOTE: a prefixed inline assignment like
+  //   `BOOKPITCH_ADMIN_PASSWORD=foo npx tsx ...`
+  // IS visible in shell history (it's part of the command line, not
+  // a shell-builtin `export` scoped to a subshell). To keep the value
+  // out of history, either
+  //   (a) `export BOOKPITCH_ADMIN_PASSWORD=<value>` in a shell with
+  //       HISTIGNORE='export*' or `set +o history` set, or
+  //   (b) `read -rs BOOKPITCH_ADMIN_PASSWORD; export BOOKPITCH_ADMIN_PASSWORD`,
+  //       or
+  //   (c) stick to the interactive prompt path on a TTY.
   let password: string;
   if (process.env.BOOKPITCH_ADMIN_PASSWORD) {
     password = process.env.BOOKPITCH_ADMIN_PASSWORD;
