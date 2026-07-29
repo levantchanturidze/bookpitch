@@ -1,3 +1,4 @@
+import { NextResponse } from 'next/server';
 import type { NextAuthConfig } from 'next-auth';
 
 /**
@@ -14,8 +15,12 @@ export const authConfig = {
   trustHost: true,
   pages: { signIn: '/signin' },
   callbacks: {
-    // Runs inside proxy.ts on every matched request. Returning false tells
-    // Auth.js to redirect to `pages.signIn`.
+    // Runs inside proxy.ts on every matched request. Returning `true` allows
+    // the request through. Unauthenticated hits on a protected path get an
+    // EXPLICIT redirect to /signin with no `?callbackUrl=` query and no
+    // `__Secure-authjs.callback-url` cookie — post-signin routing is
+    // handled by the sign-in action itself (redirectTo: '/'), so leaking
+    // the origin URL into the address bar or cookie would be noise.
     authorized({ auth, request: { nextUrl } }) {
       const path = nextUrl.pathname;
       const isPublic =
@@ -54,7 +59,8 @@ export const authConfig = {
         // in the page itself hides them in production.
         path.startsWith('/dev/');
       if (isPublic) return true;
-      return !!auth?.user;
+      if (auth?.user) return true;
+      return NextResponse.redirect(new URL('/signin', nextUrl.origin));
     },
   },
 } satisfies NextAuthConfig;
