@@ -27,12 +27,17 @@ export type ActiveSession = {
 };
 
 /**
- * Returns the active session or `null`. Server-only.
+ * Returns the active ORG-PLANE session or `null`. Server-only.
  *
  * Reads the JWT's canonical Phase 3 claims (`activeOrganizationId`,
- * `membershipId`, `platformRoleId`). Sessions without `membershipId` (a
- * broken or ancient token that survived the force-reauth migration)
- * return null so callers get 401 rather than a half-formed session.
+ * `membershipId`, `platformRoleId`). Sessions without both org id AND
+ * membership id return null. Two cases produce that today:
+ *   (a) broken / ancient token that survived force-reauth (401 is correct)
+ *   (b) platform-plane-only sessions (SUPER_ADMIN etc.) which have no
+ *       org context by design (spec §4.1). These callers must use
+ *       `requireAuthContext()` from `@/lib/rbac`, not this function.
+ *       If a platform user hits an endpoint that calls getSession(),
+ *       they get 401 — that's a routing mistake, not an auth bug.
  */
 export async function getSession(): Promise<ActiveSession | null> {
   const session = await auth();

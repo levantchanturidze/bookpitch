@@ -128,11 +128,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           });
         });
 
-        if (!user?.passwordHash || user.memberships.length === 0) return null;
+        // Platform-plane roles (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT_AGENT,
+        // BILLING_MANAGER) have no org memberships by design (spec §4.1) —
+        // they operate cross-tenant via impersonation / break-glass. Accept
+        // them via the platformRoleId path even when memberships is empty;
+        // the resulting JWT carries activeOrganizationId: null and belongs
+        // at /platform.
+        if (!user?.passwordHash) return null;
+        const hasMembership = user.memberships.length > 0;
+        const isPlatformUser = user.platformRoleId != null;
+        if (!hasMembership && !isPlatformUser) return null;
+
         const ok = await verify(user.passwordHash, password);
         if (!ok) return null;
 
-        const membership = user.memberships[0];
+        const membership = hasMembership ? user.memberships[0] : null;
 
         // Phase 5 spec §7.2 "root account pattern": SUPER_ADMIN /
         // PLATFORM_ADMIN logins send a security alert email. Best-effort
@@ -145,8 +155,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           id: user.id,
           email: user.email,
           name: user.fullName ?? undefined,
-          activeOrganizationId: membership.organizationId,
-          membershipId: membership.id,
+          activeOrganizationId: membership?.organizationId ?? null,
+          membershipId: membership?.id ?? null,
           platformRoleId: user.platformRoleId,
           sessionVersion: user.sessionVersion,
         };
@@ -159,8 +169,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const u = user as {
           id: string;
           email: string;
-          activeOrganizationId: string;
-          membershipId: string;
+          activeOrganizationId: string | null;
+          membershipId: string | null;
           platformRoleId: string | null;
           sessionVersion: number;
         };

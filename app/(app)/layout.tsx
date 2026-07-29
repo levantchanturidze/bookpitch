@@ -25,7 +25,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     if (err instanceof UnauthenticatedError) redirect('/signin');
     throw err;
   }
-  if (!ctx.activeOrganizationId) redirect('/signin');
+  // Platform-plane users (SUPER_ADMIN etc.) hold no org context — they
+  // belong under /platform, not the app plane. Bouncing them to /signin
+  // would create a loop after login. Non-empty platformPermissions is
+  // the platform-user signal.
+  if (!ctx.activeOrganizationId) {
+    if (ctx.platformPermissions.size > 0) redirect('/platform');
+    redirect('/signin');
+  }
   const orgId = ctx.activeOrganizationId;
 
   const [organization, { locations, active }] = await Promise.all([
