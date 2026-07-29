@@ -153,9 +153,16 @@ describe('SUPPORT_AGENT PII discipline probe (spec §4.1 + §6.1)', () => {
       params: Promise.resolve({ id: orgId }),
     });
     expect(res.status).toBe(200);
-    const body = await json<{ org: unknown }>(res);
-    const rawBlob = JSON.stringify(body).toLowerCase();
-    expect(rawBlob).not.toMatch(/allergies|clinical|treatmenthistory/);
+    const body = await json<{ org: { features?: unknown; [k: string]: unknown } }>(res);
+    // Strip the features JSONB before scanning — Phase 6 toggle keys
+    // contain the substring "clinical" (toggle.provider.clinical_notes_others)
+    // which would otherwise false-positive against the PII scanner.
+    const org = { ...body.org };
+    delete org.features;
+    const rawBlob = JSON.stringify({ org }).toLowerCase();
+    expect(rawBlob).not.toMatch(/allergies|clinicalnote|treatmenthistory/);
+    // The customers COLLECTION must be absent — only aggregate _count is OK.
+    expect(rawBlob).not.toMatch(/"customers":\[/);
   });
 
   it('audit query masks actor emails for SUPPORT_AGENT', async () => {

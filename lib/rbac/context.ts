@@ -19,6 +19,7 @@
 import { prismaAdmin } from '@/lib/db';
 import type { AuthContext, PermissionKey } from './types';
 import { perm } from './types';
+import { loadOrgToggles, DEFAULT_TOGGLES } from './toggles';
 
 type CacheEntry = { ctx: AuthContext; at: number };
 const CACHE = new Map<string, CacheEntry>();
@@ -114,6 +115,12 @@ export async function buildAuthContext(
       isBreakGlass: breakGlass !== null,
       sessionVersion: user.sessionVersion,
       organizationStatus: null,
+      // Platform-only sessions carry the safe defaults — Phase 6 toggles
+      // only matter when a resource in a specific org is being accessed,
+      // and those checks either pass through can()'s org-plane branches
+      // (which have a real ctx.orgToggles) or through platform.* perms
+      // that don't consult toggles.
+      orgToggles: DEFAULT_TOGGLES,
     };
   } else {
     const built = await buildOrgContext(user, membershipId, platformPermissions,
@@ -210,10 +217,15 @@ async function buildOrgContext(
   if (!membership.organization) return null;                      // org deleted
   if (!membership.roleId || !membership.roleRef) return null;     // role_id NULL — pre-backfill
 
-  const permRows = await prismaAdmin.rolePermission.findMany({
-    where: { roleId: membership.roleId },
-    select: { permissionKey: true },
-  });
+  // Fetch role permissions + org toggles in parallel — one round trip each,
+  // both bounded by their own caches (org toggles also 30s TTL).
+  const [permRows, orgToggles] = await Promise.all([
+    prismaAdmin.rolePermission.findMany({
+      where: { roleId: membership.roleId },
+      select: { permissionKey: true },
+    }),
+    loadOrgToggles(membership.organizationId),
+  ]);
   const permissions: ReadonlySet<PermissionKey> = new Set(
     permRows.map(r => perm(r.permissionKey)),
   );
@@ -234,5 +246,6 @@ async function buildOrgContext(
     isBreakGlass: breakGlass !== null,
     sessionVersion: user.sessionVersion,
     organizationStatus: membership.organization.status as AuthContext['organizationStatus'],
+    orgToggles,
   };
 }

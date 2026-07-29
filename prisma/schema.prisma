@@ -127,6 +127,7 @@ model Organization {
   ownerUser         AppUser? @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   impersonationSessions ImpersonationSession[]
   breakGlassSessions    BreakGlassSession[]
+  ownershipTransfers    OwnershipTransfer[]
 
   @@index([status], map: "idx_org_status")
   @@index([ownerUserId], map: "idx_org_owner_user_id")
@@ -201,6 +202,8 @@ model AppUser {
   impersonationSessionsStarted ImpersonationSession[] @relation("ImpersonationActor")
   impersonationSessionsTarget  ImpersonationSession[] @relation("ImpersonationTarget")
   breakGlassSessions           BreakGlassSession[]
+  ownershipTransfersInitiated  OwnershipTransfer[]    @relation("OwnershipTransferFrom")
+  ownershipTransfersReceived   OwnershipTransfer[]    @relation("OwnershipTransferTo")
 
   @@unique([authProvider, authSubject])
   @@index([status], map: "idx_app_users_status")
@@ -776,4 +779,26 @@ model BreakGlassSession {
   organization Organization? @relation(fields: [targetOrganizationId], references: [id], onDelete: NoAction)
 
   @@map("break_glass_sessions")
+}
+
+// Two-step ownership transfer (Phase 6, spec §4.2 + §9 rule 1). One
+// pending transfer per org enforced by a partial unique index (see
+// migration). Rows persist post-decision as history — same "sessions
+// outlive actors" argument as ImpersonationSession.
+model OwnershipTransfer {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  fromUserId      String   @map("from_user_id") @db.Uuid
+  toUserId        String   @map("to_user_id") @db.Uuid
+  status          String   @default("pending")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt       DateTime @map("expires_at") @db.Timestamptz(6)
+  decidedAt       DateTime? @map("decided_at") @db.Timestamptz(6)
+  decidedReason   String?  @map("decided_reason")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  fromUser     AppUser      @relation("OwnershipTransferFrom", fields: [fromUserId], references: [id], onDelete: NoAction)
+  toUser       AppUser      @relation("OwnershipTransferTo",   fields: [toUserId],   references: [id], onDelete: NoAction)
+
+  @@map("ownership_transfers")
 }

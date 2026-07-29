@@ -4,6 +4,7 @@ import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
 import { getGateway } from './gateway';
+import { loadOrgToggles } from '@/lib/rbac';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
@@ -214,4 +215,35 @@ export async function applyWebhook(
     });
     return 'applied';
   });
+}
+
+// -----------------------------------------------------------------------------
+// Phase 6 spec §6.2 — front-desk discount ceiling.
+//
+// The org's `toggle.frontdesk.discount_ceiling` (numeric, currency units)
+// caps the discretionary discount a FRONT_DESK caller can apply at
+// checkout. Ceiling of 0 = no discretion (the default).
+//
+// Callers (the future discount pathway — not yet wired into checkout,
+// which today always settles at `appointment.price`) must call this
+// helper BEFORE persisting the discount so the check happens in the
+// same tenant-scoped tx.
+//
+// Passing a caller with roleKey !== 'FRONT_DESK' is a no-op (owners /
+// admins use `payment.discount:unlimited` per spec §5 and aren't bound
+// by the ceiling).
+// -----------------------------------------------------------------------------
+export async function assertDiscountWithinCeiling(
+  orgId: string,
+  actorRoleKey: string | null,
+  discountAmount: number,
+): Promise<void> {
+  if (actorRoleKey !== 'FRONT_DESK') return;
+  if (discountAmount <= 0) return;
+  const toggles = await loadOrgToggles(orgId);
+  if (discountAmount > toggles.frontdeskDiscountCeiling) {
+    throw new InvalidInputError(
+      `discount ${discountAmount} exceeds the front-desk ceiling ${toggles.frontdeskDiscountCeiling}`,
+    );
+  }
 }

@@ -2,6 +2,8 @@ import type { LocationType, UserRole } from '@prisma/client';
 import { ConflictError, InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
+import { assertNotLastOwner } from '@/lib/admin/last-owner';
+import { canManageRoleAssignment, buildAuthContext } from '@/lib/rbac';
 
 // -----------------------------------------------------------------------------
 // Admin service (owner-only). Every mutation is scoped via withOrg (RLS +
@@ -205,6 +207,21 @@ export async function updateStaff(session: ActiveSession, id: string, body: unkn
 
 export async function deleteStaff(session: ActiveSession, id: string) {
   return withOrg(session.organizationId, async (tx) => {
+    // Phase 6 spec §9 rule 5: provider deletion blocked while future
+    // bookings exist. Cancelled + completed appointments don't count —
+    // they're history that shouldn't block cleanup.
+    const futureBookings = await tx.appointment.count({
+      where: {
+        staffId: id,
+        startsAt: { gt: new Date() },
+        status: { notIn: ['cancelled', 'completed'] },
+      },
+    });
+    if (futureBookings > 0) {
+      throw new ConflictError(
+        `provider has ${futureBookings} future booking(s) — cancel or reassign first (spec §9 rule 5)`,
+      );
+    }
     try {
       await tx.staff.delete({ where: { id } });
       await writeAudit(tx, session, 'delete', 'staff', id);
@@ -382,23 +399,82 @@ export async function listMembers(session: ActiveSession): Promise<MemberRow[]> 
   });
 }
 
+// Map legacy enum → target roles.key for the rank/lattice check.
+const ENUM_TO_KEY: Record<UserRole, string> = {
+  owner: 'ORG_OWNER',
+  practitioner: 'PROVIDER',
+  receptionist: 'FRONT_DESK',
+};
+
 export async function updateMemberRole(
   session: ActiveSession,
   membershipId: string,
   role: UserRole,
 ) {
   if (!USER_ROLES.includes(role)) throw new InvalidInputError('invalid role');
+  const targetKey = ENUM_TO_KEY[role];
+
+  // Phase 6 guardrail 1: rank + lattice check on the ACTOR's role.
+  // Must happen BEFORE the withOrg tx so the actor's AuthContext is
+  // resolved outside a tenant-locked connection.
+  const actorCtx = session.membershipId
+    ? await buildAuthContext(session.userId, session.membershipId)
+    : null;
+  if (!actorCtx) throw new InvalidInputError('actor has no active membership in this org');
+  const canManage = await canManageRoleAssignment(actorCtx, targetKey);
+  if (!canManage) {
+    throw new InvalidInputError(`your role cannot assign the ${targetKey} role`);
+  }
+
   return withOrg(session.organizationId, async (tx) => {
     const existing = await tx.membership.findUnique({
       where: { id: membershipId },
-      select: { userId: true },
+      select: { userId: true, roleRef: { select: { key: true } } },
     });
     if (!existing) throw new InvalidInputError('membership not found');
     if (existing.userId === session.userId) {
       throw new InvalidInputError('you cannot change your own role');
     }
-    const row = await tx.membership.update({ where: { id: membershipId }, data: { role } });
+
+    // Phase 6 guardrail 2: rank check on the CURRENT role of the target
+    // (spec §9 rule 3 — cannot modify a peer or superior).
+    if (existing.roleRef?.key) {
+      const canManageCurrent = await canManageRoleAssignment(actorCtx, existing.roleRef.key);
+      if (!canManageCurrent) {
+        throw new InvalidInputError(
+          `your role cannot modify a ${existing.roleRef.key} member`,
+        );
+      }
+    }
+
+    // Phase 6 guardrail 3: last-owner protection (spec §9 rule 1).
+    // If the target is the last ORG_OWNER and we're demoting them, refuse.
+    if (targetKey !== 'ORG_OWNER') {
+      await assertNotLastOwner(tx, session.organizationId, membershipId);
+    }
+
+    // Perform the enum + role_id update. Post-Phase-4, role_id is the
+    // authoritative pointer; the legacy enum is kept in sync for
+    // during-Contract compatibility.
+    const roleRow = await tx.role.findFirstOrThrow({
+      where: { key: targetKey, organizationId: null },
+      select: { id: true },
+    });
+    const row = await tx.membership.update({
+      where: { id: membershipId },
+      data: { role, roleId: roleRow.id },
+    });
     await writeAudit(tx, session, 'update', 'staff', existing.userId, { member: true, role });
+
+    // Phase 6 guardrail 4 (spec §9 rule 10): sessions invalidate on role
+    // change. Bump the TARGET user's sessionVersion — their live JWT
+    // gets kicked within SV_TTL_MS (5s) and the AuthContext cache
+    // rebuilds with the new role.
+    await tx.appUser.update({
+      where: { id: existing.userId },
+      data: { sessionVersion: { increment: 1 } },
+    });
+
     return row;
   });
 }
@@ -407,13 +483,40 @@ export async function removeMember(session: ActiveSession, membershipId: string)
   return withOrg(session.organizationId, async (tx) => {
     const existing = await tx.membership.findUnique({
       where: { id: membershipId },
-      select: { userId: true },
+      select: { userId: true, roleRef: { select: { key: true } } },
     });
     if (!existing) throw new InvalidInputError('membership not found');
     if (existing.userId === session.userId) {
       throw new InvalidInputError('you cannot remove yourself');
     }
+
+    // Phase 6 guardrail: rank check — you can't remove a peer or superior
+    // (spec §9 rule 3). buildAuthContext outside the tx so it doesn't
+    // fight the tenant-locked connection.
+    const actorCtx = session.membershipId
+      ? await buildAuthContext(session.userId, session.membershipId)
+      : null;
+    if (!actorCtx) throw new InvalidInputError('actor has no active membership');
+    if (existing.roleRef?.key) {
+      const canManage = await canManageRoleAssignment(actorCtx, existing.roleRef.key);
+      if (!canManage) {
+        throw new InvalidInputError(
+          `your role cannot remove a ${existing.roleRef.key} member`,
+        );
+      }
+    }
+
+    // Phase 6 guardrail: last-owner protection (spec §9 rule 1).
+    await assertNotLastOwner(tx, session.organizationId, membershipId);
+
     await tx.membership.delete({ where: { id: membershipId } });
     await writeAudit(tx, session, 'delete', 'staff', existing.userId, { member: true });
+
+    // Phase 6 (spec §9 rule 10): bump session so the removed user's
+    // live JWT is rejected on the next request.
+    await tx.appUser.update({
+      where: { id: existing.userId },
+      data: { sessionVersion: { increment: 1 } },
+    });
   });
 }

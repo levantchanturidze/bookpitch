@@ -5,6 +5,15 @@ import { withOrg, withoutRls } from '@/lib/db';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
 import { log } from '@/lib/logger';
+import { buildAuthContext, canManageRoleAssignment } from '@/lib/rbac';
+
+// Legacy enum → Phase 3 role key. Kept here (small mapping duplicated
+// with lib/admin.ts) so this module stays self-contained.
+const ENUM_TO_KEY: Record<UserRole, string> = {
+  owner: 'ORG_OWNER',
+  practitioner: 'PROVIDER',
+  receptionist: 'FRONT_DESK',
+};
 
 // -----------------------------------------------------------------------------
 // Staff invitations.
@@ -37,13 +46,25 @@ export async function createInvitation(
   session: ActiveSession,
   input: CreateInvitationInput,
 ): Promise<CreateInvitationResult> {
-  // Authorization is the caller's responsibility (route handler must call
-  // requirePermission(ctx, 'staff.invite', ...)). Service trusts its input.
+  // Route-level guard already checked `staff.invite`. Phase 6 adds a
+  // second layer here: the invited ROLE must be one the actor can
+  // assign per the rank + lattice (spec §9 rule 2). An ORG_ADMIN
+  // cannot invite an ORG_OWNER via this flow; enforcement of the same
+  // rule on updateMemberRole prevents the same escalation post-accept.
   const email = input.email.trim().toLowerCase();
   if (!email || !email.includes('@')) throw new InvalidInputError('email is invalid');
   const role = input.role;
   if (role !== 'owner' && role !== 'practitioner' && role !== 'receptionist') {
     throw new InvalidInputError('role must be owner | practitioner | receptionist');
+  }
+  const targetKey = ENUM_TO_KEY[role];
+  if (session.membershipId) {
+    const actorCtx = await buildAuthContext(session.userId, session.membershipId);
+    if (!actorCtx) throw new InvalidInputError('actor has no active membership');
+    const canManage = await canManageRoleAssignment(actorCtx, targetKey);
+    if (!canManage) {
+      throw new InvalidInputError(`your role cannot invite the ${targetKey} role`);
+    }
   }
 
   const raw = randomBytes(32).toString('base64url');

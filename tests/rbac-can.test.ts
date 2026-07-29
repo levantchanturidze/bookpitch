@@ -137,6 +137,12 @@ describe('can()', () => {
         isBreakGlass: false,
         sessionVersion: 1,
         organizationStatus: null,
+        orgToggles: {
+          providerFinancialReports: false,
+          providerClinicalNotesOthers: false,
+          frontdeskClientFullHistory: false,
+          frontdeskDiscountCeiling: 0,
+        },
       } as const;
       expect(can(ctx, 'booking.read', { organizationId: 'anything' })).toBe(false);
       expect(can(ctx, 'platform.org.suspend')).toBe(true);

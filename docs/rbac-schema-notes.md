@@ -556,4 +556,91 @@ in Phase 3; Phase 5 populates it with the four categories from spec
 override (`__setRestrictedDuringImpersonation`) preserved so specific
 tests can probe narrower sets.
 
+## 9. Phase 6 additions
+
+Two additions on top of Phase 5: guardrails on staff management + org
+plane invariants, and the `ownership_transfers` table for two-step
+owner change (spec §4.2).
+
+### 9.1. `ownership_transfers` table (migration 20260728140000)
+
+Two-step ownership transfer:
+- `status` transitions: `pending → accepted | declined | expired | revoked`
+- Partial unique index on `(organization_id) WHERE status = 'pending'`
+  — one pending transfer per org at a time. The application error
+  ("a pending ownership transfer already exists…") is friendlier than
+  the DB-level unique-violation but the constraint is authoritative.
+- FKs `NO ACTION` on both user FKs (from + to) — evidentiary rows
+  outlive their actors, same rationale as `audit_log`.
+- Row-level security enabled (tenant isolation).
+- Hot query: `WHERE to_user_id = $1 AND status = 'pending'` — the
+  nominee's inbox. Partial index `idx_ownership_transfers_to_pending`
+  covers it in O(1).
+
+Accept runs in a single `prismaAdmin.$transaction`: promote target
+membership to `ORG_OWNER`, demote previous owner to `ORG_ADMIN`, set
+`organizations.owner_user_id = to_user_id`, mark transfer accepted,
+bump BOTH users' `sessionVersion` (spec §9 rule 10 — role change
+invalidates sessions). One atomic write; failure at any step rolls
+back everything.
+
+### 9.2. `assertNotLastOwner` helper (lib/admin/last-owner.ts)
+
+Spec §9 rule 1: every organization keeps at least one active
+ORG_OWNER. The helper counts active `ORG_OWNER` memberships in the org
+EXCLUDING the target membership; a count of zero means the mutation
+would leave the org ownerless.
+
+Called from:
+- `updateMemberRole` when the change would demote an owner
+- `removeMember` unconditionally (defense in depth)
+
+Runs inside the caller's tx so the count + write see the same
+snapshot. Callers pass the tx handle.
+
+**Not reachable via the standard admin flow.** In practice, `removeMember`
+already refuses when actor+target are peers (same rank). An ORG_OWNER
+can't remove a peer ORG_OWNER; a SUPER_ADMIN never uses org-plane
+`removeMember`. The check is defense-in-depth for future paths that
+might bypass the rank check.
+
+### 9.3. Per-org toggles namespace
+
+`organizations.features` JSONB carries both feature flags (existing,
+managed by `lib/features.ts`) and Phase 6 toggles (new, managed by
+`lib/rbac/toggles.ts`). Namespaces disambiguate:
+
+- Feature flags: bare keys — `patient_booking_widget`, etc.
+- Toggles: `toggle.<name>` prefix. Four ship in Phase 6:
+  - `toggle.provider.financial_reports` (bool, default false)
+  - `toggle.provider.clinical_notes_others` (bool, default false)
+  - `toggle.frontdesk.client_full_history` (bool, default false)
+  - `toggle.frontdesk.discount_ceiling` (number, default 0)
+
+Cache invalidation on write (`updateOrgToggles`) — the 30s TTL is a
+backstop, not the primary lever. The AuthContext cache also picks up
+the new value on the next `buildAuthContext` (bumping the user's
+`sessionVersion` would force it faster; not currently done on toggle
+writes because a 30s delay is acceptable for a policy change).
+
+### 9.4. Branch scope resolution — `lib/rbac/scope.ts`
+
+`can()` handles `:branch` grants against `ctx.branchIds`. Phase 6 adds
+`scopedLocationIds(ctx)` which resolves that set to the legacy
+`locations.id[]` via `branches.legacy_location_id`. Route handlers
+merge the result into their query's WHERE clause so a BRANCH_MANAGER
+hitting a list endpoint without a `locationId` param doesn't get every
+branch's data.
+
+Returns `null` for unrestricted callers (empty `ctx.branchIds`) —
+distinguishable from an empty scope (BRANCH_MANAGER with no active
+branches, which correctly returns zero rows).
+
+Fixture pin: the seed's Split Practice "Downtown" branch is linked to
+the legacy "Split Downtown Loc" location (`branches.legacy_location_id`).
+This makes `scopedLocationIds` resolve to a real location for the
+BRANCH_MANAGER fixture user — Phase 2's auto-created shadow branch is
+deleted first so the pointer is unambiguous.
+
+
 
