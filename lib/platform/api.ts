@@ -24,6 +24,7 @@ import type { NextResponse } from 'next/server';
 import { withApi } from '@/lib/auth';
 import { requireAuthContext } from '@/lib/rbac';
 import type { AuthContext } from '@/lib/rbac';
+import { log } from '@/lib/logger';
 import { auditBreakGlassRead } from './break-glass';
 
 export function withPlatformApi<T>(
@@ -34,12 +35,22 @@ export function withPlatformApi<T>(
     const ctx = await requireAuthContext();
     const body = await handler(ctx);
     if (ctx.isBreakGlass) {
-      await auditBreakGlassRead(ctx, action).catch(() => {
-        // Never let an audit-write failure change the response — logged
-        // by prisma internals; the request already succeeded from the
-        // caller's perspective. Prefer a lost audit row over a false
-        // 500 that hides the actual outcome.
-      });
+      // Spec §7.2 rule 6: reads during a break-glass session MUST be
+      // audited. An unauditable read defeats the entire point of
+      // break-glass, so fail closed: log loud then throw. withApi maps
+      // this to a 500 and Next.js re-throws. Prefer a false 5xx (client
+      // retries) over silently losing an audit row.
+      try {
+        await auditBreakGlassRead(ctx, action);
+      } catch (err) {
+        log.error('platform.break_glass.audit_write_failed', {
+          action,
+          sessionId: ctx.breakGlass?.sessionId,
+          actorUserId: ctx.userId,
+          error: (err as Error).message,
+        });
+        throw new Error('break-glass audit write failed — refusing to serve read');
+      }
     }
     return body;
   });

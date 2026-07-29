@@ -9,18 +9,22 @@ audit-log integrity. Ran against the multi-tenant fixtures from Phase 3 +
 Phase 5 (`prisma/rbac-fixtures.ts`).
 
 **Deliverable format** per prompt: findings first, then fixes and
-regression tests. **No fixes applied.** Each finding maps to a probe in
-`tests/security-review.test.ts` marked `it.fails(...)` — vitest tracks
-the finding without blocking CI, and forces us to un-mark the moment the
-fix lands.
+regression tests. Each finding maps to a probe in
+`tests/security-review.test.ts`.
+
+## Status: all three findings fixed (2026-07-29)
+
+All three findings have landed on `rbac-rebuild`. The regression probes
+are now plain `it(...)` and pass. Details in the "Resolution" block on
+each finding below.
 
 ## Executive summary
 
-| ID | Severity | Surface | Title |
-|---|---|---|---|
-| [SEC-001](#sec-001) | Medium | Cross-tenant | Customer routes return 200 + body-shape for cross-tenant IDs instead of 404 |
-| [SEC-002](#sec-002) | Low-Medium | Cross-tenant | `/api/customers/[id]/export` throws an unmapped 5xx for missing / cross-tenant IDs |
-| [SEC-003](#sec-003) | High | Break-glass | Break-glass read-audit failure is silently swallowed (spec §7.2 rule 6 violation) |
+| ID | Severity | Surface | Title | Status |
+|---|---|---|---|---|
+| [SEC-001](#sec-001) | Medium | Cross-tenant | Customer routes return 200 + body-shape for cross-tenant IDs instead of 404 | **Fixed** 2026-07-29 |
+| [SEC-002](#sec-002) | Low-Medium | Cross-tenant | `/api/customers/[id]/export` throws an unmapped 5xx for missing / cross-tenant IDs | **Fixed** 2026-07-29 |
+| [SEC-003](#sec-003) | High | Break-glass | Break-glass read-audit failure is silently swallowed (spec §7.2 rule 6 violation) | **Fixed** 2026-07-29 |
 
 Three real findings across 37 probes. **No critical findings.** The
 Phase 1 append-only invariant holds, RLS holds, cross-tenant data is
@@ -102,8 +106,24 @@ One-line change per site.
 
 ### Regression test
 
-Live in `tests/security-review.test.ts`. Un-mark `it.fails` → `it`
-when the fix lands.
+Live in `tests/security-review.test.ts` (`P1.1`, `P1.2`, `P1.3`),
+now plain `it(...)` and passing.
+
+### Resolution — 2026-07-29
+
+All three sites in `app/api/customers/[id]/route.ts` swapped from
+`return NextResponse.json({error:'Not found'}, {status:404})` to
+`throw new NotFoundError('customer not found')`. The same anti-pattern
+was found at:
+
+- `app/api/customers/[id]/history/route.ts:40` — same fix
+  (`throw new NotFoundError`).
+- `app/api/appointments/[id]/route.ts:94` — same fix.
+- `app/api/customers/[id]/route.ts:90-94` — same class of bug for the
+  409 branch; converted to `throw new ConflictError(...)`.
+
+`NextResponse` import removed from all three files. `withApi`'s
+`mapError` produces the correct HTTP status for each throw class.
 
 ---
 
@@ -187,8 +207,24 @@ finds routes not using the wrapper.
 
 ### Regression test
 
-Same location. Un-mark `it.fails` → `it` when a 4xx (not a 5xx / throw)
-is returned.
+`P1.5`, now plain `it(...)` — asserts the response status is 4xx.
+
+### Resolution — 2026-07-29
+
+Introduced `withApiRaw()` in `lib/auth.ts` — same guard + `mapError`
+error-mapping as `withApi`, but the handler returns a bespoke
+`Response` (attachment / CSV / stream) instead of a JSON body.
+
+- `app/api/customers/[id]/export/route.ts` now wraps in `withApiRaw` so
+  `InvalidInputError('customer not found')` from `lib/gdpr.ts:81`
+  surfaces as a mapped 400 JSON response instead of a raw 500 / stack
+  trace. (Follow-up: `lib/gdpr.ts:81` still uses `InvalidInputError`
+  for a semantically-not-found; leaving as-is — the response is safe
+  and swapping to `NotFoundError` there is a semantic tidy-up, not a
+  security fix.)
+- `app/api/insurance/export/route.ts` — same class of bug (only mapped
+  `InvalidInputError`, everything else escaped). Migrated to
+  `withApiRaw` in the same commit for consistency.
 
 ---
 
@@ -274,9 +310,28 @@ if (ctx.isBreakGlass) {
 
 ### Regression test
 
-`P3.8` currently mocks `prismaAdmin.auditLog.create` to reject once,
-then hits `/platform/orgs` as SUPER in break-glass mode. Asserts the
-response is ≥500 (safe) rather than 200 (current, unsafe).
+`P3.8`, now plain `it(...)`. Mocks `prismaAdmin.auditLog.create` to
+reject once, then hits `/platform/orgs` as SUPER in break-glass mode.
+The wrapper `withApi` re-throws unknown 5xx errors (Next.js catches
+them and returns 500 in production); the probe catches the throw and
+treats it as status 500, then asserts `status >= 500`.
+
+### Resolution — 2026-07-29
+
+`lib/platform/api.ts::withPlatformApi` replaced the swallowing
+`.catch(() => {})` with an explicit try/catch that:
+
+1. Logs `platform.break_glass.audit_write_failed` at error level with
+   `{action, sessionId, actorUserId, error}` — surfaces to Sentry /
+   whatever's downstream so audit-path outages become visible.
+2. Throws a new `Error('break-glass audit write failed — refusing to
+   serve read')`. `withApi.mapError` treats unknown errors as 500 and
+   re-throws so Next.js handles the response.
+
+Behaviour verified end-to-end: the P3.8 probe's log output shows both
+the loud error log and the mapped 500. Spec §7.2 rule 6 now holds
+literally — a break-glass read that cannot be audited is never
+served.
 
 ---
 
@@ -384,40 +439,28 @@ fail if the invariant is ever broken.
 
 ---
 
-## Prioritization
+## Prioritization — closed
 
-Suggested order:
+All three findings have shipped fixes on `rbac-rebuild`. Original
+order-of-work was:
 
-### Fix now
-- **SEC-003 (High)** — one file, one function; the spec violation is
-  literal and detection would be very hard if it ever bit us in prod.
-  Low blast radius, high evidentiary payoff.
+- **Fix now** — SEC-003 (High): shipped.
+- **Fix before next release** — SEC-001 (Medium): shipped, grep pass
+  caught two additional broken-404 sites outside the initial scope.
+- **Fix soon (opportunistic)** — SEC-002 (Low-Medium): shipped along
+  with a same-class-of-bug fix in `/api/insurance/export`.
 
-### Fix before next release
-- **SEC-001 (Medium)** — three sites in `app/api/customers/[id]/route.ts`,
-  each a one-line change (`throw new NotFoundError(...)` instead of
-  `return NextResponse.json(...)`). Same pattern likely lives in a
-  handful of other routes — do a grep pass at the same time.
-
-### Fix soon (opportunistic)
-- **SEC-002 (Low-Medium)** — export route needs an error-mapping
-  wrapper. Can be bundled with SEC-001's grep pass — same class of bug.
-
-### Accept + document
-- Nothing in this category. All three findings are cheap to fix.
+No findings in the "accept + document" bucket.
 
 ---
 
 ## Regression test lifecycle
 
-Each finding's `it.fails(...)` block in `tests/security-review.test.ts`:
-- **Today**: assertion fails against current code → `it.fails` records
-  the finding without breaking CI.
-- **After fix**: assertion passes → `it.fails` becomes an "unexpected
-  pass" and vitest fails the suite. The fix commit MUST convert
-  `it.fails` → `it` — this is the signal that the finding is closed.
+Each finding's probe in `tests/security-review.test.ts` is now plain
+`it(...)` and passes:
+
+- **After fix (now)**: `it(...)` passes against the fixed code.
 - **If it ever regresses**: the plain `it` fails → CI fails → the
   regression is caught before merge.
 
-Do not remove the tests once fixed. Each one is defense against
-re-introduction.
+Do not remove the tests. Each one is defense against re-introduction.

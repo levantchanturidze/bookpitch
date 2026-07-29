@@ -1,6 +1,5 @@
 import type { NextRequest } from 'next/server';
-import { NextResponse } from 'next/server';
-import { InvalidInputError, ctxToSession, withApi } from '@/lib/auth';
+import { InvalidInputError, NotFoundError, ctxToSession, withApi } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
@@ -37,7 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return history;
     });
 
-    if (!result) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    if (!result) throw new NotFoundError('customer not found');
     return {
       history: {
         id: result.id,

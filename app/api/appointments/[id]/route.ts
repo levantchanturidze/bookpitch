@@ -1,6 +1,5 @@
 import type { NextRequest } from 'next/server';
-import { NextResponse } from 'next/server';
-import { ctxToSession, SlotTakenError, withApi } from '@/lib/auth';
+import { ctxToSession, NotFoundError, SlotTakenError, withApi } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
@@ -91,7 +90,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         return toAppointmentDto(row);
       });
 
-      if (!appointment) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+      if (!appointment) throw new NotFoundError('appointment not found');
 
       // Cancel-transition fan-out: notify anyone waiting on this slot.
       // Fire-and-catch — a waitlist failure never blocks the cancel.
