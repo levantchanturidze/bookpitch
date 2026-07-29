@@ -1,11 +1,17 @@
 import { createInterface, Interface } from 'node:readline';
 import { config as loadEnv } from 'dotenv';
 
-// Load .env then override with .env.local (matches prisma/seed.ts). Callers
-// running against a remote DB pass DATABASE_URL inline so neither file is
-// required — the explicit env-var check below covers that path.
-loadEnv();
-loadEnv({ path: '.env.local', override: true });
+// FOOTGUN NOTE (2026-07-30, learned the hard way):
+// A prior version of this file did `loadEnv({ path: '.env.local', override: true })`
+// unconditionally. That silently overwrote DATABASE_URL passed inline by the
+// caller with .env.local's localhost URL — the first production bootstrap
+// super-admin landed in the developer's local Postgres instead of Supabase.
+// Rule: caller intent (explicit env var) always wins. Only fall back to the
+// dotfiles when the caller hasn't provided DATABASE_URL.
+if (!process.env.DATABASE_URL) {
+  loadEnv();
+  loadEnv({ path: '.env.local', override: true });
+}
 
 // -----------------------------------------------------------------------------
 // scripts/create-platform-user.ts
@@ -92,14 +98,27 @@ async function main() {
     process.exit(1);
   }
 
-  const password = await promptPassword(`password for ${email}: `);
+  // Password: prefer env var (BOOKPITCH_ADMIN_PASSWORD) so the caller
+  // can pipe safely from automation; fall back to the interactive prompt
+  // for humans on a TTY. Env-var path skips the confirm step by design —
+  // the caller is responsible for typing it right the first time.
+  let password: string;
+  if (process.env.BOOKPITCH_ADMIN_PASSWORD) {
+    password = process.env.BOOKPITCH_ADMIN_PASSWORD;
+  } else {
+    password = await promptPassword(`password for ${email}: `);
+    if (password.length < 12) {
+      console.error('error: password must be at least 12 characters');
+      process.exit(1);
+    }
+    const confirm = await promptPassword('confirm password: ');
+    if (password !== confirm) {
+      console.error('error: passwords do not match');
+      process.exit(1);
+    }
+  }
   if (password.length < 12) {
     console.error('error: password must be at least 12 characters');
-    process.exit(1);
-  }
-  const confirm = await promptPassword('confirm password: ');
-  if (password !== confirm) {
-    console.error('error: passwords do not match');
     process.exit(1);
   }
 
