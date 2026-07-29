@@ -19,6 +19,17 @@ export const authConfig = {
   session: { strategy: 'jwt' },
   trustHost: true,
   pages: { signIn: '/signin' },
+  // Auth.js unconditionally sets a `__Secure-authjs.callback-url` cookie on
+  // every request that hits the middleware chain, even when our proxy
+  // returns its own redirect. There's no per-config switch to disable the
+  // cookie entirely, but setting `maxAge: 0` in its options makes the
+  // browser drop it the moment it arrives — same practical outcome.
+  cookies: {
+    callbackUrl: {
+      name: '__Secure-authjs.callback-url',
+      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: true, maxAge: 0 },
+    },
+  },
 } satisfies NextAuthConfig;
 
 /**
