@@ -123,6 +123,49 @@ with a seeded user, verifies a `session-token` cookie is issued, and
 uses that cookie to `GET /platform/orgs`. This is the only shape that
 would have caught the authorize() bug.
 
+## F-07 · RBAC guards ship in SHADOW MODE in production · P0 · Security
+
+**What:** `lib/rbac/guard.ts::requirePermission` calls `isEnforcing(module)`,
+which returns `false` unless `RBAC_ENFORCE_MODULES` env var is set. In shadow
+mode the guard logs `rbac.shadow_deny` and returns the ctx unchanged — the
+caller's route handler runs anyway. **No permission check actually blocks a
+request in production today.**
+
+**Confirmed live:** FRONT_DESK test account got 200 (not 403) from
+`GET /api/admin/staff` on `bookpitch1.vercel.app`. The endpoint requires
+`staff.update` which FRONT_DESK does not have (verified in `role_permissions`).
+Vercel runtime log for that request:
+
+```
+{"level":"warn","msg":"rbac.shadow_deny","permission":"staff.update",
+ "module":"admin","roleKey":"FRONT_DESK",...}
+```
+
+Denial logged, request served.
+
+**Env-var check:** `vercel env ls production` shows no `RBAC_ENFORCE_MODULES`
+key exists. So every module is in shadow.
+
+**Impact:** every permission check in the app is a no-op right now. FRONT_DESK
+can read staff endpoints, ORG_ADMIN can attempt actions above their rank,
+PROVIDER can hit other providers' bookings — none of it is enforced. The only
+things preventing full data leakage today are: (a) RLS on tenant-scoped tables
+(still working, verified with Phase 5 tests), (b) route handlers that shape
+their queries defensively (variable), and (c) branch-scope check which fires
+BEFORE `requirePermission` in `app/api/appointments/route.ts` (still enforcing
+per probe 3, unrelated to `requirePermission`).
+
+**Fix path:** set `RBAC_ENFORCE_MODULES` in Vercel Preview + Production. The
+Phase 4 enforcement audit (`docs/rbac-enforcement-audit.md`) lists every
+module — start with `*` (enforce all) for prod, or roll module-by-module
+starting with `admin`, `platform`, `payments`. Test every core flow first;
+enforcement mode will surface any missed `requirePermission` call or wrong
+permission key as a 403.
+
+**Do not blindly flip `*` in prod without first running the app against a
+staging DB with `RBAC_ENFORCE_MODULES=*` for at least a session per role.**
+The Phase 4 tests are all mocked — actual enforcement outcomes may differ.
+
 ## F-06 · Vercel build runs no migration step · P1 · Deploy pipeline
 
 **What:** `package.json` `build` is `next build`. There is no
