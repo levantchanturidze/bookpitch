@@ -170,6 +170,54 @@ export function withApi<T>(handler: () => Promise<T>): Promise<NextResponse> {
   });
 }
 
+/**
+ * Same guarantees as `withApi`, but for routes whose handler returns a
+ * bespoke Response (CSV, JSON attachment, file stream, …) instead of a
+ * plain JSON body. The success path passes the Response through
+ * untouched; the error path runs the same `mapError` so thrown
+ * NotFoundError/ForbiddenError/InvalidInputError/etc. become the same
+ * 4xx JSON payloads any other route would produce.
+ */
+export function withApiRaw(handler: () => Promise<Response>): Promise<Response> {
+  const requestId = newRequestId();
+  return withRequestContext({ requestId }, async () => {
+    const startedAt = Date.now();
+    try {
+      const session = await getSession().catch(() => null);
+      if (session) {
+        updateRequestContext({ orgId: session.organizationId, actorUserId: session.userId });
+      }
+      const res = await handler();
+      res.headers.set('x-request-id', requestId);
+      const durationMs = Date.now() - startedAt;
+      const warnMs = Number(process.env.LATENCY_WARN_MS ?? 1000);
+      const errorMs = Number(process.env.LATENCY_ERROR_MS ?? 3000);
+      const status = res.status;
+      if (durationMs >= errorMs) log.error('api.slow', { durationMs, status });
+      else if (durationMs >= warnMs) log.warn('api.slow', { durationMs, status });
+      else log.info('api', { durationMs, status });
+      return res;
+    } catch (err) {
+      const res = mapError(err);
+      res.headers.set('x-request-id', requestId);
+      if (res.status >= 500) {
+        log.error('api', {
+          durationMs: Date.now() - startedAt,
+          status: res.status,
+          error: (err as Error).message,
+        });
+      } else {
+        log.warn('api', {
+          durationMs: Date.now() - startedAt,
+          status: res.status,
+        });
+      }
+      if (res.status >= 500) throw err;
+      return res;
+    }
+  });
+}
+
 function mapError(err: unknown): NextResponse {
   if (err instanceof UnauthenticatedError) {
     return NextResponse.json({ error: err.message }, { status: 401 });

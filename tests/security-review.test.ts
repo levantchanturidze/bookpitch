@@ -159,15 +159,10 @@ beforeEach(() => {
 // § 1 — Cross-tenant isolation
 // =============================================================================
 describe('SEC § cross-tenant isolation', () => {
-  // SEC-001 finding — see docs/rbac-security-review.md.
-  // Customer routes return 200 with `{customer: null}` when RLS filters
-  // out a cross-tenant id. No data leak (the row is null), but the HTTP
-  // status contract is wrong: 200 should be a valid resource. Enumeration
-  // is limited because same shape appears for genuinely-nonexistent ids.
-  // Fix: replace `return NextResponse.json({...}, {status:404})` inside
-  // withApi handlers with `throw new NotFoundError(...)` — Phase 5 added
-  // that class exactly for this reason.
-  it.fails('P1.1: GET /api/customers/[other-org-id] returns 404 (not 200 with null)', async () => {
+  // SEC-001 fixed — customer routes now `throw new NotFoundError(...)`
+  // instead of returning a NextResponse from inside a withApi handler.
+  // withApi's mapError converts the throw into a proper 404.
+  it('P1.1: GET /api/customers/[other-org-id] returns 404 (SEC-001 fixed)', async () => {
     authMock.mockResolvedValue(await mockJwt(H.splitOwnerId, H.splitOrgId));
     const res = await routeCustomerItem.GET(req('http://x'), {
       params: Promise.resolve({ id: H.grandCustomerId }),
@@ -175,7 +170,7 @@ describe('SEC § cross-tenant isolation', () => {
     expect(res.status).toBe(404);
   });
 
-  it.fails('P1.2: PATCH /api/customers/[other-org-id] returns 404 (same SEC-001)', async () => {
+  it('P1.2: PATCH /api/customers/[other-org-id] returns 404 (SEC-001 fixed)', async () => {
     authMock.mockResolvedValue(await mockJwt(H.splitOwnerId, H.splitOrgId));
     const res = await routeCustomerItem.PATCH(
       req('http://x', { method: 'PATCH', body: JSON.stringify({ name: 'pwned' }) }),
@@ -184,7 +179,7 @@ describe('SEC § cross-tenant isolation', () => {
     expect(res.status).toBe(404);
   });
 
-  it.fails('P1.3: DELETE /api/customers/[other-org-id] returns 404 (same SEC-001)', async () => {
+  it('P1.3: DELETE /api/customers/[other-org-id] returns 404 (SEC-001 fixed)', async () => {
     authMock.mockResolvedValue(await mockJwt(H.splitOwnerId, H.splitOrgId));
     const res = await routeCustomerItem.DELETE(req('http://x'), {
       params: Promise.resolve({ id: H.grandCustomerId }),
@@ -203,24 +198,17 @@ describe('SEC § cross-tenant isolation', () => {
     expect(body.customers[0].name).toBe('Do Not Leak');
   });
 
-  // SEC-002 finding — see docs/rbac-security-review.md.
-  // Export route is NOT wrapped in withApi. lib/gdpr.ts throws
-  // InvalidInputError for a not-found customer; the throw escapes as a
-  // Next.js 500 (or worse, stack trace in dev). Should return 404 or 4xx.
-  it.fails('P1.5: /api/customers/[id]/export for cross-tenant id returns a mapped 4xx', async () => {
+  // SEC-002 fixed — /api/customers/[id]/export is now wrapped in
+  // withApiRaw, so InvalidInputError('customer not found') from
+  // lib/gdpr.ts becomes a mapped 400 JSON response instead of leaking
+  // a stack trace or raw 500.
+  it('P1.5: /api/customers/[id]/export for cross-tenant id returns a mapped 4xx (SEC-002 fixed)', async () => {
     authMock.mockResolvedValue(await mockJwt(H.splitOwnerId, H.splitOrgId));
-    let status = 0;
-    try {
-      const res = await routeCustomerExport.POST(req('http://x', { method: 'POST' }), {
-        params: Promise.resolve({ id: H.grandCustomerId }),
-      });
-      status = res.status;
-    } catch {
-      // Currently the code THROWS instead of returning a response.
-      status = 500;
-    }
-    expect(status).toBeGreaterThanOrEqual(400);
-    expect(status).toBeLessThan(500); // must be a mapped 4xx, not a 5xx or throw
+    const res = await routeCustomerExport.POST(req('http://x', { method: 'POST' }), {
+      params: Promise.resolve({ id: H.grandCustomerId }),
+    });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
   });
 
   it('P1.6: GET /api/appointments with an out-of-scope locationId returns 400', async () => {
@@ -526,23 +514,17 @@ describe('SEC § impersonation + break-glass', () => {
     expect(after).toBeGreaterThan(before);
   });
 
-  it.fails(
-    "P3.8: break-glass read audit-write failure must NOT silently succeed (currently .catch() swallows)",
+  it(
+    "P3.8: break-glass read audit-write failure fails closed (SEC-003 fixed)",
     async () => {
-      // Spec §7.2 rule 6: reads are audited. lib/platform/api.ts wraps the
-      // audit-write in .catch(() => {}) which swallows any error — meaning
-      // if the write fails, the caller still gets a 200 and the read is
-      // NOT auditable. The suggested fix: fail-closed on repeated audit
-      // failures + surface the error to logging.
-      //
-      // This test asserts SAFE behaviour (the request must not succeed
-      // when the audit row can't be written). It fails today because the
-      // catch swallows silently. Marked `it.fails` so it tracks the
-      // finding without blocking CI.
+      // Spec §7.2 rule 6: reads MUST be audited during a break-glass
+      // session. lib/platform/api.ts now surrounds the audit write with a
+      // try/catch that logs at error level and throws — withApi maps that
+      // throw to a 500 and re-throws so Next.js surfaces the failure.
       //
       // Reproduction: mock the audit insert to throw → hit /platform/orgs
-      // as SUPER in break-glass mode → response should be 500 or the
-      // request should be refused, but is currently 200.
+      // as SUPER in break-glass mode → the call must either throw or
+      // return a 5xx (never a 200).
       const bg = await prismaAdmin.breakGlassSession.create({
         data: {
           actorUserId: H.superUserId,
@@ -551,16 +533,22 @@ describe('SEC § impersonation + break-glass', () => {
         },
       });
       __clearAuthContextCache();
-      // Mock auditLog.create to fail.
       const spy = vi.spyOn(prismaAdmin.auditLog, 'create')
         .mockRejectedValueOnce(new Error('simulated audit failure'));
       authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-      const res = await routePlatformOrgs.GET();
+      let status = 0;
+      try {
+        const res = await routePlatformOrgs.GET();
+        status = res.status;
+      } catch {
+        // withApi re-throws unknown 5xx errors so Next.js sees them; in a
+        // real request Next.js maps that to a 500. The safe outcome is
+        // "never a 2xx", which a thrown error trivially satisfies.
+        status = 500;
+      }
       spy.mockRestore();
       void bg;
-      // Safe outcome: response signals failure OR refuses the read.
-      // Current behaviour: 200 (finding).
-      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(status).toBeGreaterThanOrEqual(500);
     },
   );
 

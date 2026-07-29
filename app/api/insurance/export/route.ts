@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { ctxToSession, InvalidInputError } from '@/lib/auth';
+import { ctxToSession, InvalidInputError, withApiRaw } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { buildClaimsExport, renderClaimsCsv } from '@/lib/insurance';
 import { log } from '@/lib/logger';
@@ -13,9 +13,9 @@ export const dynamic = 'force-dynamic';
 // Returns a CSV attachment ready to submit to the named insurer (or all
 // insurers when omitted). Missing/invalid dates → 400.
 //
-// Not wrapped in withApi because we return text/csv, not JSON.
+// Wrapped in withApiRaw (not withApi) so we can return text/csv.
 export async function GET(req: NextRequest) {
-  try {
+  return withApiRaw(async () => {
     const ctx = await requireAuthContext();
     requirePermission(ctx, 'report.export', { organizationId: ctx.activeOrganizationId! }, 'insurance');
     const session = ctxToSession(ctx);
@@ -45,12 +45,7 @@ export async function GET(req: NextRequest) {
         'cache-control': 'no-store',
       },
     });
-  } catch (err) {
-    if (err instanceof InvalidInputError) {
-      return NextResponse.json({ error: err.message }, { status: 400 });
-    }
-    throw err;
-  }
+  });
 }
 
 function slug(s: string): string {

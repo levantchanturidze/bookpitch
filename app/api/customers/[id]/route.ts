@@ -1,6 +1,5 @@
 import type { NextRequest } from 'next/server';
-import { NextResponse } from 'next/server';
-import { ctxToSession, withApi } from '@/lib/auth';
+import { ConflictError, ctxToSession, NotFoundError, withApi } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
@@ -29,9 +28,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       return toCustomerDetailDto(row);
     });
 
-    if (!customer) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
+    if (!customer) throw new NotFoundError('customer not found');
     return { customer };
   });
 }
@@ -54,7 +51,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       return toCustomerDto(row);
     });
 
-    if (!customer) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    if (!customer) throw new NotFoundError('customer not found');
     return { customer };
   });
 }
@@ -84,14 +81,9 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
       return { status: 'ok' as const };
     });
 
-    if (result.status === 'not_found') {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
+    if (result.status === 'not_found') throw new NotFoundError('customer not found');
     if (result.status === 'has_deps') {
-      return NextResponse.json(
-        { error: 'Customer has appointments and cannot be deleted' },
-        { status: 409 },
-      );
+      throw new ConflictError('Customer has appointments and cannot be deleted');
     }
     return { ok: true };
   });
