@@ -98,6 +98,123 @@ async function writePlatformAudit(
   });
 }
 
+/**
+ * Create a new organization from the platform plane (§6.1 row 1).
+ * Atomic: creates the org, one initial Location (Phase 2 trigger creates
+ * the matching Branch), and — if ownerEmail is provided — either promotes
+ * an existing user or sends them an ORG_OWNER invitation. Never sets a
+ * password; owner receives an invite link per §9 rule 4.
+ *
+ * Callers: platform.org.create (PLATFORM_ADMIN + SUPER_ADMIN per §6.1).
+ */
+export async function createOrganization(
+  actor: AuthContext,
+  input: {
+    name: string;
+    vertical?: 'clinic' | 'salon' | 'fitness' | 'mixed' | null;
+    locationName?: string;
+    locationType?: 'clinic' | 'salon';
+    ownerEmail?: string | null;
+  },
+): Promise<{
+  organizationId: string;
+  locationId: string;
+  ownerInvitationUrl: string | null;
+  ownerPromotedExistingUser: boolean;
+}> {
+  const name = input.name.trim();
+  if (name.length < 2) throw new InvalidInputError('name must be at least 2 characters');
+  const vertical = input.vertical ?? null;
+  if (vertical && !['clinic','salon','fitness','mixed'].includes(vertical)) {
+    throw new InvalidInputError('vertical must be clinic|salon|fitness|mixed');
+  }
+  const locationType = input.locationType ?? 'clinic';
+  if (locationType !== 'clinic' && locationType !== 'salon') {
+    throw new InvalidInputError('locationType must be clinic or salon');
+  }
+  const locationName = (input.locationName ?? 'Main location').trim();
+  const ownerEmail = input.ownerEmail?.trim().toLowerCase() || null;
+  if (ownerEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ownerEmail)) {
+    throw new InvalidInputError('ownerEmail is invalid');
+  }
+
+  // 1) Create the org + first location in a transaction. Phase 2 trigger
+  //    creates the corresponding Branch row via the location insert.
+  const { orgId, locationId } = await prismaAdmin.$transaction(async (tx) => {
+    const org = await tx.organization.create({
+      data: { name, vertical, status: 'active' },
+      select: { id: true },
+    });
+    const loc = await tx.location.create({
+      data: {
+        organizationId: org.id,
+        name: locationName,
+        type: locationType,
+      },
+      select: { id: true },
+    });
+    return { orgId: org.id, locationId: loc.id };
+  });
+
+  await writePlatformAudit(actor, orgId, 'org.create', {
+    name, vertical, locationName, locationType, viaOwnerEmail: ownerEmail ?? null,
+  });
+  log.info('platform.org.create', { orgId, actorUserId: actor.userId, name });
+
+  // 2) Owner handling — same rules as changeOrganizationOwner: promote if
+  //    the email already belongs to an active user, otherwise invite.
+  //    Skipped entirely if ownerEmail is null (SUPER_ADMIN can wire an
+  //    owner in a second step).
+  let invitationUrl: string | null = null;
+  let promotedExisting = false;
+  if (ownerEmail) {
+    const existingUser = await prismaAdmin.appUser.findUnique({
+      where: { email: ownerEmail }, select: { id: true },
+    });
+    if (existingUser) {
+      // Grant membership + owner pointer atomically. changeOrganizationOwner
+      // assumes an existing membership, so do this write directly.
+      const ownerRole = await prismaAdmin.role.findFirstOrThrow({
+        where: { key: 'ORG_OWNER', organizationId: null }, select: { id: true },
+      });
+      await prismaAdmin.$transaction([
+        prismaAdmin.membership.create({
+          data: {
+            organizationId: orgId,
+            userId: existingUser.id,
+            role: 'owner',
+            roleId: ownerRole.id,
+            status: 'active',
+          },
+        }),
+        prismaAdmin.organization.update({
+          where: { id: orgId }, data: { ownerUserId: existingUser.id },
+        }),
+      ]);
+      await writePlatformAudit(actor, orgId, 'org.owner.change', {
+        newOwnerUserId: existingUser.id, promotedExisting: true, viaCreate: true,
+      });
+      promotedExisting = true;
+    } else {
+      const inv = await createInvitation(
+        { userId: actor.userId, email: actor.email, organizationId: orgId },
+        { email: ownerEmail, role: 'owner' as UserRole },
+      );
+      await writePlatformAudit(actor, orgId, 'org.owner.invite', {
+        email: ownerEmail, invitationId: inv.id, viaCreate: true,
+      });
+      invitationUrl = inv.url;
+    }
+  }
+
+  return {
+    organizationId: orgId,
+    locationId,
+    ownerInvitationUrl: invitationUrl,
+    ownerPromotedExistingUser: promotedExisting,
+  };
+}
+
 export async function suspendOrganization(actor: AuthContext, orgId: string, reason: string) {
   if (!reason || reason.trim().length < 5) {
     throw new InvalidInputError('reason must be at least 5 characters');

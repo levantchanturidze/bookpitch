@@ -27,6 +27,12 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
     <div>
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-lg font-bold">Organizations — {orgs.length}</h2>
+        <Link
+          href="/platform/orgs/new"
+          className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+        >
+          + New organization
+        </Link>
       </div>
       <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
         <table className="w-full text-left text-xs">

@@ -6,6 +6,7 @@ import { AlertTriangle, ShieldAlert } from 'lucide-react';
 
 const NAV = [
   { href: '/platform/orgs',        label: 'Organizations' },
+  { href: '/platform/roles',       label: 'Platform roles' },
   { href: '/platform/audit',       label: 'Audit log' },
   { href: '/platform/break-glass', label: 'Break-glass' },
 ] as const;
