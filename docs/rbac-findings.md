@@ -123,6 +123,33 @@ with a seeded user, verifies a `session-token` cookie is issued, and
 uses that cookie to `GET /platform/orgs`. This is the only shape that
 would have caught the authorize() bug.
 
+## F-08 · Platform §6.1 gaps still open · P2 · Feature completeness
+
+**Fixed 2026-08-02 (commit 81fd1ea):**
+- Organization creation — POST /api/platform/orgs + /platform/orgs/new page.
+- Platform role assignment (SUPER_ADMIN only) — POST /api/platform/roles +
+  /platform/roles page.
+
+**Still missing from spec §6.1:**
+- **Edit organization.** No PATCH /api/platform/orgs/[id] and no edit UI.
+  Only name/vertical/allowSupportImpersonation would be editable today.
+  Low-effort; do this alongside the toggle UI below.
+- **Feature flags / global config CRUD.** `organizations.features` (JSONB)
+  exists and has consumers (spec §6.2 toggle keys), but there's no endpoint
+  that lets SUPER_ADMIN read/write it from /platform. Related:
+  `organizations.allowSupportImpersonation` is read on the API side but
+  no UI toggles it.
+- **Subscription / plan / invoice management.** `platform.billing.*` perms
+  are seeded (SUPER_ADMIN + PLATFORM_ADMIN can manage; SUPPORT_AGENT read),
+  and `organizations.plan`, `planStatus`, `stripe*` columns exist — but no
+  endpoints or UI wire them together. Stripe integration is scaffolded in
+  `lib/billing/` but not connected to /platform.
+- **Audit-log filters in the UI.** GET /api/platform/audit supports query
+  params but the /platform/audit page renders all rows with no filter form.
+- **Organization status dashboard.** Aggregate view (member count, last
+  activity, trial expiry) — some columns are already populated on the
+  `_count` side; UI could aggregate them without new endpoints.
+
 ## F-07 · RBAC guards ship in SHADOW MODE in production · P0 · Security
 
 **What:** `lib/rbac/guard.ts::requirePermission` calls `isEnforcing(module)`,
