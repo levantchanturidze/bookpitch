@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { InvalidInputError, ctxToSession, withApi } from '@/lib/auth';
-import { requireAuthContext, requirePermission, scopedLocationIds } from '@/lib/rbac';
+import { requireAuthContext, requirePermission, scopedLocationIds, scopedByOwn } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import {
@@ -48,10 +48,18 @@ export async function GET(req: NextRequest) {
       : scoped ? { locationId: { in: scoped } }
       : {};
 
+    // F-09 fix: :own-scoped roles (PROVIDER's `booking.read:own`) MUST see
+    // only their own bookings. can() grants the call in list mode; the
+    // filter has to live at the query layer. Filter matches
+    // appointment.staff.userId to the caller's user id.
+    const ownUserId = scopedByOwn(ctx, 'booking.read');
+    const ownFilter = ownUserId ? { staff: { userId: ownUserId } } : {};
+
     const appointments = await withOrg(session.organizationId, async (tx) => {
       const rows = await tx.appointment.findMany({
         where: {
           ...locationFilter,
+          ...ownFilter,
           startsAt: { gte: fromDate, lt: toDate },
         },
         include: {

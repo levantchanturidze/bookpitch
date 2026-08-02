@@ -105,8 +105,17 @@ export function can(
   }
 
   // 4c. :own — resource ownership must match the caller.
+  //     List-mode fallback mirrors :branch (line 103): if no specific
+  //     resource.ownerUserId was passed, grant the call and expect the
+  //     caller's query to filter results by ctx.userId. Callers must use
+  //     scopedByOwn() from lib/rbac/scope.ts to derive that filter — the
+  //     permission layer trusts the query layer here, same trust model as
+  //     :branch scope. Without this fallback a role with only :own scope
+  //     (e.g. PROVIDER's booking.read:own) can never list ANYTHING under
+  //     enforcement mode.
   if (granted.has(perm(`${p}:own`))) {
-    return !!resource?.ownerUserId && resource.ownerUserId === ctx.userId;
+    if (!resource?.ownerUserId) return true;
+    return resource.ownerUserId === ctx.userId;
   }
 
   // 4d. Scope-less grant. A few permission keys (booking.create, client.create)

@@ -23,7 +23,8 @@
 // -----------------------------------------------------------------------------
 
 import { prismaAdmin } from '@/lib/db';
-import type { AuthContext } from './types';
+import type { AuthContext, PermissionKey } from './types';
+import { perm } from './types';
 
 /**
  * Resolves the caller's ctx.branchIds to the location IDs the app-plane
@@ -39,6 +40,33 @@ import type { AuthContext } from './types';
  * Cached inside AuthContext per-request via the 30s ctx cache — this
  * function is called once per list endpoint per session refresh.
  */
+/**
+ * Companion to can()'s :own list-mode fallback (see lib/rbac/can.ts §4c).
+ * Returns the userId to filter list queries by when the caller's strongest
+ * grant on the given base permission is `:own` — meaning they can only
+ * see rows they own.
+ *
+ * Returns null when the caller has :org or :branch (unrestricted or
+ * branch-scoped access) OR no grant at all (can() will separately deny).
+ * Callers merge into their query:
+ *
+ *   const ownUserId = scopedByOwn(ctx, 'booking.read');
+ *   const where = {
+ *     ...(ownUserId ? { staff: { userId: ownUserId } } : {}),
+ *     ...(scoped ? { locationId: { in: scoped } } : {}),
+ *   };
+ *
+ * The permission layer trusts the query layer to apply this filter —
+ * same trust model as scopedLocationIds() for :branch.
+ */
+export function scopedByOwn(ctx: AuthContext, basePermKey: string): string | null {
+  const p = basePermKey.split(':')[0]; // strip any accidental scope suffix
+  if (ctx.permissions.has(perm(`${p}:org`))) return null;
+  if (ctx.permissions.has(perm(`${p}:branch`))) return null;
+  if (ctx.permissions.has(perm(`${p}:own`))) return ctx.userId;
+  return null;
+}
+
 export async function scopedLocationIds(ctx: AuthContext): Promise<string[] | null> {
   if (ctx.branchIds.size === 0) return null;
   const rows = await prismaAdmin.branch.findMany({

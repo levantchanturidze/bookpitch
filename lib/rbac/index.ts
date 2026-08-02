@@ -11,7 +11,7 @@ export { requireAuthContext, requirePermission } from './guard';
 export { canManageRoleAssignment } from './rank';
 export { buildAuthContext } from './context';
 export { perm } from './types';
-export { scopedLocationIds } from './scope';
+export { scopedLocationIds, scopedByOwn } from './scope';
 export { loadOrgToggles, updateOrgToggles, DEFAULT_TOGGLES } from './toggles';
 export type { OrgToggles } from './toggles';
 export type {
