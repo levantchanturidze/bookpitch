@@ -203,6 +203,67 @@ tight upper bound. Consider (a) moving `prismaAdmin` reads through
 the transaction-mode pooler where possible, or (b) upgrading Supabase
 tier.
 
+## F-10 · No role-appropriate landing page · P2 · UX
+
+**What:** `app/page.tsx` unconditionally `redirect('/scheduler')` for every
+signed-in caller. ACCOUNTANT has no `booking.read` at any scope, so
+`/scheduler`'s server-side `requirePermission` throws → renders a 500
+under enforcement mode.
+
+**Tried and reverted (commit 3eb48d2):** made `/` role-aware by calling
+`requireAuthContext()` and dispatching by permission set. This worked
+functionally but added an extra `prismaAdmin` query to every home visit,
+which doubled DB load and — combined with F-11 (Supabase free-tier pool
+ceiling) — pushed us over the connection limit under normal use.
+
+**Correct fix:** teach `signInAction` (in `app/(auth)/signin/actions.ts`)
+to pick the landing at sign-in time using the JWT claims already loaded
+in the credentials `authorize()` callback. No extra query per home visit.
+Something like:
+```ts
+const landing = pickLanding(session.user.permissions ?? [], session.user.platformRoleId);
+await signIn('credentials', { ..., redirectTo: landing });
+```
+`pickLanding` is a pure function of the perm set — no DB call.
+
+**Interim workaround:** app-plane pages that a role can't reach do render
+the `app/(app)/error.tsx` "Operational Access Lock" panel — separate
+follow-up because the boundary isn't currently catching the ForbiddenError
+(Next 16 behavior needs investigation).
+
+## F-11 · Supabase free-tier pool ceiling exhausts under normal Vercel scaling · P1 · Ops
+
+**What:** Supabase free-tier session-mode pooler (port 5432, our
+`ADMIN_DATABASE_URL`) caps at **15 concurrent clients**. Every Vercel
+serverless function instance creates its own PrismaClient with its own
+pg pool (default `max: 10`). Two concurrent cold starts blow the ceiling
+and `EMAXCONNSESSION` cascades to production 500s for ~5-10 min until
+connections age out.
+
+**Manifested:** three times during 2026-08-02 iteration (auth-flow
+sign-in errors, `/scheduler` 500s, page-level `requireAuthContext`
+failures). Each time it took multiple minutes to recover.
+
+**Partial mitigation (commit af48441):** capped Prisma's pg pool at
+`PG_POOL_MAX=3` per client (down from default 10). Helps under
+low-concurrency but doesn't solve fan-out: 5 concurrent Vercel functions
+still exhausts 15.
+
+**Real fix candidates:**
+1. **Switch `ADMIN_DATABASE_URL` to the transaction pool (port 6543,
+   `?pgbouncer=true`)**. Transaction mode multiplexes many app
+   connections onto few DB backends — designed for serverless. Caveat:
+   breaks `prisma migrate deploy` (needs advisory locks) and any code
+   that uses prepared statements or session-level SET. Would need a
+   separate `ADMIN_MIGRATE_DATABASE_URL` (session pool) for migrations.
+2. **Upgrade Supabase to a paid tier** — session pool ceiling scales
+   with plan. Cleanest but costs money.
+3. **Route all admin reads through a lazy singleton PrismaClient with
+   pool max=1** and rely on Node's event loop for concurrency. Works
+   for read-heavy paths, gets contention-y under write bursts.
+
+None of these are a config flip. Left for a decision.
+
 ## F-07 · RBAC guards ship in SHADOW MODE in production · P0 · Security
 
 **What:** `lib/rbac/guard.ts::requirePermission` calls `isEnforcing(module)`,
