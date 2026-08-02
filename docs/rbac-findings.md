@@ -150,6 +150,59 @@ would have caught the authorize() bug.
   activity, trial expiry) — some columns are already populated on the
   `_count` side; UI could aggregate them without new endpoints.
 
+## F-09 · `:own` scope on list-mode calls returns false · P1 · Enforcement design gap
+
+**What:** `lib/rbac/can.ts:107-110` — when a caller with `:own` scope
+hits a list endpoint (no specific `resource.ownerUserId`),
+`can(ctx, 'booking.read')` returns false. `:branch` scope has a
+list-mode fallback (line 103: `if (!resource?.branchId) return true`)
+that grants the call and expects the query to filter by the caller's
+branch. `:own` has no equivalent, so a PROVIDER with `booking.read:own`
+literally cannot list their own calendar under enforcement mode.
+
+**Confirmed 2026-08-02:** flipped `RBAC_ENFORCE_MODULES=*` on prod.
+PROVIDER sign-in landed at `/scheduler` which returned 500 because
+`GET /api/appointments` calls
+`requirePermission(ctx, 'booking.read', {organizationId}, 'appointments')`.
+Log line: `rbac.enforce_deny permission=booking.read roleKey=PROVIDER`.
+Same failure for ACCOUNTANT and anyone with `:own`-scoped read
+permissions on list endpoints.
+
+**Reverted the enforcement flip** to keep prod usable while this is
+fixed. Shadow mode logs the deny but serves the request.
+
+**Fix path (needs a code change, not a config flip):**
+1. `lib/rbac/can.ts` — add a list-mode grant for `:own` mirroring the
+   `:branch` pattern:
+   ```ts
+   if (granted.has(perm(`${p}:own`))) {
+     if (!resource?.ownerUserId) return true;
+     return resource.ownerUserId === ctx.userId;
+   }
+   ```
+2. Every list route that calls `requirePermission(_, 'X.read', …)`
+   with `X:own` in scope must ALSO filter its query to `ownerUserId
+   === ctx.userId` — otherwise the `:own` scope grants a full list
+   read. Same trust model as `:branch`: guard is permissive at the
+   permission layer, the query layer is responsible for scope
+   containment.
+3. New helper `scopedByOwn(ctx, 'X.read')` → returns `ctx.userId` if
+   the caller's strongest matching scope is `:own`, else null. Routes
+   consume it in their `WHERE` clauses.
+
+**Blast radius:** every list endpoint with `:own` scope in play
+(`/api/appointments`, likely `/api/customers` if PROVIDER has
+`client.read:own`, calendar surfaces). The fix requires per-route
+audit + queries updated.
+
+**Related discovered 2026-08-02:** Supabase free-tier session-mode
+pooler is capped at 15 clients. My probe spike (7 accounts × parallel
+sign-ins) exhausted it and caused ~10 minutes of production 500s. The
+prisma clients in `lib/db.ts` open a connection per query without a
+tight upper bound. Consider (a) moving `prismaAdmin` reads through
+the transaction-mode pooler where possible, or (b) upgrading Supabase
+tier.
+
 ## F-07 · RBAC guards ship in SHADOW MODE in production · P0 · Security
 
 **What:** `lib/rbac/guard.ts::requirePermission` calls `isEnforcing(module)`,
