@@ -23,12 +23,19 @@ type CachedClients = {
 };
 const globalForPrisma = globalThis as unknown as CachedClients;
 
+// Supabase's free-tier session-mode pooler caps at 15 clients (port 5432).
+// Per Vercel serverless function invocation, the default pg pool max=10 —
+// two concurrent cold starts blow the ceiling. Cap the per-client pool at
+// PG_POOL_MAX (default 3) so even 5 concurrent functions leave headroom.
+// Callers on paid tiers can raise it via env.
+const POOL_MAX = Number(process.env.PG_POOL_MAX ?? 3);
+
 function build(connectionString: string | undefined, label: string): PrismaClient {
   if (!connectionString) {
     throw new Error(`${label} is not set — check .env.local`);
   }
   return new PrismaClient({
-    adapter: new PrismaPg({ connectionString }),
+    adapter: new PrismaPg({ connectionString, max: POOL_MAX }),
     log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
   });
 }
