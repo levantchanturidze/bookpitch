@@ -31,6 +31,7 @@ declare module 'next-auth' {
       activeOrganizationId: string | null;
       membershipId: string | null;
       platformRoleId: string | null;
+      roleKey: string | null;
     } & DefaultSession['user'];
   }
 }
@@ -42,6 +43,7 @@ declare module '@auth/core/jwt' {
     activeOrganizationId: string | null;
     membershipId: string | null;
     platformRoleId: string | null;
+    roleKey: string | null;
     sessionVersion: number;
   }
 }
@@ -116,14 +118,24 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (typeof email !== 'string' || typeof password !== 'string') return null;
 
         // Login predates any org context — bypass RLS to find the user +
-        // (optionally) their target membership.
+        // (optionally) their target membership. Also load the membership's
+        // role.key so downstream (JWT claim, root landing) can pick a
+        // sensible destination without a second query per home visit.
         const user = await withoutRls(async (tx) => {
           return tx.appUser.findUnique({
             where: { email },
             include: {
               memberships: requestedOrgId
-                ? { where: { organizationId: requestedOrgId, status: 'active' }, take: 1 }
-                : { orderBy: { createdAt: 'asc' }, take: 1, where: { status: 'active' } },
+                ? {
+                    where: { organizationId: requestedOrgId, status: 'active' },
+                    take: 1,
+                    include: { roleRef: { select: { key: true } } },
+                  }
+                : {
+                    orderBy: { createdAt: 'asc' }, take: 1,
+                    where: { status: 'active' },
+                    include: { roleRef: { select: { key: true } } },
+                  },
             },
           });
         });
@@ -158,6 +170,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           activeOrganizationId: membership?.organizationId ?? null,
           membershipId: membership?.id ?? null,
           platformRoleId: user.platformRoleId,
+          // F-10: roleKey in the JWT so `/` can pick a landing without a
+          // second DB round trip per home visit. Platform-only users get
+          // null here (they have no org membership); their platformRoleId
+          // steers them to /platform separately.
+          roleKey: membership?.roleRef?.key ?? null,
           sessionVersion: user.sessionVersion,
         };
       },
@@ -172,6 +189,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           activeOrganizationId: string | null;
           membershipId: string | null;
           platformRoleId: string | null;
+          roleKey: string | null;
           sessionVersion: number;
         };
         token.userId = u.id;
@@ -179,6 +197,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.activeOrganizationId = u.activeOrganizationId;
         token.membershipId = u.membershipId;
         token.platformRoleId = u.platformRoleId;
+        token.roleKey = u.roleKey ?? null;
         token.sessionVersion = u.sessionVersion ?? 1;
       }
       return token;
@@ -196,6 +215,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.user.activeOrganizationId = token.activeOrganizationId;
       session.user.membershipId         = token.membershipId;
       session.user.platformRoleId       = token.platformRoleId;
+      session.user.roleKey              = token.roleKey;
       return session;
     },
   },

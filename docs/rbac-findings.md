@@ -255,7 +255,28 @@ tight upper bound. Consider (a) moving `prismaAdmin` reads through
 the transaction-mode pooler where possible, or (b) upgrading Supabase
 tier.
 
-## F-10 · No role-appropriate landing page · P2 · UX
+## F-10 · No role-appropriate landing page · P2 · UX · FIXED 2026-08-03
+
+**Fixed.** The JWT now carries the caller's org-plane `roleKey` (added
+to `authorize()` in auth.ts via `include: { roleRef: { select: { key: true } } }`
+on the membership load — no extra query, folded into the existing user
+lookup). `app/page.tsx` reads the session via `auth()` (JWT-only, no DB)
+and dispatches:
+
+- `platformRoleId` set → `/platform`
+- `roleKey === 'ACCOUNTANT'` → `/settings/billing`
+- `roleKey === 'MARKETING'` → `/patients`
+- otherwise (ORG_OWNER, ORG_ADMIN, BRANCH_MANAGER, SENIOR_PROVIDER,
+  FRONT_DESK, PROVIDER — all hold `booking.read` at some scope) → `/scheduler`
+
+The earlier attempt (reverted in 3eb48d2) added `requireAuthContext()`
+which hit the DB per home visit and made F-11's pool ceiling worse.
+This version reads only the JWT.
+
+Original finding below.
+
+---
+
 
 **What:** `app/page.tsx` unconditionally `redirect('/scheduler')` for every
 signed-in caller. ACCOUNTANT has no `booking.read` at any scope, so
