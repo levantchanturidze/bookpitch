@@ -217,11 +217,15 @@ would have caught the authorize() bug.
   update via plain PATCH; `allowSupportImpersonation` toggle requires
   fresh password re-auth (spec §9 rule 9 — changing support-access
   policy is destructive-tier).
-- **Feature flags / global config CRUD.** `organizations.features` (JSONB)
-  exists and has consumers (spec §6.2 toggle keys), but there's no endpoint
-  that lets SUPER_ADMIN read/write it from /platform. Related:
-  `organizations.allowSupportImpersonation` is read on the API side but
-  no UI toggles it.
+- ~~**Feature flags / global config CRUD.**~~ **Fixed 2026-08-03.**
+  GET+PATCH `/api/platform/orgs/[id]/toggles`. GET is `platform.analytics.read`
+  (any platform role — view); PATCH is `platform.config.manage`
+  (SUPER_ADMIN only per spec §6.1 "Feature flags / global config") +
+  fresh password re-auth (§9 rule 9). UI panel on OrgDetail with the
+  three ⚙️ boolean toggles + numeric discount ceiling; non-SUPER users
+  see read-only values. `allowSupportImpersonation` toggle landed in
+  the earlier edit-org fix (already deployed 2026-08-03 in commit
+  372ac68).
 - **Subscription / plan / invoice management.** `platform.billing.*` perms
   are seeded (SUPER_ADMIN + PLATFORM_ADMIN can manage; SUPPORT_AGENT read),
   and `organizations.plan`, `planStatus`, `stripe*` columns exist — but no

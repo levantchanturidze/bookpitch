@@ -24,6 +24,14 @@ type Capabilities = {
   canResetPassword: boolean;
   canImpersonate: boolean;
   canEdit: boolean;
+  canEditToggles: boolean;
+};
+
+type Toggles = {
+  providerFinancialReports: boolean;
+  providerClinicalNotesOthers: boolean;
+  frontdeskClientFullHistory: boolean;
+  frontdeskDiscountCeiling: number;
 };
 
 /**
@@ -42,7 +50,13 @@ async function freshAuth(): Promise<boolean> {
   return true;
 }
 
-export default function OrgDetail({ org, capabilities }: { org: Org; capabilities: Capabilities }) {
+export default function OrgDetail({
+  org, capabilities, toggles,
+}: {
+  org: Org;
+  capabilities: Capabilities;
+  toggles: Toggles;
+}) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -187,6 +201,26 @@ export default function OrgDetail({ org, capabilities }: { org: Org; capabilitie
       )}
 
       <section>
+        <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+          Feature toggles
+          {!capabilities.canEditToggles && (
+            <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-normal normal-case text-slate-400">
+              view only — SUPER_ADMIN can edit
+            </span>
+          )}
+        </h3>
+        <OrgTogglesPanel
+          orgId={org.id}
+          initial={toggles}
+          canEdit={capabilities.canEditToggles}
+          onSaved={() => router.refresh()}
+          onError={setError}
+          freshAuth={freshAuth}
+        />
+      </section>
+
+
+      <section>
         <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Members</h3>
         <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
           <table className="w-full text-left text-xs">
@@ -229,6 +263,135 @@ function Stat({ label, value }: { label: string; value: number }) {
     <div>
       <p className="font-mono text-[10px] uppercase tracking-widest text-slate-500">{label}</p>
       <p className="mt-1 font-mono text-lg font-bold">{value}</p>
+    </div>
+  );
+}
+
+// F-08 feature-flags UI. Renders the four §6.2 ⚙️ toggle values for
+// this org. SUPER_ADMIN gets edit controls (each PATCH requires reauth
+// per the API); others see values only. Numeric field (discount ceiling)
+// is separate from the three booleans.
+function OrgTogglesPanel({
+  orgId, initial, canEdit, onSaved, onError, freshAuth,
+}: {
+  orgId: string;
+  initial: Toggles;
+  canEdit: boolean;
+  onSaved: () => void;
+  onError: (msg: string | null) => void;
+  freshAuth: () => Promise<boolean>;
+}) {
+  const [t, setT] = useState(initial);
+  const [pending, setPending] = useState(false);
+
+  const patch = async (delta: Partial<Toggles>) => {
+    onError(null); setPending(true);
+    try {
+      if (canEdit) {
+        const ok = await freshAuth();
+        if (!ok) return;
+      }
+      const res = await fetch(`/api/platform/orgs/${orgId}/toggles`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(delta),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error ?? `HTTP ${res.status}`);
+      }
+      const body = await res.json() as { toggles: Toggles };
+      setT(body.toggles);
+      onSaved();
+    } catch (e) {
+      onError((e as Error).message);
+    } finally { setPending(false); }
+  };
+
+  const rows: Array<{ key: keyof Toggles; label: string; hint: string }> = [
+    { key: 'providerFinancialReports',
+      label: 'Provider — org financial reports',
+      hint: 'When on, PROVIDER can view org-level financial reports (default OFF).' },
+    { key: 'providerClinicalNotesOthers',
+      label: "Provider — others' clinical notes",
+      hint: "When on, PROVIDER can read other clinicians' notes (default OFF)." },
+    { key: 'frontdeskClientFullHistory',
+      label: 'Front-desk — full client history',
+      hint: 'When on, FRONT_DESK sees full client history (default OFF — contact only).' },
+  ];
+
+  return (
+    <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900 p-4">
+      {rows.map(({ key, label, hint }) => {
+        const val = t[key] as boolean;
+        return (
+          <div key={key} className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold text-slate-200">{label}</p>
+              <p className="mt-0.5 text-[11px] text-slate-500">{hint}</p>
+            </div>
+            {canEdit ? (
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => patch({ [key]: !val })}
+                className={`rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-40 ${
+                  val ? 'border-emerald-600 text-emerald-200 hover:bg-emerald-950'
+                      : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                {val ? 'ON' : 'OFF'}
+              </button>
+            ) : (
+              <span className={`font-mono text-xs ${val ? 'text-emerald-300' : 'text-slate-500'}`}>
+                {val ? 'ON' : 'OFF'}
+              </span>
+            )}
+          </div>
+        );
+      })}
+
+      <div className="flex items-center justify-between gap-4 pt-2">
+        <div>
+          <p className="text-xs font-semibold text-slate-200">Front-desk discount ceiling</p>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            Currency units. 0 = no discretionary discount for FRONT_DESK.
+          </p>
+        </div>
+        {canEdit ? (
+          <FrontdeskCeilingEditor
+            value={t.frontdeskDiscountCeiling}
+            pending={pending}
+            onSave={(n) => patch({ frontdeskDiscountCeiling: n })}
+          />
+        ) : (
+          <span className="font-mono text-xs text-slate-300">{t.frontdeskDiscountCeiling}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FrontdeskCeilingEditor({
+  value, pending, onSave,
+}: { value: number; pending: boolean; onSave: (n: number) => void }) {
+  const [n, setN] = useState(String(value));
+  const dirty = String(value) !== n && Number.isFinite(Number(n)) && Number(n) >= 0;
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="number" min="0" step="1"
+        value={n}
+        onChange={(e) => setN(e.target.value)}
+        className="w-24 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100"
+      />
+      <button
+        type="button" disabled={pending || !dirty}
+        onClick={() => onSave(Number(n))}
+        className="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+      >
+        Save
+      </button>
     </div>
   );
 }

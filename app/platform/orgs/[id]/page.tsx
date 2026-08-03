@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { requireAuthContext, requirePermission, can } from '@/lib/rbac';
+import { requireAuthContext, requirePermission, can, loadOrgToggles } from '@/lib/rbac';
 import { getOrganization } from '@/lib/platform/orgs';
 import OrgDetail from '@/components/platform/OrgDetail';
 
@@ -25,7 +25,13 @@ export default async function PlatformOrgDetailPage(
     // F-08 edit-org: reuses platform.org.suspend (same tier — SUPER_ADMIN
     // + PLATFORM_ADMIN — and semantically similar: both mutate org state).
     canEdit: can(ctx, 'platform.org.suspend'),
+    // F-08 feature-flags/toggles: SUPER_ADMIN only per spec §6.1
+    // "Feature flags / global config". Others get view-only (rendered
+    // in the panel).
+    canEditToggles: can(ctx, 'platform.config.manage'),
   };
+
+  const toggles = await loadOrgToggles(id);
 
   return (
     <OrgDetail
@@ -50,6 +56,7 @@ export default async function PlatformOrgDetailPage(
         })),
       }}
       capabilities={capabilities}
+      toggles={toggles}
     />
   );
 }
