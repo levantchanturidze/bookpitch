@@ -1,10 +1,10 @@
 import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import { PrismaAdapter } from '@auth/prisma-adapter';
-import { verify } from '@node-rs/argon2';
 
 import { authConfig } from '@/auth.config';
 import { prismaAdmin, withoutRls } from '@/lib/db';
+import { validateCredentials } from '@/lib/auth/credentials';
 import { getEmailProvider } from '@/lib/messaging';
 import { log } from '@/lib/logger';
 
@@ -116,67 +116,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           ? credentials.orgId
           : null;
         if (typeof email !== 'string' || typeof password !== 'string') return null;
-
-        // Login predates any org context — bypass RLS to find the user +
-        // (optionally) their target membership. Also load the membership's
-        // role.key so downstream (JWT claim, root landing) can pick a
-        // sensible destination without a second query per home visit.
-        const user = await withoutRls(async (tx) => {
-          return tx.appUser.findUnique({
-            where: { email },
-            include: {
-              memberships: requestedOrgId
-                ? {
-                    where: { organizationId: requestedOrgId, status: 'active' },
-                    take: 1,
-                    include: { roleRef: { select: { key: true } } },
-                  }
-                : {
-                    orderBy: { createdAt: 'asc' }, take: 1,
-                    where: { status: 'active' },
-                    include: { roleRef: { select: { key: true } } },
-                  },
-            },
-          });
-        });
-
-        // Platform-plane roles (SUPER_ADMIN, PLATFORM_ADMIN, SUPPORT_AGENT,
-        // BILLING_MANAGER) have no org memberships by design (spec §4.1) —
-        // they operate cross-tenant via impersonation / break-glass. Accept
-        // them via the platformRoleId path even when memberships is empty;
-        // the resulting JWT carries activeOrganizationId: null and belongs
-        // at /platform.
-        if (!user?.passwordHash) return null;
-        const hasMembership = user.memberships.length > 0;
-        const isPlatformUser = user.platformRoleId != null;
-        if (!hasMembership && !isPlatformUser) return null;
-
-        const ok = await verify(user.passwordHash, password);
-        if (!ok) return null;
-
-        const membership = hasMembership ? user.memberships[0] : null;
-
+        const result = await validateCredentials({ email, password, requestedOrgId });
+        if (!result) return null;
         // Phase 5 spec §7.2 "root account pattern": SUPER_ADMIN /
         // PLATFORM_ADMIN logins send a security alert email. Best-effort
-        // — a provider outage never blocks a valid signin.
-        if (user.platformRoleId) {
-          void alertOnPlatformLogin(user.id, user.email);
+        // — a provider outage never blocks a valid signin. Fire from here
+        // (not from validateCredentials) because the helper is called by
+        // tests too and we don't want them to trigger emails.
+        if (result.platformRoleId) {
+          void alertOnPlatformLogin(result.id, result.email);
         }
-
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.fullName ?? undefined,
-          activeOrganizationId: membership?.organizationId ?? null,
-          membershipId: membership?.id ?? null,
-          platformRoleId: user.platformRoleId,
-          // F-10: roleKey in the JWT so `/` can pick a landing without a
-          // second DB round trip per home visit. Platform-only users get
-          // null here (they have no org membership); their platformRoleId
-          // steers them to /platform separately.
-          roleKey: membership?.roleRef?.key ?? null,
-          sessionVersion: user.sessionVersion,
-        };
+        return result;
       },
     }),
   ],

@@ -152,7 +152,33 @@ data-fetching endpoints without proper checks becomes a data leak.
 route, asserts either 403 or a redirect. Should have been part of
 Phase 5.
 
-## F-05 · Test blind spot: mocked auth everywhere · P2 · Coverage
+## F-05 · Test blind spot: mocked auth everywhere · P2 · Coverage · PARTIAL FIX 2026-08-03
+
+**Partial fix.** Extracted the credential-check logic from
+`auth.ts::authorize()` into `lib/auth/credentials.ts::validateCredentials()`.
+Added `tests/credentials.test.ts` — the only test in the suite that
+hits real DB + real argon2 + real role load with zero mocks. Guards
+against regression of:
+
+- ORG_OWNER sign-in returns roleKey + org context (baseline)
+- **Platform-only SUPER_ADMIN with NO org membership succeeds** (this
+  is the exact case Phase 5 shipped broken — `memberships.length === 0`
+  used to reject). Regression test now in place.
+- Wrong password → null (no exception, no info leak)
+- Unknown email → null (same)
+- `status='deleted'` user cannot sign in (spec §9.11)
+- Multi-org user + `requestedOrgId` picks the right membership
+- Multi-org user + wrong `requestedOrgId` → null
+
+**Still open (full fix):** every other test still mocks `@/auth` or
+JWT/session. This one integration test would have caught the F-05
+class of bug on its own, but the broader recommendation stands —
+prefer the real path where it's testable.
+
+Original finding below.
+
+---
+
 
 **What:** the entire test suite mocks `@/auth` (or the JWT / session /
 AuthContext directly). No test exercises the real credentials `authorize()`
