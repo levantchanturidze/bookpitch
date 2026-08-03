@@ -919,11 +919,9 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     }
   });
 
-  // ---- SEC-004 candidate: toggles mutation writes NO audit row -------------
-  // If this probe passes, the audit gap has been closed and we can flip
-  // it from `it.fails` back to `it`.
-  it.fails(
-    'P6.13: updateOrgToggles writes an audit row (SEC-004 open — currently fails)',
+  // ---- SEC-004 regression guard: toggles mutation writes an audit row -----
+  it(
+    'P6.13: updateOrgToggles writes an audit row (SEC-004 fixed 2026-08-03)',
     async () => {
       authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
       await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
@@ -958,9 +956,9 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     },
   );
 
-  // ---- SEC-005 candidate: platform.config.manage not RESTRICTED_DURING_IMPERSONATION
-  it.fails(
-    'P6.14: platform.config.manage must be in RESTRICTED_DURING_IMPERSONATION (SEC-005 open)',
+  // ---- SEC-005 regression guard: platform.config.manage in RESTRICTED_DURING_IMPERSONATION
+  it(
+    'P6.14: platform.config.manage in RESTRICTED_DURING_IMPERSONATION (SEC-005 fixed 2026-08-03)',
     () => {
       // The impersonation restriction set exists specifically to prevent
       // an impersonating actor from flipping PII / clinical-visibility

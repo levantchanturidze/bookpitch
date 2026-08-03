@@ -3,6 +3,8 @@ import { withPlatformApi } from '@/lib/platform/api';
 import { requirePermission, loadOrgToggles, updateOrgToggles } from '@/lib/rbac';
 import { InvalidInputError } from '@/lib/auth';
 import { requireFreshPassword } from '@/lib/platform/password-reauth';
+import { prismaAdmin } from '@/lib/db';
+import { log } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -52,6 +54,33 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (Object.keys(patch).length === 0) {
       throw new InvalidInputError('no editable fields');
     }
-    return { toggles: await updateOrgToggles(id, patch) };
+
+    // SEC-004: audit the change. These toggles govern clinical-note
+    // visibility and PII tiers — every flip is a policy-level event
+    // and spec §9 rule 5 requires it in audit_log. Snapshot the
+    // previous state before mutating so the meta captures both sides.
+    const previous = await loadOrgToggles(id);
+    const next = await updateOrgToggles(id, patch);
+    await prismaAdmin.auditLog.create({
+      data: {
+        organizationId: id,
+        actorUserId: ctx.userId,
+        action: 'org.toggles.update',
+        entity: 'organization',
+        entityId: id,
+        reason: 'platform:org.toggles.update',
+        impersonationSessionId: ctx.impersonation?.sessionId ?? null,
+        breakGlassSessionId: ctx.breakGlass?.sessionId ?? null,
+        meta: {
+          changed: Object.keys(patch),
+          previous: previous as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          next: next as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        },
+      },
+    });
+    log.info('platform.org.toggles.update', {
+      orgId: id, actorUserId: ctx.userId, changed: Object.keys(patch),
+    });
+    return { toggles: next };
   });
 }

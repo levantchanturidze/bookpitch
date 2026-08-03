@@ -45,6 +45,17 @@ const DEFAULT_RESTRICTED: ReadonlySet<PermissionKey> = new Set([
   perm('clinical_note.read:own'),
   perm('clinical_note.read:any'),
   perm('clinical_note.attachment.manage'),
+
+  // ---- Configuration changes (SEC-005 — spec §7.1 rule 5 generalized) ----
+  // Feature toggles govern clinical-note visibility (providerClinicalNotesOthers)
+  // and PII tiers (frontdeskClientFullHistory). Flipping them during
+  // impersonation is a two-step clinical/PII exfiltration: enable the
+  // toggle, read the newly-visible data via a normal role, disable the
+  // toggle. Blocking here breaks step 1. `platform.role.assign` and
+  // `platform.org.create` are deliberately NOT in the set — the former
+  // audits as the actor identity (traceable), the latter is a legitimate
+  // support-diagnostic action.
+  perm('platform.config.manage'),
 ]);
 
 // eslint-disable-next-line prefer-const  -- intentionally rebindable for tests

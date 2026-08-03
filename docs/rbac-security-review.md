@@ -18,12 +18,12 @@ regression tests. Each finding maps to a probe in
   SEC-003) shipped fixes. Regression probes are plain `it(...)` and pass.
 - **2026-08-03 delta pass** — 14 new probes covering the platform §6.1
   routes that landed after 2026-07-29 (F-08 edit-org, feature toggles,
-  org create, platform-role assignment). Two new findings:
-  **SEC-004 (High)** — org-toggles mutation writes no audit row;
-  **SEC-005 (Medium)** — `platform.config.manage` missing from
-  `RESTRICTED_DURING_IMPERSONATION`. Both are open, tracked in the
-  probe suite as `it.fails(...)`. See [§6 Delta findings](#delta-findings)
-  below.
+  org create, platform-role assignment). Two findings surfaced and were
+  fixed the same day: **SEC-004 (High)** — org-toggles mutation writes
+  no audit row; **SEC-005 (Medium)** — `platform.config.manage` missing
+  from `RESTRICTED_DURING_IMPERSONATION`. Regression probes P6.13 + P6.14
+  are now plain `it(...)` and pass. See
+  [§6 Delta findings](#delta-findings) below.
 
 ## Executive summary
 
@@ -32,8 +32,8 @@ regression tests. Each finding maps to a probe in
 | [SEC-001](#sec-001) | Medium | Cross-tenant | Customer routes return 200 + body-shape for cross-tenant IDs instead of 404 | **Fixed** 2026-07-29 |
 | [SEC-002](#sec-002) | Low-Medium | Cross-tenant | `/api/customers/[id]/export` throws an unmapped 5xx for missing / cross-tenant IDs | **Fixed** 2026-07-29 |
 | [SEC-003](#sec-003) | High | Break-glass | Break-glass read-audit failure is silently swallowed (spec §7.2 rule 6 violation) | **Fixed** 2026-07-29 |
-| [SEC-004](#sec-004) | **High** | Audit integrity | `updateOrgToggles` writes no audit row — clinical/PII toggle flips leave no evidence | **Open** 2026-08-03 |
-| [SEC-005](#sec-005) | **Medium** | Impersonation | `platform.config.manage` missing from `RESTRICTED_DURING_IMPERSONATION` — impersonating actor can flip clinical-visibility toggles | **Open** 2026-08-03 |
+| [SEC-004](#sec-004) | High | Audit integrity | `updateOrgToggles` writes no audit row — clinical/PII toggle flips leave no evidence | **Fixed** 2026-08-03 |
+| [SEC-005](#sec-005) | Medium | Impersonation | `platform.config.manage` missing from `RESTRICTED_DURING_IMPERSONATION` — impersonating actor can flip clinical-visibility toggles | **Fixed** 2026-08-03 |
 
 Three real findings across 37 probes. **No critical findings.** The
 Phase 1 append-only invariant holds, RLS holds, cross-tenant data is
@@ -623,8 +623,28 @@ already has `ctx` in scope.
 ### Regression test
 
 `P6.13` — flip `frontdeskDiscountCeiling` and assert `audit_log`
-gained a row with `action in ('org.toggles.update','org.config.update','platform.config.manage')`.
-Currently `it.fails`; flip to plain `it` when the fix lands.
+gained a row with `action='org.toggles.update'`. Now plain `it(...)`
+and passing.
+
+### Resolution — 2026-08-03
+
+`app/api/platform/orgs/[id]/toggles/route.ts::PATCH` now snapshots the
+previous toggles via `loadOrgToggles(id)`, applies the mutation via
+`updateOrgToggles(id, patch)`, then writes an `audit_log` row with:
+
+- `action='org.toggles.update'`
+- `entity='organization'`, `entityId=id`
+- `impersonationSessionId` + `breakGlassSessionId` threaded from `ctx`
+  so the audit correctly attributes any change made under an active
+  session
+- `meta={changed: string[], previous: OrgToggles, next: OrgToggles}` —
+  full before/after in structured JSON, so support can reconstruct any
+  toggle timeline without replaying application logs
+
+Also emits `log.info('platform.org.toggles.update', {...})` for
+Sentry / downstream ingestion. Fix chose the route-level write over
+threading `ctx` into `updateOrgToggles(orgId, patch, actor)` — smaller
+diff, and `updateOrgToggles` has one caller today.
 
 ---
 
@@ -704,7 +724,27 @@ whoever picks the fix):
 ### Regression test
 
 `P6.14` — `expect(RESTRICTED_DURING_IMPERSONATION.has(perm('platform.config.manage'))).toBe(true)`.
-Currently `it.fails`; flip when the one-liner lands.
+Now plain `it(...)` and passing.
+
+### Resolution — 2026-08-03
+
+`lib/rbac/impersonation.ts::DEFAULT_RESTRICTED` gained a new
+"Configuration changes" section with `platform.config.manage`. The
+comment explicitly calls out why `platform.role.assign` and
+`platform.org.create` are NOT added:
+
+- `platform.role.assign` — audit already carries `actor.userId`
+  (SUPER_ADMIN), so grants are traceable even when made mid-
+  impersonation. Adding it would break a legitimate diagnostic
+  workflow ("grant this role while I'm helping this customer").
+- `platform.org.create` — a legitimate support-diagnostic action
+  ("spin up a test org while I'm troubleshooting"). Not a
+  clinical/PII exposure vector.
+
+Together with SEC-004, the two-step clinical-exfiltration attack is
+now closed on both ends: (a) the toggle flip is blocked mid-
+impersonation, and (b) if the flip happens by a non-impersonating
+SUPER_ADMIN, it's audited with full before/after state.
 
 ---
 
@@ -730,27 +770,27 @@ Currently `it.fails`; flip when the one-liner lands.
 
 ---
 
-## Delta prioritization
+## Delta prioritization — closed
 
-- **Fix now (High)** — SEC-004. One-file change, closes an evidence gap
-  on the highest-sensitivity toggle in the system. Effort: ~15 min plus
-  regression flip.
-- **Fix same PR (Medium)** — SEC-005. One-line change plus a comment.
-  Effort: ~5 min. Bundle with SEC-004 so both audit-visibility and
-  impersonation-tightness ship together.
-- **Consider (Informational)** — `platform.role.assign` +
-  `platform.org.create` during impersonation. Not exploitable but
-  worth documenting the rationale for including / excluding.
+Both delta findings shipped fixes on 2026-08-03, bundled in one commit:
 
-No delta finding requires a migration or a schema change.
+- **SEC-004 (High)** — landed. Rationale for the rank + fix approach
+  in the Resolution block above.
+- **SEC-005 (Medium)** — landed. Rationale for the impersonation
+  restriction (and the two deliberate omissions) in the Resolution
+  block above.
+
+Informational (not tracked as findings): the rationale for keeping
+`platform.role.assign` and `platform.org.create` OUT of
+`RESTRICTED_DURING_IMPERSONATION` is now inline in the code comment
+above `DEFAULT_RESTRICTED` in `lib/rbac/impersonation.ts`.
+
+No delta finding required a migration or a schema change.
 
 ---
 
 ## Regression suite health
 
-- 51 total probes (37 original + 14 delta)
-- 49 pass, 2 `it.fails` (SEC-004, SEC-005)
-- 0 flaky (probe P6.12 restores the mutated org name in a `finally`
-  block after an earlier iteration polluted fixture state and broke
-  the subsequent beforeAll — regression-guarded now)
-- Runs in ~15 s serial (fileParallelism disabled per shared DB state).
+- 51 total probes (37 original + 14 delta), all plain `it(...)`
+- **51 pass, 0 `it.fails`, 0 flaky** (post-fix)
+- Runs in ~1.5 s serial (fileParallelism disabled per shared DB state)
