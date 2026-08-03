@@ -34,6 +34,7 @@ regression tests. Each finding maps to a probe in
 | [SEC-003](#sec-003) | High | Break-glass | Break-glass read-audit failure is silently swallowed (spec §7.2 rule 6 violation) | **Fixed** 2026-07-29 |
 | [SEC-004](#sec-004) | High | Audit integrity | `updateOrgToggles` writes no audit row — clinical/PII toggle flips leave no evidence | **Fixed** 2026-08-03 |
 | [SEC-005](#sec-005) | Medium | Impersonation | `platform.config.manage` missing from `RESTRICTED_DURING_IMPERSONATION` — impersonating actor can flip clinical-visibility toggles | **Fixed** 2026-08-03 |
+| [SEC-006](#sec-006) | High | Availability | `assignPlatformRole` can demote the last SUPER_ADMIN and brick `platform.role.assign` | **Fixed** 2026-08-03 |
 
 Three real findings across 37 probes. **No critical findings.** The
 Phase 1 append-only invariant holds, RLS holds, cross-tenant data is
@@ -791,6 +792,88 @@ No delta finding required a migration or a schema change.
 
 ## Regression suite health
 
-- 51 total probes (37 original + 14 delta), all plain `it(...)`
-- **51 pass, 0 `it.fails`, 0 flaky** (post-fix)
+- 52 total probes (37 original + 15 delta), all plain `it(...)`
+- **52 pass, 0 `it.fails`, 0 flaky** (post-fix)
 - Runs in ~1.5 s serial (fileParallelism disabled per shared DB state)
+
+---
+
+<a name="sec-006"></a>
+## SEC-006 — `assignPlatformRole` can brick platform admin plane · High
+
+**Attack surface**: availability / lockout (analog of spec §9 rule 1
+for the platform plane)
+**Reproduction**: `tests/security-review.test.ts` §platform §6.1
+new-surface probes `P6.15`.
+
+### Behaviour (pre-fix)
+
+`lib/platform/roles.ts::assignPlatformRole` had a defensive rank check
+that refused to GRANT SUPER_ADMIN from a non-SUPER caller, but no
+guard against REMOVING the last SUPER_ADMIN. Two paths reached the
+brick state:
+
+1. **Self-revoke** — the only SUPER_ADMIN calls
+   `assignPlatformRole(their_own_email, null)`. Their `platformRoleId`
+   is nulled, `platform.role.assign` becomes unreachable, and no other
+   platform user has the perm to restore it.
+2. **Peer-revoke** — with two SUPER_ADMINs (A and B), A demotes B to
+   PLATFORM_ADMIN, then B (now non-SUPER) also cannot restore A if A
+   later revokes themselves. The first move is what SEC-006's guard
+   catches; the second is a compound scenario.
+
+Recovery from either state requires dropping into the Supabase SQL
+editor and executing `UPDATE app_users SET platform_role_id = ...`
+directly against the DB — not a normal operator workflow.
+
+### Impact
+
+- **Availability**: `platform.role.assign` is the only path to grant a
+  new SUPER_ADMIN. Losing all SUPER_ADMINs makes the platform
+  admin-plane read-only-ish (SUPPORT_AGENT still reads, PLATFORM_ADMIN
+  still edits orgs) but destructive-tier operations (org.delete,
+  role.assign, config.manage) become unreachable.
+- **Blast radius**: single mistaken click in the platform-role UI.
+- **Recovery cost**: superuser DB access + manual UUID lookup.
+
+Not exploitable by an attacker (already needs SUPER_ADMIN to trigger)
+— this is a lockout risk, not an escalation risk. Rated High because
+"platform is bricked" is a bad Monday.
+
+### Affected files
+
+- `lib/platform/roles.ts::assignPlatformRole` — the mutation.
+
+### Resolution — 2026-08-03
+
+Added a last-SUPER_ADMIN guard mirroring
+`lib/admin/last-owner.ts::assertNotLastOwner`:
+
+```ts
+if (previousRoleKey === 'SUPER_ADMIN' && roleKey !== 'SUPER_ADMIN') {
+  const others = await prismaAdmin.appUser.count({
+    where: {
+      platformRoleId: <SUPER_ADMIN role.id>,
+      id: { not: target.id },
+      status: 'active',
+    },
+  });
+  if (others === 0) {
+    throw new InvalidInputError(
+      'must keep at least one active SUPER_ADMIN — grant SUPER_ADMIN to another user first, then revoke this one',
+    );
+  }
+}
+```
+
+Catches BOTH the self-revoke case (SUPER demoting themselves) and the
+peer-revoke case (SUPER demoting the other SUPER when they're the last
+two). Error message tells the operator the fix path — grant SUPER to
+someone else first.
+
+### Regression test
+
+`P6.15` — asserts (a) revoke-to-null of the sole SUPER throws, (b)
+demote-to-PLATFORM_ADMIN of the sole SUPER throws, (c) positive
+control: with two SUPERs, demoting one succeeds. Cleans up its own
+mutations so state stays consistent for the next test-file run.

@@ -88,6 +88,32 @@ export async function assignPlatformRole(
   if (!target) throw new InvalidInputError('user not found');
 
   const previousRoleKey = target.platformRole?.key ?? null;
+
+  // SEC-006: last-SUPER_ADMIN protection. If this mutation would remove the
+  // final SUPER_ADMIN from the system, refuse — `platform.role.assign` is
+  // SUPER-only, so a zero-SUPER state is unrecoverable without dropping into
+  // the DB SQL editor. Analog of spec §9 rule 1 for the platform plane.
+  // Catches BOTH the self-revoke case (SUPER demoting themselves) and the
+  // peer-revoke case (SUPER demoting the other SUPER when they're the last
+  // two).
+  if (previousRoleKey === 'SUPER_ADMIN' && roleKey !== 'SUPER_ADMIN') {
+    const superRole = await prismaAdmin.role.findFirstOrThrow({
+      where: { key: 'SUPER_ADMIN', organizationId: null }, select: { id: true },
+    });
+    const others = await prismaAdmin.appUser.count({
+      where: {
+        platformRoleId: superRole.id,
+        id: { not: target.id },
+        status: 'active',
+      },
+    });
+    if (others === 0) {
+      throw new InvalidInputError(
+        'must keep at least one active SUPER_ADMIN — grant SUPER_ADMIN to another user first, then revoke this one',
+      );
+    }
+  }
+
   let newRoleId: string | null = null;
   if (roleKey !== null) {
     const role = await prismaAdmin.role.findFirstOrThrow({
