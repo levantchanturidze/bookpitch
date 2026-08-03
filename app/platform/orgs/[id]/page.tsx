@@ -43,6 +43,9 @@ export default async function PlatformOrgDetailPage(
         planStatus: org.planStatus,
         vertical: org.vertical,
         allowSupportImpersonation: org.allowSupportImpersonation,
+        stripeCustomerId: org.stripeCustomerId,
+        stripeSubscriptionId: org.stripeSubscriptionId,
+        currentPeriodEnd: org.currentPeriodEnd?.toISOString() ?? null,
         owner: org.ownerUser
           ? { id: org.ownerUser.id, email: org.ownerUser.email, fullName: org.ownerUser.fullName }
           : null,

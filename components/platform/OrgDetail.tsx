@@ -12,6 +12,9 @@ type Org = {
   planStatus: string;
   vertical: string | null;
   allowSupportImpersonation: boolean;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  currentPeriodEnd: string | null;
   owner: { id: string; email: string; fullName: string | null } | null;
   counts: { memberships: number; locations: number; branches: number; customers: number; appointments: number };
   members: Array<{ id: string; userId: string; email: string; fullName: string | null; roleKey: string }>;
@@ -193,6 +196,16 @@ export default function OrgDetail({
         </div>
       </section>
 
+      <section>
+        <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+          Billing
+          <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-normal normal-case text-slate-400">
+            read-only — managed in Stripe
+          </span>
+        </h3>
+        <BillingPanel org={org} />
+      </section>
+
       {capabilities.canEdit && (
         <section>
           <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Edit</h3>
@@ -263,6 +276,98 @@ function Stat({ label, value }: { label: string; value: number }) {
     <div>
       <p className="font-mono text-[10px] uppercase tracking-widest text-slate-500">{label}</p>
       <p className="mt-1 font-mono text-lg font-bold">{value}</p>
+    </div>
+  );
+}
+
+// F-08 read-only billing view. Surfaces the plan/planStatus/period-end
+// columns and Stripe IDs so support can answer "what plan is this org
+// on / when does it renew / where do I find them in Stripe" without a
+// separate lookup. No write actions — subscription mutation stays in
+// Stripe. Deep-links to the Stripe customer/subscription pages if IDs
+// are present. Stripe env (test vs live) is not surfaced to the client,
+// so the link uses the mode-agnostic dashboard URL that Stripe redirects
+// appropriately.
+function BillingPanel({ org }: { org: Org }) {
+  const periodEnd = org.currentPeriodEnd ? new Date(org.currentPeriodEnd) : null;
+  const daysToRenewal = periodEnd
+    ? Math.floor((periodEnd.getTime() - Date.now()) / (24 * 3600_000))
+    : null;
+  const renewalTone =
+    daysToRenewal === null   ? 'text-slate-500' :
+    daysToRenewal < 0        ? 'text-red-300'   :
+    daysToRenewal <= 7       ? 'text-amber-300'
+                             : 'text-slate-300';
+  const statusTone: Record<string, string> = {
+    active:   'text-emerald-300',
+    trialing: 'text-sky-300',
+    past_due: 'text-amber-300',
+    canceled: 'text-red-300',
+    unpaid:   'text-red-300',
+  };
+  return (
+    <div className="grid grid-cols-1 gap-3 rounded-lg border border-slate-800 bg-slate-900 p-4 md:grid-cols-2">
+      <BillingRow label="Plan" value={<span className="font-mono uppercase">{org.plan}</span>} />
+      <BillingRow
+        label="Plan status"
+        value={
+          <span className={`font-mono uppercase ${statusTone[org.planStatus] ?? 'text-slate-300'}`}>
+            {org.planStatus}
+          </span>
+        }
+      />
+      <BillingRow
+        label="Current period ends"
+        value={
+          periodEnd ? (
+            <span className="font-mono">
+              <span className="text-slate-300">{periodEnd.toISOString().slice(0, 10)}</span>
+              <span className={`ml-2 text-[10px] ${renewalTone}`}>
+                ({daysToRenewal! < 0 ? `${-daysToRenewal!}d overdue` : `${daysToRenewal}d`})
+              </span>
+            </span>
+          ) : <span className="font-mono text-slate-500">—</span>
+        }
+      />
+      <BillingRow
+        label="Stripe customer"
+        value={
+          org.stripeCustomerId ? (
+            <a
+              href={`https://dashboard.stripe.com/customers/${org.stripeCustomerId}`}
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-[11px] text-sky-300 hover:underline"
+            >
+              {org.stripeCustomerId} ↗
+            </a>
+          ) : <span className="font-mono text-slate-500">not linked</span>
+        }
+      />
+      <BillingRow
+        label="Stripe subscription"
+        value={
+          org.stripeSubscriptionId ? (
+            <a
+              href={`https://dashboard.stripe.com/subscriptions/${org.stripeSubscriptionId}`}
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-[11px] text-sky-300 hover:underline"
+            >
+              {org.stripeSubscriptionId} ↗
+            </a>
+          ) : <span className="font-mono text-slate-500">not linked</span>
+        }
+      />
+    </div>
+  );
+}
+
+function BillingRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <p className="font-mono text-[10px] uppercase tracking-widest text-slate-500">{label}</p>
+      <div className="mt-1 text-xs">{value}</div>
     </div>
   );
 }
