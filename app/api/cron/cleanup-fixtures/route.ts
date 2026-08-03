@@ -48,30 +48,44 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 3. Delete orgs (cascades memberships + locations + branches + staff + services).
-  //    Do this BEFORE user delete so app_users.owner_user_id FKs resolve cleanly.
-  //    Wrap in one transaction so partial cascade doesn't leave orphans.
-  const deletedOrgs: string[] = [];
+  // 3. Delete users (cascades memberships). Then soft-delete the orgs
+  //    (status='archived') per spec §9 rule 6. We can't hard-delete orgs
+  //    because audit_log.organization_id has no CASCADE — audit log is
+  //    append-only and rows referencing the org cannot be dropped or
+  //    NULLed. Soft-delete preserves the audit trail while making the
+  //    org inaccessible to sign-in (can() denies for archived orgs).
   const deletedUsers: string[] = [];
+  const archivedOrgs: string[] = [];
   await prismaAdmin.$transaction(async (tx) => {
-    for (const orgId of orgIds) {
-      await tx.organization.delete({ where: { id: orgId } });
-      deletedOrgs.push(orgId);
+    // First: null out organization.owner_user_id where it points at any
+    // of our users. Prevents FK violation on the user delete.
+    for (const userId of userIds) {
+      await tx.organization.updateMany({
+        where: { ownerUserId: userId },
+        data: { ownerUserId: null },
+      });
     }
     for (const userId of userIds) {
       await tx.appUser.delete({ where: { id: userId } });
       deletedUsers.push(userId);
     }
+    for (const orgId of orgIds) {
+      await tx.organization.update({
+        where: { id: orgId },
+        data: { status: 'archived' },
+      });
+      archivedOrgs.push(orgId);
+    }
   });
 
   log.warn('cleanup-fixtures.executed', {
     deletedUsers: deletedUsers.length,
-    deletedOrgs: deletedOrgs.length,
+    archivedOrgs: archivedOrgs.length,
     emails: TARGET_EMAILS,
   });
 
   return NextResponse.json({
     ok: true,
-    deletedUsers, deletedOrgs, emails: TARGET_EMAILS,
+    deletedUsers, archivedOrgs, emails: TARGET_EMAILS,
   });
 }
