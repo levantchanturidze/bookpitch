@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { scrubPhi, sentryBeforeSend, withRequestContext, log } from '@/lib/logger';
 
 describe('logger.scrubPhi', () => {
@@ -47,18 +47,21 @@ describe('sentryBeforeSend', () => {
 
 describe('log', () => {
   it('emits a single JSON line with the request context', () => {
-    const original = process.stdout.write.bind(process.stdout);
+    // Logger writes via console.log (see lib/logger.ts) so that Edge
+    // Runtime can serve routes that transitively import it. Spy on
+    // console.log, not process.stdout.write, since the two aren't
+    // wired 1:1 in every environment (Vitest binds console.log to its
+    // own reporter).
     const lines: string[] = [];
-    (process.stdout as unknown as { write: (s: string) => boolean }).write = (s: string) => {
-      lines.push(s);
-      return true;
-    };
+    const spy = vi.spyOn(console, 'log').mockImplementation((s: unknown) => {
+      lines.push(String(s));
+    });
     try {
       withRequestContext({ requestId: 'req-x', orgId: 'org-x' }, () => {
         log.info('hello', { extra: 'field' });
       });
     } finally {
-      (process.stdout as unknown as { write: typeof original }).write = original;
+      spy.mockRestore();
     }
     const parsed = JSON.parse(lines[0]);
     expect(parsed.msg).toBe('hello');

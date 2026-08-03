@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { ctxToSession, NotFoundError, SlotTakenError, withApi } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePermission, resolveBookingOwner } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import {
@@ -25,9 +25,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     // the BASE key (no scope suffix); can() walks :org → :branch → :own.
     const raw = (await req.clone().json().catch(() => null)) as { status?: unknown } | null;
     const requiredPerm = raw?.status === 'cancelled' ? 'booking.cancel' : 'booking.update';
-    requirePermission(ctx, requiredPerm, { organizationId: ctx.activeOrganizationId! }, 'appointments');
     const session = ctxToSession(ctx);
     const { id } = await params;
+    // F-09 companion: resolve booking owner before the permission check
+    // so :own-scoped roles (PROVIDER's booking.update:own / booking.cancel:own)
+    // are evaluated against the actual booking owner rather than falling
+    // through can()'s list-mode fallback.
+    const ownerUserId = await resolveBookingOwner(id, ctx.activeOrganizationId!);
+    requirePermission(
+      ctx, requiredPerm,
+      { organizationId: ctx.activeOrganizationId!, ownerUserId: ownerUserId ?? undefined },
+      'appointments',
+    );
     const input = parseUpdateInput(await req.json().catch(() => null));
 
     try {

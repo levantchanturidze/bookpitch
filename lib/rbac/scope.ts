@@ -67,6 +67,53 @@ export function scopedByOwn(ctx: AuthContext, basePermKey: string): string | nul
   return null;
 }
 
+/**
+ * Per-resource ownership resolver. Given an appointment id, returns the
+ * user id that owns the booking (via `appointment.staff.userId`), or null
+ * if the appointment doesn't exist / has no linked user. Callers pass the
+ * result into `requirePermission(ctx, perm, { organizationId, ownerUserId })`
+ * so `:own`-scoped roles get evaluated against the actual owner rather
+ * than passing the F-09 list-mode fallback.
+ *
+ * Runs via `prismaAdmin` because callers hitting this predate their
+ * `withOrg(tx)` block (they need the owner to build the guard args before
+ * the transaction opens). RLS bypass is safe: this reads only a single
+ * uuid, no PII, and the caller is already gated on `activeOrganizationId`
+ * matching the appointment's org via a follow-up query.
+ */
+export async function resolveBookingOwner(
+  appointmentId: string,
+  activeOrganizationId: string,
+): Promise<string | null> {
+  const row = await prismaAdmin.appointment.findFirst({
+    where: { id: appointmentId, organizationId: activeOrganizationId },
+    select: { staff: { select: { userId: true } } },
+  });
+  return row?.staff?.userId ?? null;
+}
+
+/**
+ * Same for a waitlist row — resolves via a two-step lookup (waitlist has
+ * `staffId` as a column with no Prisma relation to Staff). Returns null
+ * if the entry has no assigned staff (a flexible customer request) or the
+ * staff row has no linked user.
+ */
+export async function resolveWaitlistOwner(
+  waitlistId: string,
+  activeOrganizationId: string,
+): Promise<string | null> {
+  const row = await prismaAdmin.waitlist.findFirst({
+    where: { id: waitlistId, organizationId: activeOrganizationId },
+    select: { staffId: true },
+  });
+  if (!row?.staffId) return null;
+  const staff = await prismaAdmin.staff.findFirst({
+    where: { id: row.staffId, organizationId: activeOrganizationId },
+    select: { userId: true },
+  });
+  return staff?.userId ?? null;
+}
+
 export async function scopedLocationIds(ctx: AuthContext): Promise<string[] | null> {
   if (ctx.branchIds.size === 0) return null;
   const rows = await prismaAdmin.branch.findMany({

@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { ctxToSession, withApi, InvalidInputError } from '@/lib/auth';
-import { requireAuthContext, requirePermission, scopedLocationIds } from '@/lib/rbac';
+import { requireAuthContext, requirePermission, scopedLocationIds, scopedByOwn } from '@/lib/rbac';
 import { addToWaitlist, listWaitlist } from '@/lib/waitlist';
 
 export const runtime = 'nodejs';
@@ -14,7 +14,10 @@ export async function GET() {
     // Phase 6: branch scoping — BRANCH_MANAGER only sees rows in their
     // assigned branches (plus flexible/no-location rows).
     const scoped = await scopedLocationIds(ctx);
-    const rows = await listWaitlist(ctxToSession(ctx), { scopedLocationIds: scoped });
+    const ownUserId = scopedByOwn(ctx, 'booking.read');
+    const rows = await listWaitlist(ctxToSession(ctx), {
+      scopedLocationIds: scoped, ownUserId,
+    });
     return { waitlist: rows };
   });
 }

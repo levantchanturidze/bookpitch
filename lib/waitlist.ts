@@ -60,10 +60,23 @@ export async function addToWaitlist(
 
 export async function listWaitlist(
   session: ActiveSession,
-  opts: { scopedLocationIds?: string[] | null } = {},
+  opts: { scopedLocationIds?: string[] | null; ownUserId?: string | null } = {},
 ) {
-  return withOrg(session.organizationId, (tx) =>
-    tx.waitlist.findMany({
+  return withOrg(session.organizationId, async (tx) => {
+    // F-09 companion: :own-scoped roles (PROVIDER's booking.read:own) see
+    // only entries assigned to their staff record. Waitlist has staffId
+    // as a bare column (no Prisma relation), so resolve the caller's
+    // staff.id set first and filter waitlist.staffId IN (...). Flexible
+    // entries (staffId null) are excluded.
+    let ownStaffIds: string[] | null = null;
+    if (opts.ownUserId) {
+      const staff = await tx.staff.findMany({
+        where: { userId: opts.ownUserId },
+        select: { id: true },
+      });
+      ownStaffIds = staff.map((s) => s.id);
+    }
+    return tx.waitlist.findMany({
       where: {
         status: { in: ['pending', 'notified'] },
         // Phase 6 branch scoping. Waitlist entries have an optional
@@ -77,11 +90,12 @@ export async function listWaitlist(
         ...(opts.scopedLocationIds
           ? { OR: [{ locationId: null }, { locationId: { in: opts.scopedLocationIds } }] }
           : {}),
+        ...(ownStaffIds !== null ? { staffId: { in: ownStaffIds } } : {}),
       },
       orderBy: { createdAt: 'desc' },
       take: 200,
-    }),
-  );
+    });
+  });
 }
 
 export async function removeFromWaitlist(session: ActiveSession, id: string): Promise<void> {

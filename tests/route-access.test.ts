@@ -49,11 +49,14 @@ const USERS: FixtureUser[] = [
     email: 'moonlight@bp.test',
     roleKey: 'PROVIDER',
     // PROVIDER's grants are booking.*:own, client.read:contact, report.own.
-    // Nav mappings from audit doc: scheduler=booking.read:branch (no),
-    // patients=client.read:contact (yes), reminders=booking.update:org (no),
-    // billing=payment.charge (no by default per rbac-seed ⚙️), analytics=report.branch (no).
+    // Post-F-09 (2026-08-03), :own-scoped list-mode calls are GRANTED by
+    // can() with the trust model that the query layer filters by
+    // ctx.userId (scopedByOwn). So `scheduler` and `reminders` now render
+    // for PROVIDER — showing only their own bookings — rather than 403.
+    // billing / analytics still deny (payment.charge / report.branch not
+    // in the :own scope pattern).
     canByNavId: {
-      scheduler: false, patients: true,  reminders: false, billing: false, analytics: false,
+      scheduler: true, patients: true, reminders: true, billing: false, analytics: false,
     },
   },
   {
