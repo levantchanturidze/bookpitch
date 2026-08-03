@@ -209,9 +209,14 @@ would have caught the authorize() bug.
   /platform/roles page.
 
 **Still missing from spec §6.1:**
-- **Edit organization.** No PATCH /api/platform/orgs/[id] and no edit UI.
-  Only name/vertical/allowSupportImpersonation would be editable today.
-  Low-effort; do this alongside the toggle UI below.
+- ~~**Edit organization.**~~ **Fixed 2026-08-03.** PATCH `/api/platform/orgs/[id]`
+  gated on `platform.org.suspend` (same tier as edit — SUPER_ADMIN +
+  PLATFORM_ADMIN — semantically similar). `editOrganization` in
+  `lib/platform/orgs.ts` accepts `{name, vertical, allowSupportImpersonation}`.
+  UI in `components/platform/OrgDetail.tsx::EditOrgForm`: name + vertical
+  update via plain PATCH; `allowSupportImpersonation` toggle requires
+  fresh password re-auth (spec §9 rule 9 — changing support-access
+  policy is destructive-tier).
 - **Feature flags / global config CRUD.** `organizations.features` (JSONB)
   exists and has consumers (spec §6.2 toggle keys), but there's no endpoint
   that lets SUPER_ADMIN read/write it from /platform. Related:
@@ -222,8 +227,11 @@ would have caught the authorize() bug.
   and `organizations.plan`, `planStatus`, `stripe*` columns exist — but no
   endpoints or UI wire them together. Stripe integration is scaffolded in
   `lib/billing/` but not connected to /platform.
-- **Audit-log filters in the UI.** GET /api/platform/audit supports query
-  params but the /platform/audit page renders all rows with no filter form.
+- ~~**Audit-log filters in the UI.**~~ **Already present** (discovered
+  2026-08-03 while auditing F-08). `components/platform/AuditView.tsx`
+  has a full filter form (actor UUID, org UUID, action prefix, from
+  date, to date) that PATCHes the URL search params and re-renders.
+  Not actually missing — my earlier F-08 note was stale on this item.
 - **Organization status dashboard.** Aggregate view (member count, last
   activity, trial expiry) — some columns are already populated on the
   `_count` side; UI could aggregate them without new endpoints.

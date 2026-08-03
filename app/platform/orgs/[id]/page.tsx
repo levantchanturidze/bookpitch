@@ -22,6 +22,9 @@ export default async function PlatformOrgDetailPage(
     canChangeOwner: can(ctx, 'platform.org.owner.change'),
     canResetPassword: can(ctx, 'platform.user.password_reset'),
     canImpersonate: can(ctx, 'platform.impersonate'),
+    // F-08 edit-org: reuses platform.org.suspend (same tier — SUPER_ADMIN
+    // + PLATFORM_ADMIN — and semantically similar: both mutate org state).
+    canEdit: can(ctx, 'platform.org.suspend'),
   };
 
   return (

@@ -215,6 +215,64 @@ export async function createOrganization(
   };
 }
 
+/**
+ * Edit a subset of org attributes. F-08 fix — spec §6.1 "edit organization"
+ * row was missing a code path. Callers: SUPER_ADMIN + PLATFORM_ADMIN via
+ * the same `platform.org.suspend` grant (both mutate org state; adding a
+ * dedicated `platform.org.edit` perm would require reseeding prod, so
+ * reuse for now — the caller set is identical).
+ *
+ * allowSupportImpersonation is the most security-relevant field: flipping
+ * it OFF blocks SUPPORT_AGENT / PLATFORM_ADMIN impersonation of the org
+ * (see lib/platform/impersonation.ts). Flipping it ON should require
+ * re-auth at the caller — enforced at the route level.
+ */
+export async function editOrganization(
+  actor: AuthContext,
+  orgId: string,
+  patch: {
+    name?: string;
+    vertical?: 'clinic' | 'salon' | 'fitness' | 'mixed' | null;
+    allowSupportImpersonation?: boolean;
+  },
+): Promise<{ id: string; name: string; vertical: string | null; allowSupportImpersonation: boolean }> {
+  const data: {
+    name?: string;
+    vertical?: string | null;
+    allowSupportImpersonation?: boolean;
+  } = {};
+  if (patch.name !== undefined) {
+    const trimmed = patch.name.trim();
+    if (trimmed.length < 2) throw new InvalidInputError('name must be at least 2 characters');
+    data.name = trimmed;
+  }
+  if (patch.vertical !== undefined) {
+    if (patch.vertical !== null && !['clinic','salon','fitness','mixed'].includes(patch.vertical)) {
+      throw new InvalidInputError('vertical must be clinic|salon|fitness|mixed or null');
+    }
+    data.vertical = patch.vertical;
+  }
+  if (patch.allowSupportImpersonation !== undefined) {
+    data.allowSupportImpersonation = patch.allowSupportImpersonation;
+  }
+  if (Object.keys(data).length === 0) {
+    throw new InvalidInputError('no editable fields provided');
+  }
+
+  const org = await prismaAdmin.organization.update({
+    where: { id: orgId },
+    data,
+    select: { id: true, name: true, vertical: true, allowSupportImpersonation: true },
+  });
+  await writePlatformAudit(actor, orgId, 'org.edit', {
+    fields: Object.keys(data).join(','),
+  });
+  log.info('platform.org.edit', {
+    orgId, actorUserId: actor.userId, fields: Object.keys(data),
+  });
+  return org;
+}
+
 export async function suspendOrganization(actor: AuthContext, orgId: string, reason: string) {
   if (!reason || reason.trim().length < 5) {
     throw new InvalidInputError('reason must be at least 5 characters');
