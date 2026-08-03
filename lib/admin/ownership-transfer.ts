@@ -130,14 +130,16 @@ export async function acceptTransfer(
   transferId: string,
 ): Promise<{ ok: true }> {
   // Fetch the transfer outside a tenant-scoped tx — the nominee may not
-  // yet have the org's active membership pointer we expect.
-  const transfer = await unsafePrismaAdmin.ownershipTransfer.findUnique({
-    where: { id: transferId },
+  // yet have the org's active membership pointer we expect. SEC-007
+  // hardening: the WHERE clause carries `toUserId = session.userId` so a
+  // caller who doesn't own the transfer gets `null` (mapped to 404)
+  // instead of "found but not for you" (400). Kills transferId
+  // enumeration — no error-shape distinguishes "doesn't exist" from
+  // "exists but not for you."
+  const transfer = await unsafePrismaAdmin.ownershipTransfer.findFirst({
+    where: { id: transferId, toUserId: session.userId },
   });
   if (!transfer) throw new NotFoundError('transfer not found');
-  if (transfer.toUserId !== session.userId) {
-    throw new InvalidInputError('this transfer is not addressed to you');
-  }
   if (transfer.status !== 'pending') {
     throw new InvalidInputError(`transfer is ${transfer.status}, not pending`);
   }
@@ -259,13 +261,13 @@ export async function declineTransfer(
   transferId: string,
   reason: string = 'declined by nominee',
 ): Promise<{ ok: true }> {
-  const transfer = await unsafePrismaAdmin.ownershipTransfer.findUnique({
-    where: { id: transferId },
+  // SEC-007 hardening: WHERE clause carries `toUserId = session.userId`
+  // so non-nominees see 404, not "not for you." Same enumeration-kill
+  // as acceptTransfer.
+  const transfer = await unsafePrismaAdmin.ownershipTransfer.findFirst({
+    where: { id: transferId, toUserId: session.userId },
   });
   if (!transfer) throw new NotFoundError('transfer not found');
-  if (transfer.toUserId !== session.userId) {
-    throw new InvalidInputError('this transfer is not addressed to you');
-  }
   if (transfer.status !== 'pending') {
     throw new InvalidInputError(`transfer is ${transfer.status}, not pending`);
   }
@@ -292,13 +294,13 @@ export async function revokeTransfer(
   session: ActiveSession,
   transferId: string,
 ): Promise<{ ok: true }> {
-  const transfer = await unsafePrismaAdmin.ownershipTransfer.findUnique({
-    where: { id: transferId },
+  // SEC-007 hardening: WHERE clause carries `fromUserId = session.userId`
+  // so non-nominators see 404. Same enumeration-kill; only the party who
+  // created the transfer can see it exists.
+  const transfer = await unsafePrismaAdmin.ownershipTransfer.findFirst({
+    where: { id: transferId, fromUserId: session.userId },
   });
   if (!transfer) throw new NotFoundError('transfer not found');
-  if (transfer.fromUserId !== session.userId) {
-    throw new InvalidInputError('only the nominator can revoke a pending transfer');
-  }
   if (transfer.status !== 'pending') {
     throw new InvalidInputError(`transfer is ${transfer.status}, not pending`);
   }

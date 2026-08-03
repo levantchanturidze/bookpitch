@@ -1157,6 +1157,66 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
     }
   });
 
+  it('P7.6: ownership-transfer accept/decline/revoke return 404 (not 400) for a transferId that is not addressed to the caller — kills enumeration', async () => {
+    const { acceptTransfer, declineTransfer, revokeTransfer, nominateTransfer } =
+      await import('@/lib/admin/ownership-transfer');
+    const { NotFoundError } = await import('@/lib/auth');
+
+    // Set up: split owner nominates the moonlighter (a member of Split via
+    // rbac-fixtures) as new owner. Then have a DIFFERENT user (grand owner,
+    // not a member of Split) try to accept/decline/revoke.
+    const nominatorSession = {
+      userId: H.splitOwnerId,
+      email: 'split-owner@bp.test',
+      organizationId: H.splitOrgId,
+      membershipId: H.splitOwnerMembershipId,
+    };
+
+    // Ensure moonlighter has a Split membership (rbac-fixtures creates it).
+    const moonSplitMembership = await unsafePrismaAdmin.membership.findFirstOrThrow({
+      where: { userId: H.moonId, organizationId: H.splitOrgId },
+      select: { id: true },
+    });
+    void moonSplitMembership;
+
+    // Create the nomination.
+    const { id: transferId } = await nominateTransfer(nominatorSession, H.moonId);
+    try {
+      // A third party (grand owner) — not the nominee, not the nominator —
+      // tries to peek. Pre-hardening: accept threw 400 "not addressed to you"
+      // and decline threw 400 "not addressed to you" — both revealed the
+      // transfer exists. Post-hardening: 404 identical to "does not exist."
+      const grandSession = {
+        userId: H.grandOwnerId,
+        email: 'owner@bookpitch.dev',
+        organizationId: H.grandOrgId,
+        membershipId: H.grandOwnerMembershipId,
+      };
+      await expect(acceptTransfer(grandSession, transferId)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(declineTransfer(grandSession, transferId)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(revokeTransfer(grandSession, transferId)).rejects.toBeInstanceOf(NotFoundError);
+
+      // Cross-check the SAME error shape for a completely bogus id.
+      const bogus = '00000000-0000-0000-0000-000000000000';
+      await expect(acceptTransfer(grandSession, bogus)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(declineTransfer(grandSession, bogus)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(revokeTransfer(grandSession, bogus)).rejects.toBeInstanceOf(NotFoundError);
+
+      // Positive control: the actual nominee (moonlighter) CAN see the
+      // transfer via decline (cheaper than accept for the assert path).
+      const moonSession = {
+        userId: H.moonId,
+        email: 'moonlight@bp.test',
+        organizationId: H.splitOrgId,
+        membershipId: H.moonSplitMembershipId,
+      };
+      await declineTransfer(moonSession, transferId, 'sec-007 probe cleanup');
+    } finally {
+      // Cleanup: hard-delete the transfer regardless of state.
+      await unsafePrismaAdmin.ownershipTransfer.deleteMany({ where: { id: transferId } });
+    }
+  });
+
   it('P7.5: availability route resolves same-org staff and refuses cross-org staff via RLS', async () => {
     // The availability route was the "one confirmed" SEC-007 leak shape.
     // Verify the fix: withOrg + RLS return the staff row for a same-org

@@ -793,9 +793,9 @@ No delta finding required a migration or a schema change.
 
 ## Regression suite health
 
-- 57 total probes (37 original + 15 delta + 5 SEC-007 group-E regressions),
+- 58 total probes (37 original + 15 delta + 6 SEC-007 group-E regressions),
   all plain `it(...)`
-- **57 pass, 0 `it.fails`, 0 flaky** (post-fix)
+- **58 pass, 0 `it.fails`, 0 flaky** (post-fix)
 - Runs in ~1.5 s serial (fileParallelism disabled per shared DB state)
 
 ---
@@ -1060,3 +1060,59 @@ Effort: one migration (create role, GRANT SELECT on the ~5 tables), a
 new client in `lib/db.ts`, refactor `buildAuthContext`, remove the
 allowlist entry for `lib/rbac/context.ts`. Not a code review that
 fits in a "next" iteration — its own PR, tracked here.
+
+### Addendum — ownership-transfer enumeration hardening (2026-08-04)
+
+Post-SEC-007 sweep across all 78 remaining `unsafePrismaAdmin.*` read
+callsites (see the sweep report in the conversation log for the full
+grid). The scopedLocationIds shape — caller-supplied ID → lookup with
+no tenant filter, trust chain lives downstream — is eliminated from
+the general query surface. Three residual sites in
+`lib/admin/ownership-transfer.ts` (accept / decline / revoke) were
+structurally justified: ownership transfers are cross-tenant by
+nature (the nominee may not yet be a member of the source org), so
+`withOrg(session.organizationId, …)` doesn't cleanly apply.
+
+The residual enumeration risk — an attacker who knows a transferId
+UUID could distinguish "not found" (404) from "found but not for
+you" (400) — was closed by moving the ownership check into the WHERE
+clause itself:
+
+```ts
+// Before:
+const transfer = await unsafePrismaAdmin.ownershipTransfer.findUnique({
+  where: { id: transferId },
+});
+if (!transfer) throw new NotFoundError('transfer not found');
+if (transfer.toUserId !== session.userId) {
+  throw new InvalidInputError('this transfer is not addressed to you');
+}
+
+// After:
+const transfer = await unsafePrismaAdmin.ownershipTransfer.findFirst({
+  where: { id: transferId, toUserId: session.userId },
+});
+if (!transfer) throw new NotFoundError('transfer not found');
+```
+
+Non-nominees now get the same 404 as callers who guessed a nonexistent
+UUID. `revokeTransfer` uses the same shape with `fromUserId:
+session.userId`. Probe **P7.6** asserts identical `NotFoundError`
+class for both "not for you" and "bogus UUID" cases; positive control
+confirms the addressed nominee can still decline.
+
+Sweep summary — remaining `unsafePrismaAdmin` callsites categorized:
+
+- **Self-lookups** (`id: ctx.userId` — trusted JWT-derived): 9
+- **Bearer-token / identity claim** (email, tokenHash): 6
+- **Platform-plane by design** (caller is SUPER/PLATFORM, cross-tenant
+  is the whole point): 5
+- **System-role / lattice reads** (`organizationId: null`): 6
+- **JWT-signed identity via buildAuthContext**: 2
+- **Fleet-wide count** (SEC-006 last-SUPER guard): 1
+- **Ownership-transfer cross-org (structural, now hardened)**: 4
+
+No further concerning sites remain. `bookpitch_login` narrow-role
+migration (option 3 above) remains the correct end state for the
+`buildAuthContext` group — that's the last place the hottest path in
+the codebase touches a superuser client.
