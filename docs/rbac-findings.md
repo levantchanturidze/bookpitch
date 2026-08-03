@@ -29,7 +29,23 @@ these accounts should exist at all in prod.
 memberships in whatever fixture org the seed created. Confirm those
 memberships and the org itself are gone or intended.
 
-## F-02 · `prisma/seed.ts` wipes major tables · P1 · Data-loss risk
+## F-02 · `prisma/seed.ts` wipes major tables · P1 · Data-loss risk · FIXED 2026-08-03
+
+**Fixed** via `prisma/_require-local-db-guard.ts` imported as the very
+first statement of both `prisma/seed.ts` and `prisma/rbac-fixtures.ts`.
+The guard reads `process.env.ADMIN_DATABASE_URL ?? DATABASE_URL` BEFORE
+any other module loads (Node evaluates imports in declared order and
+`@/lib/db` throws on missing URL and would obscure the guard). If the
+URL is set and its host isn't `localhost`/`127.0.0.1`, the guard prints
+a clear refusal message including the actual hostname, and exits 1.
+Verified: prod-URL invocation refuses, override flag (`BOOKPITCH_ALLOW_NON_LOCAL_SEED=1`)
+bypasses, bare-shell invocation stays silent (dotenv later loads
+localhost from `.env.local` — safe path).
+
+Original finding below.
+
+---
+
 
 **What:** `prisma/seed.ts` lines 62-82 calls `deleteMany()` on
 `auditLog`, `messageLog`, `messageTemplate`, `payment`, `appointment`,

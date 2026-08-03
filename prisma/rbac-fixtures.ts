@@ -14,6 +14,11 @@
 // Passwords match the base seed's DEV_USER_PASSWORD default.
 // -----------------------------------------------------------------------------
 
+// F-02: MUST be the very first import. Guards against running this fixture
+// against a non-local DB (which would create test users with the repo-
+// committed DEV_USER_PASSWORD default on a production tenant).
+import './_require-local-db-guard';
+
 import { UserRole } from '@prisma/client';
 import { hash } from '@node-rs/argon2';
 import 'dotenv/config';

@@ -1,3 +1,9 @@
+// F-02: MUST be the very first import. It calls process.exit(1) if a
+// prod-shaped URL is in the caller's env, before any other module loads
+// (including `@/lib/db`, which throws on missing URL and would obscure
+// the guard's intent).
+import './_require-local-db-guard';
+
 import { LocationType, UserRole } from '@prisma/client';
 import { hash } from '@node-rs/argon2';
 import 'dotenv/config';
