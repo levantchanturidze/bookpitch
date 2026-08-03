@@ -522,3 +522,29 @@ naturally serialized by GH Actions.
 check (a route or a scheduled probe) that fails loudly if the runtime
 schema doesn't match the built-in migration set. Silent drift is the
 underlying failure mode.
+
+**Progress 2026-08-03:** option (2) partially landed as
+`.github/workflows/migrate.yml`. On push to `main` (path-filtered on
+`prisma/migrations/**` + `schema.prisma`), runs `prisma migrate status`
+→ `migrate deploy` → `migrate status` again, using
+`ADMIN_MIGRATE_DATABASE_URL` (superuser role). Concurrency group locked
+so parallel pushes serialize.
+
+**Remaining work (user action needed):**
+1. Add `ADMIN_MIGRATE_DATABASE_URL` as a GitHub Actions repo secret
+   (Settings → Secrets and variables → Actions → New repository secret).
+   Value: the `postgres` role connection string that
+   `ADMIN_DATABASE_URL` currently holds (session-mode pooler, port 5432).
+2. Ordering: this workflow runs in parallel with Vercel's git deploy,
+   not before it. Because migrations are expand-only (spec §9,
+   CLAUDE.md), the deployed code briefly running against the
+   pre-migration schema is safe. Tightening this to "Vercel waits for
+   migration" requires either (a) disabling Vercel git auto-deploy and
+   triggering a deploy hook from the workflow's success step, or
+   (b) a Vercel "ignored build step" script that polls a health-check
+   endpoint exposing the applied-migration count. Both are follow-up
+   ops decisions.
+3. Post-deploy drift check: the second `prisma migrate status` in the
+   workflow catches immediate drift. A recurring probe (e.g. added to
+   `cron.yml`) would catch drift introduced out-of-band (someone runs
+   a migration in the Supabase SQL editor).

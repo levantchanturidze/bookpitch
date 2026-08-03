@@ -1,0 +1,66 @@
+name: Deploy database migrations
+
+# F-06: applies pending Prisma migrations against production on every push to
+# main that touches prisma/migrations/**. Runs in parallel with Vercel's own
+# git-triggered deploy — both fire from the same push. The ordering guarantee
+# is that the migration is expand-only (invariant in CLAUDE.md and rbac-spec
+# §9), so the deployed code may briefly run against the pre-migration schema
+# without breaking. Expand-only means: new columns/tables only, existing
+# shapes never removed or narrowed in the same PR that lands the code that
+# needs them.
+#
+# The tighter guarantee ("Vercel waits for this workflow before promoting")
+# requires either:
+#   (a) disabling Vercel git auto-deploy and triggering a deploy hook from
+#       this workflow's success step; or
+#   (b) a Vercel "ignored build step" script that polls a health check
+#       endpoint that exposes the applied-migration count.
+# Both are follow-up work — see docs/rbac-findings.md § F-06.
+#
+# Uses ADMIN_MIGRATE_DATABASE_URL (superuser/schema-owning role) — not
+# DATABASE_URL, which points at bookpitch_app (NOBYPASSRLS runtime role).
+# Prisma migrate needs CREATE/ALTER, bookpitch_app doesn't have them.
+# See F-11 for the split-URL rationale.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'prisma/migrations/**'
+      - 'prisma/schema.prisma'
+      - '.github/workflows/migrate.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: migrate-prod
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Show pending migrations
+        env:
+          DATABASE_URL: ${{ secrets.ADMIN_MIGRATE_DATABASE_URL }}
+        run: npx prisma migrate status
+
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.ADMIN_MIGRATE_DATABASE_URL }}
+        run: npx prisma migrate deploy
+
+      - name: Verify no drift after apply
+        env:
+          DATABASE_URL: ${{ secrets.ADMIN_MIGRATE_DATABASE_URL }}
+        run: npx prisma migrate status
