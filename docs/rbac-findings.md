@@ -76,7 +76,24 @@ seed's deleteMany (line 62: `ALTER TABLE audit_log DISABLE TRIGGER USER`).
 That is correct for the local reset flow but is a second reason no dev
 seed should ever hit prod.
 
-## F-03 · `create-platform-user.ts` writes no audit row · P2
+## F-03 · `create-platform-user.ts` writes no audit row · P2 · FIXED 2026-08-03
+
+**Fixed.** `scripts/create-platform-user.ts` now writes an `audit_log`
+row per mint. Shape:
+  - `action`: `platform_user.create` or `platform_user.update`
+  - `entity`: `staff` · `entity_id`: new user id
+  - `actor_user_id`: NULL (bootstrap by definition — no signed-in caller)
+  - `organization_id`: NULL (platform-scoped event)
+  - `meta`: `{ via, invokedBy (OS user), hostname, roleKey }`
+
+Failure of the audit insert is logged loud but does NOT roll back the
+user write — losing the audit row is worse than a partial mint but the
+account is already in the DB and reverting would leave a phantom.
+
+Original finding below.
+
+---
+
 
 **What:** `scripts/create-platform-user.ts` creates or updates an
 `app_users` row with a platform role and does not insert into
@@ -95,7 +112,26 @@ entity='staff', entity_id=<newUser.id>, meta={'via':'create-platform-user.ts',
 because there's no logged-in caller at bootstrap time; the meta captures
 the operator context instead.
 
-## F-04 · `/platform` access-control layer · P2 · Security review
+## F-04 · `/platform` access-control layer · P2 · Security review · VERIFIED CLEAN 2026-08-03
+
+**Verified live under enforcement:** signed in as FRONT_DESK, PROVIDER,
+and ORG_OWNER and probed every /platform surface. All correctly denied:
+
+- Every /platform/* page → `307 → /` (layout catches `ForbiddenError`
+  from `requirePermission(ctx, 'platform.analytics.read', …)` at
+  `app/platform/layout.tsx:20` and calls `redirect('/')`).
+- Every /api/platform/* API → `403` (each route's own
+  `requirePermission` denies).
+
+Enforcement (`RBAC_ENFORCE_MODULES=*`) makes both layers real. The
+layout-level check catches org-plane users before any child page
+touches DB or renders any data; the API-level checks are a second
+line of defense.
+
+Original suspicion below.
+
+---
+
 
 **What:** need to confirm which layer actually gates `/platform/*`
 against a caller who has an `app_users` row + a JWT but NOT a platform

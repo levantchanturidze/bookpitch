@@ -34,8 +34,10 @@ if (!process.env.DATABASE_URL) {
 //     script is the BOOTSTRAP exception — used once per environment to
 //     create the first SUPER_ADMIN, from a trusted operator's laptop.
 //     Any subsequent password change MUST go through the reset-link flow.
-//   • Only writes to app_users. Never touches memberships / organizations
-//     / audit_log.
+//   • Writes to app_users + one audit_log row per mint (F-03 fix). Never
+//     touches memberships or organizations. Audit row has
+//     actor_user_id=NULL (bootstrap has no signed-in caller); operator
+//     context is captured in meta.
 //   • mfa_enabled is set to true — no MFA enforcement code ships in the
 //     MVP, but the flag surfaces the intent + is picked up when MFA lands
 //     (see lib/platform/break-glass.ts::startBreakGlass TODO).
@@ -140,6 +142,20 @@ async function main() {
     select: { id: true },
   });
 
+  // F-03: audit the mint. actor_user_id is NULL because this runs from an
+  // operator's laptop with no signed-in caller (bootstrap by definition).
+  // Meta captures the OS user + hostname so future forensics can trace
+  // the operator context.
+  const os = await import('node:os');
+  const meta = {
+    via: 'scripts/create-platform-user.ts',
+    invokedBy: process.env.USER ?? os.userInfo().username ?? '<unknown>',
+    hostname: os.hostname(),
+    roleKey,
+  };
+
+  let userId: string;
+  let action: 'platform_user.create' | 'platform_user.update';
   if (existing) {
     await prismaAdmin.appUser.update({
       where: { id: existing.id },
@@ -151,6 +167,8 @@ async function main() {
         sessionVersion: { increment: 1 },
       },
     });
+    userId = existing.id;
+    action = 'platform_user.update';
     console.log(`✔ updated ${email} → ${roleKey} (sessionVersion bumped)`);
   } else {
     const created = await prismaAdmin.appUser.create({
@@ -165,7 +183,28 @@ async function main() {
       },
       select: { id: true },
     });
+    userId = created.id;
+    action = 'platform_user.create';
     console.log(`✔ created ${email} → ${roleKey} (id=${created.id})`);
+  }
+
+  // Append-only audit row. Failure here is logged but does NOT roll back
+  // the user write — the account already exists in the DB, losing the
+  // audit row is worse than a partial mint but not worth reverting.
+  try {
+    await prismaAdmin.auditLog.create({
+      data: {
+        organizationId: null,   // platform-scoped event
+        actorUserId: null,      // no signed-in caller — bootstrap
+        action,
+        entity: 'staff',
+        entityId: userId,
+        meta,
+      },
+    });
+  } catch (err) {
+    console.error(`WARN: audit_log insert failed: ${(err as Error).message}`);
+    console.error('The account was created/updated successfully; only the audit row is missing.');
   }
 
   await prismaAdmin.$disconnect();
