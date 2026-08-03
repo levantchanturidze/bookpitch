@@ -5,7 +5,34 @@ Not fixed in that session by design — each needs its own review + code
 change + tests. Priority markers are the reviewer's initial cut, not
 authoritative.
 
-## F-01 · Two dev seed accounts in production · P1 · Security
+## F-01 · Two dev seed accounts in production · P1 · Security · FIXED 2026-08-02
+
+**Fixed** via a one-shot `/api/platform/cleanup-fixtures` endpoint
+(commits `392d9fa` → `23c8440` → `e4cfd95` → `3df6f2f`, removed after
+use). The two dev users were **masked, not hard-deleted**, because
+`audit_log.actor_user_id` is `ON DELETE NO ACTION` (spec §9.11 —
+audit rows must survive actor purge for forensic integrity):
+
+- `status='deleted'` (blocks login via `validateCredentials`
+  guard in `lib/auth/credentials.ts`)
+- `email` rewritten to `deleted-<uuid>@bookpitch.invalid` (frees the
+  original email for legitimate use + defeats email-based lookup)
+- `password_hash = NULL` (belt-and-braces — even bypassing the status
+  check, argon2.verify against NULL returns false)
+
+The associated fixture org was **soft-deleted** (`status='archived'`)
+rather than hard-deleted, again because `audit_log.organization_id`
+is `ON DELETE NO ACTION`. Members lose access via the same
+enforcement flow that gates suspended orgs.
+
+**Verified 2026-08-02:** live sign-in attempts as either address
+return 401 (silent — same shape as unknown-email). No org membership
+resolves either userId to an active org.
+
+Original finding below.
+
+---
+
 
 **What:** Production `app_users` contains two rows created 2026-07-24:
 `owner@bookpitch.dev` and `reception@bookpitch.dev`.
@@ -231,6 +258,19 @@ would have caught the authorize() bug.
   and `organizations.plan`, `planStatus`, `stripe*` columns exist — but no
   endpoints or UI wire them together. Stripe integration is scaffolded in
   `lib/billing/` but not connected to /platform.
+  - **Read-only view landed 2026-08-03 (commit 9d1d54f).**
+    `components/platform/OrgDetail.tsx::BillingPanel` surfaces plan,
+    planStatus, currentPeriodEnd + days-to-renewal (amber ≤7d, red
+    overdue), stripeCustomerId, stripeSubscriptionId. Latter two
+    deep-link to `dashboard.stripe.com/customers/…` and
+    `/subscriptions/…`. No write actions — subscription mutation stays
+    in Stripe. Section header carries a "read-only — managed in Stripe"
+    chip.
+  - **Write-side (checkout, webhook, plan change) still open.** Needs
+    Stripe test/live keys in Vercel + a `/api/webhooks/stripe` handler
+    that maps `checkout.session.completed` and
+    `customer.subscription.updated` events onto the org row. Larger
+    scope — deferred until user provides keys.
 - ~~**Audit-log filters in the UI.**~~ **Already present** (discovered
   2026-08-03 while auditing F-08). `components/platform/AuditView.tsx`
   has a full filter form (actor UUID, org UUID, action prefix, from
@@ -246,7 +286,45 @@ would have caught the authorize() bug.
   until we surface `currentPeriodEnd` on `PlatformOrgSummary` (belongs
   in the subscription/billing work below).
 
-## F-09 · `:own` scope on list-mode calls returns false · P1 · Enforcement design gap
+## F-09 · `:own` scope on list-mode calls returns false · P1 · Enforcement design gap · FIXED 2026-08-02
+
+**Fixed** across three touch points:
+
+1. **`lib/rbac/can.ts`** — added the list-mode grant for `:own`
+   mirroring `:branch`:
+   ```ts
+   if (granted.has(perm(`${p}:own`))) {
+     if (!resource?.ownerUserId) return true;   // list-mode grant
+     return resource.ownerUserId === ctx.userId;
+   }
+   ```
+2. **`lib/rbac/scope.ts`** — new helpers `scopedByOwn(ctx, perm)`,
+   `resolveBookingOwner(bookingId)`, `resolveWaitlistOwner(waitlistId)`
+   used by routes to filter queries + do per-resource ownership checks.
+3. **Six routes updated to filter by owner in list mode:**
+   `app/api/appointments/route.ts` (GET+PATCH),
+   `app/api/waitlist/route.ts` (GET+DELETE),
+   `app/api/reminders/send-now/route.ts`,
+   `app/api/admin/staff/[id]/availability/route.ts`.
+   Waitlist has no Prisma relation to Staff so uses a two-query pattern
+   (fetch staff.id list for user, filter waitlist.staffId IN (...)).
+
+**Verified live under enforcement:** PROVIDER sign-in now lands at
+`/scheduler` with 200 (was 500 pre-fix); calendar renders own bookings
+only; `/reminders` scopes to own upcoming; ACCOUNTANT gets `/analytics`
+without a 403.
+
+**Route-access test suite updated** to reflect the new correct
+behavior: PROVIDER previously expected 403 on `/scheduler` and
+`/reminders`, now expects 200. See
+`tests/route-access.test.ts`.
+
+Original finding below.
+
+---
+
+
+
 
 **What:** `lib/rbac/can.ts:107-110` — when a caller with `:own` scope
 hits a list endpoint (no specific `resource.ownerUserId`),
@@ -466,7 +544,27 @@ diagnosis via `curl /api/health`.
   - Rotate `bookpitch_app` in the same operation as the postgres
     reset — they are always leaked together.
 
-## F-07 · RBAC guards ship in SHADOW MODE in production · P0 · Security
+## F-07 · RBAC guards ship in SHADOW MODE in production · P0 · Security · FIXED 2026-08-02
+
+**Fixed** by setting `RBAC_ENFORCE_MODULES=*` in Vercel Production
+after the F-09 `:own` scope fix landed (F-09 had to ship first — the
+initial enforcement flip broke PROVIDER + ACCOUNTANT because
+`can(ctx, 'booking.read')` returned false in list mode; see F-09
+"Confirmed 2026-08-02" note). Once F-09 was in, enforcement was
+turned on and left on — verified stable across a sign-in per role
+(SUPER_ADMIN / ORG_OWNER / BRANCH_MANAGER / FRONT_DESK / PROVIDER /
+ACCOUNTANT), each landing on its role-appropriate page and hitting
+its scoped API surface without a 403.
+
+**Verified live 2026-08-02:** repeat probe — FRONT_DESK sign-in →
+`GET /api/admin/staff` now returns 403 with `rbac.enforce_deny` (was
+200 + `rbac.shadow_deny` before the flip). Confirms shadow-mode
+tolerance is off. No further regressions reported.
+
+Original finding below.
+
+---
+
 
 **What:** `lib/rbac/guard.ts::requirePermission` calls `isEnforcing(module)`,
 which returns `false` unless `RBAC_ENFORCE_MODULES` env var is set. In shadow
