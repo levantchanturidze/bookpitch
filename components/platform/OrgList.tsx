@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import Link from 'next/link';
 
 type OrgRow = {
@@ -15,6 +16,88 @@ type OrgRow = {
   createdAt: string;
 };
 
+// F-08 org-status aggregate dashboard. All computed in-memory from the
+// already-loaded org list — no extra queries. Meant as a fast support-
+// triage snapshot at the top of /platform/orgs. Grows to a real
+// dedicated dashboard as soon as we outgrow "sum a list".
+function StatusSummary({ orgs }: { orgs: OrgRow[] }) {
+  const s = useMemo(() => {
+    const byStatus: Record<string, number> = {};
+    const byPlan: Record<string, number> = {};
+    let members = 0;
+    let missingOwner = 0;
+    let recentSignups = 0;
+    let impersonationEnabled = 0;
+    const now = Date.now();
+    const sevenDaysAgo = now - 7 * 24 * 3600_000;
+    for (const o of orgs) {
+      byStatus[o.status] = (byStatus[o.status] ?? 0) + 1;
+      byPlan[o.plan] = (byPlan[o.plan] ?? 0) + 1;
+      members += o.memberCount;
+      if (!o.ownerEmail) missingOwner += 1;
+      if (new Date(o.createdAt).getTime() >= sevenDaysAgo) recentSignups += 1;
+      if (o.allowSupportImpersonation) impersonationEnabled += 1;
+    }
+    return { byStatus, byPlan, members, missingOwner, recentSignups, impersonationEnabled };
+  }, [orgs]);
+
+  const statusOrder: Array<keyof typeof s.byStatus> = ['active', 'trial', 'suspended', 'archived'];
+  const statusColor: Record<string, string> = {
+    active: 'text-emerald-300', trial: 'text-sky-300',
+    suspended: 'text-red-300', archived: 'text-slate-500',
+  };
+
+  return (
+    <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-6">
+      <SummaryCard label="Organizations" value={orgs.length} tone="strong" />
+      <SummaryCard
+        label="By status"
+        value={
+          <div className="flex flex-wrap gap-1 text-[10px] font-mono">
+            {statusOrder.filter(k => s.byStatus[k]).map(k => (
+              <span key={k} className={statusColor[k]}>
+                {k}: {s.byStatus[k]}
+              </span>
+            ))}
+          </div>
+        }
+      />
+      <SummaryCard label="Members (all)" value={s.members} />
+      <SummaryCard
+        label="Missing owner"
+        value={s.missingOwner}
+        tone={s.missingOwner > 0 ? 'warn' : 'default'}
+      />
+      <SummaryCard label="New in 7 days" value={s.recentSignups} />
+      <SummaryCard
+        label="Support access on"
+        value={s.impersonationEnabled}
+        hint={`of ${orgs.length}`}
+      />
+    </div>
+  );
+}
+
+function SummaryCard({
+  label, value, hint, tone = 'default',
+}: {
+  label: string;
+  value: React.ReactNode;
+  hint?: string;
+  tone?: 'default' | 'strong' | 'warn';
+}) {
+  const border = tone === 'warn'   ? 'border-amber-800 bg-amber-950' :
+                 tone === 'strong' ? 'border-slate-700 bg-slate-800'
+                                   : 'border-slate-800 bg-slate-900';
+  return (
+    <div className={`rounded-lg border p-3 ${border}`}>
+      <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">{label}</p>
+      <div className="mt-1 font-mono text-lg font-bold text-slate-100">{value}</div>
+      {hint && <p className="mt-0.5 text-[10px] text-slate-500">{hint}</p>}
+    </div>
+  );
+}
+
 const STATUS_STYLE: Record<string, string> = {
   active:    'bg-emerald-900 text-emerald-200',
   trial:     'bg-sky-900 text-sky-200',
@@ -26,7 +109,7 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
   return (
     <div>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-bold">Organizations — {orgs.length}</h2>
+        <h2 className="text-lg font-bold">Organizations</h2>
         <Link
           href="/platform/orgs/new"
           className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
@@ -34,6 +117,7 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
           + New organization
         </Link>
       </div>
+      <StatusSummary orgs={orgs} />
       <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] uppercase tracking-wider text-slate-500">
