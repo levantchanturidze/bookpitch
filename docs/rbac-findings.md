@@ -264,6 +264,63 @@ still exhausts 15.
 
 None of these are a config flip. Left for a decision.
 
+## F-12 · Secret exposure via shell fall-through + Vercel sensitive vars are one-way · P0 · Security incident
+
+**Root cause of the incident.** During diagnostic work on 2026-08-02 the
+agent ran a `while … case …` loop over `.env.supabase` intending to
+filter values out; the fall-through arm echoed every unmatched line
+verbatim. All secrets in the file (DB passwords, AUTH_SECRET,
+FIELD_ENCRYPTION_KEY, CRON_SECRET, PAYMENT_MOCK_SECRET) landed in the
+chat transcript before the loop finished. **Standing rule now in
+CLAUDE.md**: never echo, cat, grep, or loop over a file containing
+secrets; read into a variable and pipe via stdin; redirect anything
+that could contain a credential.
+
+**Two roles were exposed, not one.** Supabase separates:
+  - `postgres` (superuser) — used by `DIRECT_URL` and `ADMIN_DATABASE_URL`.
+    The dashboard "Reset database password" action rotates THIS one.
+  - `bookpitch_app` (NOBYPASSRLS runtime role) — used by `DATABASE_URL`.
+    The dashboard does NOT rotate this. Requires manual
+    `ALTER USER bookpitch_app WITH PASSWORD '...';` in the SQL editor.
+
+Anyone doing an incident-response rotation via the Supabase dashboard
+alone leaves the `bookpitch_app` credential live even though the
+"password reset" appeared complete. This distinction is easy to miss
+and would leave a leaked runtime credential in production. Document
+this in any playbook that includes "reset the Supabase password."
+
+**Sensitive Vercel env vars are one-way.** Values set with
+`type: "sensitive"` cannot be read back — not via the REST API, not
+via `vercel env pull` (returns empty strings for those keys). This is
+by design; the practical consequence for rotation is:
+  - Any local file (e.g. `.env.supabase`, dev machines' `.env.local`)
+    holding these values MUST be updated at rotation time. Otherwise
+    the next session starts blocked because local tooling can't reach
+    prod DB and the values cannot be re-derived.
+  - Automation that generates + writes a secret must print it exactly
+    once to the operator's terminal — there is no "read it back later"
+    path.
+  - Rotation scripts (`scripts/rotate-db-urls.py`,
+    `scripts/verify-post-rotation.py`) should NOT be committed to the
+    repo — they were removed in the same session.
+
+**Health-check gap that cost an hour.** When `password authentication
+failed for user "postgres"` surfaced in the logs after the rotation
+attempt, it was impossible to tell WHICH of `DIRECT_URL` or
+`ADMIN_DATABASE_URL` was misconfigured — the error identifies the
+Postgres user, not the env var name. Fixed by rewriting
+`app/api/health/route.ts` to probe each Prisma client separately and
+report by env-var name (never by value). Next occurrence: 30-second
+diagnosis via `curl /api/health`.
+
+**Post-mortem takeaways worth keeping:**
+  - Prefer stdin over argv for any tool that writes secrets. Prefer
+    `getpass.getpass()` for prompts; never accept a secret as a CLI arg.
+  - Never `cat` a `.env*` file. Always parse in a language with proper
+    escaping (Python, Node), extract only what you need, print keys only.
+  - Rotate `bookpitch_app` in the same operation as the postgres
+    reset — they are always leaked together.
+
 ## F-07 · RBAC guards ship in SHADOW MODE in production · P0 · Security
 
 **What:** `lib/rbac/guard.ts::requirePermission` calls `isEnforcing(module)`,

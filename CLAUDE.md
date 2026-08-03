@@ -36,3 +36,21 @@ organizations, memberships, or any query that reads tenant-scoped data.
   Do not silently pick an interpretation.
 - Write findings to `docs/` as you go. Anything not written down is lost at the
   next context reset.
+
+## Secret handling — hard rule (F-12, 2026-08-02 incident)
+
+- Never echo, cat, grep, or loop over a file containing secrets. Read into a
+  variable and pipe via stdin. Redirect any output that could contain a
+  credential. This has caused an incident; treat it as a hard rule.
+- Consequences that follow: parse `.env*` files with a language that has
+  proper string handling (Python, Node); extract only what you need; print
+  keys only. Never `cat .env.local | grep KEY`. Never a `while … case …` loop
+  over env-file lines. Never `--value <VALUE>` on a CLI that has a stdin path.
+- Sensitive Vercel env vars are one-way: they cannot be read back via API or
+  CLI. Every local file holding those values must be updated at rotation
+  time, or the next session starts blocked. Rotation scripts do not live in
+  the repo — delete them after use.
+- Supabase's dashboard "Reset database password" only rotates the `postgres`
+  role. `bookpitch_app` (the runtime NOBYPASSRLS role, used by
+  `DATABASE_URL`) needs a separate `ALTER USER bookpitch_app WITH PASSWORD`
+  in the SQL editor. Missing this leaves a leaked credential live.
