@@ -993,3 +993,208 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     },
   );
 });
+
+// =============================================================================
+// § 7 — SEC-007 regression probes: RLS-safe migrations of the group-E callsites
+// that previously used unsafePrismaAdmin with an org-scoped WHERE clause. Each
+// probe confirms the migrated helper (a) returns the right answer for a valid
+// same-org id, (b) returns null / empty for a cross-tenant id (RLS filtering),
+// and (c) survives nested withOrg — the design concern that lib/rbac/scope.ts's
+// resolveBookingOwner would be called from inside a caller's own withOrg block.
+// =============================================================================
+describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
+  // Base seed's staff rows don't carry a userId — set one up per probe so
+  // resolveBookingOwner has an owner to return. Uses the fixture's grand
+  // owner (owner@bookpitch.dev) as the linked user.
+  async function makeStaffLinkedToUser(orgId: string, userId: string): Promise<string> {
+    const loc = await unsafePrismaAdmin.location.findFirstOrThrow({
+      where: { organizationId: orgId }, select: { id: true },
+    });
+    const staff = await unsafePrismaAdmin.staff.create({
+      data: {
+        organizationId: orgId,
+        locationId: loc.id,
+        userId,
+        name: 'SEC-007 probe staff',
+        roleTitle: 'probe',
+      },
+      select: { id: true },
+    });
+    return staff.id;
+  }
+
+  it('P7.1: resolveBookingOwner returns the correct owner for a same-org appointment', async () => {
+    const { resolveBookingOwner } = await import('@/lib/rbac/scope');
+    const staffId = await makeStaffLinkedToUser(H.grandOrgId, H.grandOwnerId);
+    const now = new Date();
+    const appt = await unsafePrismaAdmin.appointment.create({
+      data: {
+        organizationId: H.grandOrgId,
+        locationId: (await unsafePrismaAdmin.location.findFirstOrThrow({
+          where: { organizationId: H.grandOrgId }, select: { id: true },
+        })).id,
+        customerId: H.grandCustomerId,
+        staffId,
+        serviceId: null,
+        serviceName: 'sec-007 probe',
+        price: 0,
+        startsAt: new Date(now.getTime() + 3600_000),
+        endsAt:   new Date(now.getTime() + 3600_000 + 1800_000),
+        status: 'pending', paymentStatus: 'unpaid',
+      },
+      select: { id: true },
+    });
+    try {
+      const owner = await resolveBookingOwner(appt.id, H.grandOrgId);
+      expect(owner).toBe(H.grandOwnerId);
+    } finally {
+      await unsafePrismaAdmin.appointment.delete({ where: { id: appt.id } });
+      await unsafePrismaAdmin.staff.delete({ where: { id: staffId } });
+    }
+  });
+
+  it('P7.2: resolveBookingOwner returns null when the appointment is in ANOTHER org (RLS filters)', async () => {
+    const { resolveBookingOwner } = await import('@/lib/rbac/scope');
+    // Set up an iso-org staff row + appointment so we have a cross-tenant
+    // target to probe. Iso may or may not have staff seeded (base seed
+    // creates staff only in Grand); create one for the probe.
+    const isoLoc = await unsafePrismaAdmin.location.findFirst({
+      where: { organizationId: H.isoOrgId }, select: { id: true },
+    });
+    if (!isoLoc) return;   // isolation org has no location — probe not applicable
+    const isoStaff = await unsafePrismaAdmin.staff.create({
+      data: {
+        organizationId: H.isoOrgId,
+        locationId: isoLoc.id,
+        userId: H.isoOwnerId,
+        name: 'SEC-007 iso probe staff',
+        roleTitle: 'probe',
+      },
+      select: { id: true },
+    });
+    const now = new Date();
+    const isoAppt = await unsafePrismaAdmin.appointment.create({
+      data: {
+        organizationId: H.isoOrgId,
+        locationId: isoLoc.id,
+        customerId: H.isoCustomerId,
+        staffId: isoStaff.id,
+        serviceId: null,
+        serviceName: 'sec-007 cross-tenant probe',
+        price: 0,
+        startsAt: new Date(now.getTime() + 3600_000),
+        endsAt:   new Date(now.getTime() + 3600_000 + 1800_000),
+        status: 'pending', paymentStatus: 'unpaid',
+      },
+      select: { id: true },
+    });
+    try {
+      // Ask for the iso appointment while claiming to be in Grand — RLS
+      // must filter it out. Post-migration this returns null (no leak).
+      const owner = await resolveBookingOwner(isoAppt.id, H.grandOrgId);
+      expect(owner).toBeNull();
+    } finally {
+      await unsafePrismaAdmin.appointment.delete({ where: { id: isoAppt.id } });
+      await unsafePrismaAdmin.staff.delete({ where: { id: isoStaff.id } });
+    }
+  });
+
+  it('P7.3: scopedLocationIds refuses to resolve a branch id from ANOTHER org (RLS filters)', async () => {
+    const { scopedLocationIds } = await import('@/lib/rbac/scope');
+    // Grand has a branch; Split has a separate branch (Downtown). Build a
+    // fake ctx that says the caller is in Grand but "somehow" has a Split
+    // branch id in ctx.branchIds — RLS on branches must return zero rows.
+    const splitDowntown = await unsafePrismaAdmin.branch.findFirstOrThrow({
+      where: { organizationId: H.splitOrgId, name: 'Downtown' },
+      select: { id: true, legacyLocationId: true },
+    });
+    const fakeCtx = {
+      activeOrganizationId: H.grandOrgId,
+      branchIds: new Set([splitDowntown.id]),
+    } as unknown as Parameters<typeof scopedLocationIds>[0];
+    const ids = await scopedLocationIds(fakeCtx);
+    // RLS on `branches` filters the Split row from Grand's scope. Result:
+    // empty array (branchIds is non-empty so we don't return null, but the
+    // findMany returns 0 rows post-RLS).
+    expect(ids).toEqual([]);
+  });
+
+  it('P7.4: nested withOrg — resolveBookingOwner works when the caller is already inside its own withOrg tx', async () => {
+    const { resolveBookingOwner } = await import('@/lib/rbac/scope');
+    // Seed a staff row linked to a user, and an appointment on them.
+    const staffId = await makeStaffLinkedToUser(H.grandOrgId, H.grandOwnerId);
+    const loc = await unsafePrismaAdmin.location.findFirstOrThrow({
+      where: { organizationId: H.grandOrgId }, select: { id: true },
+    });
+    const now = new Date();
+    const appt = await unsafePrismaAdmin.appointment.create({
+      data: {
+        organizationId: H.grandOrgId,
+        locationId: loc.id,
+        customerId: H.grandCustomerId,
+        staffId,
+        serviceName: 'sec-007 nested probe',
+        price: 0,
+        startsAt: new Date(now.getTime() + 7200_000),
+        endsAt:   new Date(now.getTime() + 7200_000 + 1800_000),
+        status: 'pending', paymentStatus: 'unpaid',
+      },
+      select: { id: true },
+    });
+    try {
+      // Open an outer withOrg tx and, inside it, call resolveBookingOwner
+      // which opens ITS OWN withOrg. Under session pool, Prisma opens a
+      // new connection for the inner tx — no deadlock, correct answer.
+      // If a future move to the tx-pool changes this shape, this probe
+      // will surface it before DATABASE_URL_SUPERUSER_TXPOOL is activated.
+      const owner = await withOrg(H.grandOrgId, async (_outerTx) => {
+        return resolveBookingOwner(appt.id, H.grandOrgId);
+      });
+      expect(owner).toBe(H.grandOwnerId);
+    } finally {
+      await unsafePrismaAdmin.appointment.delete({ where: { id: appt.id } });
+      await unsafePrismaAdmin.staff.delete({ where: { id: staffId } });
+    }
+  });
+
+  it('P7.5: availability route resolves same-org staff and refuses cross-org staff via RLS', async () => {
+    // The availability route was the "one confirmed" SEC-007 leak shape.
+    // Verify the fix: withOrg + RLS return the staff row for a same-org
+    // id but zero rows for a cross-org id.
+    const grandStaffId = await makeStaffLinkedToUser(H.grandOrgId, H.grandOwnerId);
+    const isoLoc = await unsafePrismaAdmin.location.findFirst({
+      where: { organizationId: H.isoOrgId }, select: { id: true },
+    });
+    const isoStaffId = isoLoc
+      ? (await unsafePrismaAdmin.staff.create({
+          data: {
+            organizationId: H.isoOrgId,
+            locationId: isoLoc.id,
+            userId: H.isoOwnerId,
+            name: 'SEC-007 iso probe staff',
+            roleTitle: 'probe',
+          },
+          select: { id: true },
+        })).id
+      : null;
+
+    try {
+      // Same-org resolves.
+      const sameOrgResult = await withOrg(H.grandOrgId, (tx) =>
+        tx.staff.findFirst({ where: { id: grandStaffId }, select: { userId: true } }),
+      );
+      expect(sameOrgResult?.userId).toBe(H.grandOwnerId);
+
+      if (isoStaffId) {
+        // Cross-org returns null (RLS filters).
+        const crossOrgResult = await withOrg(H.grandOrgId, (tx) =>
+          tx.staff.findFirst({ where: { id: isoStaffId }, select: { userId: true } }),
+        );
+        expect(crossOrgResult).toBeNull();
+      }
+    } finally {
+      await unsafePrismaAdmin.staff.delete({ where: { id: grandStaffId } });
+      if (isoStaffId) await unsafePrismaAdmin.staff.delete({ where: { id: isoStaffId } });
+    }
+  });
+});

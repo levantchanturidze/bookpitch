@@ -5,16 +5,23 @@
 // seed file runs THIS module's top-level code before any other import
 // (including `@/lib/db`, which can itself throw on module load).
 //
-// Refuses to proceed when ADMIN_DATABASE_URL or DATABASE_URL is set at
-// process start and points at a non-local host. `.env.local`'s values
-// are NOT loaded at this point — callers who inline a prod URL get an
-// unambiguous refusal here; bare-shell invocations that will later
-// pick up a localhost `.env.local` proceed silently.
+// Refuses to proceed when any admin/runtime DB URL is set at process start
+// and points at a non-local host. `.env.local`'s values are NOT loaded at
+// this point — callers who inline a prod URL get an unambiguous refusal
+// here; bare-shell invocations that will later pick up a localhost
+// `.env.local` proceed silently. Checks BOTH the new SEC-007 names and the
+// legacy names so guard fires regardless of which name the operator uses.
 //
 // Escape hatch: BOOKPITCH_ALLOW_NON_LOCAL_SEED=1 (only for a deliberate
 // staging reset — never for CI, never for prod).
 // -----------------------------------------------------------------------------
-const raw = process.env.ADMIN_DATABASE_URL ?? process.env.DATABASE_URL;
+const raw =
+  process.env.DATABASE_URL_SUPERUSER_SESSION ??
+  process.env.DATABASE_URL_SUPERUSER_TXPOOL ??
+  process.env.DATABASE_URL_APP_NOBYPASSRLS ??
+  process.env.ADMIN_DATABASE_URL ??
+  process.env.ADMIN_RUNTIME_DATABASE_URL ??
+  process.env.DATABASE_URL;
 if (raw) {
   const isLocal = /(^|@)(localhost|127\.0\.0\.1)(:|\/)/.test(raw);
   if (!isLocal && process.env.BOOKPITCH_ALLOW_NON_LOCAL_SEED !== '1') {

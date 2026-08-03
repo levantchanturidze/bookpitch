@@ -17,10 +17,13 @@ name: Deploy database migrations
 #       endpoint that exposes the applied-migration count.
 # Both are follow-up work — see docs/rbac-findings.md § F-06.
 #
-# Uses ADMIN_MIGRATE_DATABASE_URL (superuser/schema-owning role) — not
-# DATABASE_URL, which points at bookpitch_app (NOBYPASSRLS runtime role).
-# Prisma migrate needs CREATE/ALTER, bookpitch_app doesn't have them.
-# See F-11 for the split-URL rationale.
+# Uses DATABASE_URL_SUPERUSER_MIGRATE (superuser/schema-owning role) — not
+# DATABASE_URL_APP_NOBYPASSRLS, which points at bookpitch_app (NOBYPASSRLS
+# runtime role). Prisma migrate needs CREATE/ALTER, bookpitch_app doesn't
+# have them. See F-11 for the split-URL rationale and SEC-007 for the
+# env-var rename (the legacy ADMIN_MIGRATE_DATABASE_URL secret still
+# works as a fallback so the migration doesn't break if only the old
+# secret is set).
 
 on:
   push:
@@ -52,15 +55,15 @@ jobs:
 
       - name: Show pending migrations
         env:
-          DATABASE_URL: ${{ secrets.ADMIN_MIGRATE_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: npx prisma migrate status
 
       - name: Apply migrations
         env:
-          DATABASE_URL: ${{ secrets.ADMIN_MIGRATE_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: npx prisma migrate deploy
 
       - name: Verify no drift after apply
         env:
-          DATABASE_URL: ${{ secrets.ADMIN_MIGRATE_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: npx prisma migrate status

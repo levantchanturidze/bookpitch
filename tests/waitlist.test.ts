@@ -154,14 +154,20 @@ describe('waitlist — add/list/remove + cancellation notifier', () => {
       preferredTo: new Date('2027-08-31T00:00:00Z'),
     });
 
-    const { matched } = await notifyWaitlistForCancelled(orgId, {
-      id: 'fake-appt',
-      staffId,
-      serviceId,
-      locationId,
-      startsAt,
-      endsAt,
-    });
+    // SEC-007: notifyWaitlistForCancelled now requires a tenant-scoped tx.
+    // Wrap the call in withOrg — the test's `session()` helper returns an
+    // ActiveSession we can use for org id.
+    const { withOrg } = await import('@/lib/db');
+    const { matched } = await withOrg(orgId, (tx) =>
+      notifyWaitlistForCancelled(tx, orgId, {
+        id: 'fake-appt',
+        staffId,
+        serviceId,
+        locationId,
+        startsAt,
+        endsAt,
+      }),
+    );
     expect(matched).toBe(2);
 
     const rows = await withoutRls((tx) =>

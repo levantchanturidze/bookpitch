@@ -28,18 +28,35 @@ import { PrismaPg } from '@prisma/adapter-pg';
 //                   go through `withOrg` instead (SEC-007 — see
 //                   docs/rbac-security-review.md).
 //
-// Connection URL precedence for unsafePrismaAdmin (F-11 mitigation):
-//   1. ADMIN_RUNTIME_DATABASE_URL — transaction-pool (Supabase port 6543,
-//      with ?pgbouncer=true). Uses no session-pool slots, so it doesn't
-//      compete with prismaApp for the 15-client ceiling. RECOMMENDED for
-//      Vercel prod.
-//   2. ADMIN_DATABASE_URL — session-pool (port 5432). Falls back for local
-//      dev and older env setups. Consumes a session slot per client.
-//   3. DATABASE_URL — last-resort fallback so nothing crashes locally.
+// Connection URL naming (SEC-007 rename — env var name states the DB role
+// AND its privilege, so a future operator can't wire a superuser URL into a
+// slot expecting a NOBYPASSRLS one without noticing):
 //
-// Migrations (prisma migrate deploy) still use ADMIN_MIGRATE_DATABASE_URL
-// via .github/workflows/migrate.yml — migrations need session persistence
-// for advisory locks, so they can't share the transaction-pool URL.
+//   • DATABASE_URL_APP_NOBYPASSRLS     — runtime bookpitch_app (NOBYPASSRLS,
+//     NOSUPERUSER). Powers prismaApp. Legacy name: DATABASE_URL (fallback).
+//
+//   • DATABASE_URL_SUPERUSER_TXPOOL    — runtime superuser (postgres,
+//     BYPASSRLS via SUPERUSER) via transaction pool (Supabase 6543,
+//     ?pgbouncer=true). Powers unsafePrismaAdmin. Preferred at runtime — no
+//     session-pool slot pressure. Legacy name: ADMIN_RUNTIME_DATABASE_URL.
+//
+//   • DATABASE_URL_SUPERUSER_SESSION   — runtime superuser via session pool
+//     (port 5432). Fallback for unsafePrismaAdmin when the tx-pool URL isn't
+//     set. Consumes one session-pool slot per client. Legacy name:
+//     ADMIN_DATABASE_URL.
+//
+//   • DATABASE_URL_SUPERUSER_MIGRATE   — superuser via session pool, used by
+//     .github/workflows/migrate.yml for `prisma migrate deploy`. Migrations
+//     need session persistence for advisory locks. Legacy name:
+//     ADMIN_MIGRATE_DATABASE_URL.
+//
+//   • DATABASE_URL_APP_REPLICA         — bookpitch_app on a read replica
+//     endpoint (still NOBYPASSRLS). Optional; falls back to prismaApp when
+//     unset. Legacy name: DATABASE_REPLICA_URL.
+//
+// The legacy names remain valid as fallbacks so existing deployments keep
+// working; new deployments should use the new names. Documented in
+// .env.example and docs/rbac-security-review.md § SEC-007.
 //
 // Both are HMR-safe via globalThis caching.
 // -----------------------------------------------------------------------------
@@ -68,27 +85,39 @@ function build(connectionString: string | undefined, label: string): PrismaClien
   });
 }
 
+// New names first, legacy names as fallback so operators can migrate at
+// their own pace. SEC-007: the new names document the DB role's privilege
+// in the variable name itself; the legacy names hid it.
+const APP_URL =
+  process.env.DATABASE_URL_APP_NOBYPASSRLS ?? process.env.DATABASE_URL;
+const SUPERUSER_URL =
+  process.env.DATABASE_URL_SUPERUSER_TXPOOL ??
+  process.env.DATABASE_URL_SUPERUSER_SESSION ??
+  process.env.ADMIN_RUNTIME_DATABASE_URL ??
+  process.env.ADMIN_DATABASE_URL ??
+  APP_URL;
+const REPLICA_URL =
+  process.env.DATABASE_URL_APP_REPLICA ?? process.env.DATABASE_REPLICA_URL;
+
+// Report by the new name so misconfiguration diagnostics point at the
+// canonical env var. If a caller ONLY set a legacy name, the message
+// still tells them which new name to add.
 export const prismaApp: PrismaClient =
-  globalForPrisma.prismaApp ?? build(process.env.DATABASE_URL, 'DATABASE_URL');
+  globalForPrisma.prismaApp ?? build(APP_URL, 'DATABASE_URL_APP_NOBYPASSRLS');
 
 export const unsafePrismaAdmin: PrismaClient =
   globalForPrisma.unsafePrismaAdmin ??
-  build(
-    process.env.ADMIN_RUNTIME_DATABASE_URL ??
-      process.env.ADMIN_DATABASE_URL ??
-      process.env.DATABASE_URL,
-    'ADMIN_RUNTIME_DATABASE_URL',
-  );
+  build(SUPERUSER_URL, 'DATABASE_URL_SUPERUSER_TXPOOL');
 
-// Read replica — falls back to prismaApp when DATABASE_REPLICA_URL is
-// unset so dev never breaks. Only used by lib/db-replica.ts::withOrgReplica
-// for explicitly-read-only surfaces (analytics, audit log viewer).
+// Read replica — falls back to prismaApp when the replica URL is unset so
+// dev never breaks. Only used by lib/db-replica.ts::withOrgReplica for
+// explicitly-read-only surfaces (analytics, audit log viewer).
 // Replica-eligible callers MUST tolerate eventual consistency: a write
 // that just happened on primary may not yet be visible via the replica.
 export const prismaReplica: PrismaClient =
   globalForPrisma.prismaReplica ??
-  (process.env.DATABASE_REPLICA_URL
-    ? build(process.env.DATABASE_REPLICA_URL, 'DATABASE_REPLICA_URL')
+  (REPLICA_URL
+    ? build(REPLICA_URL, 'DATABASE_URL_APP_REPLICA')
     : prismaApp);
 
 if (process.env.NODE_ENV !== 'production') {

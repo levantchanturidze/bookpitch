@@ -13,15 +13,21 @@ export const dynamic = 'force-dynamic';
 // (see docs/rbac-findings.md F-12 for the incident this fixed).
 //
 // Response shape:
-//   { ok: true,  timestamp, checks: { DATABASE_URL: {ok, latencyMs},
-//                                     ADMIN_DATABASE_URL: {ok, latencyMs} } }
-//   { ok: false, timestamp, checks: { DATABASE_URL: {ok, latencyMs, errorCode},
-//                                     ADMIN_DATABASE_URL: {ok, error} } }
+//   { ok: true,  timestamp, checks: { DATABASE_URL_APP_NOBYPASSRLS: {ok, latencyMs},
+//                                     DATABASE_URL_SUPERUSER_TXPOOL: {ok, latencyMs} } }
+// The admin-side key mirrors whichever env var is actually powering
+// unsafePrismaAdmin (new tx-pool name preferred, falls back to session,
+// then to the legacy ADMIN_RUNTIME_DATABASE_URL / ADMIN_DATABASE_URL).
 //
 // Response body NEVER contains a URL, password, or full error message.
 // Error field is just the Postgres error code ('28P01' = auth failed,
 // 'XX000' = pool exhausted, etc.). Anyone reading /api/health cannot
 // derive credentials from what's there.
+type AdminLabel =
+  | 'DATABASE_URL_SUPERUSER_TXPOOL'
+  | 'DATABASE_URL_SUPERUSER_SESSION'
+  | 'ADMIN_RUNTIME_DATABASE_URL'
+  | 'ADMIN_DATABASE_URL';
 type CheckResult = {
   ok: boolean;
   latencyMs: number;
@@ -30,7 +36,7 @@ type CheckResult = {
 
 async function probe(
   client: typeof prismaApp,
-  label: 'DATABASE_URL' | 'ADMIN_DATABASE_URL' | 'ADMIN_RUNTIME_DATABASE_URL',
+  label: 'DATABASE_URL_APP_NOBYPASSRLS' | AdminLabel,
 ): Promise<CheckResult> {
   const t0 = Date.now();
   try {
@@ -51,19 +57,19 @@ async function probe(
 }
 
 export async function GET() {
-  // Report by the env var that was actually used to build unsafePrismaAdmin so
-  // the diagnosis flow (F-12) points at the right rotation target — a
-  // failure on 'ADMIN_RUNTIME_DATABASE_URL' means the tx-pool URL is
-  // wrong, on 'ADMIN_DATABASE_URL' means the fallback session-pool URL
-  // is wrong.
-  const adminLabel: 'ADMIN_RUNTIME_DATABASE_URL' | 'ADMIN_DATABASE_URL' =
-    process.env.ADMIN_RUNTIME_DATABASE_URL
-      ? 'ADMIN_RUNTIME_DATABASE_URL'
-      : 'ADMIN_DATABASE_URL';
+  // Report by the env var that was actually used to build the client so the
+  // F-12 diagnosis flow points at the right rotation target. Precedence
+  // matches lib/db.ts (new names first, legacy names as fallback).
+  const appLabel = 'DATABASE_URL_APP_NOBYPASSRLS' as const;
+  const adminLabel: AdminLabel =
+    process.env.DATABASE_URL_SUPERUSER_TXPOOL   ? 'DATABASE_URL_SUPERUSER_TXPOOL'   :
+    process.env.DATABASE_URL_SUPERUSER_SESSION  ? 'DATABASE_URL_SUPERUSER_SESSION'  :
+    process.env.ADMIN_RUNTIME_DATABASE_URL      ? 'ADMIN_RUNTIME_DATABASE_URL'      :
+                                                  'ADMIN_DATABASE_URL';
 
   // Probe both clients in parallel — DB slowness on one shouldn't cascade.
   const [appCheck, adminCheck] = await Promise.all([
-    probe(prismaApp, 'DATABASE_URL'),
+    probe(prismaApp, appLabel),
     probe(unsafePrismaAdmin, adminLabel),
   ]);
 
@@ -73,7 +79,7 @@ export async function GET() {
       ok,
       timestamp: new Date().toISOString(),
       checks: {
-        DATABASE_URL: appCheck,
+        [appLabel]: appCheck,
         [adminLabel]: adminCheck,
       },
     },

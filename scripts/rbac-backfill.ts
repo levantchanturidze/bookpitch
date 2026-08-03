@@ -11,8 +11,9 @@
 //   rollback  Apply both Phase 2 down.sql files (triggers first, then
 //             backfill), then delete their _prisma_migrations rows.
 //
-// Uses ADMIN_DATABASE_URL (superuser). If unset, falls back to DATABASE_URL —
-// but rollback needs DDL grants, so that fallback only works locally.
+// Uses DATABASE_URL_SUPERUSER_SESSION (superuser). If unset, falls back to
+// legacy ADMIN_DATABASE_URL then DATABASE_URL_APP_NOBYPASSRLS / DATABASE_URL
+// — but rollback needs DDL grants, so that fallback only works locally.
 //
 // Style matches prisma/rbac-seed.ts. All output is plain text (no colors)
 // so it copy-pastes into the runbook / incident channel cleanly.
@@ -38,9 +39,15 @@ const MIGRATIONS_DIR = path.join(REPO_ROOT, 'prisma', 'migrations');
 // scripts (down.sql files contain DROP TRIGGER + DROP FUNCTION chains).
 // -----------------------------------------------------------------------------
 function connectionString(): string {
-  const url = process.env.ADMIN_DATABASE_URL ?? process.env.DATABASE_URL;
+  const url =
+    process.env.DATABASE_URL_SUPERUSER_SESSION ??
+    process.env.DATABASE_URL_SUPERUSER_TXPOOL ??
+    process.env.ADMIN_DATABASE_URL ??
+    process.env.ADMIN_RUNTIME_DATABASE_URL ??
+    process.env.DATABASE_URL_APP_NOBYPASSRLS ??
+    process.env.DATABASE_URL;
   if (!url) {
-    throw new Error('ADMIN_DATABASE_URL (or DATABASE_URL) is not set.');
+    throw new Error('no database URL set — check DATABASE_URL_SUPERUSER_* or legacy ADMIN_DATABASE_URL / DATABASE_URL.');
   }
   // pg refuses the `schema=public` query parameter that Prisma likes. Strip
   // it — search_path defaults to public anyway.

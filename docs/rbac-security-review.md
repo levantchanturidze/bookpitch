@@ -35,6 +35,7 @@ regression tests. Each finding maps to a probe in
 | [SEC-004](#sec-004) | High | Audit integrity | `updateOrgToggles` writes no audit row — clinical/PII toggle flips leave no evidence | **Fixed** 2026-08-03 |
 | [SEC-005](#sec-005) | Medium | Impersonation | `platform.config.manage` missing from `RESTRICTED_DURING_IMPERSONATION` — impersonating actor can flip clinical-visibility toggles | **Fixed** 2026-08-03 |
 | [SEC-006](#sec-006) | High | Availability | `assignPlatformRole` can demote the last SUPER_ADMIN and brick `platform.role.assign` | **Fixed** 2026-08-03 |
+| [SEC-007](#sec-007) | High | RLS bypass | Superuser Prisma client `prismaAdmin` exported publicly — 6 ordinary request paths bypass RLS. Bookpitch_app NOBYPASSRLS is the spec's 2nd layer of tenant isolation and it was inactive at these callsites | **Fixed** 2026-08-03 (correct end state — narrow `bookpitch_login` role — deferred as own PR) |
 
 Three real findings across 37 probes. **No critical findings.** The
 Phase 1 append-only invariant holds, RLS holds, cross-tenant data is
@@ -792,8 +793,9 @@ No delta finding required a migration or a schema change.
 
 ## Regression suite health
 
-- 52 total probes (37 original + 15 delta), all plain `it(...)`
-- **52 pass, 0 `it.fails`, 0 flaky** (post-fix)
+- 57 total probes (37 original + 15 delta + 5 SEC-007 group-E regressions),
+  all plain `it(...)`
+- **57 pass, 0 `it.fails`, 0 flaky** (post-fix)
 - Runs in ~1.5 s serial (fileParallelism disabled per shared DB state)
 
 ---
@@ -877,3 +879,184 @@ someone else first.
 demote-to-PLATFORM_ADMIN of the sole SUPER throws, (c) positive
 control: with two SUPERs, demoting one succeeds. Cleans up its own
 mutations so state stays consistent for the next test-file run.
+
+---
+
+<a name="sec-007"></a>
+## SEC-007 — Unconstrained superuser Prisma client reachable from any request path · High
+
+**Attack surface**: RLS second-layer bypass (CLAUDE.md invariant 1 —
+"tenant isolation is checked first. Every query touching tenant data
+filters by organization_id. A query without it is a bug regardless of
+what the surrounding code appears to guarantee.")
+**Reproduction**: not a runtime probe — a code-level audit + the ESLint
+rule that fails builds when a new import is added without allowlisting.
+
+### Behaviour (pre-fix)
+
+`lib/db.ts` exported `prismaAdmin` as a public module symbol. Any file
+that did `import { prismaAdmin } from '@/lib/db'` reached a `postgres`-
+role connection (SUPERUSER, implicit BYPASSRLS). Six same-shape leak
+vectors existed across three files:
+
+| Callsite | Shape |
+|---|---|
+| `app/api/admin/staff/[id]/availability/route.ts:18` | superuser client + `where: {id, organizationId: ctx.activeOrganizationId!}` — RLS bypassed, WHERE clause is the only tenant filter |
+| `lib/rbac/scope.ts::resolveBookingOwner` | same shape |
+| `lib/rbac/scope.ts::resolveWaitlistOwner` (appointment lookup) | same shape |
+| `lib/rbac/scope.ts::resolveWaitlistOwner` (staff lookup) | same shape |
+| `lib/waitlist.ts::notifyWaitlistForCancelled` | `withoutRls` (still superuser) + `where: {organizationId: cancelledOrgId}` — same shape, escape justified by nested-tx-deadlock concern |
+| `lib/rbac/scope.ts::scopedLocationIds` | **worse**: `unsafePrismaAdmin.branch.findMany({where: {id: {in: [...ctx.branchIds]}}})` with NO organizationId filter — relies entirely on ctx.branchIds having been vetted upstream |
+
+`bookpitch_app` being NOBYPASSRLS is the second layer of tenant
+isolation the spec depends on — RLS enforces the tenant filter even
+when a WHERE clause is wrong. Every one of these callsites bypassed
+that layer.
+
+### Impact
+
+- **Cross-tenant leak risk**: one bad WHERE (missing `organizationId`,
+  wrong ctx field, wrong variable name in a helper) becomes an
+  unbounded cross-tenant read. The layer that would have caught it
+  was inactive.
+- **Additive over time**: the pattern is easy to copy from existing
+  code. Nothing structural prevented a new PR from adding a seventh
+  callsite, or a hundredth.
+- **`buildAuthContext` is the hottest path**: `lib/rbac/context.ts`
+  runs on every authenticated request and holds the superuser
+  connection at the base of the auth pipeline. This is legitimate
+  today (see the "correct end state" section below) but it is worth
+  naming explicitly — the widest privilege at the highest request
+  volume in the codebase.
+
+### Resolution — 2026-08-03
+
+Three commits:
+
+1. **Rename + document intent** (`c682140`).
+   `prismaAdmin` → `unsafePrismaAdmin` across all 54 TS/TSX files. The
+   `unsafe` prefix is a visible acknowledgement at every import line
+   that the caller is reaching for a BYPASSRLS connection. Header
+   comment in `lib/db.ts` documents legitimate uses (login / no-
+   session, platform-plane, cron/webhook, DDL) and points at this
+   finding for the full posture discussion.
+
+2. **Availability route fix, shipped alone** (`281913e`).
+   `app/api/admin/staff/[id]/availability/route.ts:18` migrated to
+   `withOrg(ctx.activeOrganizationId!, tx => tx.staff.findFirst(...))`
+   so RLS becomes the belt to the WHERE-clause suspenders. Shipped
+   alone so the one confirmed cross-tenant risk is legible in git
+   history on its own.
+
+3. **Rename, migrations, ESLint rule** (bundled — this commit).
+   - **Group E migrations**: `resolveBookingOwner`, `resolveWaitlistOwner`,
+     `scopedLocationIds` in `lib/rbac/scope.ts` all migrated to
+     `withOrg`. `scopedLocationIds` previously had NO organizationId
+     filter at all; now RLS on `branches` is the enforcer.
+   - **Waitlist refactor**: `notifyWaitlistForCancelled` now takes the
+     caller's tx handle as a required first param (per your Q2 choice
+     to refactor callers rather than grandfather in a `withoutRls`
+     escape). Callers in `app/api/appointments/[id]/route.ts` and
+     `tests/waitlist.test.ts` updated to nest the fan-out inside their
+     existing `withOrg` block.
+   - **Dead import cleanup**: `lib/admin.ts` was importing `withoutRls`
+     but never calling it. Dropped.
+   - **ESLint restrict-imports rule**: `eslint.config.mjs` now blocks
+     `unsafePrismaAdmin` and `withoutRls` imports from `@/lib/db`. An
+     allowlist (`UNSAFE_DB_ALLOWLIST`) covers the 33 legitimate
+     importers, each tagged with its group (A/B/C/D). The rule was
+     verified to fire by temporarily injecting `import { withOrg,
+     unsafePrismaAdmin } from '@/lib/db'` into `app/api/customers/route.ts`
+     (not on the allowlist) — `npm run lint` failed with the expected
+     `no-restricted-imports` error and the SEC-007 message. Injection
+     was reverted.
+   - **Env-var rename** (bundled per your Q4 answer, see next
+     section).
+
+### Regression tests
+
+**5 new probes in §7 of `tests/security-review.test.ts`:**
+
+- **P7.1** — `resolveBookingOwner` returns the correct owner for a
+  same-org appointment (positive control).
+- **P7.2** — `resolveBookingOwner` returns null when the appointment
+  is in another org — RLS filters the row before the handler sees it.
+  This is the migration validating its own contract.
+- **P7.3** — `scopedLocationIds` refuses to resolve a branch id from
+  another org even when `ctx.branchIds` contains it. This is the
+  "worse than the availability route" case; RLS on `branches` now
+  filters the fake id.
+- **P7.4** — nested `withOrg`: `resolveBookingOwner` called from
+  inside an outer `withOrg(...)` tx completes with the correct answer
+  under session pool. **Caveat**: this validates local Postgres +
+  session-pool behavior. Transaction-pool behavior under pgbouncer
+  requires activating `DATABASE_URL_SUPERUSER_TXPOOL` in prod and
+  observing — worst case is that inner tx starts on a different
+  connection than the outer, which is what session pool does anyway,
+  so the probe reflects the shape.
+- **P7.5** — availability route (the one confirmed leak vector)
+  resolves same-org staff and returns null for cross-org staff via
+  RLS. Direct regression on the availability fix from commit
+  `281913e`.
+
+All 5 pass. Suite is now 57/57 green.
+
+### Environment variable rename — SEC-007 companion
+
+The DB URL family was renamed to state the DB role's privilege in the
+variable name itself. Legacy names remain valid as fallbacks so
+existing deployments keep working; new deployments should use the new
+names.
+
+| New | Legacy (fallback) | Role | Privilege |
+|---|---|---|---|
+| `DATABASE_URL_APP_NOBYPASSRLS` | `DATABASE_URL` | `bookpitch_app` | NOBYPASSRLS, NOSUPERUSER |
+| `DATABASE_URL_APP_REPLICA` | `DATABASE_REPLICA_URL` | `bookpitch_app` (replica) | NOBYPASSRLS, NOSUPERUSER |
+| `DATABASE_URL_SUPERUSER_TXPOOL` | `ADMIN_RUNTIME_DATABASE_URL` | `postgres` (tx-pool) | SUPERUSER (implicit BYPASSRLS) |
+| `DATABASE_URL_SUPERUSER_SESSION` | `ADMIN_DATABASE_URL` | `postgres` (session-pool) | SUPERUSER (implicit BYPASSRLS) |
+| `DATABASE_URL_SUPERUSER_MIGRATE` | `ADMIN_MIGRATE_DATABASE_URL` (GH secret) | `postgres` (migrations) | SUPERUSER (implicit BYPASSRLS) |
+| `DATABASE_URL_SUPERUSER_DIRECT` | `DIRECT_URL` | `postgres` (unpooled) | SUPERUSER (implicit BYPASSRLS) |
+
+Files updated: `lib/db.ts` (precedence-lookup fallbacks), `.env.example`
+(full comment block naming privilege per URL),
+`app/api/health/route.ts` (reports whichever name is actually in use),
+`prisma/_require-local-db-guard.ts` (checks both new + legacy names),
+`.github/workflows/migrate.yml` (secret name with fallback),
+`scripts/rbac-backfill.ts`.
+
+### Correct end state — option 3, deferred
+
+The pragmatic tightening shipped now: `unsafe` prefix + ESLint
+allowlist. The **correct end state** is option 3 from the audit — a
+narrow `bookpitch_login` DB role.
+
+**`bookpitch_login`** would have:
+- `SELECT` on `app_users`, `memberships`, `roles`, `role_permissions`,
+  `platform_role_permissions`
+- `SELECT` on `organizations` (status column read by suspended-org gate)
+- `SELECT` on `organizations.features` (toggles loaded per request)
+- **NO** BYPASSRLS, **NO** SUPERUSER, no other table access
+
+A new `prismaLogin` client backed by `bookpitch_login` replaces
+`unsafePrismaAdmin` inside `lib/rbac/context.ts::buildAuthContext`
+(the hot path — every authenticated request runs `SELECT` on
+`app_users`, `memberships`, `role_permissions`, `impersonation_sessions`,
+`break_glass_sessions` via the client here). `buildAuthContext` is
+explicitly the top candidate for this migration because:
+
+- **Highest request volume** — runs on every authenticated request
+- **Widest privilege** — currently holds full superuser on that hot path
+- **Bounded query surface** — the ~5 tables it actually needs are a
+  proper subset of what `bookpitch_app` can already reach via RLS
+
+After the migration:
+- `unsafePrismaAdmin` becomes genuinely platform-only (groups B + C +
+  cron DDL). Its allowlist shrinks by half.
+- The hot path no longer holds superuser at request time. A bug in
+  `buildAuthContext` becomes a "wrong tenant maybe" error, not a
+  "read anything from anywhere" error.
+
+Effort: one migration (create role, GRANT SELECT on the ~5 tables), a
+new client in `lib/db.ts`, refactor `buildAuthContext`, remove the
+allowlist entry for `lib/rbac/context.ts`. Not a code review that
+fits in a "next" iteration — its own PR, tracked here.

@@ -1,6 +1,6 @@
 import type { LocationType, UserRole } from '@prisma/client';
 import { ConflictError, InvalidInputError, type ActiveSession } from '@/lib/auth';
-import { withOrg, withoutRls } from '@/lib/db';
+import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { assertNotLastOwner } from '@/lib/admin/last-owner';
 import { canManageRoleAssignment, buildAuthContext } from '@/lib/rbac';

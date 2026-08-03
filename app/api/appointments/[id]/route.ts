@@ -96,27 +96,29 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
         const changedFields = Object.keys(input);
         await writeAudit(tx, session, 'update', 'appointment', id, { fields: changedFields });
+
+        // SEC-007: inline the waitlist fan-out inside the same
+        // tenant-scoped tx so notifyWaitlistForCancelled runs against RLS.
+        // Previously called after the tx closed via withoutRls — worked,
+        // but was the "org-scoped WHERE on superuser client" shape.
+        if (input.status === 'cancelled') {
+          try {
+            await notifyWaitlistForCancelled(tx, session.organizationId, {
+              id: row.id,
+              staffId: row.staffId,
+              serviceId: row.serviceId,
+              locationId: row.locationId,
+              startsAt: row.startsAt,
+              endsAt: row.endsAt,
+            });
+          } catch {
+            /* swallow — audit + retention are unaffected */
+          }
+        }
         return toAppointmentDto(row);
       });
 
       if (!appointment) throw new NotFoundError('appointment not found');
-
-      // Cancel-transition fan-out: notify anyone waiting on this slot.
-      // Fire-and-catch — a waitlist failure never blocks the cancel.
-      if (input.status === 'cancelled') {
-        try {
-          await notifyWaitlistForCancelled(session.organizationId, {
-            id: appointment.id,
-            staffId: appointment.staffId,
-            serviceId: appointment.serviceId,
-            locationId: appointment.locationId,
-            startsAt: new Date(appointment.startsAt),
-            endsAt: new Date(appointment.endsAt),
-          });
-        } catch {
-          /* swallow — audit + retention are unaffected */
-        }
-      }
 
       return { appointment };
     } catch (err) {

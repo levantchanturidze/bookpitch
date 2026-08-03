@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
-import { withOrg, withoutRls } from '@/lib/db';
+import { withOrg } from '@/lib/db';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { notifyEvent } from '@/lib/notifications';
 import { log } from '@/lib/logger';
@@ -105,13 +105,17 @@ export async function removeFromWaitlist(session: ActiveSession, id: string): Pr
 /**
  * Called after an appointment is cancelled. Finds pending waitlist entries
  * whose (staff, service, location, window) covers the freed slot and marks
- * them notified. Emits one notification per match with a rollup at the end.
+ * them notified. Emits one rolled-up notification.
  *
- * Uses withoutRls because the caller may already be inside its own withOrg
- * transaction; running a second nested transaction would deadlock in some
- * drivers. The org boundary is enforced by the passed appointment.
+ * SEC-007: requires the caller's tenant-scoped tx. Previously used
+ * `withoutRls` (superuser client, WHERE clause carried the only
+ * organizationId filter — the exact same-shape leak vector SEC-007
+ * catalogs). The caller now inlines this inside their existing
+ * `withOrg(organizationId, tx => …)` block so RLS on `waitlist` is the
+ * enforcer even if `cancelledOrgId` were ever computed wrong.
  */
 export async function notifyWaitlistForCancelled(
+  tx: TxClient,
   cancelledOrgId: string,
   cancelled: {
     id: string;
@@ -122,42 +126,37 @@ export async function notifyWaitlistForCancelled(
     endsAt: Date;
   },
 ): Promise<{ matched: number }> {
-  const matched = await withoutRls(async (tx: TxClient) => {
-    const rows = await tx.waitlist.findMany({
-      where: {
-        organizationId: cancelledOrgId,
-        status: 'pending',
-        preferredFrom: { lte: cancelled.startsAt },
-        preferredTo: { gte: cancelled.endsAt },
-        AND: [
-          { OR: [{ staffId: null }, { staffId: cancelled.staffId }] },
-          { OR: [{ serviceId: null }, { serviceId: cancelled.serviceId }] },
-          { OR: [{ locationId: null }, { locationId: cancelled.locationId }] },
-        ],
-      },
-      include: { organization: { select: { id: true } } },
-    });
-    if (!rows.length) return 0;
-
-    await tx.waitlist.updateMany({
-      where: { id: { in: rows.map((r) => r.id) } },
-      data: { status: 'notified', notifiedAt: new Date() },
-    });
-
-    // Single rolled-up notification — one bell for staff, not N bells.
-    await notifyEvent(tx, cancelledOrgId, {
-      type: 'waitlist',
-      title: `Slot opened — ${rows.length} waitlist match${rows.length === 1 ? '' : 'es'}`,
-      body: `${cancelled.startsAt.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
-    });
-    return rows.length;
+  const rows = await tx.waitlist.findMany({
+    where: {
+      status: 'pending',
+      preferredFrom: { lte: cancelled.startsAt },
+      preferredTo: { gte: cancelled.endsAt },
+      AND: [
+        { OR: [{ staffId: null }, { staffId: cancelled.staffId }] },
+        { OR: [{ serviceId: null }, { serviceId: cancelled.serviceId }] },
+        { OR: [{ locationId: null }, { locationId: cancelled.locationId }] },
+      ],
+    },
+    select: { id: true },
   });
-  if (matched > 0) {
-    log.info('waitlist.notified', {
-      organizationId: cancelledOrgId,
-      appointmentId: cancelled.id,
-      matched,
-    });
-  }
-  return { matched };
+  if (!rows.length) return { matched: 0 };
+
+  await tx.waitlist.updateMany({
+    where: { id: { in: rows.map((r) => r.id) } },
+    data: { status: 'notified', notifiedAt: new Date() },
+  });
+
+  // Single rolled-up notification — one bell for staff, not N bells.
+  await notifyEvent(tx, cancelledOrgId, {
+    type: 'waitlist',
+    title: `Slot opened — ${rows.length} waitlist match${rows.length === 1 ? '' : 'es'}`,
+    body: `${cancelled.startsAt.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
+  });
+
+  log.info('waitlist.notified', {
+    organizationId: cancelledOrgId,
+    appointmentId: cancelled.id,
+    matched: rows.length,
+  });
+  return { matched: rows.length };
 }
