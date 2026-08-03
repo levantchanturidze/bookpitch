@@ -28,7 +28,6 @@ const NO_GUARD_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   { path: 'app/api/auth/reset/request/route.ts',    reason: 'Password reset request — no session yet, rate-limited' },
   { path: 'app/api/cron/audit-digest/route.ts',     reason: 'Scheduled worker — Bearer CRON_SECRET' },
   { path: 'app/api/cron/db-partitions/route.ts',    reason: 'Scheduled worker — Bearer CRON_SECRET' },
-  { path: 'app/api/cron/reset-app-role/route.ts',   reason: 'TEMPORARY one-shot for 2026-08-02 DATABASE_URL fix — Bearer MINT_TOKEN. Removed after use.' },
   { path: 'app/api/cron/housekeeping/route.ts',     reason: 'Scheduled worker — Bearer CRON_SECRET' },
   { path: 'app/api/cron/reminders/route.ts',        reason: 'Scheduled worker — Bearer CRON_SECRET' },
   { path: 'app/api/cron/retention/route.ts',        reason: 'Scheduled worker — Bearer CRON_SECRET' },
