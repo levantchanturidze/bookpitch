@@ -54,7 +54,7 @@ async function main() {
   const resetPasswords = process.argv.includes('--reset-passwords');
 
   const { hash } = await import('@node-rs/argon2');
-  const { prismaAdmin } = await import('@/lib/db');
+  const { unsafePrismaAdmin } = await import('@/lib/db');
   const { UserRole, LocationType } = await import('@prisma/client');
 
   // -----------------------------------------------------------------------
@@ -62,11 +62,11 @@ async function main() {
   // -----------------------------------------------------------------------
 
   async function upsertOrg(name: string) {
-    const existing = await prismaAdmin.organization.findFirst({
+    const existing = await unsafePrismaAdmin.organization.findFirst({
       where: { name }, select: { id: true, name: true },
     });
     if (existing) return existing;
-    return prismaAdmin.organization.create({
+    return unsafePrismaAdmin.organization.create({
       data: { name }, select: { id: true, name: true },
     });
   }
@@ -76,14 +76,14 @@ async function main() {
   ) {
     // Phase 2 sync trigger auto-creates a Branch when a Location is inserted,
     // linked via branches.legacy_location_id = locations.id.
-    const loc = await prismaAdmin.location.findFirst({
+    const loc = await unsafePrismaAdmin.location.findFirst({
       where: { organizationId: orgId, name },
       select: { id: true, name: true },
     });
     let locationId: string;
     if (loc) locationId = loc.id;
     else {
-      const created = await prismaAdmin.location.create({
+      const created = await unsafePrismaAdmin.location.create({
         data: {
           organizationId: orgId,
           name,
@@ -94,14 +94,14 @@ async function main() {
       locationId = created.id;
     }
     // Branch might already be there (trigger or prior run). Look it up.
-    let branch = await prismaAdmin.branch.findFirst({
+    let branch = await unsafePrismaAdmin.branch.findFirst({
       where: { organizationId: orgId, legacyLocationId: locationId },
       select: { id: true, name: true },
     });
     if (!branch) {
       // Fallback: create branch manually if the trigger didn't fire (older
       // migrations, or org was created before Phase 2).
-      branch = await prismaAdmin.branch.create({
+      branch = await unsafePrismaAdmin.branch.create({
         data: { organizationId: orgId, name, legacyLocationId: locationId },
         select: { id: true, name: true },
       });
@@ -112,7 +112,7 @@ async function main() {
   type UserOutcome = { email: string; created: boolean; password: string | null };
 
   async function upsertUser(email: string, fullName: string): Promise<UserOutcome> {
-    const existing = await prismaAdmin.appUser.findUnique({
+    const existing = await unsafePrismaAdmin.appUser.findUnique({
       where: { email }, select: { id: true },
     });
     if (existing && !resetPasswords) {
@@ -122,7 +122,7 @@ async function main() {
     const password = randomBytes(24).toString('base64url');
     const passwordHash = await hash(password);
     if (existing) {
-      await prismaAdmin.appUser.update({
+      await unsafePrismaAdmin.appUser.update({
         where: { id: existing.id },
         data: {
           passwordHash, status: 'active',
@@ -130,7 +130,7 @@ async function main() {
         },
       });
     } else {
-      await prismaAdmin.appUser.create({
+      await unsafePrismaAdmin.appUser.create({
         data: {
           authProvider: 'credentials',
           authSubject: email,
@@ -148,26 +148,26 @@ async function main() {
     orgId: string, userEmail: string, legacyRole: 'owner' | 'practitioner' | 'receptionist',
     systemRoleKey: string,
   ) {
-    const user = await prismaAdmin.appUser.findUniqueOrThrow({
+    const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: userEmail }, select: { id: true },
     });
-    const role = await prismaAdmin.role.findFirstOrThrow({
+    const role = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: systemRoleKey, organizationId: null }, select: { id: true },
     });
-    const existing = await prismaAdmin.membership.findFirst({
+    const existing = await unsafePrismaAdmin.membership.findFirst({
       where: { organizationId: orgId, userId: user.id },
       select: { id: true, roleId: true, status: true },
     });
     if (existing) {
       if (existing.roleId !== role.id || existing.status !== 'active') {
-        await prismaAdmin.membership.update({
+        await unsafePrismaAdmin.membership.update({
           where: { id: existing.id },
           data: { roleId: role.id, status: 'active', role: legacyRole as never },
         });
       }
       return existing.id;
     }
-    const created = await prismaAdmin.membership.create({
+    const created = await unsafePrismaAdmin.membership.create({
       data: {
         organizationId: orgId, userId: user.id,
         role: legacyRole as never,
@@ -182,21 +182,21 @@ async function main() {
   async function scopeToBranches(membershipId: string, branchIds: string[]) {
     // Idempotent: remove any existing scopes not in the desired set, then
     // add missing ones. For test env we just re-add the intended set.
-    const existing = await prismaAdmin.membershipBranch.findMany({
+    const existing = await unsafePrismaAdmin.membershipBranch.findMany({
       where: { membershipId }, select: { branchId: true },
     });
     const have = new Set(existing.map((r) => r.branchId));
     const want = new Set(branchIds);
     for (const b of have) {
       if (!want.has(b)) {
-        await prismaAdmin.membershipBranch.delete({
+        await unsafePrismaAdmin.membershipBranch.delete({
           where: { membershipId_branchId: { membershipId, branchId: b } },
         });
       }
     }
     for (const b of want) {
       if (!have.has(b)) {
-        await prismaAdmin.membershipBranch.create({
+        await unsafePrismaAdmin.membershipBranch.create({
           data: { membershipId, branchId: b },
         });
       }
@@ -204,10 +204,10 @@ async function main() {
   }
 
   async function ensureOrgOwnerPointer(orgId: string, ownerEmail: string) {
-    const user = await prismaAdmin.appUser.findUniqueOrThrow({
+    const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: ownerEmail }, select: { id: true },
     });
-    await prismaAdmin.organization.update({
+    await unsafePrismaAdmin.organization.update({
       where: { id: orgId }, data: { ownerUserId: user.id },
     });
   }
@@ -305,7 +305,7 @@ async function main() {
   console.log('Rotate passwords immediately by signing in and using /reset.');
   console.log('Re-run with --reset-passwords to regenerate all (bumps sessionVersion so live JWTs die).');
 
-  await prismaAdmin.$disconnect();
+  await unsafePrismaAdmin.$disconnect();
 }
 
 main().catch((err) => {

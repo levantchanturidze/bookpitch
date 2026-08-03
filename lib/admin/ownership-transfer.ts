@@ -19,7 +19,7 @@
 // gets flipped to `status='expired'`. A housekeeping cron can also sweep.
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin, withOrg } from '@/lib/db';
+import { unsafePrismaAdmin, withOrg } from '@/lib/db';
 import { InvalidInputError, ConflictError, NotFoundError, type ActiveSession } from '@/lib/auth';
 import { notifyEvent } from '@/lib/notifications';
 import { getEmailProvider } from '@/lib/messaging';
@@ -95,7 +95,7 @@ export async function nominateTransfer(
     // Email + sessionVersion bump happen AFTER the tx (they cross
     // tenants — the nominee's app_user isn't guaranteed to be reachable
     // from the org-scoped tx handle).
-    const nominee = await prismaAdmin.appUser.findUnique({
+    const nominee = await unsafePrismaAdmin.appUser.findUnique({
       where: { id: toUserId }, select: { email: true },
     });
     if (nominee?.email) {
@@ -114,7 +114,7 @@ export async function nominateTransfer(
     }
     // Bump nominee sessionVersion so their AuthContext rebuilds and any
     // "pending transfers" UI badge appears within 5s.
-    await prismaAdmin.appUser.update({
+    await unsafePrismaAdmin.appUser.update({
       where: { id: toUserId }, data: { sessionVersion: { increment: 1 } },
     });
     log.info('platform.ownership_transfer.nominated', {
@@ -131,7 +131,7 @@ export async function acceptTransfer(
 ): Promise<{ ok: true }> {
   // Fetch the transfer outside a tenant-scoped tx — the nominee may not
   // yet have the org's active membership pointer we expect.
-  const transfer = await prismaAdmin.ownershipTransfer.findUnique({
+  const transfer = await unsafePrismaAdmin.ownershipTransfer.findUnique({
     where: { id: transferId },
   });
   if (!transfer) throw new NotFoundError('transfer not found');
@@ -143,23 +143,23 @@ export async function acceptTransfer(
   }
   if (transfer.expiresAt < new Date()) {
     // Lazy expiry — mark and reject.
-    await prismaAdmin.ownershipTransfer.update({
+    await unsafePrismaAdmin.ownershipTransfer.update({
       where: { id: transferId }, data: { status: 'expired', decidedAt: new Date() },
     });
     throw new InvalidInputError('transfer has expired');
   }
 
-  const orgOwnerRole = await prismaAdmin.role.findFirstOrThrow({
+  const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
     where: { key: 'ORG_OWNER', organizationId: null }, select: { id: true },
   });
-  const orgAdminRole = await prismaAdmin.role.findFirstOrThrow({
+  const orgAdminRole = await unsafePrismaAdmin.role.findFirstOrThrow({
     where: { key: 'ORG_ADMIN', organizationId: null }, select: { id: true },
   });
 
-  // Single transaction for the swap. Uses prismaAdmin because we need to
+  // Single transaction for the swap. Uses unsafePrismaAdmin because we need to
   // update two memberships + the org + the transfer + bump two users'
   // sessionVersions — all in one atomic write.
-  await prismaAdmin.$transaction(async (tx) => {
+  await unsafePrismaAdmin.$transaction(async (tx) => {
     // Target membership must still exist + be active.
     const toMembership = await tx.membership.findFirst({
       where: {
@@ -259,7 +259,7 @@ export async function declineTransfer(
   transferId: string,
   reason: string = 'declined by nominee',
 ): Promise<{ ok: true }> {
-  const transfer = await prismaAdmin.ownershipTransfer.findUnique({
+  const transfer = await unsafePrismaAdmin.ownershipTransfer.findUnique({
     where: { id: transferId },
   });
   if (!transfer) throw new NotFoundError('transfer not found');
@@ -269,11 +269,11 @@ export async function declineTransfer(
   if (transfer.status !== 'pending') {
     throw new InvalidInputError(`transfer is ${transfer.status}, not pending`);
   }
-  await prismaAdmin.ownershipTransfer.update({
+  await unsafePrismaAdmin.ownershipTransfer.update({
     where: { id: transferId },
     data: { status: 'declined', decidedAt: new Date(), decidedReason: reason },
   });
-  await prismaAdmin.auditLog.create({
+  await unsafePrismaAdmin.auditLog.create({
     data: {
       organizationId: transfer.organizationId,
       actorUserId: session.userId,
@@ -292,7 +292,7 @@ export async function revokeTransfer(
   session: ActiveSession,
   transferId: string,
 ): Promise<{ ok: true }> {
-  const transfer = await prismaAdmin.ownershipTransfer.findUnique({
+  const transfer = await unsafePrismaAdmin.ownershipTransfer.findUnique({
     where: { id: transferId },
   });
   if (!transfer) throw new NotFoundError('transfer not found');
@@ -302,7 +302,7 @@ export async function revokeTransfer(
   if (transfer.status !== 'pending') {
     throw new InvalidInputError(`transfer is ${transfer.status}, not pending`);
   }
-  await prismaAdmin.ownershipTransfer.update({
+  await unsafePrismaAdmin.ownershipTransfer.update({
     where: { id: transferId },
     data: { status: 'revoked', decidedAt: new Date() },
   });
@@ -312,7 +312,7 @@ export async function revokeTransfer(
 
 /** Nominee's inbox — pending transfers addressed to `userId`. */
 export async function pendingTransfersForNominee(userId: string) {
-  const rows = await prismaAdmin.ownershipTransfer.findMany({
+  const rows = await unsafePrismaAdmin.ownershipTransfer.findMany({
     where: { toUserId: userId, status: 'pending', expiresAt: { gt: new Date() } },
     include: {
       organization: { select: { name: true } },

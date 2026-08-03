@@ -7,7 +7,7 @@ vi.mock('@/auth', () => ({
   signOut: vi.fn(),
 }));
 
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const {
   nominateTransfer, acceptTransfer, declineTransfer, revokeTransfer, pendingTransfersForNominee,
@@ -36,25 +36,25 @@ describe('ownership transfer', () => {
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    const org = await prismaAdmin.organization.findFirstOrThrow({
+    const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     });
     orgId = org.id;
-    ownerUserId = (await prismaAdmin.appUser.findUniqueOrThrow({
+    ownerUserId = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'split-owner@bp.test' },
     })).id;
-    ownerMembershipId = (await prismaAdmin.membership.findFirstOrThrow({
+    ownerMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
       where: { userId: ownerUserId, organizationId: orgId },
     })).id;
-    const target = await prismaAdmin.appUser.findUniqueOrThrow({
+    const target = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'moonlight@bp.test' },
     });
     targetUserId = target.id;
-    targetMembershipId = (await prismaAdmin.membership.findFirstOrThrow({
+    targetMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
       where: { userId: target.id, organizationId: orgId },
     })).id;
     // Non-member for negative tests.
-    outsiderUserId = (await prismaAdmin.appUser.findUniqueOrThrow({
+    outsiderUserId = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'solo@bp.test' },
     })).id;
   });
@@ -62,29 +62,29 @@ describe('ownership transfer', () => {
   beforeEach(async () => {
     __clearAuthContextCache();
     // Wipe any leftover pending / accepted transfers so each test starts fresh.
-    await prismaAdmin.ownershipTransfer.deleteMany({ where: { organizationId: orgId } });
+    await unsafePrismaAdmin.ownershipTransfer.deleteMany({ where: { organizationId: orgId } });
     // Restore Split Practice owner + roles to the fixture state.
-    const orgOwnerRole = await prismaAdmin.role.findFirstOrThrow({
+    const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'ORG_OWNER', organizationId: null },
     });
-    const providerRole = await prismaAdmin.role.findFirstOrThrow({
+    const providerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'PROVIDER', organizationId: null },
     });
-    await prismaAdmin.organization.update({
+    await unsafePrismaAdmin.organization.update({
       where: { id: orgId }, data: { ownerUserId },
     });
-    await prismaAdmin.membership.update({
+    await unsafePrismaAdmin.membership.update({
       where: { id: ownerMembershipId },
       data: { role: 'owner', roleId: orgOwnerRole.id },
     });
-    await prismaAdmin.membership.update({
+    await unsafePrismaAdmin.membership.update({
       where: { id: targetMembershipId },
       data: { role: 'practitioner', roleId: providerRole.id },
     });
   });
 
   afterAll(async () => {
-    await prismaAdmin.ownershipTransfer.deleteMany({ where: { organizationId: orgId } });
+    await unsafePrismaAdmin.ownershipTransfer.deleteMany({ where: { organizationId: orgId } });
   });
 
   const ownerSession = () => ({
@@ -110,10 +110,10 @@ describe('ownership transfer', () => {
   });
 
   it('accept swaps ownership + roles + bumps both sessionVersions', async () => {
-    const beforeOwnerSV = (await prismaAdmin.appUser.findUniqueOrThrow({
+    const beforeOwnerSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: ownerUserId }, select: { sessionVersion: true },
     })).sessionVersion;
-    const beforeTargetSV = (await prismaAdmin.appUser.findUniqueOrThrow({
+    const beforeTargetSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: targetUserId }, select: { sessionVersion: true },
     })).sessionVersion;
 
@@ -121,30 +121,30 @@ describe('ownership transfer', () => {
     const res = await acceptTransfer(targetSession(), id);
     expect(res.ok).toBe(true);
 
-    const org = await prismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
+    const org = await unsafePrismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
     expect(org.ownerUserId).toBe(targetUserId);
 
-    const targetMembershipRefreshed = await prismaAdmin.membership.findUniqueOrThrow({
+    const targetMembershipRefreshed = await unsafePrismaAdmin.membership.findUniqueOrThrow({
       where: { id: targetMembershipId },
       include: { roleRef: { select: { key: true } } },
     });
     expect(targetMembershipRefreshed.roleRef?.key).toBe('ORG_OWNER');
 
-    const ownerMembershipRefreshed = await prismaAdmin.membership.findUniqueOrThrow({
+    const ownerMembershipRefreshed = await unsafePrismaAdmin.membership.findUniqueOrThrow({
       where: { id: ownerMembershipId },
       include: { roleRef: { select: { key: true } } },
     });
     expect(ownerMembershipRefreshed.roleRef?.key).toBe('ORG_ADMIN');
 
-    const transferAfter = await prismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id } });
+    const transferAfter = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id } });
     expect(transferAfter.status).toBe('accepted');
 
     // Both users' sessionVersions bumped — nominee gets +1 on nominate
     // AND +1 on accept; the ownerUserId gets +1 on accept.
-    const afterOwnerSV = (await prismaAdmin.appUser.findUniqueOrThrow({
+    const afterOwnerSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: ownerUserId }, select: { sessionVersion: true },
     })).sessionVersion;
-    const afterTargetSV = (await prismaAdmin.appUser.findUniqueOrThrow({
+    const afterTargetSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: targetUserId }, select: { sessionVersion: true },
     })).sessionVersion;
     expect(afterOwnerSV).toBeGreaterThan(beforeOwnerSV);
@@ -154,10 +154,10 @@ describe('ownership transfer', () => {
   it('decline closes the transfer without touching memberships', async () => {
     const { id } = await nominateTransfer(ownerSession(), targetUserId);
     await declineTransfer(targetSession(), id, 'not now');
-    const t = await prismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id } });
+    const t = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id } });
     expect(t.status).toBe('declined');
     expect(t.decidedReason).toBe('not now');
-    const org = await prismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
+    const org = await unsafePrismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
     expect(org.ownerUserId).toBe(ownerUserId);
   });
 
@@ -165,13 +165,13 @@ describe('ownership transfer', () => {
     const { id } = await nominateTransfer(ownerSession(), targetUserId);
     await expect(revokeTransfer(targetSession(), id)).rejects.toBeInstanceOf(InvalidInputError);
     await revokeTransfer(ownerSession(), id);
-    const t = await prismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id } });
+    const t = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id } });
     expect(t.status).toBe('revoked');
   });
 
   it('accept refuses an expired pending row', async () => {
     // Create + backdate an expiry.
-    const row = await prismaAdmin.ownershipTransfer.create({
+    const row = await unsafePrismaAdmin.ownershipTransfer.create({
       data: {
         organizationId: orgId,
         fromUserId: ownerUserId,
@@ -183,7 +183,7 @@ describe('ownership transfer', () => {
     });
     await expect(acceptTransfer(targetSession(), row.id)).rejects.toBeInstanceOf(InvalidInputError);
     // And should be marked expired.
-    const after = await prismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id: row.id } });
+    const after = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id: row.id } });
     expect(after.status).toBe('expired');
   });
 

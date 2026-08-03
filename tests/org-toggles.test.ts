@@ -7,7 +7,7 @@ vi.mock('@/auth', () => ({
   signOut: vi.fn(),
 }));
 
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { can, updateOrgToggles, loadOrgToggles, buildAuthContext, DEFAULT_TOGGLES } =
   await import('@/lib/rbac');
@@ -30,15 +30,15 @@ describe('per-org policy toggles', () => {
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    splitOrgId = (await prismaAdmin.organization.findFirstOrThrow({
+    splitOrgId = (await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     })).id;
-    const moon = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
-    moonMembershipId = (await prismaAdmin.membership.findFirstOrThrow({
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
+    moonMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
       where: { userId: moon.id, organizationId: splitOrgId },
     })).id;
-    const mgr = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'splitmgr@bp.test' } });
-    mgrMembershipId = (await prismaAdmin.membership.findFirstOrThrow({
+    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'splitmgr@bp.test' } });
+    mgrMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
       where: { userId: mgr.id, organizationId: splitOrgId },
     })).id;
   });
@@ -65,7 +65,7 @@ describe('per-org policy toggles', () => {
   it('PROVIDER cannot read others clinical notes when toggle is OFF', async () => {
     await updateOrgToggles(splitOrgId, { providerClinicalNotesOthers: false });
     __clearAuthContextCache();
-    const moon = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
     const ctx = await buildAuthContext(moon.id, moonMembershipId);
     expect(ctx).not.toBeNull();
     expect(can(ctx!, 'clinical_note.read:any', { organizationId: splitOrgId })).toBe(false);
@@ -78,26 +78,26 @@ describe('per-org policy toggles', () => {
     // temporarily add it for the test. Alternatively: pick a role that
     // DOES have :any and toggle-gated. Since only PROVIDER is toggled
     // in our seed, grant it here.
-    const providerRole = await prismaAdmin.role.findFirstOrThrow({
+    const providerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'PROVIDER', organizationId: null },
     });
-    const existing = await prismaAdmin.rolePermission.findFirst({
+    const existing = await unsafePrismaAdmin.rolePermission.findFirst({
       where: { roleId: providerRole.id, permissionKey: 'clinical_note.read:any' },
     });
     if (!existing) {
-      await prismaAdmin.rolePermission.create({
+      await unsafePrismaAdmin.rolePermission.create({
         data: { roleId: providerRole.id, permissionKey: 'clinical_note.read:any' },
       });
     }
 
     __clearAuthContextCache();
-    const moon = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
     const ctx = await buildAuthContext(moon.id, moonMembershipId);
     expect(can(ctx!, 'clinical_note.read:any', { organizationId: splitOrgId })).toBe(true);
 
     // Cleanup: remove the temp grant so the seed converges again on next run.
     if (!existing) {
-      await prismaAdmin.rolePermission.delete({
+      await unsafePrismaAdmin.rolePermission.delete({
         where: { roleId_permissionKey: { roleId: providerRole.id, permissionKey: 'clinical_note.read:any' } },
       });
     }
@@ -106,15 +106,15 @@ describe('per-org policy toggles', () => {
   it('FRONT_DESK cannot read client:full when toggle is OFF', async () => {
     // splitmgr is BRANCH_MANAGER; we need a FRONT_DESK. Temp-flip mgr to
     // FRONT_DESK for this test.
-    const fdRole = await prismaAdmin.role.findFirstOrThrow({
+    const fdRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'FRONT_DESK', organizationId: null },
     });
-    await prismaAdmin.membership.update({
+    await unsafePrismaAdmin.membership.update({
       where: { id: mgrMembershipId }, data: { roleId: fdRole.id },
     });
     await updateOrgToggles(splitOrgId, { frontdeskClientFullHistory: false });
     __clearAuthContextCache();
-    const mgr = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'splitmgr@bp.test' } });
+    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'splitmgr@bp.test' } });
     const ctx = await buildAuthContext(mgr.id, mgrMembershipId);
     expect(ctx!.roleKey).toBe('FRONT_DESK');
     expect(can(ctx!, 'client.read:full', { organizationId: splitOrgId })).toBe(false);
@@ -122,10 +122,10 @@ describe('per-org policy toggles', () => {
     expect(can(ctx!, 'client.read:contact', { organizationId: splitOrgId })).toBe(true);
 
     // Restore BRANCH_MANAGER.
-    const bmRole = await prismaAdmin.role.findFirstOrThrow({
+    const bmRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'BRANCH_MANAGER', organizationId: null },
     });
-    await prismaAdmin.membership.update({
+    await unsafePrismaAdmin.membership.update({
       where: { id: mgrMembershipId }, data: { roleId: bmRole.id },
     });
   });

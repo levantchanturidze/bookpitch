@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { log } from '@/lib/logger';
 
 export const runtime = 'nodejs';
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   for (let i = 0; i <= 3; i++) {
     const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + i, 1));
     const iso = target.toISOString().slice(0, 10);
-    await prismaAdmin.$executeRawUnsafe(
+    await unsafePrismaAdmin.$executeRawUnsafe(
       `SELECT bp_create_monthly_partition('audit_log'::regclass, '${iso}'::date);`,
     );
     created.push(iso.slice(0, 7));

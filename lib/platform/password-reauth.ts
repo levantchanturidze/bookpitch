@@ -23,7 +23,7 @@
 // -----------------------------------------------------------------------------
 
 import { verify } from '@node-rs/argon2';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { ForbiddenError, InvalidInputError } from '@/lib/auth';
 
 const MAX_AGE_MS = 60_000;               // spec §7.2 rule 3 — verified at moment of use
@@ -66,7 +66,7 @@ export async function verifyPasswordFresh(
 ): Promise<boolean> {
   consumeAttempt(userId);
 
-  const row = await prismaAdmin.appUser.findUnique({
+  const row = await unsafePrismaAdmin.appUser.findUnique({
     where: { id: userId },
     select: { passwordHash: true },
   });

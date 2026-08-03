@@ -4,7 +4,7 @@
 // the seed grants to SUPER_ADMIN alone.
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
 import { log } from '@/lib/logger';
@@ -23,7 +23,7 @@ export type PlatformRoleHolder = {
 
 /** List every user who currently holds a platform-plane role. */
 export async function listPlatformRoleHolders(): Promise<PlatformRoleHolder[]> {
-  const rows = await prismaAdmin.appUser.findMany({
+  const rows = await unsafePrismaAdmin.appUser.findMany({
     where: { platformRoleId: { not: null } },
     select: {
       id: true, email: true, fullName: true, createdAt: true,
@@ -70,7 +70,7 @@ export async function assignPlatformRole(
   // Defensive: caller must have SUPER_ADMIN to grant SUPER_ADMIN. Since the
   // route-level guard is `platform.role.assign` (SUPER-only per seed) this
   // is belt-and-braces; a bug that widens the perm elsewhere won't leak here.
-  const actorUser = await prismaAdmin.appUser.findUniqueOrThrow({
+  const actorUser = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: actor.userId },
     select: { platformRole: { select: { key: true } } },
   });
@@ -79,7 +79,7 @@ export async function assignPlatformRole(
     throw new InvalidInputError('only SUPER_ADMIN can grant SUPER_ADMIN');
   }
 
-  const target = await prismaAdmin.appUser.findUnique({
+  const target = await unsafePrismaAdmin.appUser.findUnique({
     where: { email },
     select: {
       id: true, platformRole: { select: { id: true, key: true } },
@@ -97,10 +97,10 @@ export async function assignPlatformRole(
   // peer-revoke case (SUPER demoting the other SUPER when they're the last
   // two).
   if (previousRoleKey === 'SUPER_ADMIN' && roleKey !== 'SUPER_ADMIN') {
-    const superRole = await prismaAdmin.role.findFirstOrThrow({
+    const superRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'SUPER_ADMIN', organizationId: null }, select: { id: true },
     });
-    const others = await prismaAdmin.appUser.count({
+    const others = await unsafePrismaAdmin.appUser.count({
       where: {
         platformRoleId: superRole.id,
         id: { not: target.id },
@@ -116,21 +116,21 @@ export async function assignPlatformRole(
 
   let newRoleId: string | null = null;
   if (roleKey !== null) {
-    const role = await prismaAdmin.role.findFirstOrThrow({
+    const role = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: roleKey, organizationId: null }, select: { id: true },
     });
     newRoleId = role.id;
   }
 
-  await prismaAdmin.$transaction([
-    prismaAdmin.appUser.update({
+  await unsafePrismaAdmin.$transaction([
+    unsafePrismaAdmin.appUser.update({
       where: { id: target.id },
       data: {
         platformRoleId: newRoleId,
         sessionVersion: { increment: 1 },
       },
     }),
-    prismaAdmin.auditLog.create({
+    unsafePrismaAdmin.auditLog.create({
       data: {
         organizationId: null,   // platform-scoped action
         actorUserId: actor.userId,

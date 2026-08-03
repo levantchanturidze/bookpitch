@@ -3,7 +3,7 @@ import { withPlatformApi } from '@/lib/platform/api';
 import { requirePermission, loadOrgToggles, updateOrgToggles } from '@/lib/rbac';
 import { InvalidInputError } from '@/lib/auth';
 import { requireFreshPassword } from '@/lib/platform/password-reauth';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { log } from '@/lib/logger';
 
 export const runtime = 'nodejs';
@@ -61,7 +61,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     // previous state before mutating so the meta captures both sides.
     const previous = await loadOrgToggles(id);
     const next = await updateOrgToggles(id, patch);
-    await prismaAdmin.auditLog.create({
+    await unsafePrismaAdmin.auditLog.create({
       data: {
         organizationId: id,
         actorUserId: ctx.userId,

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { canManageRoleAssignment } from '@/lib/rbac/rank';
 import { buildAuthContext, __clearAuthContextCache } from '@/lib/rbac/context';
 import { seedRbacFixtures } from '@/prisma/rbac-fixtures';
@@ -11,12 +11,12 @@ import { seedRbacFixtures } from '@/prisma/rbac-fixtures';
 // -----------------------------------------------------------------------------
 
 async function ctxFor(email: string, orgName?: string) {
-  const user = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
   const membership = orgName
-    ? await prismaAdmin.membership.findFirstOrThrow({
+    ? await unsafePrismaAdmin.membership.findFirstOrThrow({
         where: { userId: user.id, organization: { name: orgName } },
       })
-    : await prismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } });
+    : await unsafePrismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } });
   const ctx = await buildAuthContext(user.id, membership.id);
   if (!ctx) throw new Error(`no ctx for ${email}`);
   return ctx;

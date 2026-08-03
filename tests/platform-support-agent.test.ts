@@ -11,7 +11,7 @@ vi.mock('@/auth', () => ({
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { mockPlatformJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 
 // Every platform-plane route we ship. SUPPORT_AGENT must either 403 or
 // return zero PII from each one. This is the plan's PII-discipline
@@ -60,7 +60,7 @@ describe('SUPPORT_AGENT PII discipline probe (spec §4.1 + §6.1)', () => {
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    const org = await prismaAdmin.organization.findFirstOrThrow({
+    const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     });
     orgId = org.id;

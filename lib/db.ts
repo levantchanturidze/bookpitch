@@ -6,14 +6,29 @@ import { PrismaPg } from '@prisma/adapter-pg';
 //   • prismaApp   → connects as `bookpitch_app` (NOSUPERUSER, NOBYPASSRLS).
 //                   All tenant-scoped queries go through `withOrg(orgId, fn)`
 //                   which wraps them in a tx that sets `app.current_org_id`
-//                   for RLS policies to consume.
-//   • prismaAdmin → connects as the OS superuser (locally `levan`; on Supabase
-//                   this would be the service_role). Bypasses RLS. Used by
-//                   the login lookup (via `withoutRls`), read-only admin
-//                   surfaces (audit, break-glass, retention crons), and DDL
-//                   in db-partitions cron.
+//                   for RLS policies to consume. This is the second layer of
+//                   defense the spec (§9 tenant isolation) depends on —
+//                   RLS is the enforcer even if a WHERE clause is wrong.
 //
-// Connection URL precedence for prismaAdmin (F-11 mitigation):
+//   • unsafePrismaAdmin → connects as the DB superuser (`postgres` on
+//                   Supabase, `levan` locally). BYPASSRLS, full DDL, no
+//                   tenant filter. Every query on this client is a
+//                   deliberate second-layer waiver — the *only* protection
+//                   is the WHERE clause the caller writes. Legitimate uses:
+//                     - login / password-reset lookup (no org context yet)
+//                     - buildAuthContext (needs suspended-org gate
+//                       BEFORE tenant scope applies)
+//                     - platform-plane operations (SUPER/PLATFORM roles
+//                       operate cross-tenant by design)
+//                     - system crons + Stripe webhook (no session)
+//                     - DDL in db-partitions cron
+//                   The `unsafe` prefix is deliberate: importing it must
+//                   be a visible acknowledgement at the callsite. New
+//                   uses in ordinary org-plane request handlers should
+//                   go through `withOrg` instead (SEC-007 — see
+//                   docs/rbac-security-review.md).
+//
+// Connection URL precedence for unsafePrismaAdmin (F-11 mitigation):
 //   1. ADMIN_RUNTIME_DATABASE_URL — transaction-pool (Supabase port 6543,
 //      with ?pgbouncer=true). Uses no session-pool slots, so it doesn't
 //      compete with prismaApp for the 15-client ceiling. RECOMMENDED for
@@ -31,7 +46,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 
 type CachedClients = {
   prismaApp: PrismaClient | undefined;
-  prismaAdmin: PrismaClient | undefined;
+  unsafePrismaAdmin: PrismaClient | undefined;
   prismaReplica: PrismaClient | undefined;
 };
 const globalForPrisma = globalThis as unknown as CachedClients;
@@ -56,8 +71,8 @@ function build(connectionString: string | undefined, label: string): PrismaClien
 export const prismaApp: PrismaClient =
   globalForPrisma.prismaApp ?? build(process.env.DATABASE_URL, 'DATABASE_URL');
 
-export const prismaAdmin: PrismaClient =
-  globalForPrisma.prismaAdmin ??
+export const unsafePrismaAdmin: PrismaClient =
+  globalForPrisma.unsafePrismaAdmin ??
   build(
     process.env.ADMIN_RUNTIME_DATABASE_URL ??
       process.env.ADMIN_DATABASE_URL ??
@@ -78,7 +93,7 @@ export const prismaReplica: PrismaClient =
 
 if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prismaApp = prismaApp;
-  globalForPrisma.prismaAdmin = prismaAdmin;
+  globalForPrisma.unsafePrismaAdmin = unsafePrismaAdmin;
   globalForPrisma.prismaReplica = prismaReplica;
 }
 
@@ -110,7 +125,7 @@ export async function withOrg<T>(
 export async function withoutRls<T>(
   fn: (tx: Parameters<Parameters<PrismaClient['$transaction']>[0]>[0]) => Promise<T>,
 ): Promise<T> {
-  return prismaAdmin.$transaction(async (tx) => fn(tx));
+  return unsafePrismaAdmin.$transaction(async (tx) => fn(tx));
 }
 
 /**

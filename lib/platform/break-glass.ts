@@ -15,7 +15,7 @@
 // parameter to startBreakGlass.
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError, ConflictError, ForbiddenError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
 import { verifyPasswordFresh } from './password-reauth';
@@ -43,7 +43,7 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
   // SUPER_ADMIN only. Roles check the caller's platform perms — SUPER_ADMIN
   // has `platform.impersonate` per seed but we want a stricter check:
   // only SUPER_ADMIN can break glass. Query the role key directly.
-  const actorUser = await prismaAdmin.appUser.findUniqueOrThrow({
+  const actorUser = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: input.actor.userId },
     select: { platformRole: { select: { key: true } } },
   });
@@ -55,7 +55,7 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
   await verifyPasswordFresh(input.actor.userId, input.password, { throwOnBadPassword: true });
 
   // One active session at a time.
-  const existing = await prismaAdmin.breakGlassSession.findFirst({
+  const existing = await unsafePrismaAdmin.breakGlassSession.findFirst({
     where: { actorUserId: input.actor.userId, endedAt: null, expiresAt: { gt: new Date() } },
     select: { id: true },
   });
@@ -64,14 +64,14 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
   // If a targetOrganizationId is provided, verify it exists (fail loud on
   // typos; the session becomes queryable regardless).
   if (input.targetOrganizationId) {
-    const org = await prismaAdmin.organization.findUnique({
+    const org = await unsafePrismaAdmin.organization.findUnique({
       where: { id: input.targetOrganizationId }, select: { id: true },
     });
     if (!org) throw new InvalidInputError('target organization not found');
   }
 
   const expiresAt = new Date(Date.now() + BREAK_GLASS_TTL_MS);
-  const session = await prismaAdmin.breakGlassSession.create({
+  const session = await unsafePrismaAdmin.breakGlassSession.create({
     data: {
       actorUserId: input.actor.userId,
       targetOrganizationId: input.targetOrganizationId ?? null,
@@ -85,7 +85,7 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
 
   // Audit row for the activation itself. If a target org is set, tag the
   // row to that org; otherwise it's a platform-scoped audit (org_id null).
-  await prismaAdmin.auditLog.create({
+  await unsafePrismaAdmin.auditLog.create({
     data: {
       organizationId: input.targetOrganizationId ?? null,
       actorUserId: input.actor.userId,
@@ -99,7 +99,7 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
 
   // Bump sessionVersion so the AuthContext cache picks up the new
   // ctx.breakGlass within ~5s.
-  await prismaAdmin.appUser.update({
+  await unsafePrismaAdmin.appUser.update({
     where: { id: input.actor.userId },
     data: { sessionVersion: { increment: 1 } },
   });
@@ -140,12 +140,12 @@ export async function endBreakGlass(actor: AuthContext, reason: string = 'user_e
   }
   const sessionId = actor.breakGlass.sessionId;
 
-  await prismaAdmin.breakGlassSession.update({
+  await unsafePrismaAdmin.breakGlassSession.update({
     where: { id: sessionId },
     data: { endedAt: new Date(), endedReason: reason },
   });
 
-  await prismaAdmin.auditLog.create({
+  await unsafePrismaAdmin.auditLog.create({
     data: {
       organizationId: actor.breakGlass.targetOrganizationId ?? null,
       actorUserId: actor.userId,
@@ -156,7 +156,7 @@ export async function endBreakGlass(actor: AuthContext, reason: string = 'user_e
     },
   });
 
-  await prismaAdmin.appUser.update({
+  await unsafePrismaAdmin.appUser.update({
     where: { id: actor.userId },
     data: { sessionVersion: { increment: 1 } },
   });
@@ -176,7 +176,7 @@ export async function auditBreakGlassRead(
   meta: Record<string, string | number | boolean | null> = {},
 ) {
   if (!actor.breakGlass) return;
-  await prismaAdmin.auditLog.create({
+  await unsafePrismaAdmin.auditLog.create({
     data: {
       organizationId: actor.breakGlass.targetOrganizationId ?? null,
       actorUserId: actor.userId,

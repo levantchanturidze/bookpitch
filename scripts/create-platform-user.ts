@@ -87,9 +87,9 @@ async function main() {
   }
 
   const { hash } = await import('@node-rs/argon2');
-  const { prismaAdmin } = await import('@/lib/db');
+  const { unsafePrismaAdmin } = await import('@/lib/db');
 
-  const role = await prismaAdmin.role.findFirst({
+  const role = await unsafePrismaAdmin.role.findFirst({
     where: { key: roleKey, organizationId: null },
     select: { id: true },
   });
@@ -137,7 +137,7 @@ async function main() {
   }
 
   const passwordHash = await hash(password);
-  const existing = await prismaAdmin.appUser.findUnique({
+  const existing = await unsafePrismaAdmin.appUser.findUnique({
     where: { email },
     select: { id: true },
   });
@@ -157,7 +157,7 @@ async function main() {
   let userId: string;
   let action: 'platform_user.create' | 'platform_user.update';
   if (existing) {
-    await prismaAdmin.appUser.update({
+    await unsafePrismaAdmin.appUser.update({
       where: { id: existing.id },
       data: {
         passwordHash,
@@ -171,7 +171,7 @@ async function main() {
     action = 'platform_user.update';
     console.log(`✔ updated ${email} → ${roleKey} (sessionVersion bumped)`);
   } else {
-    const created = await prismaAdmin.appUser.create({
+    const created = await unsafePrismaAdmin.appUser.create({
       data: {
         authProvider: 'credentials',
         authSubject: email,
@@ -192,7 +192,7 @@ async function main() {
   // the user write — the account already exists in the DB, losing the
   // audit row is worse than a partial mint but not worth reverting.
   try {
-    await prismaAdmin.auditLog.create({
+    await unsafePrismaAdmin.auditLog.create({
       data: {
         organizationId: null,   // platform-scoped event
         actorUserId: null,      // no signed-in caller — bootstrap
@@ -207,7 +207,7 @@ async function main() {
     console.error('The account was created/updated successfully; only the audit row is missing.');
   }
 
-  await prismaAdmin.$disconnect();
+  await unsafePrismaAdmin.$disconnect();
 }
 
 main().catch((err) => {

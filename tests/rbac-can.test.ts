@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { can } from '@/lib/rbac/can';
 import { buildAuthContext, __clearAuthContextCache } from '@/lib/rbac/context';
 import { perm } from '@/lib/rbac/types';
@@ -16,12 +16,12 @@ import { seedRbacFixtures } from '@/prisma/rbac-fixtures';
 // -----------------------------------------------------------------------------
 
 async function ctxFor(email: string, orgName?: string) {
-  const user = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
   const membership = orgName
-    ? await prismaAdmin.membership.findFirstOrThrow({
+    ? await unsafePrismaAdmin.membership.findFirstOrThrow({
         where: { userId: user.id, organization: { name: orgName } },
       })
-    : await prismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } });
+    : await unsafePrismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } });
   const ctx = await buildAuthContext(user.id, membership.id);
   if (!ctx) throw new Error(`no ctx for ${email}`);
   return ctx;
@@ -64,12 +64,12 @@ describe('can()', () => {
 
     it('BRANCH_MANAGER (:branch grant) can update bookings in scoped branches only', async () => {
       const ctx = await ctxFor('splitmgr@bp.test', 'Split Practice');
-      const [downtown, airport] = await prismaAdmin.$queryRawUnsafe<Array<{ id: string; name: string }>>(
+      const [downtown, airport] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ id: string; name: string }>>(
         `SELECT b.id, b.name FROM branches b JOIN organizations o ON o.id = b.organization_id
           WHERE o.name = 'Split Practice' AND b.name IN ('Downtown','Airport') ORDER BY b.name`,
       );
       // Wait — Airport lex < Downtown, so [0] is Airport. Rebind explicitly.
-      const byName = Object.fromEntries((await prismaAdmin.branch.findMany({
+      const byName = Object.fromEntries((await unsafePrismaAdmin.branch.findMany({
         where: { organization: { name: 'Split Practice' } },
       })).map(b => [b.name, b.id]));
       expect(can(ctx, 'booking.update', {
@@ -88,7 +88,7 @@ describe('can()', () => {
   describe('tenant isolation', () => {
     it('a user in org A cannot touch a resource in org B', async () => {
       const ctx = await ctxFor('moonlight@bp.test', 'Grand Medical & Aurora Spa Group');
-      const otherOrg = await prismaAdmin.organization.findFirstOrThrow({
+      const otherOrg = await unsafePrismaAdmin.organization.findFirstOrThrow({
         where: { name: 'Split Practice' },
       });
       expect(can(ctx, 'booking.read', {

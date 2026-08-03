@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { seedRbac } from '@/prisma/rbac-seed';
 
 // -----------------------------------------------------------------------------
@@ -18,7 +18,7 @@ describe('RBAC seed', () => {
   });
 
   it('seeds every system role from spec §4', async () => {
-    const rows = await prismaAdmin.role.findMany({
+    const rows = await unsafePrismaAdmin.role.findMany({
       where: { isSystem: true, organizationId: null },
       orderBy: [{ plane: 'asc' }, { rank: 'desc' }],
       select: { key: true, plane: true, rank: true },
@@ -46,32 +46,32 @@ describe('RBAC seed', () => {
   });
 
   it('SUPER_ADMIN holds every permission (spec §4.1 — no ceiling)', async () => {
-    const superRole = await prismaAdmin.role.findFirstOrThrow({
+    const superRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'SUPER_ADMIN', organizationId: null },
     });
-    const bundle = await prismaAdmin.rolePermission.count({ where: { roleId: superRole.id } });
-    const total = await prismaAdmin.permission.count();
+    const bundle = await unsafePrismaAdmin.rolePermission.count({ where: { roleId: superRole.id } });
+    const total = await unsafePrismaAdmin.permission.count();
     expect(bundle).toBe(total);
     expect(total).toBeGreaterThan(50); // sanity: enumeration didn't disappear
   });
 
   it('CLIENT holds zero permissions (spec §4.3)', async () => {
-    const clientRole = await prismaAdmin.role.findFirstOrThrow({
+    const clientRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'CLIENT', organizationId: null },
     });
-    const bundle = await prismaAdmin.rolePermission.count({ where: { roleId: clientRole.id } });
+    const bundle = await unsafePrismaAdmin.rolePermission.count({ where: { roleId: clientRole.id } });
     expect(bundle).toBe(0);
   });
 
   it('ORG_OWNER holds org.billing.manage but ORG_ADMIN does not (spec §2.1)', async () => {
     const [owner, admin] = await Promise.all([
-      prismaAdmin.role.findFirstOrThrow({ where: { key: 'ORG_OWNER',  organizationId: null } }),
-      prismaAdmin.role.findFirstOrThrow({ where: { key: 'ORG_ADMIN',  organizationId: null } }),
+      unsafePrismaAdmin.role.findFirstOrThrow({ where: { key: 'ORG_OWNER',  organizationId: null } }),
+      unsafePrismaAdmin.role.findFirstOrThrow({ where: { key: 'ORG_ADMIN',  organizationId: null } }),
     ]);
-    const ownerHas = await prismaAdmin.rolePermission.findFirst({
+    const ownerHas = await unsafePrismaAdmin.rolePermission.findFirst({
       where: { roleId: owner.id, permissionKey: 'org.billing.manage' },
     });
-    const adminHas = await prismaAdmin.rolePermission.findFirst({
+    const adminHas = await unsafePrismaAdmin.rolePermission.findFirst({
       where: { roleId: admin.id, permissionKey: 'org.billing.manage' },
     });
     expect(ownerHas).toBeTruthy();
@@ -79,15 +79,15 @@ describe('RBAC seed', () => {
   });
 
   it('PROVIDER cannot read other clinicians\' notes by default (⚙️, spec §6.2)', async () => {
-    const provider = await prismaAdmin.role.findFirstOrThrow({
+    const provider = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'PROVIDER', organizationId: null },
     });
-    const readAny = await prismaAdmin.rolePermission.findFirst({
+    const readAny = await unsafePrismaAdmin.rolePermission.findFirst({
       where: { roleId: provider.id, permissionKey: 'clinical_note.read:any' },
     });
     expect(readAny).toBeNull();
     // But own-notes reading IS allowed.
-    const readOwn = await prismaAdmin.rolePermission.findFirst({
+    const readOwn = await unsafePrismaAdmin.rolePermission.findFirst({
       where: { roleId: provider.id, permissionKey: 'clinical_note.read:own' },
     });
     expect(readOwn).toBeTruthy();
@@ -96,7 +96,7 @@ describe('RBAC seed', () => {
   it('re-running the seed is a no-op (idempotency)', async () => {
     // Take a fingerprint keyed on the (role.key, permission.key) pairs.
     const fingerprint = async () => {
-      const rows = await prismaAdmin.$queryRaw<Array<{ role_key: string; permission_key: string }>>`
+      const rows = await unsafePrismaAdmin.$queryRaw<Array<{ role_key: string; permission_key: string }>>`
         SELECT r.key AS role_key, rp.permission_key
           FROM role_permissions rp
           JOIN roles r ON r.id = rp.role_id AND r.organization_id IS NULL
@@ -110,9 +110,9 @@ describe('RBAC seed', () => {
     expect(after).toBe(before);
     // Row counts unchanged too (nothing was inserted or deleted).
     const [roles, perms, rp] = await Promise.all([
-      prismaAdmin.role.count({ where: { isSystem: true, organizationId: null } }),
-      prismaAdmin.permission.count(),
-      prismaAdmin.rolePermission.count(),
+      unsafePrismaAdmin.role.count({ where: { isSystem: true, organizationId: null } }),
+      unsafePrismaAdmin.permission.count(),
+      unsafePrismaAdmin.rolePermission.count(),
     ]);
     expect({ roles, perms, rp }).toEqual({ roles: 13, perms: 67, rp: 214 });
   });

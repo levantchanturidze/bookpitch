@@ -12,7 +12,7 @@ const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { mockPlatformJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 const { __clearPasswordReauthCache } = await import('@/lib/platform/password-reauth');
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 const bgRoute        = await import('@/app/api/platform/break-glass/route');
 const bgEndRoute     = await import('@/app/api/platform/break-glass/end/route');
 const orgsListRoute  = await import('@/app/api/platform/orgs/route');
@@ -31,15 +31,15 @@ describe('/api/platform/break-glass', () => {
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    const org = await prismaAdmin.organization.findFirstOrThrow({
+    const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     });
     orgId = org.id;
-    const su = await prismaAdmin.appUser.findUniqueOrThrow({
+    const su = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'superadmin@bp.test' }, select: { id: true },
     });
     superUserId = su.id;
-    const pa = await prismaAdmin.appUser.findUniqueOrThrow({
+    const pa = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'platform-admin@bp.test' }, select: { id: true },
     });
     platformAdminId = pa.id;
@@ -49,7 +49,7 @@ describe('/api/platform/break-glass', () => {
     authMock.mockReset();
     __clearAuthContextCache();
     __clearPasswordReauthCache();
-    await prismaAdmin.breakGlassSession.deleteMany({
+    await unsafePrismaAdmin.breakGlassSession.deleteMany({
       where: { actorUserId: { in: [superUserId, platformAdminId] } },
     });
   });
@@ -64,7 +64,7 @@ describe('/api/platform/break-glass', () => {
     }));
     expect(res.status).toBe(200);
     const body = await json<{ sessionId: string }>(res);
-    const s = await prismaAdmin.breakGlassSession.findUniqueOrThrow({ where: { id: body.sessionId } });
+    const s = await unsafePrismaAdmin.breakGlassSession.findUniqueOrThrow({ where: { id: body.sessionId } });
     expect(s.actorUserId).toBe(superUserId);
     expect(s.reason).toBe('triage-check');
   });
@@ -92,7 +92,7 @@ describe('/api/platform/break-glass', () => {
   });
 
   it('active session populates ctx.breakGlass + isBreakGlass', async () => {
-    await prismaAdmin.breakGlassSession.create({
+    await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: superUserId,
         targetOrganizationId: orgId,
@@ -110,14 +110,14 @@ describe('/api/platform/break-glass', () => {
     expect(can(ctx, 'clinical_note.read:any', { organizationId: orgId })).toBe(true);
     expect(can(ctx, 'client.read:full', { organizationId: orgId })).toBe(true);
     // …but NOT in a different org.
-    const otherOrg = await prismaAdmin.organization.findFirstOrThrow({
+    const otherOrg = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Isolation Corp' }, select: { id: true },
     });
     expect(can(ctx, 'clinical_note.read:any', { organizationId: otherOrg.id })).toBe(false);
   });
 
   it('every read during a break-glass session writes an audit row', async () => {
-    const bg = await prismaAdmin.breakGlassSession.create({
+    const bg = await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: superUserId,
         targetOrganizationId: null,
@@ -128,7 +128,7 @@ describe('/api/platform/break-glass', () => {
     __clearAuthContextCache();
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
 
-    const beforeCount = await prismaAdmin.auditLog.count({
+    const beforeCount = await unsafePrismaAdmin.auditLog.count({
       where: { breakGlassSessionId: bg.id, action: { startsWith: 'break_glass.read.' } },
     });
     // A single GET /api/platform/orgs (list) should write one audit row
@@ -137,14 +137,14 @@ describe('/api/platform/break-glass', () => {
     expect(res.status).toBe(200);
     // audit write is a floating .catch — wait a tick.
     await new Promise(r => setTimeout(r, 50));
-    const afterCount = await prismaAdmin.auditLog.count({
+    const afterCount = await unsafePrismaAdmin.auditLog.count({
       where: { breakGlassSessionId: bg.id, action: { startsWith: 'break_glass.read.' } },
     });
     expect(afterCount).toBeGreaterThan(beforeCount);
   });
 
   it('expired break-glass session drops out of ctx', async () => {
-    await prismaAdmin.breakGlassSession.create({
+    await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: superUserId,
         reason: 'expired', ticketId: 'BG-6',
@@ -162,7 +162,7 @@ describe('/api/platform/break-glass', () => {
   it('audit_log UPDATE still fails (re-verify Phase 1 §9.11 during a BG session)', async () => {
     // Add + look up an audit row, then try to update it via the admin
     // client — the trigger should raise.
-    const bg = await prismaAdmin.breakGlassSession.create({
+    const bg = await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: superUserId,
         reason: 'no-update', ticketId: 'BG-7',
@@ -170,13 +170,13 @@ describe('/api/platform/break-glass', () => {
       },
     });
     // Grab any existing row to attempt an update.
-    const row = await prismaAdmin.auditLog.findFirst({
+    const row = await unsafePrismaAdmin.auditLog.findFirst({
       where: { breakGlassSessionId: bg.id },
       orderBy: { at: 'desc' },
     });
     if (!row) {
       // Insert one so we have a target.
-      const created = await prismaAdmin.auditLog.create({
+      const created = await unsafePrismaAdmin.auditLog.create({
         data: {
           organizationId: orgId,
           actorUserId: superUserId,
@@ -186,14 +186,14 @@ describe('/api/platform/break-glass', () => {
         },
       });
       await expect(
-        prismaAdmin.auditLog.update({
+        unsafePrismaAdmin.auditLog.update({
           where: { at_id: { at: created.at, id: created.id } },
           data: { action: 'tampered' },
         }),
       ).rejects.toThrow(/append-only|permission denied/i);
     } else {
       await expect(
-        prismaAdmin.auditLog.update({
+        unsafePrismaAdmin.auditLog.update({
           where: { at_id: { at: row.at, id: row.id } },
           data: { action: 'tampered' },
         }),
@@ -202,7 +202,7 @@ describe('/api/platform/break-glass', () => {
   });
 
   it('end marks session ended', async () => {
-    const bg = await prismaAdmin.breakGlassSession.create({
+    const bg = await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: superUserId,
         reason: 'end-check', ticketId: 'BG-8',
@@ -215,7 +215,7 @@ describe('/api/platform/break-glass', () => {
       method: 'POST', body: JSON.stringify({ reason: 'done' }),
     }));
     expect(res.status).toBe(200);
-    const after = await prismaAdmin.breakGlassSession.findUniqueOrThrow({ where: { id: bg.id } });
+    const after = await unsafePrismaAdmin.breakGlassSession.findUniqueOrThrow({ where: { id: bg.id } });
     expect(after.endedAt).toBeTruthy();
     expect(after.endedReason).toBe('done');
   });

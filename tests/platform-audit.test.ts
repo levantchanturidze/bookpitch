@@ -11,7 +11,7 @@ vi.mock('@/auth', () => ({
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { mockPlatformJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 const auditRoute = await import('@/app/api/platform/audit/route');
 
 import type { NextRequest } from 'next/server';
@@ -72,14 +72,14 @@ describe('/api/platform/audit', () => {
 
   it('action prefix filter matches startsWith', async () => {
     // Write an audit row with a distinctive action.
-    const org = await prismaAdmin.organization.findFirstOrThrow({
+    const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     });
-    const u = await prismaAdmin.appUser.findUniqueOrThrow({
+    const u = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'platform-admin@bp.test' }, select: { id: true },
     });
     const marker = `probe.audit.${Date.now()}`;
-    await prismaAdmin.auditLog.create({
+    await unsafePrismaAdmin.auditLog.create({
       data: {
         organizationId: org.id,
         actorUserId: u.id,
@@ -97,11 +97,11 @@ describe('/api/platform/audit', () => {
   });
 
   it('audit_log UPDATE still blocked (re-verify Phase 1 §9.11)', async () => {
-    // Grab an existing row and try to mutate via prismaAdmin.
-    const row = await prismaAdmin.auditLog.findFirst({ orderBy: { at: 'desc' } });
+    // Grab an existing row and try to mutate via unsafePrismaAdmin.
+    const row = await unsafePrismaAdmin.auditLog.findFirst({ orderBy: { at: 'desc' } });
     if (!row) return; // fresh DB — nothing to try.
     await expect(
-      prismaAdmin.auditLog.update({
+      unsafePrismaAdmin.auditLog.update({
         where: { at_id: { at: row.at, id: row.id } },
         data: { reason: 'tampered' },
       }),

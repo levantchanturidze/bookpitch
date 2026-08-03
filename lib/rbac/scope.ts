@@ -22,7 +22,7 @@
 // this on :branch grants when resource.branchId is passed).
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import type { AuthContext, PermissionKey } from './types';
 import { perm } from './types';
 
@@ -35,7 +35,7 @@ import { perm } from './types';
  *     queries by. An empty array intentionally matches nothing: a
  *     BRANCH_MANAGER with only cleared branches sees zero rows.
  *
- * Uses prismaAdmin because branches.legacy_location_id is queried across
+ * Uses unsafePrismaAdmin because branches.legacy_location_id is queried across
  * a small, bounded set (max = number of branches in the caller's org).
  * Cached inside AuthContext per-request via the 30s ctx cache — this
  * function is called once per list endpoint per session refresh.
@@ -75,7 +75,7 @@ export function scopedByOwn(ctx: AuthContext, basePermKey: string): string | nul
  * so `:own`-scoped roles get evaluated against the actual owner rather
  * than passing the F-09 list-mode fallback.
  *
- * Runs via `prismaAdmin` because callers hitting this predate their
+ * Runs via `unsafePrismaAdmin` because callers hitting this predate their
  * `withOrg(tx)` block (they need the owner to build the guard args before
  * the transaction opens). RLS bypass is safe: this reads only a single
  * uuid, no PII, and the caller is already gated on `activeOrganizationId`
@@ -85,7 +85,7 @@ export async function resolveBookingOwner(
   appointmentId: string,
   activeOrganizationId: string,
 ): Promise<string | null> {
-  const row = await prismaAdmin.appointment.findFirst({
+  const row = await unsafePrismaAdmin.appointment.findFirst({
     where: { id: appointmentId, organizationId: activeOrganizationId },
     select: { staff: { select: { userId: true } } },
   });
@@ -102,12 +102,12 @@ export async function resolveWaitlistOwner(
   waitlistId: string,
   activeOrganizationId: string,
 ): Promise<string | null> {
-  const row = await prismaAdmin.waitlist.findFirst({
+  const row = await unsafePrismaAdmin.waitlist.findFirst({
     where: { id: waitlistId, organizationId: activeOrganizationId },
     select: { staffId: true },
   });
   if (!row?.staffId) return null;
-  const staff = await prismaAdmin.staff.findFirst({
+  const staff = await unsafePrismaAdmin.staff.findFirst({
     where: { id: row.staffId, organizationId: activeOrganizationId },
     select: { userId: true },
   });
@@ -116,7 +116,7 @@ export async function resolveWaitlistOwner(
 
 export async function scopedLocationIds(ctx: AuthContext): Promise<string[] | null> {
   if (ctx.branchIds.size === 0) return null;
-  const rows = await prismaAdmin.branch.findMany({
+  const rows = await unsafePrismaAdmin.branch.findMany({
     where: {
       id: { in: [...ctx.branchIds] },
       legacyLocationId: { not: null },

@@ -10,7 +10,7 @@ vi.mock('@/auth', () => ({
   __clearSessionVersionCache: vi.fn(),
 }));
 
-const { withoutRls, prismaAdmin } = await import('@/lib/db');
+const { withoutRls, unsafePrismaAdmin } = await import('@/lib/db');
 const { listUserMemberships, switchActiveOrg } = await import('@/lib/org-switch');
 const { InvalidInputError } = await import('@/lib/auth');
 
@@ -79,11 +79,11 @@ describe('org switcher', () => {
   });
 
   it('switchActiveOrg bumps sessionVersion for a valid membership', async () => {
-    const before = await prismaAdmin.appUser.findUniqueOrThrow({
+    const before = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: userId }, select: { sessionVersion: true },
     });
     await switchActiveOrg(userId, orgB);
-    const after = await prismaAdmin.appUser.findUniqueOrThrow({
+    const after = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: userId }, select: { sessionVersion: true },
     });
     expect(after.sessionVersion).toBe(before.sessionVersion + 1);

@@ -1,4 +1,4 @@
-import { prismaAdmin, withoutRls } from '@/lib/db';
+import { unsafePrismaAdmin, withoutRls } from '@/lib/db';
 
 // -----------------------------------------------------------------------------
 // Test helper: purge audit_log rows for a specific set of organizations.
@@ -16,7 +16,7 @@ export async function resetAuditForOrgs(orgIds: string[]): Promise<void> {
   if (orgIds.length === 0) return;
   // ALTER TABLE ... DISABLE TRIGGER USER cannot run inside a subtransaction
   // in Postgres, so keep this outside withoutRls().
-  await prismaAdmin.$executeRawUnsafe(
+  await unsafePrismaAdmin.$executeRawUnsafe(
     'ALTER TABLE "audit_log" DISABLE TRIGGER USER',
   );
   try {
@@ -24,7 +24,7 @@ export async function resetAuditForOrgs(orgIds: string[]): Promise<void> {
       tx.auditLog.deleteMany({ where: { organizationId: { in: orgIds } } }),
     );
   } finally {
-    await prismaAdmin.$executeRawUnsafe(
+    await unsafePrismaAdmin.$executeRawUnsafe(
       'ALTER TABLE "audit_log" ENABLE TRIGGER USER',
     );
   }

@@ -7,7 +7,7 @@ vi.mock('@/auth', () => ({
   signOut: vi.fn(),
 }));
 
-const { prismaAdmin, withoutRls } = await import('@/lib/db');
+const { unsafePrismaAdmin, withoutRls } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { updateMemberRole, removeMember, deleteStaff } = await import('@/lib/admin');
 const { createInvitation } = await import('@/lib/invitations');
@@ -31,22 +31,22 @@ describe('admin guardrails', () => {
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    const org = await prismaAdmin.organization.findFirstOrThrow({
+    const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     });
     orgId = org.id;
-    const owner = await prismaAdmin.appUser.findUniqueOrThrow({
+    const owner = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'split-owner@bp.test' },
     });
     ownerUserId = owner.id;
-    ownerMembershipId = (await prismaAdmin.membership.findFirstOrThrow({
+    ownerMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
       where: { userId: owner.id, organizationId: orgId },
     })).id;
-    const mgr = await prismaAdmin.appUser.findUniqueOrThrow({
+    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'splitmgr@bp.test' },
     });
     managerUserId = mgr.id;
-    managerMembershipId = (await prismaAdmin.membership.findFirstOrThrow({
+    managerMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
       where: { userId: mgr.id, organizationId: orgId },
     })).id;
   });
@@ -55,10 +55,10 @@ describe('admin guardrails', () => {
     __clearAuthContextCache();
     // Clean any leftover fixture users from prior failed test runs so
     // last-owner assertions see the single seeded ORG_OWNER.
-    await prismaAdmin.membership.deleteMany({
+    await unsafePrismaAdmin.membership.deleteMany({
       where: { user: { email: { in: ['tmp-cleanup@ex.test'] } }, organizationId: orgId },
     });
-    await prismaAdmin.membership.deleteMany({
+    await unsafePrismaAdmin.membership.deleteMany({
       where: {
         organizationId: orgId,
         userId: { not: ownerUserId },
@@ -105,7 +105,7 @@ describe('admin guardrails', () => {
   // -------- Last-owner --------
 
   it('assertNotLastOwner throws when the target IS the last active ORG_OWNER', async () => {
-    await prismaAdmin.$transaction(async (t) => {
+    await unsafePrismaAdmin.$transaction(async (t) => {
       await expect(assertNotLastOwner(t, orgId, ownerMembershipId))
         .rejects.toBeInstanceOf(InvalidInputError);
     });
@@ -113,25 +113,25 @@ describe('admin guardrails', () => {
 
   it('assertNotLastOwner passes when another active ORG_OWNER exists', async () => {
     // Add a second owner temporarily.
-    const secondUser = await prismaAdmin.appUser.create({
+    const secondUser = await unsafePrismaAdmin.appUser.create({
       data: { authProvider: 'credentials', authSubject: `so-${Date.now()}@ex.test`,
               email: `so-${Date.now()}@ex.test`, passwordHash: 'x' },
     });
-    const orgOwnerRole = await prismaAdmin.role.findFirstOrThrow({
+    const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'ORG_OWNER', organizationId: null },
     });
-    const secondOwner = await prismaAdmin.membership.create({
+    const secondOwner = await unsafePrismaAdmin.membership.create({
       data: {
         userId: secondUser.id, organizationId: orgId,
         role: 'owner', roleId: orgOwnerRole.id,
       },
     });
 
-    await prismaAdmin.$transaction((t) => assertNotLastOwner(t, orgId, ownerMembershipId));
+    await unsafePrismaAdmin.$transaction((t) => assertNotLastOwner(t, orgId, ownerMembershipId));
 
     // Cleanup.
-    await prismaAdmin.membership.delete({ where: { id: secondOwner.id } });
-    await prismaAdmin.appUser.delete({ where: { id: secondUser.id } });
+    await unsafePrismaAdmin.membership.delete({ where: { id: secondOwner.id } });
+    await unsafePrismaAdmin.appUser.delete({ where: { id: secondUser.id } });
   });
 
   it('updateMemberRole refuses to demote the last active ORG_OWNER', async () => {
@@ -142,7 +142,7 @@ describe('admin guardrails', () => {
     // branch of updateMemberRole via the public API. Skip through the
     // helper directly instead — proves the check fires without setting
     // up a synthetic actor.
-    await prismaAdmin.$transaction(async (t) => {
+    await unsafePrismaAdmin.$transaction(async (t) => {
       await expect(assertNotLastOwner(t, orgId, ownerMembershipId))
         .rejects.toBeInstanceOf(InvalidInputError);
     });
@@ -154,23 +154,23 @@ describe('admin guardrails', () => {
     // Give split-owner a second ORG_OWNER peer, then try to demote them.
     // Actually simpler: use the BRANCH_MANAGER target — split-owner
     // (actor) can manage BRANCH_MANAGER → FRONT_DESK per the lattice.
-    const beforeSV = (await prismaAdmin.appUser.findUniqueOrThrow({
+    const beforeSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: managerUserId }, select: { sessionVersion: true },
     })).sessionVersion;
 
     // ORG_OWNER can manage BRANCH_MANAGER per lattice; demote to FRONT_DESK.
     await updateMemberRole(ownerSession(), managerMembershipId, 'receptionist');
 
-    const afterSV = (await prismaAdmin.appUser.findUniqueOrThrow({
+    const afterSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: managerUserId }, select: { sessionVersion: true },
     })).sessionVersion;
     expect(afterSV).toBe(beforeSV + 1);
 
     // Restore BRANCH_MANAGER for other tests.
-    const bmRole = await prismaAdmin.role.findFirstOrThrow({
+    const bmRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'BRANCH_MANAGER', organizationId: null },
     });
-    await prismaAdmin.membership.update({
+    await unsafePrismaAdmin.membership.update({
       where: { id: managerMembershipId },
       data: { roleId: bmRole.id, role: 'receptionist' },
     });

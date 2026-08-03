@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { prismaApp, prismaAdmin } from '@/lib/db';
+import { prismaApp, unsafePrismaAdmin } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,7 +51,7 @@ async function probe(
 }
 
 export async function GET() {
-  // Report by the env var that was actually used to build prismaAdmin so
+  // Report by the env var that was actually used to build unsafePrismaAdmin so
   // the diagnosis flow (F-12) points at the right rotation target — a
   // failure on 'ADMIN_RUNTIME_DATABASE_URL' means the tx-pool URL is
   // wrong, on 'ADMIN_DATABASE_URL' means the fallback session-pool URL
@@ -64,7 +64,7 @@ export async function GET() {
   // Probe both clients in parallel — DB slowness on one shouldn't cascade.
   const [appCheck, adminCheck] = await Promise.all([
     probe(prismaApp, 'DATABASE_URL'),
-    probe(prismaAdmin, adminLabel),
+    probe(unsafePrismaAdmin, adminLabel),
   ]);
 
   const ok = appCheck.ok && adminCheck.ok;

@@ -72,13 +72,13 @@ const USERS: FixtureUser[] = [
 ];
 
 async function jwtFor(email: string) {
-  const { prismaAdmin } = await import('@/lib/db');
-  const user = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
-  const membership = await prismaAdmin.membership.findFirstOrThrow({
+  const { unsafePrismaAdmin } = await import('@/lib/db');
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
+  const membership = await unsafePrismaAdmin.membership.findFirstOrThrow({
     where: { userId: user.id, organization: { name: 'Split Practice' } },
   }).catch(async () =>
     // Some users only have a Grand Medical membership; fall back.
-    prismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } }),
+    unsafePrismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } }),
   );
   return {
     user: {
@@ -95,7 +95,7 @@ async function jwtFor(email: string) {
 
 describe('page-level guards match NAV_ITEMS.requiredPermission', () => {
   beforeAll(async () => {
-    const { prismaAdmin } = await import('@/lib/db');
+    const { unsafePrismaAdmin } = await import('@/lib/db');
     const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
     await seedRbacFixtures();
 
@@ -103,7 +103,7 @@ describe('page-level guards match NAV_ITEMS.requiredPermission', () => {
     // jwtFor). Use Split's own location so pages that dereference
     // `active.id` in a withOrg query actually find it — a location from a
     // different org would be filtered by RLS.
-    const loc = await prismaAdmin.location.findFirstOrThrow({
+    const loc = await unsafePrismaAdmin.location.findFirstOrThrow({
       where: { organization: { name: 'Split Practice' } },
     });
     locationMock.mockImplementation(async () => ({

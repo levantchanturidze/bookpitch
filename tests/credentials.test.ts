@@ -17,7 +17,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 
 const { validateCredentials } = await import('@/lib/auth/credentials');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 
 // Fixtures use DEV_USER_PASSWORD (default 'devpass123'). This test suite
 // runs against a local test DB where that default is fine; the F-02
@@ -78,7 +78,7 @@ describe('validateCredentials — real path (F-05)', () => {
     // Create + mask a temp user, then confirm sign-in fails.
     const { hash } = await import('@node-rs/argon2');
     const tempEmail = `f05-deleted-${Date.now()}@bookpitch-test.invalid`;
-    await prismaAdmin.appUser.create({
+    await unsafePrismaAdmin.appUser.create({
       data: {
         authProvider: 'credentials',
         authSubject: tempEmail,
@@ -95,20 +95,20 @@ describe('validateCredentials — real path (F-05)', () => {
     // it doesn't accidentally let them through.
     expect(before).toBeNull();
     // Mask
-    await prismaAdmin.appUser.update({
+    await unsafePrismaAdmin.appUser.update({
       where: { email: tempEmail },
       data: { status: 'deleted' },
     });
     const after = await validateCredentials({ email: tempEmail, password: DEV_PASSWORD });
     expect(after).toBeNull();
     // Clean up
-    await prismaAdmin.appUser.delete({ where: { email: tempEmail } }).catch(() => {});
+    await unsafePrismaAdmin.appUser.delete({ where: { email: tempEmail } }).catch(() => {});
   });
 
   it('multi-org user + requestedOrgId picks that specific membership', async () => {
     // moonlight@bp.test is PROVIDER in both Grand Medical and Split Practice
     // per rbac-fixtures.ts. Ask for Split's org id specifically.
-    const split = await prismaAdmin.organization.findFirstOrThrow({
+    const split = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     });
     const r = await validateCredentials({
@@ -123,7 +123,7 @@ describe('validateCredentials — real path (F-05)', () => {
 
   it('multi-org user + requestedOrgId they do NOT belong to → null', async () => {
     // Solo Practice is soloDoc's org; moonlight has no membership there.
-    const solo = await prismaAdmin.organization.findFirstOrThrow({
+    const solo = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Solo Practice' }, select: { id: true },
     });
     const r = await validateCredentials({

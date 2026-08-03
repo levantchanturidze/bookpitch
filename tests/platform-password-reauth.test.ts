@@ -14,14 +14,14 @@ const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 const { __clearPasswordReauthCache, verifyPasswordFresh, requireFreshPassword } =
   await import('@/lib/platform/password-reauth');
 const { ForbiddenError, InvalidInputError } = await import('@/lib/auth');
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 
 describe('password re-auth (destructive-action gate)', () => {
   let superUserId: string;
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    const u = await prismaAdmin.appUser.findUniqueOrThrow({
+    const u = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'superadmin@bp.test' },
       select: { id: true },
     });

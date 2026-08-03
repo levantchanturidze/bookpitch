@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { prismaApp, prismaAdmin, withOrg, withoutRls } from '@/lib/db';
+import { prismaApp, unsafePrismaAdmin, withOrg, withoutRls } from '@/lib/db';
 
 // -----------------------------------------------------------------------------
 // Phase 3: RLS regression coverage on top of tests/rls.test.ts.
@@ -21,7 +21,7 @@ describe('RLS coverage across every tenant table', () => {
     // Introspection: find every table with an organization_id column, then
     // check the RLS + FORCE bits on pg_class. A table that's in the list
     // but has relrowsecurity=false is a leak waiting to happen.
-    const rows = await prismaAdmin.$queryRawUnsafe<Array<{
+    const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{
       table_name: string; relrowsecurity: boolean; relforcerowsecurity: boolean;
     }>>(
       `SELECT c.relname AS table_name, c.relrowsecurity, c.relforcerowsecurity
@@ -45,7 +45,7 @@ describe('RLS coverage across every tenant table', () => {
     //     is enforced at query time by the seed/admin writers.
     //   • impersonation_sessions / break_glass_sessions — platform-plane
     //     bookkeeping (Phase 5 §8). Queried only by lib/rbac/context.ts
-    //     with prismaAdmin; not exposed to org-plane callers.
+    //     with unsafePrismaAdmin; not exposed to org-plane callers.
     // Any other table missing RLS is a defect.
     const EXEMPT_REFERENCE = new Set([
       'roles', 'permissions', 'role_permissions',

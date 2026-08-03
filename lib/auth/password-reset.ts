@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { hash } from '@node-rs/argon2';
-import { prismaAdmin, withoutRls } from '@/lib/db';
+import { unsafePrismaAdmin, withoutRls } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
 import { log } from '@/lib/logger';
@@ -89,11 +89,11 @@ export async function consumeReset(input: ConsumeResetInput): Promise<{ userId: 
   }
 
   const tokenHash = hashToken(token);
-  const row = await prismaAdmin.verificationToken.findUnique({ where: { token: tokenHash } });
+  const row = await unsafePrismaAdmin.verificationToken.findUnique({ where: { token: tokenHash } });
   if (!row) throw new InvalidInputError('invalid or expired token');
   if (row.expires.getTime() < Date.now()) {
     // Best-effort cleanup; don't leak the reason.
-    await prismaAdmin.verificationToken.delete({ where: { token: tokenHash } }).catch(() => {});
+    await unsafePrismaAdmin.verificationToken.delete({ where: { token: tokenHash } }).catch(() => {});
     throw new InvalidInputError('invalid or expired token');
   }
 

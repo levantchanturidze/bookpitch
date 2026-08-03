@@ -3,7 +3,7 @@ import Credentials from 'next-auth/providers/credentials';
 import { PrismaAdapter } from '@auth/prisma-adapter';
 
 import { authConfig } from '@/auth.config';
-import { prismaAdmin, withoutRls } from '@/lib/db';
+import { unsafePrismaAdmin, withoutRls } from '@/lib/db';
 import { validateCredentials } from '@/lib/auth/credentials';
 import { getEmailProvider } from '@/lib/messaging';
 import { log } from '@/lib/logger';
@@ -98,7 +98,7 @@ async function alertOnPlatformLogin(userId: string, email: string): Promise<void
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
-  adapter: PrismaAdapter(prismaAdmin),
+  adapter: PrismaAdapter(unsafePrismaAdmin),
   providers: [
     Credentials({
       credentials: {

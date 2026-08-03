@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { seedRbacFixtures } from '@/prisma/rbac-fixtures';
 
 // -----------------------------------------------------------------------------
@@ -13,7 +13,7 @@ describe('RBAC Phase 3 fixtures', () => {
   });
 
   it('creates Split Practice with 3 named branches (Downtown, Uptown, Airport)', async () => {
-    const split = await prismaAdmin.organization.findFirstOrThrow({
+    const split = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' },
       include: { branches: { select: { name: true }, orderBy: { name: 'asc' } } },
     });
@@ -26,10 +26,10 @@ describe('RBAC Phase 3 fixtures', () => {
   });
 
   it('Split Manager is scoped to exactly 2 branches (Downtown + Uptown)', async () => {
-    const user = await prismaAdmin.appUser.findUniqueOrThrow({
+    const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'splitmgr@bp.test' },
     });
-    const membership = await prismaAdmin.membership.findFirstOrThrow({
+    const membership = await unsafePrismaAdmin.membership.findFirstOrThrow({
       where: { userId: user.id },
       include: {
         branches: { include: { branch: { select: { name: true } } } },
@@ -43,10 +43,10 @@ describe('RBAC Phase 3 fixtures', () => {
   });
 
   it('Moonlighter has PROVIDER memberships in two orgs', async () => {
-    const moon = await prismaAdmin.appUser.findUniqueOrThrow({
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'moonlight@bp.test' },
     });
-    const mems = await prismaAdmin.membership.findMany({
+    const mems = await unsafePrismaAdmin.membership.findMany({
       where: { userId: moon.id },
       include: {
         organization: { select: { name: true } },
@@ -62,10 +62,10 @@ describe('RBAC Phase 3 fixtures', () => {
   });
 
   it('Solo Doc holds a membership in Solo Practice', async () => {
-    const solo = await prismaAdmin.appUser.findUniqueOrThrow({
+    const solo = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'solo@bp.test' },
     });
-    const mems = await prismaAdmin.membership.findMany({
+    const mems = await unsafePrismaAdmin.membership.findMany({
       where: { userId: solo.id },
       include: { organization: { select: { name: true } }, roleRef: { select: { key: true } } },
     });
@@ -78,7 +78,7 @@ describe('RBAC Phase 3 fixtures', () => {
   });
 
   it('is idempotent — a second run touches no new rows', async () => {
-    const before = await prismaAdmin.$queryRawUnsafe<Array<{ n: bigint }>>(
+    const before = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ n: bigint }>>(
       `SELECT (SELECT count(*) FROM memberships)
             + (SELECT count(*) FROM organizations)
             + (SELECT count(*) FROM app_users)
@@ -86,7 +86,7 @@ describe('RBAC Phase 3 fixtures', () => {
             + (SELECT count(*) FROM membership_branches) AS n`,
     );
     await seedRbacFixtures();
-    const after = await prismaAdmin.$queryRawUnsafe<Array<{ n: bigint }>>(
+    const after = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ n: bigint }>>(
       `SELECT (SELECT count(*) FROM memberships)
             + (SELECT count(*) FROM organizations)
             + (SELECT count(*) FROM app_users)

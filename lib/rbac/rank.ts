@@ -19,7 +19,7 @@
 // from SUPER_ADMIN in the seeded lattice.
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import type { AuthContext } from './types';
 
 /**
@@ -39,7 +39,7 @@ export async function canManageRoleAssignment(
   // Look up both roles in one round trip. System roles have organization_id
   // IS NULL; custom roles are org-scoped. For MVP we only manage system roles;
   // Phase 6 will extend for custom.
-  const roles = await prismaAdmin.role.findMany({
+  const roles = await unsafePrismaAdmin.role.findMany({
     where: {
       OR: [{ key: actor.roleKey }, { key: targetRoleKey }],
       organizationId: null,
@@ -54,7 +54,7 @@ export async function canManageRoleAssignment(
   if (actorRole.rank <= targetRole.rank) return false;
 
   // Guard 2: explicit lattice edge.
-  const edge = await prismaAdmin.roleCanManage.findFirst({
+  const edge = await unsafePrismaAdmin.roleCanManage.findFirst({
     where: { parentRoleId: actorRole.id, childRoleId: targetRole.id },
     select: { parentRoleId: true },
   });

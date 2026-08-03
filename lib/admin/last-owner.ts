@@ -8,7 +8,7 @@
 // mutated; a count of zero means the mutation would leave the org
 // ownerless.
 //
-// Runs INSIDE the caller's tx (withOrg or a raw prismaAdmin transaction)
+// Runs INSIDE the caller's tx (withOrg or a raw unsafePrismaAdmin transaction)
 // so the count and the mutation both see the same snapshot.
 // -----------------------------------------------------------------------------
 

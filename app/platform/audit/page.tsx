@@ -1,6 +1,6 @@
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { queryPlatformAudit } from '@/lib/platform/audit';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import AuditView from '@/components/platform/AuditView';
 
 export const metadata = { title: 'Audit · Platform' };
@@ -17,7 +17,7 @@ export default async function PlatformAuditPage({
   const sp = await searchParams;
   const s = (k: string) => (typeof sp[k] === 'string' ? (sp[k] as string) : '') || null;
 
-  const user = await prismaAdmin.appUser.findUniqueOrThrow({
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: ctx.userId },
     select: { platformRole: { select: { key: true } } },
   });

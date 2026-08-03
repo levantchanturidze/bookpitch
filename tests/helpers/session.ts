@@ -10,7 +10,7 @@
 //   authMock.mockResolvedValue(await mockJwt(userId, orgId));
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 
 export async function mockJwt(
   userId: string,
@@ -24,11 +24,11 @@ export async function mockJwt(
     platformRoleId: string | null;
   };
 }> {
-  const user = await prismaAdmin.appUser.findUniqueOrThrow({
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: userId },
     select: { email: true, platformRoleId: true },
   });
-  const membership = await prismaAdmin.membership.findFirstOrThrow({
+  const membership = await unsafePrismaAdmin.membership.findFirstOrThrow({
     where: { userId, organizationId },
     select: { id: true },
   });
@@ -64,7 +64,7 @@ export async function mockPlatformJwt(email: string): Promise<{
     platformRoleId: string | null;
   };
 }> {
-  const user = await prismaAdmin.appUser.findUniqueOrThrow({
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email },
     select: { id: true, email: true, platformRoleId: true },
   });

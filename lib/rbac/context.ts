@@ -11,12 +11,12 @@
 //   • Bounded size: 1000 entries. LRU-lite — on insert when full, drop the
 //     oldest entry. Good enough for a Node process serving a small SaaS.
 //
-// This module uses prismaAdmin (BYPASSRLS) because it queries across the
+// This module uses unsafePrismaAdmin (BYPASSRLS) because it queries across the
 // membership → role → permissions graph, which requires reads on rows that
 // don't sit inside an org context yet (users, platform roles).
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import type { AuthContext, PermissionKey } from './types';
 import { perm } from './types';
 import { loadOrgToggles, DEFAULT_TOGGLES } from './toggles';
@@ -59,7 +59,7 @@ export async function buildAuthContext(
   // We need sessionVersion for the cache key. One extra column read is cheap
   // and lets us fail closed on a stale JWT even if the caller forgot to
   // check it.
-  const user = await prismaAdmin.appUser.findUnique({
+  const user = await unsafePrismaAdmin.appUser.findUnique({
     where: { id: userId },
     select: {
       id: true, email: true, status: true, sessionVersion: true, platformRoleId: true,
@@ -142,7 +142,7 @@ async function loadPlatformPermissions(
   platformRoleId: string | null,
 ): Promise<ReadonlySet<PermissionKey>> {
   if (!platformRoleId) return new Set();
-  const rows = await prismaAdmin.rolePermission.findMany({
+  const rows = await unsafePrismaAdmin.rolePermission.findMany({
     where: { roleId: platformRoleId },
     select: { permissionKey: true },
   });
@@ -158,7 +158,7 @@ async function loadPlatformPermissions(
  */
 async function loadActiveImpersonation(userId: string) {
   const now = new Date();
-  return prismaAdmin.impersonationSession.findFirst({
+  return unsafePrismaAdmin.impersonationSession.findFirst({
     where: {
       actorUserId: userId,
       endedAt: null,
@@ -176,7 +176,7 @@ async function loadActiveImpersonation(userId: string) {
 
 async function loadActiveBreakGlass(userId: string) {
   const now = new Date();
-  return prismaAdmin.breakGlassSession.findFirst({
+  return unsafePrismaAdmin.breakGlassSession.findFirst({
     where: {
       actorUserId: userId,
       endedAt: null,
@@ -198,7 +198,7 @@ async function buildOrgContext(
   impersonation: AuthContext['impersonation'],
   breakGlass: AuthContext['breakGlass'],
 ): Promise<AuthContext | null> {
-  const membership = await prismaAdmin.membership.findUnique({
+  const membership = await unsafePrismaAdmin.membership.findUnique({
     where: { id: membershipId },
     select: {
       id: true,
@@ -220,7 +220,7 @@ async function buildOrgContext(
   // Fetch role permissions + org toggles in parallel — one round trip each,
   // both bounded by their own caches (org toggles also 30s TTL).
   const [permRows, orgToggles] = await Promise.all([
-    prismaAdmin.rolePermission.findMany({
+    unsafePrismaAdmin.rolePermission.findMany({
       where: { roleId: membership.roleId },
       select: { permissionKey: true },
     }),

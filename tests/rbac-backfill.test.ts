@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 
 // -----------------------------------------------------------------------------
 // Phase 2 invariants:
@@ -13,7 +13,7 @@ import { prismaAdmin } from '@/lib/db';
 //     current DB state.
 //
 // Fixture strategy: build a scratch org / user / location / membership via
-// prismaAdmin. Everything is CASCADEd through the org at the end, except for
+// unsafePrismaAdmin. Everything is CASCADEd through the org at the end, except for
 // AppUsers with audit rows (append-only), which we detach via the standard
 // audit-reset helper the seed uses.
 // -----------------------------------------------------------------------------
@@ -31,7 +31,7 @@ async function scratchOrg(name: string, extras?: Partial<{ vertical: string; own
   // check below — they're test fixtures, not real orgs, and cleaned up in
   // afterAll. Real behavior is exercised by the trigger tests, which don't
   // depend on owner_user_id being set.
-  const org = await prismaAdmin.organization.create({
+  const org = await unsafePrismaAdmin.organization.create({
     data: {
       name,
       status: 'archived',
@@ -44,7 +44,7 @@ async function scratchOrg(name: string, extras?: Partial<{ vertical: string; own
 }
 
 async function scratchUser(email: string) {
-  const user = await prismaAdmin.appUser.create({
+  const user = await unsafePrismaAdmin.appUser.create({
     data: {
       authProvider: 'credentials',
       authSubject: `backfill-test-${email}`,
@@ -57,15 +57,15 @@ async function scratchUser(email: string) {
 
 afterAll(async () => {
   // Delete memberships first (they hold user + org FKs).
-  await prismaAdmin.membership.deleteMany({ where: { organizationId: { in: scratchOrgIds } } });
+  await unsafePrismaAdmin.membership.deleteMany({ where: { organizationId: { in: scratchOrgIds } } });
   // Locations cascade to branches via BEFORE-DELETE trigger + FK.
-  await prismaAdmin.location.deleteMany({ where: { organizationId: { in: scratchOrgIds } } });
+  await unsafePrismaAdmin.location.deleteMany({ where: { organizationId: { in: scratchOrgIds } } });
   // Orgs cascade to branches and any leftover memberships.
-  await prismaAdmin.organization.deleteMany({ where: { id: { in: scratchOrgIds } } });
+  await unsafePrismaAdmin.organization.deleteMany({ where: { id: { in: scratchOrgIds } } });
   // Users can be hard-deleted only when they have no audit rows. Scratch
   // users never write audit_log (no requireRole path involved), so a plain
   // delete works.
-  await prismaAdmin.appUser.deleteMany({ where: { id: { in: scratchUserIds } } });
+  await unsafePrismaAdmin.appUser.deleteMany({ where: { id: { in: scratchUserIds } } });
 });
 
 // -----------------------------------------------------------------------------
@@ -83,11 +83,11 @@ describe('sync trigger: memberships fill role_id / joined_at / is_bookable', () 
     const user = await scratchUser(`memb-${roleEnum}-${Date.now()}@ex.com`);
     // Explicitly null out the new columns to prove the trigger fills them.
     // We use $executeRawUnsafe so Prisma doesn't apply its own defaults.
-    await prismaAdmin.$executeRawUnsafe(
+    await unsafePrismaAdmin.$executeRawUnsafe(
       `INSERT INTO memberships (organization_id, user_id, role, role_id, joined_at, is_bookable)
        VALUES ('${orgId}', '${user.id}', '${roleEnum}', NULL, NULL, FALSE)`,
     );
-    const [row] = await prismaAdmin.$queryRawUnsafe<Array<{
+    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{
       role: string; role_key: string | null; is_bookable: boolean; joined_at: Date | null;
     }>>(
       `SELECT m.role, r.key AS role_key, m.is_bookable, m.joined_at
@@ -108,10 +108,10 @@ describe('sync trigger: locations → branches mirror', () => {
   beforeAll(async () => { orgId = (await scratchOrg('loc-sync-org')).id; });
 
   it('INSERT: creates a branches row with matching name/timezone/legacy_location_id', async () => {
-    const loc = await prismaAdmin.location.create({
+    const loc = await unsafePrismaAdmin.location.create({
       data: { organizationId: orgId, type: 'clinic', name: 'Loc A', timezone: 'Europe/Berlin' },
     });
-    const branch = await prismaAdmin.branch.findFirst({ where: { legacyLocationId: loc.id } });
+    const branch = await unsafePrismaAdmin.branch.findFirst({ where: { legacyLocationId: loc.id } });
     expect(branch).toBeTruthy();
     expect(branch!.name).toBe('Loc A');
     expect(branch!.timezone).toBe('Europe/Berlin');
@@ -119,32 +119,32 @@ describe('sync trigger: locations → branches mirror', () => {
   });
 
   it('INSERT: fills organizations.vertical from the first location type', async () => {
-    const org = await prismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
+    const org = await unsafePrismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
     expect(org.vertical).toBe('clinic');
   });
 
   it('UPDATE OF name / timezone: propagates to the linked branch', async () => {
-    const loc = await prismaAdmin.location.create({
+    const loc = await unsafePrismaAdmin.location.create({
       data: { organizationId: orgId, type: 'salon', name: 'Loc B', timezone: 'Asia/Tbilisi' },
     });
-    await prismaAdmin.location.update({
+    await unsafePrismaAdmin.location.update({
       where: { id: loc.id },
       data: { name: 'Loc B Renamed', timezone: 'Europe/Paris' },
     });
-    const branch = await prismaAdmin.branch.findFirstOrThrow({ where: { legacyLocationId: loc.id } });
+    const branch = await unsafePrismaAdmin.branch.findFirstOrThrow({ where: { legacyLocationId: loc.id } });
     expect(branch.name).toBe('Loc B Renamed');
     expect(branch.timezone).toBe('Europe/Paris');
   });
 
   it('DELETE: BEFORE-DELETE trigger removes the linked branch before the FK nulls it', async () => {
-    const loc = await prismaAdmin.location.create({
+    const loc = await unsafePrismaAdmin.location.create({
       data: { organizationId: orgId, type: 'clinic', name: 'Loc C' },
     });
-    const branchId = (await prismaAdmin.branch.findFirstOrThrow({
+    const branchId = (await unsafePrismaAdmin.branch.findFirstOrThrow({
       where: { legacyLocationId: loc.id },
     })).id;
-    await prismaAdmin.location.delete({ where: { id: loc.id } });
-    const orphan = await prismaAdmin.branch.findUnique({ where: { id: branchId } });
+    await unsafePrismaAdmin.location.delete({ where: { id: loc.id } });
+    const orphan = await unsafePrismaAdmin.branch.findUnique({ where: { id: branchId } });
     expect(orphan).toBeNull();
   });
 });
@@ -164,14 +164,14 @@ describe('backfill migration.sql is idempotent', () => {
       .map(s => s.trim())
       .filter(s => s.length > 0 && !s.startsWith('--'));
     for (const stmt of statements) {
-      await prismaAdmin.$executeRawUnsafe(stmt);
+      await unsafePrismaAdmin.$executeRawUnsafe(stmt);
     }
     const after = await snapshot();
     expect(after).toEqual(before);
   });
 
   async function snapshot() {
-    const [row] = await prismaAdmin.$queryRawUnsafe<Array<{
+    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{
       orgs: bigint; orgs_vertical: bigint; orgs_owner: bigint;
       locations: bigint; branches: bigint;
       memberships: bigint; role_id_set: bigint; joined_at_set: bigint; bookable_true: bigint;
@@ -216,7 +216,7 @@ describe('backfill verify invariants (current DB state)', () => {
   ];
 
   it.each(zeroExpectations)('%s → 0', async (_label, sql) => {
-    const [row] = await prismaAdmin.$queryRawUnsafe<Array<{ n: number }>>(sql);
+    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ n: number }>>(sql);
     expect(row!.n).toBe(0);
   });
 });

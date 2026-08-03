@@ -9,7 +9,7 @@ vi.mock('@/auth', () => ({
 }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { mockJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
@@ -39,28 +39,28 @@ describe('branch scoping — list endpoints filter for BRANCH_MANAGER', () => {
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    splitOrgId = (await prismaAdmin.organization.findFirstOrThrow({
+    splitOrgId = (await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     })).id;
-    const mgr = await prismaAdmin.appUser.findUniqueOrThrow({
+    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'splitmgr@bp.test' },
     });
     mgrUserId = mgr.id;
-    mgrMembershipId = (await prismaAdmin.membership.findFirstOrThrow({
+    mgrMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
       where: { userId: mgr.id, organizationId: splitOrgId },
     })).id;
     // The seeded location for Split Practice — 'Split Downtown Loc'.
-    const loc = await prismaAdmin.location.findFirstOrThrow({
+    const loc = await unsafePrismaAdmin.location.findFirstOrThrow({
       where: { organizationId: splitOrgId },
     });
     downtownLocationId = loc.id;
 
     // Ensure the manager's Downtown branch is linked to that location.
-    const downtown = await prismaAdmin.branch.findFirstOrThrow({
+    const downtown = await unsafePrismaAdmin.branch.findFirstOrThrow({
       where: { organizationId: splitOrgId, name: 'Downtown' },
     });
     if (downtown.legacyLocationId !== downtownLocationId) {
-      await prismaAdmin.branch.update({
+      await unsafePrismaAdmin.branch.update({
         where: { id: downtown.id },
         data: { legacyLocationId: downtownLocationId },
       });
@@ -76,10 +76,10 @@ describe('branch scoping — list endpoints filter for BRANCH_MANAGER', () => {
 
   it('scopedLocationIds returns null for unrestricted roles', async () => {
     // ORG_OWNER (split-owner) has no branch scope.
-    const owner = await prismaAdmin.appUser.findUniqueOrThrow({
+    const owner = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'split-owner@bp.test' },
     });
-    const ownerMembership = await prismaAdmin.membership.findFirstOrThrow({
+    const ownerMembership = await unsafePrismaAdmin.membership.findFirstOrThrow({
       where: { userId: owner.id, organizationId: splitOrgId },
     });
     const ctx = await buildAuthContext(owner.id, ownerMembership.id);

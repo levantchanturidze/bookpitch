@@ -2,7 +2,7 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { requestPasswordReset } from '@/lib/auth/password-reset';
 import { consumeRateLimit } from '@/lib/rate-limit';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
 
   // Best-effort rate limit BEFORE any DB work.
   const user = email
-    ? await prismaAdmin.appUser.findUnique({
+    ? await unsafePrismaAdmin.appUser.findUnique({
         where: { email },
         include: { memberships: { take: 1 } },
       })

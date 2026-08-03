@@ -13,7 +13,7 @@ import 'dotenv/config';
 import { config as loadEnv } from 'dotenv';
 loadEnv({ path: '.env.local', override: true });
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 
 // -----------------------------------------------------------------------------
 // System roles (spec §4). `rank` is the numeric weight for the escalation
@@ -355,7 +355,7 @@ async function upsertRoles() {
   for (const r of SYSTEM_ROLES) {
     // Partial unique on (key) WHERE org_id IS NULL. Prisma cannot target it,
     // so use a raw statement.
-    await prismaAdmin.$executeRaw`
+    await unsafePrismaAdmin.$executeRaw`
       INSERT INTO roles (key, display_name, plane, rank, organization_id, is_system)
       VALUES (${r.key}, ${r.display}, ${r.plane}, ${r.rank}, NULL, true)
       ON CONFLICT (key) WHERE organization_id IS NULL
@@ -369,7 +369,7 @@ async function upsertRoles() {
 
 async function upsertPermissions() {
   for (const p of P) {
-    await prismaAdmin.permission.upsert({
+    await unsafePrismaAdmin.permission.upsert({
       where: { key: p.key },
       create: {
         key: p.key,
@@ -389,7 +389,7 @@ async function upsertPermissions() {
 }
 
 async function upsertRolePermissions() {
-  const roles = await prismaAdmin.role.findMany({
+  const roles = await unsafePrismaAdmin.role.findMany({
     where: { organizationId: null, isSystem: true },
     select: { id: true, key: true },
   });
@@ -402,7 +402,7 @@ async function upsertRolePermissions() {
     }
     // Two-way sync: add missing, remove extras. This is what makes the seed
     // safe to re-run after a spec change — the DB converges to the file.
-    const existing = await prismaAdmin.rolePermission.findMany({
+    const existing = await unsafePrismaAdmin.rolePermission.findMany({
       where: { roleId },
       select: { permissionKey: true },
     });
@@ -414,13 +414,13 @@ async function upsertRolePermissions() {
                              .map(r => r.permissionKey);
 
     if (toAdd.length > 0) {
-      await prismaAdmin.rolePermission.createMany({
+      await unsafePrismaAdmin.rolePermission.createMany({
         data: toAdd.map(permissionKey => ({ roleId, permissionKey })),
         skipDuplicates: true,
       });
     }
     if (toRemove.length > 0) {
-      await prismaAdmin.rolePermission.deleteMany({
+      await unsafePrismaAdmin.rolePermission.deleteMany({
         where: { roleId, permissionKey: { in: toRemove } },
       });
     }
@@ -464,7 +464,7 @@ const CAN_MANAGE: Record<string, ReadonlyArray<string>> = {
 };
 
 async function upsertRoleCanManage() {
-  const roles = await prismaAdmin.role.findMany({
+  const roles = await unsafePrismaAdmin.role.findMany({
     where: { organizationId: null, isSystem: true },
     select: { id: true, key: true },
   });
@@ -482,7 +482,7 @@ async function upsertRoleCanManage() {
     }
   }
 
-  const existing = await prismaAdmin.roleCanManage.findMany({
+  const existing = await unsafePrismaAdmin.roleCanManage.findMany({
     select: { parentRoleId: true, childRoleId: true },
   });
   const existingSet = new Set(existing.map(e => `${e.parentRoleId} ${e.childRoleId}`));
@@ -491,7 +491,7 @@ async function upsertRoleCanManage() {
   const toRemove = existing.filter(e => !wantEdges.has(`${e.parentRoleId} ${e.childRoleId}`));
 
   if (toAdd.length > 0) {
-    await prismaAdmin.roleCanManage.createMany({
+    await unsafePrismaAdmin.roleCanManage.createMany({
       data: toAdd.map(k => {
         const [parentRoleId, childRoleId] = k.split(' ');
         return { parentRoleId, childRoleId };
@@ -500,7 +500,7 @@ async function upsertRoleCanManage() {
     });
   }
   for (const e of toRemove) {
-    await prismaAdmin.roleCanManage.delete({
+    await unsafePrismaAdmin.roleCanManage.delete({
       where: { parentRoleId_childRoleId: { parentRoleId: e.parentRoleId, childRoleId: e.childRoleId } },
     });
   }
@@ -521,10 +521,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   seedRbac()
     .then(async () => {
       const [roleCount, permCount, rpCount, edgeCount] = await Promise.all([
-        prismaAdmin.role.count({ where: { isSystem: true } }),
-        prismaAdmin.permission.count(),
-        prismaAdmin.rolePermission.count(),
-        prismaAdmin.roleCanManage.count(),
+        unsafePrismaAdmin.role.count({ where: { isSystem: true } }),
+        unsafePrismaAdmin.permission.count(),
+        unsafePrismaAdmin.rolePermission.count(),
+        unsafePrismaAdmin.roleCanManage.count(),
       ]);
       console.log('✔ RBAC seed complete:', { roleCount, permCount, rpCount, edgeCount });
     })
@@ -533,6 +533,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.exit(1);
     })
     .finally(async () => {
-      await prismaAdmin.$disconnect();
+      await unsafePrismaAdmin.$disconnect();
     });
 }

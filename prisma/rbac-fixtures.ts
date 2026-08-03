@@ -10,7 +10,7 @@
 // email / org name / branch name) so it's also safe to run standalone:
 //   node --env-file=.env.local ./node_modules/.bin/tsx prisma/rbac-fixtures.ts
 //
-// Uses prismaAdmin (BYPASSRLS) because it writes across multiple orgs.
+// Uses unsafePrismaAdmin (BYPASSRLS) because it writes across multiple orgs.
 // Passwords match the base seed's DEV_USER_PASSWORD default.
 // -----------------------------------------------------------------------------
 
@@ -25,7 +25,7 @@ import 'dotenv/config';
 import { config as loadEnv } from 'dotenv';
 loadEnv({ path: '.env.local', override: true });
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 
 const DEV_PASSWORD = process.env.DEV_USER_PASSWORD ?? 'devpass123';
 
@@ -34,9 +34,9 @@ const DEV_PASSWORD = process.env.DEV_USER_PASSWORD ?? 'devpass123';
 // -----------------------------------------------------------------------------
 
 async function upsertOrg(name: string, extras?: { vertical?: string }): Promise<{ id: string }> {
-  const existing = await prismaAdmin.organization.findFirst({ where: { name } });
+  const existing = await unsafePrismaAdmin.organization.findFirst({ where: { name } });
   if (existing) return { id: existing.id };
-  return prismaAdmin.organization.create({
+  return unsafePrismaAdmin.organization.create({
     data: { name, vertical: extras?.vertical ?? null },
     select: { id: true },
   });
@@ -47,9 +47,9 @@ async function upsertUser(
   fullName: string,
   passwordHash: string,
 ): Promise<{ id: string }> {
-  const existing = await prismaAdmin.appUser.findUnique({ where: { email } });
+  const existing = await unsafePrismaAdmin.appUser.findUnique({ where: { email } });
   if (existing) return { id: existing.id };
-  return prismaAdmin.appUser.create({
+  return unsafePrismaAdmin.appUser.create({
     data: {
       authProvider: 'credentials',
       authSubject: email,
@@ -62,11 +62,11 @@ async function upsertUser(
 }
 
 async function upsertBranch(orgId: string, name: string): Promise<{ id: string }> {
-  const existing = await prismaAdmin.branch.findFirst({
+  const existing = await unsafePrismaAdmin.branch.findFirst({
     where: { organizationId: orgId, name },
   });
   if (existing) return { id: existing.id };
-  return prismaAdmin.branch.create({
+  return unsafePrismaAdmin.branch.create({
     data: { organizationId: orgId, name },
     select: { id: true },
   });
@@ -91,18 +91,18 @@ async function upsertMembership(
   orgId: string,
   legacyRole: UserRole,
 ): Promise<{ id: string }> {
-  const existing = await prismaAdmin.membership.findUnique({
+  const existing = await unsafePrismaAdmin.membership.findUnique({
     where: { organizationId_userId: { organizationId: orgId, userId } },
   });
   if (existing) return { id: existing.id };
-  return prismaAdmin.membership.create({
+  return unsafePrismaAdmin.membership.create({
     data: { organizationId: orgId, userId, role: legacyRole },
     select: { id: true },
   });
 }
 
 async function ensureBranchScope(membershipId: string, branchIds: string[]): Promise<void> {
-  const existing = await prismaAdmin.membershipBranch.findMany({
+  const existing = await unsafePrismaAdmin.membershipBranch.findMany({
     where: { membershipId },
     select: { branchId: true },
   });
@@ -110,13 +110,13 @@ async function ensureBranchScope(membershipId: string, branchIds: string[]): Pro
   const toAdd = branchIds.filter(b => !have.has(b));
   const toRemove = existing.filter(r => !branchIds.includes(r.branchId));
   if (toAdd.length > 0) {
-    await prismaAdmin.membershipBranch.createMany({
+    await unsafePrismaAdmin.membershipBranch.createMany({
       data: toAdd.map(branchId => ({ membershipId, branchId })),
       skipDuplicates: true,
     });
   }
   for (const r of toRemove) {
-    await prismaAdmin.membershipBranch.delete({
+    await unsafePrismaAdmin.membershipBranch.delete({
       where: { membershipId_branchId: { membershipId, branchId: r.branchId } },
     });
   }
@@ -130,7 +130,7 @@ export async function seedRbacFixtures(): Promise<void> {
   const passwordHash = await hash(DEV_PASSWORD);
 
   // Grand Medical is created by the base seed; look it up.
-  const grand = await prismaAdmin.organization.findFirstOrThrow({
+  const grand = await unsafePrismaAdmin.organization.findFirstOrThrow({
     where: { name: 'Grand Medical & Aurora Spa Group' },
     select: { id: true },
   });
@@ -145,22 +145,22 @@ export async function seedRbacFixtures(): Promise<void> {
   // 404 in tests. Phase 6: link the Downtown branch to this legacy
   // location so `scopedLocationIds(ctx)` for the BRANCH_MANAGER
   // resolves to a real location id.
-  let splitLoc = await prismaAdmin.location.findFirst({
+  let splitLoc = await unsafePrismaAdmin.location.findFirst({
     where: { organizationId: split.id },
   });
   if (!splitLoc) {
-    splitLoc = await prismaAdmin.location.create({
+    splitLoc = await unsafePrismaAdmin.location.create({
       data: { organizationId: split.id, type: 'clinic', name: 'Split Downtown Loc' },
     });
   }
   // Phase 2 sync trigger auto-creates a branch that shadow-links to
   // this location. Redirect the pointer to the manager-scoped Downtown
   // branch instead, so scopedLocationIds resolves cleanly.
-  const shadow = await prismaAdmin.branch.findFirst({
+  const shadow = await unsafePrismaAdmin.branch.findFirst({
     where: { organizationId: split.id, legacyLocationId: splitLoc.id, name: { not: 'Downtown' } },
   });
-  if (shadow) await prismaAdmin.branch.delete({ where: { id: shadow.id } });
-  await prismaAdmin.branch.updateMany({
+  if (shadow) await unsafePrismaAdmin.branch.delete({ where: { id: shadow.id } });
+  await unsafePrismaAdmin.branch.updateMany({
     where: { id: downtown.id, legacyLocationId: null },
     data: { legacyLocationId: splitLoc.id },
   });
@@ -170,7 +170,7 @@ export async function seedRbacFixtures(): Promise<void> {
   // Phase 2 backfill fills organizations.owner_user_id from the first
   // ORG_OWNER membership by created_at. The sync trigger doesn't cover
   // this column (only vertical), so fixture-created orgs need it set here.
-  await prismaAdmin.organization.update({
+  await unsafePrismaAdmin.organization.update({
     where: { id: split.id },
     data: { ownerUserId: owner.id },
   });
@@ -180,7 +180,7 @@ export async function seedRbacFixtures(): Promise<void> {
   // schema is satisfied. role_id is the authoritative Phase 3 pointer; we
   // override it explicitly below to BRANCH_MANAGER.
   const mgrMembership = await upsertMembership(splitManager.id, split.id, UserRole.receptionist);
-  await prismaAdmin.$executeRaw`
+  await unsafePrismaAdmin.$executeRaw`
     UPDATE memberships SET role_id = (
       SELECT id FROM roles WHERE key = 'BRANCH_MANAGER' AND organization_id IS NULL
     ) WHERE id = ${mgrMembership.id}::uuid`;
@@ -194,7 +194,7 @@ export async function seedRbacFixtures(): Promise<void> {
   const solo = await upsertOrg('Solo Practice', { vertical: 'clinic' });
   const soloDoc = await upsertUser('solo@bp.test', 'Solo Doc', passwordHash);
   await upsertMembership(soloDoc.id, solo.id, UserRole.owner);
-  await prismaAdmin.organization.update({
+  await unsafePrismaAdmin.organization.update({
     where: { id: solo.id },
     data: { ownerUserId: soloDoc.id },
   });
@@ -217,19 +217,19 @@ async function ensurePlatformUser(
   email: string, roleKey: string, passwordHash: string,
   opts: { mfa?: boolean } = {},
 ) {
-  const role = await prismaAdmin.role.findFirstOrThrow({
+  const role = await unsafePrismaAdmin.role.findFirstOrThrow({
     where: { key: roleKey, organizationId: null },
     select: { id: true },
   });
-  const existing = await prismaAdmin.appUser.findUnique({ where: { email } });
+  const existing = await unsafePrismaAdmin.appUser.findUnique({ where: { email } });
   if (existing) {
-    await prismaAdmin.appUser.update({
+    await unsafePrismaAdmin.appUser.update({
       where: { id: existing.id },
       data: { platformRoleId: role.id, mfaEnabled: opts.mfa ?? false, passwordHash },
     });
     return existing;
   }
-  return prismaAdmin.appUser.create({
+  return unsafePrismaAdmin.appUser.create({
     data: {
       authProvider: 'credentials',
       authSubject: email,
@@ -247,11 +247,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   seedRbacFixtures()
     .then(async () => {
       const [orgs, users, mems, branches, memBranches] = await Promise.all([
-        prismaAdmin.organization.count(),
-        prismaAdmin.appUser.count(),
-        prismaAdmin.membership.count(),
-        prismaAdmin.branch.count(),
-        prismaAdmin.membershipBranch.count(),
+        unsafePrismaAdmin.organization.count(),
+        unsafePrismaAdmin.appUser.count(),
+        unsafePrismaAdmin.membership.count(),
+        unsafePrismaAdmin.branch.count(),
+        unsafePrismaAdmin.membershipBranch.count(),
       ]);
       console.log('✔ RBAC fixtures complete:', { orgs, users, mems, branches, memBranches });
     })
@@ -260,6 +260,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.exit(1);
     })
     .finally(async () => {
-      await prismaAdmin.$disconnect();
+      await unsafePrismaAdmin.$disconnect();
     });
 }

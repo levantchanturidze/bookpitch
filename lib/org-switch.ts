@@ -1,4 +1,4 @@
-import { prismaAdmin, withoutRls } from '@/lib/db';
+import { unsafePrismaAdmin, withoutRls } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
 import { log } from '@/lib/logger';
 
@@ -76,7 +76,7 @@ export async function switchActiveOrg(userId: string, orgId: string): Promise<vo
   // request) is rejected on the next call. The frontend then signs in
   // again with orgId in the credentials payload; authorize() picks that
   // membership and mints a new JWT.
-  await prismaAdmin.appUser.update({
+  await unsafePrismaAdmin.appUser.update({
     where: { id: userId },
     data: { sessionVersion: { increment: 1 } },
   });

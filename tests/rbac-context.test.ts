@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { buildAuthContext, __clearAuthContextCache } from '@/lib/rbac/context';
 import { seedRbacFixtures } from '@/prisma/rbac-fixtures';
 
@@ -22,20 +22,20 @@ describe('buildAuthContext', () => {
   beforeAll(async () => {
     await seedRbacFixtures();
 
-    const moon = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
     moonId = moon.id;
-    const moonMems = await prismaAdmin.membership.findMany({
+    const moonMems = await unsafePrismaAdmin.membership.findMany({
       where: { userId: moon.id },
       include: { organization: { select: { name: true } } },
     });
     grandMoonMemId = moonMems.find(m => m.organization.name.startsWith('Grand'))!.id;
     splitMoonMemId = moonMems.find(m => m.organization.name === 'Split Practice')!.id;
 
-    const mgr = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'splitmgr@bp.test' } });
+    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'splitmgr@bp.test' } });
     splitMgrId = mgr.id;
-    const mgrMem = await prismaAdmin.membership.findFirstOrThrow({ where: { userId: mgr.id } });
+    const mgrMem = await unsafePrismaAdmin.membership.findFirstOrThrow({ where: { userId: mgr.id } });
     splitMgrMemId = mgrMem.id;
-    const branches = await prismaAdmin.branch.findMany({
+    const branches = await unsafePrismaAdmin.branch.findMany({
       where: { organization: { name: 'Split Practice' } },
       orderBy: { name: 'asc' },
     });
@@ -89,7 +89,7 @@ describe('buildAuthContext', () => {
   it('cache invalidates when sessionVersion changes', async () => {
     __clearAuthContextCache();
     const before = await buildAuthContext(moonId, grandMoonMemId);
-    await prismaAdmin.appUser.update({
+    await unsafePrismaAdmin.appUser.update({
       where: { id: moonId },
       data: { sessionVersion: { increment: 1 } },
     });

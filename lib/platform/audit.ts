@@ -2,7 +2,7 @@
 // RBAC Phase 5 — audit log query for the platform-plane viewer.
 //
 // Callers: platform.audit.read grantees (SUPER_ADMIN + 👁️ others).
-// Reads via prismaAdmin because the caller is querying across orgs.
+// Reads via unsafePrismaAdmin because the caller is querying across orgs.
 //
 // SUPPORT_AGENT restriction: platform.audit.read has 👁️ per spec §6.1,
 // which we interpret as "can query but see aggregate / non-PII fields
@@ -12,7 +12,7 @@
 // SUPPORT_AGENT.
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 
 export type PlatformAuditFilter = {
   actorUserId?: string | null;
@@ -38,7 +38,7 @@ export async function queryPlatformAudit(
     };
   }
 
-  const rows = await prismaAdmin.auditLog.findMany({
+  const rows = await unsafePrismaAdmin.auditLog.findMany({
     where,
     orderBy: { at: 'desc' },
     take: filter.limit ?? 200,

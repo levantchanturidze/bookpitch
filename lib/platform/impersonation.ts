@@ -22,7 +22,7 @@
 // ended_at on expired rows for cleanliness; not required for correctness.
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError, ConflictError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
 import { notifyEvent } from '@/lib/notifications';
@@ -49,7 +49,7 @@ export async function startImpersonation(input: StartImpersonationInput) {
 
   // Verify org exists + impersonation is allowed (unless caller is in
   // break-glass — spec §6.1 row "override").
-  const org = await prismaAdmin.organization.findUnique({
+  const org = await unsafePrismaAdmin.organization.findUnique({
     where: { id: input.organizationId },
     select: { id: true, name: true, allowSupportImpersonation: true, ownerUserId: true, ownerUser: { select: { email: true } } },
   });
@@ -61,21 +61,21 @@ export async function startImpersonation(input: StartImpersonationInput) {
   }
 
   // Verify target is actually a member of that org.
-  const target = await prismaAdmin.membership.findFirst({
+  const target = await unsafePrismaAdmin.membership.findFirst({
     where: { userId: input.targetUserId, organizationId: input.organizationId, status: 'active' },
     select: { id: true, user: { select: { email: true, fullName: true } } },
   });
   if (!target) throw new InvalidInputError('target user is not a member of that organization');
 
   // One active session at a time. Prevents nesting confusion.
-  const existing = await prismaAdmin.impersonationSession.findFirst({
+  const existing = await unsafePrismaAdmin.impersonationSession.findFirst({
     where: { actorUserId: input.actor.userId, endedAt: null, expiresAt: { gt: new Date() } },
     select: { id: true },
   });
   if (existing) throw new ConflictError('you already have an active impersonation session');
 
   const expiresAt = new Date(Date.now() + IMPERSONATION_TTL_MS);
-  const session = await prismaAdmin.impersonationSession.create({
+  const session = await unsafePrismaAdmin.impersonationSession.create({
     data: {
       actorUserId: input.actor.userId,
       onBehalfOfUserId: input.targetUserId,
@@ -88,7 +88,7 @@ export async function startImpersonation(input: StartImpersonationInput) {
     },
   });
 
-  await prismaAdmin.auditLog.create({
+  await unsafePrismaAdmin.auditLog.create({
     data: {
       organizationId: input.organizationId,
       actorUserId: input.actor.userId,
@@ -104,7 +104,7 @@ export async function startImpersonation(input: StartImpersonationInput) {
 
   // Bump sessionVersion so the AuthContext cache rebuilds within ~5s and
   // subsequent requests see ctx.impersonation populated.
-  await prismaAdmin.appUser.update({
+  await unsafePrismaAdmin.appUser.update({
     where: { id: input.actor.userId },
     data: { sessionVersion: { increment: 1 } },
   });
@@ -115,7 +115,7 @@ export async function startImpersonation(input: StartImpersonationInput) {
   // the impersonation itself.
   if (org.ownerUserId) {
     try {
-      await notifyEvent(prismaAdmin, input.organizationId, {
+      await notifyEvent(unsafePrismaAdmin, input.organizationId, {
         type: 'system',
         title: 'Bookpitch support is inside your org',
         body: `A support agent (${input.actor.email}) started an impersonation session at ${session.startedAt.toISOString()}. Reason: ${reason} (ticket ${ticketId}). Session ends ${expiresAt.toISOString()}.`,
@@ -155,12 +155,12 @@ export async function endImpersonation(actor: AuthContext, reason: string = 'use
   }
   const sessionId = actor.impersonation.sessionId;
 
-  await prismaAdmin.impersonationSession.update({
+  await unsafePrismaAdmin.impersonationSession.update({
     where: { id: sessionId },
     data: { endedAt: new Date(), endedReason: reason },
   });
 
-  await prismaAdmin.auditLog.create({
+  await unsafePrismaAdmin.auditLog.create({
     data: {
       organizationId: actor.impersonation.organizationId,
       actorUserId: actor.userId,
@@ -172,7 +172,7 @@ export async function endImpersonation(actor: AuthContext, reason: string = 'use
     },
   });
 
-  await prismaAdmin.appUser.update({
+  await unsafePrismaAdmin.appUser.update({
     where: { id: actor.userId },
     data: { sessionVersion: { increment: 1 } },
   });

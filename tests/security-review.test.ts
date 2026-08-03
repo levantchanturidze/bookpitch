@@ -29,7 +29,7 @@ vi.mock('@/auth', () => ({
 }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
-const { prismaAdmin, prismaApp, withOrg, withoutRls } = await import('@/lib/db');
+const { unsafePrismaAdmin, prismaApp, withOrg, withoutRls } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { mockJwt, mockPlatformJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
@@ -84,55 +84,55 @@ let H: Handles;
 
 beforeAll(async () => {
   await seedRbacFixtures();
-  const grand = await prismaAdmin.organization.findFirstOrThrow({
+  const grand = await unsafePrismaAdmin.organization.findFirstOrThrow({
     where: { name: 'Grand Medical & Aurora Spa Group' },
   });
-  const iso = await prismaAdmin.organization.findFirstOrThrow({
+  const iso = await unsafePrismaAdmin.organization.findFirstOrThrow({
     where: { name: 'Isolation Corp' },
   });
-  const split = await prismaAdmin.organization.findFirstOrThrow({
+  const split = await unsafePrismaAdmin.organization.findFirstOrThrow({
     where: { name: 'Split Practice' },
   });
-  const grandOwner = await prismaAdmin.appUser.findUniqueOrThrow({
+  const grandOwner = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email: 'owner@bookpitch.dev' },
   });
-  const grandOwnerMembership = await prismaAdmin.membership.findFirstOrThrow({
+  const grandOwnerMembership = await unsafePrismaAdmin.membership.findFirstOrThrow({
     where: { userId: grandOwner.id, organizationId: grand.id },
   });
-  const grandCust = await prismaAdmin.customer.findFirstOrThrow({
+  const grandCust = await unsafePrismaAdmin.customer.findFirstOrThrow({
     where: { organizationId: grand.id },
   });
-  const isoOwner = await prismaAdmin.appUser.findUniqueOrThrow({
+  const isoOwner = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email: 'isolation@bookpitch.dev' },
   });
-  const isoCust = await prismaAdmin.customer.findFirstOrThrow({
+  const isoCust = await unsafePrismaAdmin.customer.findFirstOrThrow({
     where: { organizationId: iso.id },
   });
-  const splitOwner = await prismaAdmin.appUser.findUniqueOrThrow({
+  const splitOwner = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email: 'split-owner@bp.test' },
   });
-  const splitOwnerMembership = await prismaAdmin.membership.findFirstOrThrow({
+  const splitOwnerMembership = await unsafePrismaAdmin.membership.findFirstOrThrow({
     where: { userId: splitOwner.id, organizationId: split.id },
   });
-  const splitMgr = await prismaAdmin.appUser.findUniqueOrThrow({
+  const splitMgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email: 'splitmgr@bp.test' },
   });
-  const splitMgrMembership = await prismaAdmin.membership.findFirstOrThrow({
+  const splitMgrMembership = await unsafePrismaAdmin.membership.findFirstOrThrow({
     where: { userId: splitMgr.id, organizationId: split.id },
   });
-  const moon = await prismaAdmin.appUser.findUniqueOrThrow({
+  const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email: 'moonlight@bp.test' },
   });
-  const moonSplitMembership = await prismaAdmin.membership.findFirstOrThrow({
+  const moonSplitMembership = await unsafePrismaAdmin.membership.findFirstOrThrow({
     where: { userId: moon.id, organizationId: split.id },
   });
-  const platformAdmin = await prismaAdmin.appUser.findUniqueOrThrow({
+  const platformAdmin = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email: 'platform-admin@bp.test' },
   });
-  const supportUser = await prismaAdmin.appUser.findUniqueOrThrow({
+  const supportUser = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email: 'support@bp.test' },
   });
-  const superUser = await prismaAdmin.appUser.findUniqueOrThrow({
+  const superUser = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email: 'superadmin@bp.test' },
   });
 
@@ -304,13 +304,13 @@ describe('SEC § privilege escalation', () => {
     // the rank check inside updateMemberRole even runs. Either 400
     // (service rank) or 403 (route guard) is safe — the important thing
     // is the mutation didn't land.
-    const orgAdminRole = await prismaAdmin.role.findFirstOrThrow({
+    const orgAdminRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'ORG_ADMIN', organizationId: null },
     });
-    const originalRole = await prismaAdmin.membership.findUniqueOrThrow({
+    const originalRole = await unsafePrismaAdmin.membership.findUniqueOrThrow({
       where: { id: H.splitMgrMembershipId }, select: { roleId: true },
     });
-    await prismaAdmin.membership.update({
+    await unsafePrismaAdmin.membership.update({
       where: { id: H.splitMgrMembershipId }, data: { roleId: orgAdminRole.id },
     });
     __clearAuthContextCache();
@@ -320,13 +320,13 @@ describe('SEC § privilege escalation', () => {
       { params: Promise.resolve({ id: H.moonSplitMembershipId }) },
     );
     expect([400, 403]).toContain(res.status);
-    const roleAfter = await prismaAdmin.membership.findUniqueOrThrow({
+    const roleAfter = await unsafePrismaAdmin.membership.findUniqueOrThrow({
       where: { id: H.moonSplitMembershipId },
       include: { roleRef: { select: { key: true } } },
     });
     expect(roleAfter.roleRef?.key).toBe('PROVIDER'); // unchanged
     // Restore.
-    await prismaAdmin.membership.update({
+    await unsafePrismaAdmin.membership.update({
       where: { id: H.splitMgrMembershipId }, data: { roleId: originalRole.roleId },
     });
   });
@@ -335,7 +335,7 @@ describe('SEC § privilege escalation', () => {
     // Verified via helper directly in tests/admin-guardrails.test.ts.
     // Here we canary with a fresh probe against a helper call.
     const { assertNotLastOwner } = await import('@/lib/admin/last-owner');
-    await prismaAdmin.$transaction(async (t) => {
+    await unsafePrismaAdmin.$transaction(async (t) => {
       await expect(assertNotLastOwner(t, H.splitOrgId, H.splitOwnerMembershipId))
         .rejects.toBeInstanceOf(InvalidInputError);
     });
@@ -385,16 +385,16 @@ describe('SEC § privilege escalation', () => {
 // =============================================================================
 describe('SEC § impersonation + break-glass', () => {
   beforeEach(async () => {
-    await prismaAdmin.impersonationSession.deleteMany({
+    await unsafePrismaAdmin.impersonationSession.deleteMany({
       where: { actorUserId: { in: [H.platformAdminId, H.superUserId] } },
     });
-    await prismaAdmin.breakGlassSession.deleteMany({
+    await unsafePrismaAdmin.breakGlassSession.deleteMany({
       where: { actorUserId: { in: [H.platformAdminId, H.superUserId] } },
     });
   });
 
   it('P3.1: impersonation session past expires_at drops out of ctx (buildAuthContext filter)', async () => {
-    await prismaAdmin.impersonationSession.create({
+    await unsafePrismaAdmin.impersonationSession.create({
       data: {
         actorUserId: H.platformAdminId,
         onBehalfOfUserId: H.splitOwnerId,
@@ -411,7 +411,7 @@ describe('SEC § impersonation + break-glass', () => {
   });
 
   it('P3.2: break-glass session past expires_at drops out of ctx', async () => {
-    await prismaAdmin.breakGlassSession.create({
+    await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: H.superUserId,
         reason: 'expired-probe', ticketId: 'SEC-P3.2',
@@ -426,7 +426,7 @@ describe('SEC § impersonation + break-glass', () => {
   });
 
   it('P3.3: ended-but-not-expired impersonation session is filtered too', async () => {
-    await prismaAdmin.impersonationSession.create({
+    await unsafePrismaAdmin.impersonationSession.create({
       data: {
         actorUserId: H.platformAdminId,
         onBehalfOfUserId: H.splitOwnerId,
@@ -454,7 +454,7 @@ describe('SEC § impersonation + break-glass', () => {
   });
 
   it('P3.5: SUPER_ADMIN in break-glass targeting an org CAN read clinical there', async () => {
-    await prismaAdmin.breakGlassSession.create({
+    await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: H.superUserId,
         targetOrganizationId: H.grandOrgId,
@@ -474,13 +474,13 @@ describe('SEC § impersonation + break-glass', () => {
     // Give platform-admin a temporary ORG_OWNER hat + active impersonation
     // so we can check that RESTRICTED_DURING_IMPERSONATION denies even
     // though the underlying role has the perm.
-    const orgOwnerRole = await prismaAdmin.role.findFirstOrThrow({
+    const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'ORG_OWNER', organizationId: null },
     });
-    const memb = await prismaAdmin.membership.create({
+    const memb = await unsafePrismaAdmin.membership.create({
       data: { userId: H.platformAdminId, organizationId: H.splitOrgId, role: 'owner', roleId: orgOwnerRole.id },
     });
-    await prismaAdmin.impersonationSession.create({
+    await unsafePrismaAdmin.impersonationSession.create({
       data: {
         actorUserId: H.platformAdminId,
         onBehalfOfUserId: H.splitOwnerId,
@@ -496,11 +496,11 @@ describe('SEC § impersonation + break-glass', () => {
     expect(can(ctx!, 'client.export', { organizationId: H.splitOrgId })).toBe(false);
     expect(can(ctx!, 'clinical_note.create', { organizationId: H.splitOrgId })).toBe(false);
     // Cleanup — remove the temp membership.
-    await prismaAdmin.membership.delete({ where: { id: memb.id } });
+    await unsafePrismaAdmin.membership.delete({ where: { id: memb.id } });
   });
 
   it('P3.7: every break-glass read writes an audit row via withPlatformApi', async () => {
-    const bg = await prismaAdmin.breakGlassSession.create({
+    const bg = await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: H.superUserId,
         reason: 'bg-audit-probe', ticketId: 'SEC-P3.7',
@@ -509,13 +509,13 @@ describe('SEC § impersonation + break-glass', () => {
     });
     __clearAuthContextCache();
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-    const before = await prismaAdmin.auditLog.count({
+    const before = await unsafePrismaAdmin.auditLog.count({
       where: { breakGlassSessionId: bg.id, action: { startsWith: 'break_glass.read.' } },
     });
     const res = await routePlatformOrgs.GET();
     expect(res.status).toBe(200);
     await new Promise((r) => setTimeout(r, 100)); // fire-and-forget audit
-    const after = await prismaAdmin.auditLog.count({
+    const after = await unsafePrismaAdmin.auditLog.count({
       where: { breakGlassSessionId: bg.id, action: { startsWith: 'break_glass.read.' } },
     });
     expect(after).toBeGreaterThan(before);
@@ -532,7 +532,7 @@ describe('SEC § impersonation + break-glass', () => {
       // Reproduction: mock the audit insert to throw → hit /platform/orgs
       // as SUPER in break-glass mode → the call must either throw or
       // return a 5xx (never a 200).
-      const bg = await prismaAdmin.breakGlassSession.create({
+      const bg = await unsafePrismaAdmin.breakGlassSession.create({
         data: {
           actorUserId: H.superUserId,
           reason: 'audit-suppress', ticketId: 'SEC-P3.8',
@@ -540,7 +540,7 @@ describe('SEC § impersonation + break-glass', () => {
         },
       });
       __clearAuthContextCache();
-      const spy = vi.spyOn(prismaAdmin.auditLog, 'create')
+      const spy = vi.spyOn(unsafePrismaAdmin.auditLog, 'create')
         .mockRejectedValueOnce(new Error('simulated audit failure'));
       authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
       let status = 0;
@@ -606,9 +606,9 @@ describe('SEC § audit-log append-only invariant', () => {
     ).rejects.toThrow(/append-only|permission denied/i);
   });
 
-  it('P4.2: UPDATE via prismaAdmin (superuser) also fails (trigger fires for everyone)', async () => {
+  it('P4.2: UPDATE via unsafePrismaAdmin (superuser) also fails (trigger fires for everyone)', async () => {
     await expect(
-      prismaAdmin.auditLog.update({
+      unsafePrismaAdmin.auditLog.update({
         where: { at_id: { at: auditRowAt, id: auditRowId } },
         data: { action: 'tampered_by_super' },
       }),
@@ -623,20 +623,20 @@ describe('SEC § audit-log append-only invariant', () => {
     ).rejects.toThrow(/append-only|permission denied/i);
   });
 
-  it('P4.4: DELETE via prismaAdmin (superuser) also fails', async () => {
+  it('P4.4: DELETE via unsafePrismaAdmin (superuser) also fails', async () => {
     await expect(
-      prismaAdmin.auditLog.deleteMany({ where: { id: auditRowId } }),
+      unsafePrismaAdmin.auditLog.deleteMany({ where: { id: auditRowId } }),
     ).rejects.toThrow(/append-only|permission denied/i);
   });
 
   it('P4.5: TRUNCATE audit_log fails via BEFORE TRUNCATE trigger', async () => {
     await expect(
-      prismaAdmin.$executeRawUnsafe('TRUNCATE TABLE "audit_log"'),
+      unsafePrismaAdmin.$executeRawUnsafe('TRUNCATE TABLE "audit_log"'),
     ).rejects.toThrow(/append-only|permission denied/i);
   });
 
   it('P4.6: information_schema — bookpitch_app has NO UPDATE or DELETE grants on audit_log', async () => {
-    const rows = await prismaAdmin.$queryRawUnsafe<Array<{ privilege_type: string; table_name: string }>>(
+    const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ privilege_type: string; table_name: string }>>(
       `SELECT privilege_type, table_name
          FROM information_schema.role_table_grants
         WHERE grantee='bookpitch_app'
@@ -648,7 +648,7 @@ describe('SEC § audit-log append-only invariant', () => {
 
   it('P4.7: monthly partitions also have UPDATE/DELETE revoked (defense in depth)', async () => {
     // Enumerate all partitions and check each has NO write grants for bookpitch_app.
-    const partitions = await prismaAdmin.$queryRawUnsafe<Array<{ relname: string }>>(
+    const partitions = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ relname: string }>>(
       `SELECT c.relname
          FROM pg_inherits i
          JOIN pg_class c ON c.oid = i.inhrelid
@@ -659,7 +659,7 @@ describe('SEC § audit-log append-only invariant', () => {
     // At least one partition should exist for the current month.
     expect(partitions.length).toBeGreaterThan(0);
     for (const p of partitions) {
-      const grants = await prismaAdmin.$queryRawUnsafe<Array<{ privilege_type: string }>>(
+      const grants = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ privilege_type: string }>>(
         `SELECT privilege_type FROM information_schema.role_table_grants
           WHERE grantee='bookpitch_app' AND table_name='${p.relname}'
             AND privilege_type IN ('UPDATE','DELETE')`,
@@ -705,14 +705,14 @@ describe('SEC § auth + session integrity', () => {
   it('P5.3: session-version bump on role change forces re-auth within SV_TTL_MS', async () => {
     // Covered by admin-guardrails.test.ts "updateMemberRole bumps target's
     // sessionVersion". Canary here.
-    const before = (await prismaAdmin.appUser.findUniqueOrThrow({
+    const before = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: H.moonId }, select: { sessionVersion: true },
     })).sessionVersion;
     // Simulate role-change bump. (Direct manipulation OK for this canary.)
-    await prismaAdmin.appUser.update({
+    await unsafePrismaAdmin.appUser.update({
       where: { id: H.moonId }, data: { sessionVersion: { increment: 1 } },
     });
-    const after = (await prismaAdmin.appUser.findUniqueOrThrow({
+    const after = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: H.moonId }, select: { sessionVersion: true },
     })).sessionVersion;
     expect(after).toBe(before + 1);
@@ -781,7 +781,7 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
       { params: Promise.resolve({ id: H.grandOrgId }) },
     );
     expect(res.status).toBe(403);
-    const orgAfter = await prismaAdmin.organization.findUniqueOrThrow({
+    const orgAfter = await unsafePrismaAdmin.organization.findUniqueOrThrow({
       where: { id: H.grandOrgId }, select: { name: true },
     });
     expect(orgAfter.name).not.toBe('Hijacked');
@@ -879,7 +879,7 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     );
     expect(res.status).toBe(403);
     // Verify the target's role did not change.
-    const target = await prismaAdmin.appUser.findUniqueOrThrow({
+    const target = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'billing@bp.test' },
       select: { platformRole: { select: { key: true } } },
     });
@@ -892,10 +892,10 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     // Snapshot the current name so we can reset — the fixture-locator in
     // rbac-fixtures.ts::seedRbacFixtures does findFirstOrThrow by literal
     // name, and if we leave it renamed the next test-run's beforeAll dies.
-    const orig = await prismaAdmin.organization.findUniqueOrThrow({
+    const orig = await unsafePrismaAdmin.organization.findUniqueOrThrow({
       where: { id: H.grandOrgId }, select: { name: true },
     });
-    const before = await prismaAdmin.auditLog.count({
+    const before = await unsafePrismaAdmin.auditLog.count({
       where: { organizationId: H.grandOrgId, action: 'org.edit' },
     });
     try {
@@ -907,13 +907,13 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
         { params: Promise.resolve({ id: H.grandOrgId }) },
       );
       expect(res.status).toBe(200);
-      const after = await prismaAdmin.auditLog.count({
+      const after = await unsafePrismaAdmin.auditLog.count({
         where: { organizationId: H.grandOrgId, action: 'org.edit' },
       });
       expect(after).toBeGreaterThan(before);
     } finally {
       // Always restore, even if the probe fails.
-      await prismaAdmin.organization.update({
+      await unsafePrismaAdmin.organization.update({
         where: { id: H.grandOrgId }, data: { name: orig.name },
       });
     }
@@ -925,7 +925,7 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     async () => {
       authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
       await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
-      const before = await prismaAdmin.auditLog.count({
+      const before = await unsafePrismaAdmin.auditLog.count({
         where: {
           organizationId: H.grandOrgId,
           action: { in: ['org.toggles.update', 'org.config.update', 'platform.config.manage'] },
@@ -938,7 +938,7 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
         { params: Promise.resolve({ id: H.grandOrgId }) },
       );
       expect(res.status).toBe(200);
-      const after = await prismaAdmin.auditLog.count({
+      const after = await unsafePrismaAdmin.auditLog.count({
         where: {
           organizationId: H.grandOrgId,
           action: { in: ['org.toggles.update', 'org.config.update', 'platform.config.manage'] },

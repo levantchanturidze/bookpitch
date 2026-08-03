@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { prismaAdmin, prismaApp, withOrg, withoutRls } from '@/lib/db';
+import { unsafePrismaAdmin, prismaApp, withOrg, withoutRls } from '@/lib/db';
 
 // -----------------------------------------------------------------------------
 // Phase 1 schema invariants:
@@ -54,7 +54,7 @@ describe('audit_log is append-only (RBAC invariant §9.11)', () => {
 
   it('rejects UPDATE via the admin role (superuser) too — trigger fires for everyone', async () => {
     await expect(
-      prismaAdmin.auditLog.update({
+      unsafePrismaAdmin.auditLog.update({
         where: { at_id: { at: insertedAt, id: insertedId } },
         data: { action: 'tampered_by_admin' },
       }),
@@ -63,7 +63,7 @@ describe('audit_log is append-only (RBAC invariant §9.11)', () => {
 
   it('rejects DELETE via the admin role (superuser) too', async () => {
     await expect(
-      prismaAdmin.auditLog.deleteMany({ where: { id: insertedId } }),
+      unsafePrismaAdmin.auditLog.deleteMany({ where: { id: insertedId } }),
     ).rejects.toThrow(/append-only|permission denied/i);
   });
 
@@ -81,7 +81,7 @@ describe('audit_log is append-only (RBAC invariant §9.11)', () => {
   });
 
   it('bookpitch_app grants no UPDATE or DELETE on audit_log', async () => {
-    const rows = await prismaAdmin.$queryRawUnsafe<Array<{ privilege_type: string; table_name: string }>>(
+    const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ privilege_type: string; table_name: string }>>(
       `SELECT privilege_type, table_name
          FROM information_schema.role_table_grants
         WHERE grantee='bookpitch_app'

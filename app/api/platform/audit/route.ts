@@ -21,8 +21,8 @@ export async function GET(req: NextRequest) {
     // platform perm set is a strict subset of SUPER/PLATFORM_ADMIN.
     // Simpler: fetch the role key from prisma using ctx.userId. Cached
     // via the 30s AuthContext cache — cheap enough to inline.
-    const { prismaAdmin } = await import('@/lib/db');
-    const user = await prismaAdmin.appUser.findUniqueOrThrow({
+    const { unsafePrismaAdmin } = await import('@/lib/db');
+    const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: ctx.userId },
       select: { platformRole: { select: { key: true } } },
     });

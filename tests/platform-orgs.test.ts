@@ -13,7 +13,7 @@ const { mockPlatformJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 const { __clearPasswordReauthCache, verifyPasswordFresh } =
   await import('@/lib/platform/password-reauth');
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 
 const listRoute      = await import('@/app/api/platform/orgs/route');
 const detailRoute    = await import('@/app/api/platform/orgs/[id]/route');
@@ -35,11 +35,11 @@ describe('/api/platform/orgs — list, detail, suspend, reactivate, soft-delete'
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    const org = await prismaAdmin.organization.findFirstOrThrow({
+    const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     });
     orgId = org.id;
-    const su = await prismaAdmin.appUser.findUniqueOrThrow({
+    const su = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'superadmin@bp.test' }, select: { id: true },
     });
     superUserId = su.id;
@@ -50,7 +50,7 @@ describe('/api/platform/orgs — list, detail, suspend, reactivate, soft-delete'
     __clearAuthContextCache();
     __clearPasswordReauthCache();
     // Reset the target org's status to active between tests.
-    await prismaAdmin.organization.update({ where: { id: orgId }, data: { status: 'active' } });
+    await unsafePrismaAdmin.organization.update({ where: { id: orgId }, data: { status: 'active' } });
   });
 
   it('PLATFORM_ADMIN can list orgs', async () => {
@@ -65,7 +65,7 @@ describe('/api/platform/orgs — list, detail, suspend, reactivate, soft-delete'
   it('org-plane user (owner) has no platform.analytics.read → 403 on list', async () => {
     const { mockJwt } = await import('./helpers/session');
     authMock.mockResolvedValue(await mockJwt(
-      (await prismaAdmin.appUser.findUniqueOrThrow({
+      (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
         where: { email: 'split-owner@bp.test' }, select: { id: true },
       })).id,
       orgId,
@@ -94,7 +94,7 @@ describe('/api/platform/orgs — list, detail, suspend, reactivate, soft-delete'
   it('suspend + reactivate cycle works when password is fresh', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
     await verifyPasswordFresh(
-      (await prismaAdmin.appUser.findUniqueOrThrow({
+      (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
         where: { email: 'platform-admin@bp.test' }, select: { id: true },
       })).id,
       'devpass123',
@@ -104,21 +104,21 @@ describe('/api/platform/orgs — list, detail, suspend, reactivate, soft-delete'
       { params: Promise.resolve({ id: orgId }) },
     );
     expect(suspendRes.status).toBe(200);
-    const after = await prismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
+    const after = await unsafePrismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
     expect(after.status).toBe('suspended');
 
     const reactivateRes = await reactivRoute.POST(req('http://x'), {
       params: Promise.resolve({ id: orgId }),
     });
     expect(reactivateRes.status).toBe(200);
-    const after2 = await prismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
+    const after2 = await unsafePrismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
     expect(after2.status).toBe('active');
   });
 
   it('soft-delete requires SUPER_ADMIN — PLATFORM_ADMIN gets 403', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
     await verifyPasswordFresh(
-      (await prismaAdmin.appUser.findUniqueOrThrow({
+      (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
         where: { email: 'platform-admin@bp.test' }, select: { id: true },
       })).id,
       'devpass123',
@@ -138,9 +138,9 @@ describe('/api/platform/orgs — list, detail, suspend, reactivate, soft-delete'
       { params: Promise.resolve({ id: orgId }) },
     );
     expect(res.status).toBe(200);
-    const after = await prismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
+    const after = await unsafePrismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
     expect(after.status).toBe('archived');
     // Restore for other suites.
-    await prismaAdmin.organization.update({ where: { id: orgId }, data: { status: 'active' } });
+    await unsafePrismaAdmin.organization.update({ where: { id: orgId }, data: { status: 'active' } });
   });
 });

@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { requireAuthContext } from '@/lib/rbac';
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import BreakGlassForm from '@/components/platform/BreakGlassForm';
 
 export const metadata = { title: 'Break-glass · Platform' };
@@ -14,7 +14,7 @@ export const dynamic = 'force-dynamic';
  */
 export default async function BreakGlassPage() {
   const ctx = await requireAuthContext();
-  const user = await prismaAdmin.appUser.findUniqueOrThrow({
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: ctx.userId },
     select: { platformRole: { select: { key: true } } },
   });

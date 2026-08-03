@@ -9,7 +9,7 @@ import { hash } from '@node-rs/argon2';
 import 'dotenv/config';
 import { config as loadEnv } from 'dotenv';
 
-import { prismaAdmin, withoutRls } from '@/lib/db';
+import { unsafePrismaAdmin, withoutRls } from '@/lib/db';
 import { encryptField } from '@/lib/crypto';
 import { seedRbac } from './rbac-seed';
 import { seedRbacFixtures } from './rbac-fixtures';
@@ -65,7 +65,7 @@ async function main() {
   // documented escape hatch: DISABLE the append-only triggers on the
   // superuser connection, wipe audit_log along with everything else,
   // then re-enable. Production never runs `prisma db seed`.
-  await prismaAdmin.$executeRawUnsafe('ALTER TABLE "audit_log" DISABLE TRIGGER USER');
+  await unsafePrismaAdmin.$executeRawUnsafe('ALTER TABLE "audit_log" DISABLE TRIGGER USER');
   try {
     await withoutRls(async (tx) => {
       // audit_log first so downstream FKs (app_users, organizations) can go.
@@ -85,7 +85,7 @@ async function main() {
       await tx.organization.deleteMany();
     });
   } finally {
-    await prismaAdmin.$executeRawUnsafe('ALTER TABLE "audit_log" ENABLE TRIGGER USER');
+    await unsafePrismaAdmin.$executeRawUnsafe('ALTER TABLE "audit_log" ENABLE TRIGGER USER');
   }
 
   const passwordHash = await hash(DEV_PASSWORD);
@@ -358,5 +358,5 @@ main()
     process.exit(1);
   })
   .finally(async () => {
-    await prismaAdmin.$disconnect();
+    await unsafePrismaAdmin.$disconnect();
   });

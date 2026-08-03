@@ -15,12 +15,12 @@ const { ForbiddenError, UnauthenticatedError } = await import('@/lib/auth');
 const { requireAuthContext } = await import('@/lib/rbac');
 const { GET: whoamiOwner } = await import('@/app/api/dev/whoami-owner/route');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
-const { prismaAdmin } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 
 async function jwtFor(email: string) {
-  const user = await prismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
-  const membership = await prismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } });
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
+  const membership = await unsafePrismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } });
   return {
     user: {
       id: user.id,

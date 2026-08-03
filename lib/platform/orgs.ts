@@ -4,13 +4,13 @@
 // Callers: PLATFORM_ADMIN + SUPER_ADMIN. Every function trusts its input
 // (guards enforce at the route boundary via requirePermission).
 //
-// All queries use prismaAdmin because the caller is by definition NOT a
+// All queries use unsafePrismaAdmin because the caller is by definition NOT a
 // member of the target org — RLS would filter them out. Every function
 // writes an audit row (per-org organizationId, actor from ctx) so the
 // action is traceable.
 // -----------------------------------------------------------------------------
 
-import { prismaAdmin } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError, ConflictError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
 import { createInvitation } from '@/lib/invitations';
@@ -32,7 +32,7 @@ export type PlatformOrgSummary = {
 };
 
 export async function listOrganizations(): Promise<PlatformOrgSummary[]> {
-  const rows = await prismaAdmin.organization.findMany({
+  const rows = await unsafePrismaAdmin.organization.findMany({
     orderBy: { createdAt: 'desc' },
     include: {
       ownerUser: { select: { email: true } },
@@ -54,7 +54,7 @@ export async function listOrganizations(): Promise<PlatformOrgSummary[]> {
 }
 
 export async function getOrganization(id: string) {
-  const org = await prismaAdmin.organization.findUnique({
+  const org = await unsafePrismaAdmin.organization.findUnique({
     where: { id },
     include: {
       ownerUser: { select: { id: true, email: true, fullName: true } },
@@ -83,7 +83,7 @@ async function writePlatformAudit(
   action: string,
   meta: Record<string, string | number | boolean | null> = {},
 ) {
-  await prismaAdmin.auditLog.create({
+  await unsafePrismaAdmin.auditLog.create({
     data: {
       organizationId,
       actorUserId: actor.userId,
@@ -140,7 +140,7 @@ export async function createOrganization(
 
   // 1) Create the org + first location in a transaction. Phase 2 trigger
   //    creates the corresponding Branch row via the location insert.
-  const { orgId, locationId } = await prismaAdmin.$transaction(async (tx) => {
+  const { orgId, locationId } = await unsafePrismaAdmin.$transaction(async (tx) => {
     const org = await tx.organization.create({
       data: { name, vertical, status: 'active' },
       select: { id: true },
@@ -168,17 +168,17 @@ export async function createOrganization(
   let invitationUrl: string | null = null;
   let promotedExisting = false;
   if (ownerEmail) {
-    const existingUser = await prismaAdmin.appUser.findUnique({
+    const existingUser = await unsafePrismaAdmin.appUser.findUnique({
       where: { email: ownerEmail }, select: { id: true },
     });
     if (existingUser) {
       // Grant membership + owner pointer atomically. changeOrganizationOwner
       // assumes an existing membership, so do this write directly.
-      const ownerRole = await prismaAdmin.role.findFirstOrThrow({
+      const ownerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
         where: { key: 'ORG_OWNER', organizationId: null }, select: { id: true },
       });
-      await prismaAdmin.$transaction([
-        prismaAdmin.membership.create({
+      await unsafePrismaAdmin.$transaction([
+        unsafePrismaAdmin.membership.create({
           data: {
             organizationId: orgId,
             userId: existingUser.id,
@@ -187,7 +187,7 @@ export async function createOrganization(
             status: 'active',
           },
         }),
-        prismaAdmin.organization.update({
+        unsafePrismaAdmin.organization.update({
           where: { id: orgId }, data: { ownerUserId: existingUser.id },
         }),
       ]);
@@ -259,7 +259,7 @@ export async function editOrganization(
     throw new InvalidInputError('no editable fields provided');
   }
 
-  const org = await prismaAdmin.organization.update({
+  const org = await unsafePrismaAdmin.organization.update({
     where: { id: orgId },
     data,
     select: { id: true, name: true, vertical: true, allowSupportImpersonation: true },
@@ -277,7 +277,7 @@ export async function suspendOrganization(actor: AuthContext, orgId: string, rea
   if (!reason || reason.trim().length < 5) {
     throw new InvalidInputError('reason must be at least 5 characters');
   }
-  const org = await prismaAdmin.organization.update({
+  const org = await unsafePrismaAdmin.organization.update({
     where: { id: orgId },
     data: { status: 'suspended' },
     select: { id: true, name: true, status: true },
@@ -288,7 +288,7 @@ export async function suspendOrganization(actor: AuthContext, orgId: string, rea
 }
 
 export async function reactivateOrganization(actor: AuthContext, orgId: string) {
-  const org = await prismaAdmin.organization.update({
+  const org = await unsafePrismaAdmin.organization.update({
     where: { id: orgId },
     data: { status: 'active' },
     select: { id: true, name: true, status: true },
@@ -307,7 +307,7 @@ export async function softDeleteOrganization(actor: AuthContext, orgId: string, 
   if (!reason || reason.trim().length < 5) {
     throw new InvalidInputError('reason must be at least 5 characters');
   }
-  const existing = await prismaAdmin.organization.findUnique({
+  const existing = await unsafePrismaAdmin.organization.findUnique({
     where: { id: orgId },
     select: { status: true },
   });
@@ -315,7 +315,7 @@ export async function softDeleteOrganization(actor: AuthContext, orgId: string, 
   if (existing.status === 'archived') {
     throw new ConflictError('organization already archived');
   }
-  const org = await prismaAdmin.organization.update({
+  const org = await unsafePrismaAdmin.organization.update({
     where: { id: orgId },
     data: { status: 'archived' },
     select: { id: true, name: true, status: true },
@@ -340,7 +340,7 @@ export async function sendPasswordResetLink(
 ) {
   // Verify the user is actually a member of the target org — prevents
   // "type any email, get a reset link" abuse from platform side.
-  const user = await prismaAdmin.appUser.findUnique({
+  const user = await unsafePrismaAdmin.appUser.findUnique({
     where: { email },
     select: { id: true, memberships: { where: { organizationId: orgId }, select: { id: true } } },
   });
@@ -375,7 +375,7 @@ export async function changeOrganizationOwner(
     throw new InvalidInputError('email is invalid');
   }
 
-  const existingUser = await prismaAdmin.appUser.findUnique({
+  const existingUser = await unsafePrismaAdmin.appUser.findUnique({
     where: { email },
     select: {
       id: true,
@@ -386,8 +386,8 @@ export async function changeOrganizationOwner(
   if (existingUser && existingUser.memberships.length > 0) {
     // Already a member — promote by writing an owner membership row (if not
     // already one) and updating the org pointer. Requires cross-org write,
-    // so uses prismaAdmin directly.
-    await prismaAdmin.$transaction(async (tx) => {
+    // so uses unsafePrismaAdmin directly.
+    await unsafePrismaAdmin.$transaction(async (tx) => {
       await tx.organization.update({
         where: { id: orgId },
         data: { ownerUserId: existingUser.id },

@@ -9,7 +9,7 @@ vi.mock('@/auth', () => ({
   __clearSessionVersionCache: vi.fn(),
 }));
 
-const { prismaAdmin, withOrg } = await import('@/lib/db');
+const { unsafePrismaAdmin, withOrg } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { mockJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
@@ -31,18 +31,18 @@ describe('org switcher — no residue after switch', () => {
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    const moon = await prismaAdmin.appUser.findUniqueOrThrow({
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'moonlight@bp.test' },
     });
     moonId = moon.id;
-    grandOrgId = (await prismaAdmin.organization.findFirstOrThrow({
+    grandOrgId = (await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Grand Medical & Aurora Spa Group' }, select: { id: true },
     })).id;
-    splitOrgId = (await prismaAdmin.organization.findFirstOrThrow({
+    splitOrgId = (await unsafePrismaAdmin.organization.findFirstOrThrow({
       where: { name: 'Split Practice' }, select: { id: true },
     })).id;
     // Pick a Grand Medical customer to try to reach post-switch.
-    const c = await prismaAdmin.customer.findFirst({ where: { organizationId: grandOrgId } });
+    const c = await unsafePrismaAdmin.customer.findFirst({ where: { organizationId: grandOrgId } });
     if (!c) throw new Error('seed must include a Grand Medical customer');
     grandCustomerId = c.id;
   });
