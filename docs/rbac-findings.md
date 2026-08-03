@@ -236,9 +236,15 @@ would have caught the authorize() bug.
   has a full filter form (actor UUID, org UUID, action prefix, from
   date, to date) that PATCHes the URL search params and re-renders.
   Not actually missing — my earlier F-08 note was stale on this item.
-- **Organization status dashboard.** Aggregate view (member count, last
-  activity, trial expiry) — some columns are already populated on the
-  `_count` side; UI could aggregate them without new endpoints.
+- ~~**Organization status dashboard.**~~ **Fixed 2026-08-03** (commit e246d4b).
+  Six-card summary strip at the top of `/platform/orgs` computed in-memory
+  from the already-loaded org rows (no new queries): total orgs, status
+  breakdown (active/trial/suspended/archived), total members across the
+  fleet, missing-owner count (amber tint if any), recent signups (7d),
+  and impersonation-enabled count. In `components/platform/OrgList.tsx`
+  as `StatusSummary` + `SummaryCard`. Trial-expiry aggregate deferred
+  until we surface `currentPeriodEnd` on `PlatformOrgSummary` (belongs
+  in the subscription/billing work below).
 
 ## F-09 · `:own` scope on list-mode calls returns false · P1 · Enforcement design gap
 
