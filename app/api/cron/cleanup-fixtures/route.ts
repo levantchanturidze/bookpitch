@@ -48,27 +48,51 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 3. Delete users (cascades memberships). Then soft-delete the orgs
-  //    (status='archived') per spec §9 rule 6. We can't hard-delete orgs
-  //    because audit_log.organization_id has no CASCADE — audit log is
-  //    append-only and rows referencing the org cannot be dropped or
-  //    NULLed. Soft-delete preserves the audit trail while making the
-  //    org inaccessible to sign-in (can() denies for archived orgs).
-  const deletedUsers: string[] = [];
+  // 3. Spec §9.11 pattern for "delete user with audit history": mask PII
+  //    + status='deleted' rather than hard DELETE. audit_log FKs are
+  //    NO ACTION (Phase 1 hardening — audit trail survives actor purge),
+  //    so DELETE fails when any audit row references the user. Masking
+  //    keeps FK integrity while rendering the account unusable:
+  //      - status='deleted'   → can() and authorize() both reject
+  //      - password_hash=NULL → credential check fails
+  //      - email rewrite      → sign-in by email fails
+  //      - platform_role_id=NULL, mfa_enabled=false, sessionVersion++
+  //    Orgs get status='archived' — same reasoning, same audit-preservation
+  //    concern. Delete memberships (they have no audit FK).
+  const maskedUsers: string[] = [];
   const archivedOrgs: string[] = [];
+  const removedMemberships: number = 0;
   await prismaAdmin.$transaction(async (tx) => {
-    // First: null out organization.owner_user_id where it points at any
-    // of our users. Prevents FK violation on the user delete.
+    // Null out ownership pointers on any org the user owns.
     for (const userId of userIds) {
       await tx.organization.updateMany({
         where: { ownerUserId: userId },
         data: { ownerUserId: null },
       });
     }
+    // Delete memberships. Membership rows have no audit_log FK; safe.
     for (const userId of userIds) {
-      await tx.appUser.delete({ where: { id: userId } });
-      deletedUsers.push(userId);
+      await tx.membership.deleteMany({ where: { userId } });
     }
+    // Mask user rows (spec §9.11).
+    for (const userId of userIds) {
+      const stub = `deleted-${userId}@bookpitch-deleted.invalid`;
+      await tx.appUser.update({
+        where: { id: userId },
+        data: {
+          email: stub,
+          authSubject: stub,
+          fullName: 'redacted',
+          passwordHash: null,
+          status: 'deleted',
+          platformRoleId: null,
+          mfaEnabled: false,
+          sessionVersion: { increment: 1 },
+        },
+      });
+      maskedUsers.push(userId);
+    }
+    // Soft-delete orgs.
     for (const orgId of orgIds) {
       await tx.organization.update({
         where: { id: orgId },
@@ -79,13 +103,13 @@ export async function POST(req: NextRequest) {
   });
 
   log.warn('cleanup-fixtures.executed', {
-    deletedUsers: deletedUsers.length,
+    maskedUsers: maskedUsers.length,
     archivedOrgs: archivedOrgs.length,
     emails: TARGET_EMAILS,
   });
 
   return NextResponse.json({
     ok: true,
-    deletedUsers, archivedOrgs, emails: TARGET_EMAILS,
+    maskedUsers, archivedOrgs, emails: TARGET_EMAILS,
   });
 }
