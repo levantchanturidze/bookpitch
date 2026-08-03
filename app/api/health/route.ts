@@ -23,6 +23,7 @@ export const dynamic = 'force-dynamic';
 // Error field is just the Postgres error code ('28P01' = auth failed,
 // 'XX000' = pool exhausted, etc.). Anyone reading /api/health cannot
 // derive credentials from what's there.
+type AppLabel = 'DATABASE_URL_APP_NOBYPASSRLS' | 'DATABASE_URL';
 type AdminLabel =
   | 'DATABASE_URL_SUPERUSER_TXPOOL'
   | 'DATABASE_URL_SUPERUSER_SESSION'
@@ -36,7 +37,7 @@ type CheckResult = {
 
 async function probe(
   client: typeof prismaApp,
-  label: 'DATABASE_URL_APP_NOBYPASSRLS' | AdminLabel,
+  label: AppLabel | AdminLabel,
 ): Promise<CheckResult> {
   const t0 = Date.now();
   try {
@@ -59,8 +60,11 @@ async function probe(
 export async function GET() {
   // Report by the env var that was actually used to build the client so the
   // F-12 diagnosis flow points at the right rotation target. Precedence
-  // matches lib/db.ts (new names first, legacy names as fallback).
-  const appLabel = 'DATABASE_URL_APP_NOBYPASSRLS' as const;
+  // matches lib/db.ts (new names first, legacy names as fallback). Both
+  // sides now name the actually-used variable — no hardcoded label.
+  const appLabel: AppLabel =
+    process.env.DATABASE_URL_APP_NOBYPASSRLS ? 'DATABASE_URL_APP_NOBYPASSRLS'
+                                             : 'DATABASE_URL';
   const adminLabel: AdminLabel =
     process.env.DATABASE_URL_SUPERUSER_TXPOOL   ? 'DATABASE_URL_SUPERUSER_TXPOOL'   :
     process.env.DATABASE_URL_SUPERUSER_SESSION  ? 'DATABASE_URL_SUPERUSER_SESSION'  :
