@@ -22,14 +22,20 @@ export default async function Root() {
   if (!session.user.activeOrganizationId) redirect('/signin');
 
   // Route by org-plane role. Roles that hold `booking.read` at some
-  // scope get /scheduler; accountants and role-limited holders land on
-  // pages they can actually use.
+  // scope get /scheduler; role-limited holders land on pages they can
+  // actually reach. Anything else falls through to /scheduler and, if
+  // the caller lacks the perm, hits app/(app)/error.tsx's friendly
+  // Access Locked panel — not a 500.
   switch (session.user.roleKey) {
     case 'ACCOUNTANT':
-      redirect('/settings/billing');
+      // ACCOUNTANT holds report.branch + org.billing.read but NOT
+      // org.settings.update:org, which the /settings/* layout requires.
+      // Send them to /analytics instead — that's a top-level page whose
+      // permission (report.branch) they hold.
+      redirect('/analytics');
     case 'MARKETING':
-      // MARKETING has client.read:contact but no booking.read; /patients
-      // is their most useful surface.
+      // MARKETING holds client.read:contact + report.branch but no
+      // booking.read. /patients is their most useful surface.
       redirect('/patients');
     default:
       // ORG_OWNER, ORG_ADMIN, BRANCH_MANAGER, SENIOR_PROVIDER,
