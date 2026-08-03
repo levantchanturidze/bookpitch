@@ -379,7 +379,35 @@ still exhausts 15.
    pool max=1** and rely on Node's event loop for concurrency. Works
    for read-heavy paths, gets contention-y under write bursts.
 
-None of these are a config flip. Left for a decision.
+**Code plumbing landed 2026-08-03 (option 1):**
+- `lib/db.ts` — `prismaAdmin` now prefers `ADMIN_RUNTIME_DATABASE_URL`
+  when set, falling back to `ADMIN_DATABASE_URL` and then `DATABASE_URL`.
+  Zero behavior change until the new env var is populated.
+- `.github/workflows/migrate.yml` — already uses
+  `ADMIN_MIGRATE_DATABASE_URL` (F-06), so migrations keep the
+  session-pool URL.
+- `app/api/health/route.ts` — reports by whichever env var was actually
+  used to build prismaAdmin (`ADMIN_RUNTIME_DATABASE_URL` if set, else
+  `ADMIN_DATABASE_URL`), so F-12 diagnosis still points at the correct
+  rotation target.
+- `.env.example` — documents the new var + intended pool mode.
+
+**Remaining user actions to activate option 1:**
+1. In Vercel: add `ADMIN_RUNTIME_DATABASE_URL` = the same superuser
+   credentials but pointing at the **transaction pool** endpoint
+   (Supabase: port 6543, host with `-pooler` suffix,
+   `?pgbouncer=true&connection_limit=1` query string). Same role
+   password as `ADMIN_DATABASE_URL`, different URL shape.
+2. Redeploy. Watch `/api/health` — success response should now show
+   `ADMIN_RUNTIME_DATABASE_URL: {ok: true}` instead of
+   `ADMIN_DATABASE_URL: {ok: true}`.
+3. Optional: once verified stable for a week, remove `ADMIN_DATABASE_URL`
+   from Vercel entirely (still needed on GH Actions as
+   `ADMIN_MIGRATE_DATABASE_URL` for migrations).
+
+Option 2 (upgrade tier) or option 3 (singleton lazy client) remain the
+alternative paths if option 1 uncovers a pgbouncer compatibility issue
+in production.
 
 ## F-12 · Secret exposure via shell fall-through + Vercel sensitive vars are one-way · P0 · Security incident
 

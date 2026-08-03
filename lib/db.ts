@@ -9,9 +9,22 @@ import { PrismaPg } from '@prisma/adapter-pg';
 //                   for RLS policies to consume.
 //   • prismaAdmin → connects as the OS superuser (locally `levan`; on Supabase
 //                   this would be the service_role). Bypasses RLS. Used by
-//                   seed, migrations (via prisma.config.ts), and the login
-//                   lookup (via `withoutRls`) where org context isn't known
-//                   yet.
+//                   the login lookup (via `withoutRls`), read-only admin
+//                   surfaces (audit, break-glass, retention crons), and DDL
+//                   in db-partitions cron.
+//
+// Connection URL precedence for prismaAdmin (F-11 mitigation):
+//   1. ADMIN_RUNTIME_DATABASE_URL — transaction-pool (Supabase port 6543,
+//      with ?pgbouncer=true). Uses no session-pool slots, so it doesn't
+//      compete with prismaApp for the 15-client ceiling. RECOMMENDED for
+//      Vercel prod.
+//   2. ADMIN_DATABASE_URL — session-pool (port 5432). Falls back for local
+//      dev and older env setups. Consumes a session slot per client.
+//   3. DATABASE_URL — last-resort fallback so nothing crashes locally.
+//
+// Migrations (prisma migrate deploy) still use ADMIN_MIGRATE_DATABASE_URL
+// via .github/workflows/migrate.yml — migrations need session persistence
+// for advisory locks, so they can't share the transaction-pool URL.
 //
 // Both are HMR-safe via globalThis caching.
 // -----------------------------------------------------------------------------
@@ -45,7 +58,12 @@ export const prismaApp: PrismaClient =
 
 export const prismaAdmin: PrismaClient =
   globalForPrisma.prismaAdmin ??
-  build(process.env.ADMIN_DATABASE_URL ?? process.env.DATABASE_URL, 'ADMIN_DATABASE_URL');
+  build(
+    process.env.ADMIN_RUNTIME_DATABASE_URL ??
+      process.env.ADMIN_DATABASE_URL ??
+      process.env.DATABASE_URL,
+    'ADMIN_RUNTIME_DATABASE_URL',
+  );
 
 // Read replica — falls back to prismaApp when DATABASE_REPLICA_URL is
 // unset so dev never breaks. Only used by lib/db-replica.ts::withOrgReplica
