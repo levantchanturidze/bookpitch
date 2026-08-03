@@ -12,11 +12,18 @@ Phase 5 (`prisma/rbac-fixtures.ts`).
 regression tests. Each finding maps to a probe in
 `tests/security-review.test.ts`.
 
-## Status: all three findings fixed (2026-07-29)
+## Status
 
-All three findings have landed on `rbac-rebuild`. The regression probes
-are now plain `it(...)` and pass. Details in the "Resolution" block on
-each finding below.
+- **2026-07-29 pass** — all three original findings (SEC-001, SEC-002,
+  SEC-003) shipped fixes. Regression probes are plain `it(...)` and pass.
+- **2026-08-03 delta pass** — 14 new probes covering the platform §6.1
+  routes that landed after 2026-07-29 (F-08 edit-org, feature toggles,
+  org create, platform-role assignment). Two new findings:
+  **SEC-004 (High)** — org-toggles mutation writes no audit row;
+  **SEC-005 (Medium)** — `platform.config.manage` missing from
+  `RESTRICTED_DURING_IMPERSONATION`. Both are open, tracked in the
+  probe suite as `it.fails(...)`. See [§6 Delta findings](#delta-findings)
+  below.
 
 ## Executive summary
 
@@ -25,6 +32,8 @@ each finding below.
 | [SEC-001](#sec-001) | Medium | Cross-tenant | Customer routes return 200 + body-shape for cross-tenant IDs instead of 404 | **Fixed** 2026-07-29 |
 | [SEC-002](#sec-002) | Low-Medium | Cross-tenant | `/api/customers/[id]/export` throws an unmapped 5xx for missing / cross-tenant IDs | **Fixed** 2026-07-29 |
 | [SEC-003](#sec-003) | High | Break-glass | Break-glass read-audit failure is silently swallowed (spec §7.2 rule 6 violation) | **Fixed** 2026-07-29 |
+| [SEC-004](#sec-004) | **High** | Audit integrity | `updateOrgToggles` writes no audit row — clinical/PII toggle flips leave no evidence | **Open** 2026-08-03 |
+| [SEC-005](#sec-005) | **Medium** | Impersonation | `platform.config.manage` missing from `RESTRICTED_DURING_IMPERSONATION` — impersonating actor can flip clinical-visibility toggles | **Open** 2026-08-03 |
 
 Three real findings across 37 probes. **No critical findings.** The
 Phase 1 append-only invariant holds, RLS holds, cross-tenant data is
@@ -464,3 +473,284 @@ Each finding's probe in `tests/security-review.test.ts` is now plain
   regression is caught before merge.
 
 Do not remove the tests. Each one is defense against re-introduction.
+
+---
+
+<a name="delta-findings"></a>
+# Phase 7 delta pass — 2026-08-03
+
+## Scope of the delta
+
+Between the original review (2026-07-29 at commit `ecd5b2a`) and today
+(commit `aedbe8b`), the following platform-plane routes shipped as part
+of the F-08 §6.1 work:
+
+- `POST   /api/platform/orgs`                       (org create)
+- `PATCH  /api/platform/orgs/[id]`                  (edit org)
+- `GET    /api/platform/orgs/[id]/toggles`          (view feature toggles)
+- `PATCH  /api/platform/orgs/[id]/toggles`          (edit feature toggles)
+- `GET    /api/platform/roles`                      (list platform-role holders)
+- `POST   /api/platform/roles`                      (assign / revoke platform role)
+
+Plus supporting library additions (`lib/platform/orgs.ts::createOrganization`
+& `editOrganization`, `lib/platform/roles.ts::assignPlatformRole`,
+`lib/rbac/toggles.ts::updateOrgToggles`).
+
+The delta pass ran 14 probes covering guard-perm negatives + positive
+controls, input validation, impersonation restrictions, and audit-row-
+per-mutation. Two new findings, twelve cleared.
+
+## Delta executive summary
+
+| Probe | Result | Note |
+|---|---|---|
+| P6.1 SUPPORT_AGENT cannot POST /platform/orgs | pass (403) | `platform.org.create` correctly SUPER+PLATFORM_ADMIN only |
+| P6.2 BILLING_MANAGER cannot POST /platform/orgs | pass (403) | same guard |
+| P6.3 ORG_OWNER (no platform role) cannot POST /platform/orgs | pass (4xx) | platform ctx empty → deny |
+| P6.4 SUPPORT_AGENT cannot PATCH /platform/orgs/[id] | pass (403) + org name unchanged | edit uses `platform.org.suspend` (same tier) |
+| P6.5 SUPPORT_AGENT CAN GET /toggles | pass (200) | positive control — `platform.analytics.read` for view |
+| P6.6 PLATFORM_ADMIN cannot PATCH /toggles | pass (403) | `platform.config.manage` is SUPER-only |
+| P6.7 SUPER_ADMIN PATCH /toggles without reauth | pass (403) | `requireFreshPassword` fires |
+| P6.8 SUPER_ADMIN with fresh reauth CAN PATCH /toggles | pass (200) | positive control |
+| P6.9 negative discount ceiling → 400 | pass (400) | input validation live |
+| P6.10 non-boolean toggle value ignored → 400 no editable fields | pass (400) | strict boolean coercion |
+| P6.11 POST /platform/roles from PLATFORM_ADMIN → 403 | pass (403) + target role unchanged | `platform.role.assign` is SUPER-only |
+| P6.12 editOrganization writes audit row | pass | `org.edit` audit landed via `writePlatformAudit` |
+| **P6.13** updateOrgToggles writes audit row | **FAIL** (`it.fails`) | **SEC-004** — no audit write |
+| **P6.14** platform.config.manage in RESTRICTED_DURING_IMPERSONATION | **FAIL** (`it.fails`) | **SEC-005** — key missing from set |
+
+---
+
+<a name="sec-004"></a>
+## SEC-004 — Org-toggles mutation writes no audit row · High
+
+**Attack surface**: audit integrity (spec §9 rule 5)
+**Reproduction**: `tests/security-review.test.ts` §platform §6.1 new-surface
+probes `P6.13` (`it.fails`).
+
+### Behaviour
+
+`updateOrgToggles(orgId, patch)` in `lib/rbac/toggles.ts:103-127` writes
+the new toggle values to `organizations.features` and clears the cache.
+It does not write an `audit_log` row. The PATCH route
+(`app/api/platform/orgs/[id]/toggles/route.ts`) also does not write one
+— it only calls `updateOrgToggles(id, patch)` and returns. The
+`withPlatformApi` wrapper adds an audit row only when the caller is in
+break-glass mode (`ctx.isBreakGlass`); a plain SUPER_ADMIN toggle flip
+produces zero audit entries.
+
+The toggles governed by this endpoint are the §6.2 ⚙️ items:
+
+- `providerFinancialReports`  — expands PROVIDER's report reach
+- `providerClinicalNotesOthers` — **unlocks clinical notes of OTHER
+  providers** to any PROVIDER in the org
+- `frontdeskClientFullHistory` — expands FRONT_DESK's PII reach
+- `frontdeskDiscountCeiling`   — raises FRONT_DESK's discount authority
+
+Every one of these is a policy-level change on data sensitivity or
+authority scope. Spec §9 rule 5 requires that every mutation writes to
+`audit_log`. The current implementation violates that literally for the
+one operation whose evidentiary trail matters most — "when did we open
+up clinical visibility, and who did it."
+
+### Impact
+
+- **Compliance**: the toggle flip that unlocks clinical-note visibility
+  across the org has no auditable record of who did it or when. If a
+  regulator asks "who authorized cross-provider clinical access on
+  2026-XX-XX," the honest answer is "we don't know."
+- **Forensics**: a rogue SUPER_ADMIN could open `providerClinicalNotesOthers`,
+  read notes as any provider (via impersonation, subject to SEC-005),
+  flip it back, and leave zero trace of the toggle event.
+- **Change management**: without an audit row, the toggle history is
+  unrecoverable — no timeline of feature-flag drift for support to
+  reason from during an incident.
+
+### Affected files
+
+- `lib/rbac/toggles.ts` — `updateOrgToggles` (lines 103-127) is the
+  actual write. Fix must live here or one level up in the PATCH route
+  so both callers benefit (there's only one caller today).
+- `app/api/platform/orgs/[id]/toggles/route.ts` — PATCH handler,
+  currently forwards to `updateOrgToggles` without adding an audit row.
+
+### Suggested fix
+
+Add a `writePlatformAudit` call after the successful update. The
+simplest patch is in the route handler, alongside where the fresh-
+password check runs:
+
+```ts
+// app/api/platform/orgs/[id]/toggles/route.ts
+export async function PATCH(req, { params }) {
+  return withPlatformApi('org.toggles.set', async (ctx) => {
+    requirePermission(ctx, 'platform.config.manage', undefined, 'platform');
+    requireFreshPassword(ctx.userId);
+    const { id } = await params;
+    // ... existing body parsing + patch building ...
+
+    const previous = await loadOrgToggles(id);
+    const next = await updateOrgToggles(id, patch);
+
+    await prismaAdmin.auditLog.create({
+      data: {
+        organizationId: id,
+        actorUserId: ctx.userId,
+        action: 'org.toggles.update',
+        entity: 'organization',
+        entityId: id,
+        reason: 'platform:org.toggles.update',
+        impersonationSessionId: ctx.impersonation?.sessionId ?? null,
+        breakGlassSessionId: ctx.breakGlass?.sessionId ?? null,
+        meta: {
+          changed: Object.keys(patch),
+          previous: previous as unknown as Record<string, unknown>,
+          next: next as unknown as Record<string, unknown>,
+        },
+      },
+    });
+
+    return { toggles: next };
+  });
+}
+```
+
+Alternative: move the audit write into `updateOrgToggles` itself,
+threading actor context through the signature. Marginally cleaner but
+changes the function's interface — the route-level fix is smaller and
+already has `ctx` in scope.
+
+### Regression test
+
+`P6.13` — flip `frontdeskDiscountCeiling` and assert `audit_log`
+gained a row with `action in ('org.toggles.update','org.config.update','platform.config.manage')`.
+Currently `it.fails`; flip to plain `it` when the fix lands.
+
+---
+
+<a name="sec-005"></a>
+## SEC-005 — `platform.config.manage` missing from RESTRICTED_DURING_IMPERSONATION · Medium
+
+**Attack surface**: impersonation (spec §7.1 rule 5)
+**Reproduction**: `tests/security-review.test.ts` §platform §6.1 new-surface
+probes `P6.14` (`it.fails`).
+
+### Behaviour
+
+`lib/rbac/impersonation.ts::RESTRICTED_DURING_IMPERSONATION` currently
+contains 15 permissions: destructive ops (`org.delete`,
+`staff.deactivate`, `client.merge`, `platform.org.delete`,
+`platform.org.suspend`, `platform.org.owner.change`), bulk exports
+(`client.export`, `report.export`), billing changes
+(`org.billing.manage`, `org.ownership.transfer`,
+`platform.billing.manage`), and clinical (`clinical_note.*`).
+
+`platform.config.manage` is NOT in the set. An actor with an active
+impersonation session can still hit
+`PATCH /api/platform/orgs/[id]/toggles` and flip
+`providerClinicalNotesOthers`, `providerFinancialReports`,
+`frontdeskClientFullHistory` for the target org.
+
+### Impact
+
+- **Two-step clinical exfiltration**: this is precisely the class of
+  attack §7.1 rule 5 exists to block. The current restriction list
+  prevents an impersonating actor from reading clinical records
+  directly (`clinical_note.read:any` is restricted). But nothing stops
+  them from FLIPPING `providerClinicalNotesOthers=true`, then reading
+  every provider's notes AS a PROVIDER via a different session (or
+  continuing the same impersonation if the target user is a PROVIDER).
+- **Evidentiary gap compounds SEC-004**: because toggles produce no
+  audit row today, this two-step attack would leave zero trace on the
+  toggle flip and only a `break_glass.read.*` row if the reader used
+  break-glass, or nothing at all if the reader used the impersonated
+  user's own PROVIDER role. Fixing SEC-004 shrinks the blast radius;
+  fixing SEC-005 closes the door.
+- Fewer real-world users (needs impersonation) than SEC-004, but a
+  higher-value attack payoff — hence Medium not Low.
+
+### Affected files
+
+- `lib/rbac/impersonation.ts` — line 22-48 (`DEFAULT_RESTRICTED` set).
+
+### Suggested fix
+
+Add `platform.config.manage` to `DEFAULT_RESTRICTED`. One line:
+
+```ts
+const DEFAULT_RESTRICTED: ReadonlySet<PermissionKey> = new Set([
+  // ... existing entries ...
+
+  // ---- Configuration changes (spec §7.1 rule 5 — "billing changes"
+  //      generalized to "policy changes"). Feature toggles govern
+  //      clinical visibility and PII tiers — flipping them mid-
+  //      impersonation is the two-step version of a clinical read.
+  perm('platform.config.manage'),
+]);
+```
+
+While reviewing the set, also consider (not part of SEC-005, note for
+whoever picks the fix):
+
+- **`platform.role.assign`** during impersonation — a SUPER_ADMIN
+  impersonating another user can still grant platform roles (assignment
+  carries actor.userId, so audit shows SUPER_ADMIN not the impersonated
+  identity — traceable). Not a real escalation vector but muddies
+  incident forensics. Judgment call whether to add.
+- **`platform.org.create`** during impersonation — arguably a
+  legitimate diagnostic support action ("help me spin up a test org").
+  Probably leave out; document the rationale in the comment.
+
+### Regression test
+
+`P6.14` — `expect(RESTRICTED_DURING_IMPERSONATION.has(perm('platform.config.manage'))).toBe(true)`.
+Currently `it.fails`; flip when the one-liner lands.
+
+---
+
+## Delta cleared — probes that passed
+
+- **P6.1–P6.4**: guard-perm negatives on POST /orgs + PATCH /orgs/[id]
+  correctly refuse SUPPORT / BILLING / ORG-plane / cross-tier callers,
+  and the mutation is verifiably absent on the target row after refusal.
+- **P6.5**: positive control — GET /toggles works for any platform role.
+- **P6.6**: PATCH /toggles refuses PLATFORM_ADMIN (SUPER-only per
+  spec §6.1 row "Feature flags / global config").
+- **P6.7**: `requireFreshPassword` fires on SUPER_ADMIN without a
+  recent reauth marker.
+- **P6.8**: positive control — SUPER_ADMIN with fresh reauth can flip
+  a toggle (used as the setup for P6.9/P6.10/P6.13 also).
+- **P6.9/P6.10**: input validation correctly rejects a negative
+  discount ceiling and non-boolean coercion (`1` != `true`).
+- **P6.11**: `platform.role.assign` correctly refuses PLATFORM_ADMIN
+  and the target's role is verifiably unchanged after the 403.
+- **P6.12**: `editOrganization` correctly writes an `org.edit` audit
+  row via `writePlatformAudit`. Compare with SEC-004 — the same helper
+  is available for toggles and just isn't called.
+
+---
+
+## Delta prioritization
+
+- **Fix now (High)** — SEC-004. One-file change, closes an evidence gap
+  on the highest-sensitivity toggle in the system. Effort: ~15 min plus
+  regression flip.
+- **Fix same PR (Medium)** — SEC-005. One-line change plus a comment.
+  Effort: ~5 min. Bundle with SEC-004 so both audit-visibility and
+  impersonation-tightness ship together.
+- **Consider (Informational)** — `platform.role.assign` +
+  `platform.org.create` during impersonation. Not exploitable but
+  worth documenting the rationale for including / excluding.
+
+No delta finding requires a migration or a schema change.
+
+---
+
+## Regression suite health
+
+- 51 total probes (37 original + 14 delta)
+- 49 pass, 2 `it.fails` (SEC-004, SEC-005)
+- 0 flaky (probe P6.12 restores the mutated org name in a `finally`
+  block after an earlier iteration polluted fixture state and broke
+  the subsequent beforeAll — regression-guarded now)
+- Runs in ~15 s serial (fileParallelism disabled per shared DB state).

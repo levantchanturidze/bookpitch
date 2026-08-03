@@ -44,6 +44,13 @@ const routeAppointments = await import('@/app/api/appointments/route');
 const routeMembers      = await import('@/app/api/admin/members/[id]/route');
 const routeSessSwitch   = await import('@/app/api/session/switch/route');
 const routePlatformOrgs = await import('@/app/api/platform/orgs/route');
+const routePlatformOrgItem    = await import('@/app/api/platform/orgs/[id]/route');
+const routePlatformOrgToggles = await import('@/app/api/platform/orgs/[id]/toggles/route');
+const routePlatformRoles      = await import('@/app/api/platform/roles/route');
+const { verifyPasswordFresh, __clearPasswordReauthCache } = await import('@/lib/platform/password-reauth');
+const { __clearOrgTogglesCache } = await import('@/lib/rbac/toggles');
+const { RESTRICTED_DURING_IMPERSONATION } = await import('@/lib/rbac/impersonation');
+const { perm } = await import('@/lib/rbac/types');
 
 import type { NextRequest } from 'next/server';
 function req(url: string, init?: RequestInit): NextRequest {
@@ -710,4 +717,258 @@ describe('SEC § auth + session integrity', () => {
     })).sessionVersion;
     expect(after).toBe(before + 1);
   });
+});
+
+// =============================================================================
+// § 6 — Phase 7 delta (2026-08-03): probes for the platform §6.1 surface that
+// landed AFTER the original Phase 7 pass at ecd5b2a (2026-07-29). Covers
+// four new endpoints and the org-toggles subsystem introduced in F-08 work.
+//   • POST   /api/platform/orgs                       (create org)
+//   • PATCH  /api/platform/orgs/[id]                  (edit org)
+//   • GET    /api/platform/orgs/[id]/toggles          (view feature toggles)
+//   • PATCH  /api/platform/orgs/[id]/toggles          (edit feature toggles)
+//   • GET    /api/platform/roles                      (list holders)
+//   • POST   /api/platform/roles                      (assign / revoke)
+// =============================================================================
+describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', () => {
+  // Reused for every guard probe below.
+  function reqJson(url: string, method: string, body: unknown): NextRequest {
+    return req(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  beforeEach(async () => {
+    __clearPasswordReauthCache();
+    __clearOrgTogglesCache();
+  });
+
+  // ---- Guard-perm negative probes ------------------------------------------
+  it('P6.1: SUPPORT_AGENT cannot POST /platform/orgs — platform.org.create missing', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('support@bp.test'));
+    const res = await routePlatformOrgs.POST(
+      reqJson('http://x/api/platform/orgs', 'POST', { name: 'Probe Org' }),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('P6.2: BILLING_MANAGER cannot POST /platform/orgs — platform.org.create missing', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('billing@bp.test'));
+    const res = await routePlatformOrgs.POST(
+      reqJson('http://x/api/platform/orgs', 'POST', { name: 'Probe Org 2' }),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('P6.3: ORG_OWNER (no platform role) cannot POST /platform/orgs — 401 (no platform ctx)', async () => {
+    authMock.mockResolvedValue(await mockJwt(H.grandOwnerId, H.grandOrgId));
+    const res = await routePlatformOrgs.POST(
+      reqJson('http://x/api/platform/orgs', 'POST', { name: 'Probe Org 3' }),
+    );
+    // withPlatformApi + requirePermission surface a 403 when the platform
+    // perm set is empty (org-plane user has ctx.platformPermissions.size===0).
+    // Either 401 or 403 is a SAFE outcome — the probe just asserts NOT 2xx.
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+  });
+
+  it('P6.4: SUPPORT_AGENT cannot PATCH /platform/orgs/[id] — platform.org.suspend missing', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('support@bp.test'));
+    const res = await routePlatformOrgItem.PATCH(
+      reqJson(`http://x/api/platform/orgs/${H.grandOrgId}`, 'PATCH', { name: 'Hijacked' }),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+    expect(res.status).toBe(403);
+    const orgAfter = await prismaAdmin.organization.findUniqueOrThrow({
+      where: { id: H.grandOrgId }, select: { name: true },
+    });
+    expect(orgAfter.name).not.toBe('Hijacked');
+  });
+
+  // ---- Toggles: view vs edit split -----------------------------------------
+  it('P6.5: SUPPORT_AGENT CAN GET /platform/orgs/[id]/toggles (any platform role can view)', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('support@bp.test'));
+    const res = await routePlatformOrgToggles.GET(
+      req(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+    expect(res.status).toBe(200);
+    const body = await json<{ toggles: unknown }>(res);
+    expect(body.toggles).toBeDefined();
+  });
+
+  it('P6.6: PLATFORM_ADMIN cannot PATCH toggles — platform.config.manage is SUPER-only', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
+    const res = await routePlatformOrgToggles.PATCH(
+      reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+        providerClinicalNotesOthers: true,
+      }),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('P6.7: SUPER_ADMIN PATCH toggles without fresh password reauth → 403', async () => {
+    __clearPasswordReauthCache();  // no fresh reauth marker
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    const res = await routePlatformOrgToggles.PATCH(
+      reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+        providerClinicalNotesOthers: true,
+      }),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+    // requireFreshPassword throws ForbiddenError → mapped to 403.
+    expect(res.status).toBe(403);
+  });
+
+  it('P6.8: SUPER_ADMIN with fresh password can PATCH toggles (positive control)', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    // Simulate the reauth step by verifying the password.
+    await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+    const res = await routePlatformOrgToggles.PATCH(
+      reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+        frontdeskDiscountCeiling: 42,
+      }),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+    expect(res.status).toBe(200);
+    // Reset the value back to a safe default so we don't poison later probes.
+    await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+    await routePlatformOrgToggles.PATCH(
+      reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+        frontdeskDiscountCeiling: 0,
+      }),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+  });
+
+  // ---- Input validation on the new mutations -------------------------------
+  it('P6.9: negative frontdeskDiscountCeiling is rejected (input validation)', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+    const res = await routePlatformOrgToggles.PATCH(
+      reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+        frontdeskDiscountCeiling: -1,
+      }),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('P6.10: non-boolean toggle value is ignored → empty patch → 400 "no editable fields"', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+    const res = await routePlatformOrgToggles.PATCH(
+      reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+        providerClinicalNotesOthers: 1,  // truthy but not boolean — must be dropped
+      }),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  // ---- Role assignment defensive checks ------------------------------------
+  it('P6.11: POST /platform/roles from PLATFORM_ADMIN → 403 (SUPER-only via platform.role.assign)', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
+    const res = await routePlatformRoles.POST(
+      reqJson('http://x/api/platform/roles', 'POST', {
+        email: 'billing@bp.test', roleKey: 'SUPER_ADMIN',
+      }),
+    );
+    expect(res.status).toBe(403);
+    // Verify the target's role did not change.
+    const target = await prismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'billing@bp.test' },
+      select: { platformRole: { select: { key: true } } },
+    });
+    expect(target.platformRole?.key).toBe('BILLING_MANAGER');
+  });
+
+  // ---- Audit-row-per-mutation (spec §9 rule 5) -----------------------------
+  it('P6.12: editOrganization writes an audit row', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    // Snapshot the current name so we can reset — the fixture-locator in
+    // rbac-fixtures.ts::seedRbacFixtures does findFirstOrThrow by literal
+    // name, and if we leave it renamed the next test-run's beforeAll dies.
+    const orig = await prismaAdmin.organization.findUniqueOrThrow({
+      where: { id: H.grandOrgId }, select: { name: true },
+    });
+    const before = await prismaAdmin.auditLog.count({
+      where: { organizationId: H.grandOrgId, action: 'org.edit' },
+    });
+    try {
+      // Edit the name (no reauth needed for name-only patches).
+      const res = await routePlatformOrgItem.PATCH(
+        reqJson(`http://x/api/platform/orgs/${H.grandOrgId}`, 'PATCH', {
+          name: `Probe Edit ${Date.now()}`,
+        }),
+        { params: Promise.resolve({ id: H.grandOrgId }) },
+      );
+      expect(res.status).toBe(200);
+      const after = await prismaAdmin.auditLog.count({
+        where: { organizationId: H.grandOrgId, action: 'org.edit' },
+      });
+      expect(after).toBeGreaterThan(before);
+    } finally {
+      // Always restore, even if the probe fails.
+      await prismaAdmin.organization.update({
+        where: { id: H.grandOrgId }, data: { name: orig.name },
+      });
+    }
+  });
+
+  // ---- SEC-004 candidate: toggles mutation writes NO audit row -------------
+  // If this probe passes, the audit gap has been closed and we can flip
+  // it from `it.fails` back to `it`.
+  it.fails(
+    'P6.13: updateOrgToggles writes an audit row (SEC-004 open — currently fails)',
+    async () => {
+      authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+      await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+      const before = await prismaAdmin.auditLog.count({
+        where: {
+          organizationId: H.grandOrgId,
+          action: { in: ['org.toggles.update', 'org.config.update', 'platform.config.manage'] },
+        },
+      });
+      const res = await routePlatformOrgToggles.PATCH(
+        reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+          frontdeskDiscountCeiling: 7,
+        }),
+        { params: Promise.resolve({ id: H.grandOrgId }) },
+      );
+      expect(res.status).toBe(200);
+      const after = await prismaAdmin.auditLog.count({
+        where: {
+          organizationId: H.grandOrgId,
+          action: { in: ['org.toggles.update', 'org.config.update', 'platform.config.manage'] },
+        },
+      });
+      // reset
+      await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+      await routePlatformOrgToggles.PATCH(
+        reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+          frontdeskDiscountCeiling: 0,
+        }),
+        { params: Promise.resolve({ id: H.grandOrgId }) },
+      );
+      expect(after).toBeGreaterThan(before);
+    },
+  );
+
+  // ---- SEC-005 candidate: platform.config.manage not RESTRICTED_DURING_IMPERSONATION
+  it.fails(
+    'P6.14: platform.config.manage must be in RESTRICTED_DURING_IMPERSONATION (SEC-005 open)',
+    () => {
+      // The impersonation restriction set exists specifically to prevent
+      // an impersonating actor from flipping PII / clinical-visibility
+      // toggles that would then let them re-read clinical data.
+      // updateOrgToggles governs `providerClinicalNotesOthers` (spec §6.2)
+      // — flipping it during impersonation is exactly the class of
+      // two-step exfiltration §7.1 rule 5 exists to block.
+      expect(RESTRICTED_DURING_IMPERSONATION.has(perm('platform.config.manage'))).toBe(true);
+    },
+  );
 });
