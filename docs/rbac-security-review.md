@@ -35,7 +35,7 @@ regression tests. Each finding maps to a probe in
 | [SEC-004](#sec-004) | High | Audit integrity | `updateOrgToggles` writes no audit row — clinical/PII toggle flips leave no evidence | **Fixed** 2026-08-03 |
 | [SEC-005](#sec-005) | Medium | Impersonation | `platform.config.manage` missing from `RESTRICTED_DURING_IMPERSONATION` — impersonating actor can flip clinical-visibility toggles | **Fixed** 2026-08-03 |
 | [SEC-006](#sec-006) | High | Availability | `assignPlatformRole` can demote the last SUPER_ADMIN and brick `platform.role.assign` | **Fixed** 2026-08-03 |
-| [SEC-007](#sec-007) | High | RLS bypass | Superuser Prisma client `prismaAdmin` exported publicly — 6 ordinary request paths bypass RLS. Bookpitch_app NOBYPASSRLS is the spec's 2nd layer of tenant isolation and it was inactive at these callsites | **Fixed** 2026-08-03 (correct end state — narrow `bookpitch_login` role — deferred as own PR) |
+| [SEC-007](#sec-007) | High | RLS bypass | Superuser Prisma client `prismaAdmin` exported publicly — 6 ordinary request paths bypass RLS. Bookpitch_app NOBYPASSRLS is the spec's 2nd layer of tenant isolation and it was inactive at these callsites | **Fixed** 2026-08-03; end-state `bookpitch_login` migration shipped 2026-08-04 (operator activation pending) |
 
 Three real findings across 37 probes. **No critical findings.** The
 Phase 1 append-only invariant holds, RLS holds, cross-tenant data is
@@ -1024,42 +1024,75 @@ Files updated: `lib/db.ts` (precedence-lookup fallbacks), `.env.example`
 `.github/workflows/migrate.yml` (secret name with fallback),
 `scripts/rbac-backfill.ts`.
 
-### Correct end state — option 3, deferred
+### End state — option 3 shipped 2026-08-04
 
-The pragmatic tightening shipped now: `unsafe` prefix + ESLint
-allowlist. The **correct end state** is option 3 from the audit — a
-narrow `bookpitch_login` DB role.
+**`bookpitch_login`** role: `BYPASSRLS` (necessary — buildAuthContext
+runs BEFORE org context is established, so RLS on memberships /
+organizations would filter to zero rows), `NOSUPERUSER`, LOGIN, and
+`SELECT` grants on ONLY these 8 tables:
 
-**`bookpitch_login`** would have:
-- `SELECT` on `app_users`, `memberships`, `roles`, `role_permissions`,
-  `platform_role_permissions`
-- `SELECT` on `organizations` (status column read by suspended-org gate)
-- `SELECT` on `organizations.features` (toggles loaded per request)
-- **NO** BYPASSRLS, **NO** SUPERUSER, no other table access
+- `app_users`
+- `memberships`
+- `organizations`
+- `roles`
+- `role_permissions`
+- `membership_branches`
+- `impersonation_sessions`
+- `break_glass_sessions`
 
-A new `prismaLogin` client backed by `bookpitch_login` replaces
-`unsafePrismaAdmin` inside `lib/rbac/context.ts::buildAuthContext`
-(the hot path — every authenticated request runs `SELECT` on
-`app_users`, `memberships`, `role_permissions`, `impersonation_sessions`,
-`break_glass_sessions` via the client here). `buildAuthContext` is
-explicitly the top candidate for this migration because:
+Every other tenant table has an explicit `REVOKE ALL` in the migration
+as belt-and-braces. An accidental `prismaLogin.customer.findMany()`
+fails at the Postgres GRANT layer with `permission denied for table
+customers` — the hot path physically cannot reach clinical, customers,
+appointments, payments, audit_log, etc.
 
-- **Highest request volume** — runs on every authenticated request
-- **Widest privilege** — currently holds full superuser on that hot path
-- **Bounded query surface** — the ~5 tables it actually needs are a
-  proper subset of what `bookpitch_app` can already reach via RLS
+**Ships behind a fallback.** When `DATABASE_URL_LOGIN` is unset,
+`prismaLogin` transparently aliases to `unsafePrismaAdmin` (see
+`lib/db.ts`) — no runtime behavior change. Runtime code is safe to
+deploy immediately. Operator setup (any time after the migration
+lands via GH Actions):
 
-After the migration:
-- `unsafePrismaAdmin` becomes genuinely platform-only (groups B + C +
-  cron DDL). Its allowlist shrinks by half.
-- The hot path no longer holds superuser at request time. A bug in
-  `buildAuthContext` becomes a "wrong tenant maybe" error, not a
-  "read anything from anywhere" error.
+1. Run `ALTER USER bookpitch_login WITH PASSWORD '<generated>'` in
+   the Supabase SQL editor.
+2. Add `DATABASE_URL_LOGIN` in Vercel Production with the pooled URL
+   for that role (same host as `DATABASE_URL_APP_NOBYPASSRLS`, but
+   the username is `bookpitch_login`).
+3. Redeploy. The auth path now runs on the narrow role.
 
-Effort: one migration (create role, GRANT SELECT on the ~5 tables), a
-new client in `lib/db.ts`, refactor `buildAuthContext`, remove the
-allowlist entry for `lib/rbac/context.ts`. Not a code review that
-fits in a "next" iteration — its own PR, tracked here.
+Files shipped:
+- `prisma/migrations/20260804000000_bookpitch_login_role/` — role
+  creation + narrow SELECT grants + `REVOKE ALL` on every other
+  tenant table + reversible `down.sql`
+- `lib/db.ts` — new `prismaLogin` export with fallback to
+  `unsafePrismaAdmin` when `DATABASE_URL_LOGIN` is unset
+- `lib/rbac/context.ts` — `buildAuthContext` swapped from
+  `unsafePrismaAdmin` to `prismaLogin` (6 callsites)
+- `eslint.config.mjs` — `prismaLogin` added to the SEC-007
+  restrict-imports rule so it can't sprawl beyond `lib/rbac/context.ts`
+  and the other allowlisted files
+- `.env.example` — `DATABASE_URL_LOGIN` documented with operator
+  setup pointer
+
+Impact once activated:
+- Every authenticated request runs on `bookpitch_login`, not
+  `postgres`. Blast radius of a `context.ts` bug shrinks from "any
+  table in the DB" to "auth-graph tables only."
+- `unsafePrismaAdmin` still exists for the platform-plane paths,
+  crons, DDL, and webhooks — legitimately cross-tenant use cases.
+- The ESLint allowlist keeps `lib/rbac/context.ts` on it for the
+  same import — the entry now covers `prismaLogin` instead of
+  `unsafePrismaAdmin`, but the file is still gated on review.
+
+Follow-up work not in this ship:
+- Regression probe that asserts `prismaLogin.customer.findMany()`
+  fails with permission-denied — requires the role to exist in the
+  local test DB (needs the migration to run locally + a test-only
+  DATABASE_URL_LOGIN). Left as a follow-up; the migration file itself
+  is the primary evidence of the grant surface.
+- Once `DATABASE_URL_LOGIN` is live in prod for a week without
+  incident, remove the `if (LOGIN_URL) ... : unsafePrismaAdmin`
+  fallback so a missing env var becomes a startup failure rather than
+  a silent regression to the superuser client.
 
 ### Addendum — ownership-transfer enumeration hardening (2026-08-04)
 

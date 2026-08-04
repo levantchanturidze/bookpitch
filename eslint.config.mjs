@@ -63,7 +63,12 @@ const RESTRICT_UNSAFE_DB = {
   "no-restricted-imports": ["error", {
     paths: [{
       name: "@/lib/db",
-      importNames: ["unsafePrismaAdmin", "withoutRls"],
+      // `prismaLogin` is on this list too — even though it has narrow SELECT
+      // grants when DATABASE_URL_LOGIN is set, it can transparently fall
+      // back to unsafePrismaAdmin. Restrict its import to the same
+      // reviewable surface. Only lib/rbac/context.ts (buildAuthContext) is
+      // meant to use it; new callers should surface for review.
+      importNames: ["unsafePrismaAdmin", "withoutRls", "prismaLogin"],
       message:
         "SEC-007: these bypass RLS. Use `withOrg(orgId, tx => …)` instead. " +
         "If a cross-tenant reach is genuinely required (login path, platform " +
