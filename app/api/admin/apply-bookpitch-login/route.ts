@@ -168,6 +168,22 @@ export async function POST(req: NextRequest) {
     if (action === 'verify') {
       return NextResponse.json(await verifyGrants());
     }
+    if (action === 'fix-checksum') {
+      // Correct the _prisma_migrations checksum for the SEC-007 migration
+      // so a future `prisma migrate deploy` doesn't trip a drift check.
+      // The value must match SHA-256 of the migration.sql file exactly.
+      const sql = await readFile(
+        path.join(process.cwd(), 'prisma', 'migrations', MIGRATION_ID, 'migration.sql'),
+        'utf-8',
+      );
+      const { createHash } = await import('node:crypto');
+      const sha = createHash('sha256').update(sql).digest('hex');
+      await unsafePrismaAdmin.$executeRawUnsafe(
+        `UPDATE _prisma_migrations SET checksum = $1 WHERE migration_name = $2`,
+        sha, MIGRATION_ID,
+      );
+      return NextResponse.json({ updatedChecksum: sha });
+    }
     if (action === 'migrate-status') {
       // Ground truth on prod: list every applied migration + look for
       // markers that would trip `prisma migrate deploy` next time.
