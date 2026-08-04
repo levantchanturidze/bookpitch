@@ -38,7 +38,6 @@ const NO_GUARD_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   { path: 'app/api/webhooks/payment/route.ts',      reason: 'Payment gateway webhook — HMAC signature' },
   { path: 'app/api/webhooks/stripe/route.ts',       reason: 'Stripe webhook — Stripe signature' },
   { path: 'app/(app)/settings/page.tsx',            reason: 'Redirect page — inherits settings/layout.tsx guard' },
-  { path: 'app/api/admin/apply-bookpitch-login/route.ts', reason: 'TEMPORARY — one-shot MINT_TOKEN-gated, remove after apply' },
 ];
 
 const GUARD_RE = /(requireAuthContext|requirePermission|requireSession)\s*\(/;

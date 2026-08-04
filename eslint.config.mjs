@@ -57,9 +57,6 @@ const UNSAFE_DB_ALLOWLIST = [
   "prisma/**",
   "scripts/**",
   "tests/**",
-  // TEMPORARY — remove after apply. One-shot to work around F-06 auth
-  // failure by applying the bookpitch_login migration via unsafePrismaAdmin.
-  "app/api/admin/apply-bookpitch-login/route.ts",
 ];
 
 const RESTRICT_UNSAFE_DB = {
