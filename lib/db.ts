@@ -102,13 +102,21 @@ const REPLICA_URL =
 // SEC-007 narrow-role URL. When set, powers the login/auth-context hot path
 // via a role with BYPASSRLS but SELECT grants ONLY on the auth-graph tables
 // (app_users, memberships, organizations, roles, role_permissions,
-// membership_branches, impersonation_sessions, break_glass_sessions). If
-// unset, prismaLogin falls back to unsafePrismaAdmin — same behavior as
-// today, no runtime change. Operator setup: run the
-// 20260804000000_bookpitch_login_role migration (creates the role), set a
-// password via `ALTER USER bookpitch_login WITH PASSWORD '...'` in the
-// Supabase SQL editor, add the URL as DATABASE_URL_LOGIN in Vercel.
-const LOGIN_URL = process.env.DATABASE_URL_LOGIN;
+// membership_branches, impersonation_sessions, break_glass_sessions).
+//
+// Fallback rules — carefully bounded so a typo can't cause a privilege
+// escalation:
+//   • Unset (undefined) or blank/whitespace-only → prismaLogin aliases to
+//     unsafePrismaAdmin. Safe — same behavior as pre-SEC-007. Boot log
+//     line surfaces this so operators know the narrow role isn't active.
+//   • Set + nonblank → prismaLogin is built as a distinct client. If the
+//     URL is wrong (bad password, role missing, network fail), the first
+//     query fails at Postgres (500). We do NOT fall back to
+//     unsafePrismaAdmin in that case — a silent fallback would be a
+//     privilege escalation triggered by a typo. Failures propagate.
+const _LOGIN_URL_RAW = process.env.DATABASE_URL_LOGIN;
+const LOGIN_URL =
+  _LOGIN_URL_RAW && _LOGIN_URL_RAW.trim().length > 0 ? _LOGIN_URL_RAW : undefined;
 
 // Report by the new name so misconfiguration diagnostics point at the
 // canonical env var. If a caller ONLY set a legacy name, the message
@@ -120,22 +128,27 @@ export const unsafePrismaAdmin: PrismaClient =
   globalForPrisma.unsafePrismaAdmin ??
   build(SUPERUSER_URL, 'DATABASE_URL_SUPERUSER_TXPOOL');
 
-// SEC-007 narrow-role client. If DATABASE_URL_LOGIN is set, this is a
-// distinct PrismaClient backed by the bookpitch_login role — BYPASSRLS
-// (necessary for the pre-tenant auth queries) but with SELECT grants on
-// only 8 auth-graph tables. Any accidental query outside that set fails
-// with `permission denied for table X` at the Postgres layer, shrinking
-// the blast radius of the hot path from "every table" to "auth tables."
-//
-// Until the operator sets the password + env var, this transparently
-// aliases to unsafePrismaAdmin — zero runtime change. lib/rbac/context.ts
-// imports THIS symbol; the fallback keeps buildAuthContext working
-// throughout the operator setup delay.
+// SEC-007 narrow-role client. See LOGIN_URL fallback rules above.
 export const prismaLogin: PrismaClient =
   globalForPrisma.prismaLogin ??
   (LOGIN_URL
     ? build(LOGIN_URL, 'DATABASE_URL_LOGIN')
     : unsafePrismaAdmin);
+
+// Boot-time visibility. Ops needs to be able to grep Vercel logs and
+// know which role is powering the auth path right now — otherwise a
+// missing/blank env var silently returns to the wide-blast-radius
+// superuser client. Only emit once per module init.
+if (!globalForPrisma.prismaLogin) {
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    level: 'info',
+    msg: 'db.prismaLogin.init',
+    activeVar: LOGIN_URL ? 'DATABASE_URL_LOGIN' : 'unsafePrismaAdmin (fallback)',
+    narrowRoleActive: Boolean(LOGIN_URL),
+  }));
+}
 
 // Read replica — falls back to prismaApp when the replica URL is unset so
 // dev never breaks. Only used by lib/db-replica.ts::withOrgReplica for

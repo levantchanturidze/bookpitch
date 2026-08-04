@@ -1026,10 +1026,73 @@ Files updated: `lib/db.ts` (precedence-lookup fallbacks), `.env.example`
 
 ### End state — option 3 shipped 2026-08-04
 
-**`bookpitch_login`** role: `BYPASSRLS` (necessary — buildAuthContext
-runs BEFORE org context is established, so RLS on memberships /
-organizations would filter to zero rows), `NOSUPERUSER`, LOGIN, and
-`SELECT` grants on ONLY these 8 tables:
+#### Security model for bookpitch_login — different from bookpitch_app
+
+**bookpitch_app** (runtime tenant queries): NOBYPASSRLS.
+RLS is the enforcer. If a query forgets its `organizationId` filter,
+the RLS policy `organization_id = current_org_id()` returns zero
+rows. Even a superuser bug can't leak cross-tenant data through this
+role.
+
+**bookpitch_login** (auth-context construction): **BYPASSRLS.**
+This is deliberate. `buildAuthContext` runs BEFORE tenant scope
+exists — it's the code that resolves *which* org the caller is in.
+Before that resolution runs, `current_org_id()` is unset and every
+RLS policy would return zero rows. If bookpitch_login were
+NOBYPASSRLS, auth would break entirely: the membership lookup
+returns nothing → buildAuthContext returns null → every request 401s.
+
+The security guarantee for this role is therefore **not RLS**. It is
+**table grants**. The role can SELECT from exactly 8 auth-graph
+tables and nothing else. A bug that ever routed a customer, staff,
+appointment, payment, waitlist, or clinical-note read through
+prismaLogin fails with `permission denied for table <name>` at
+Postgres before the query executes. This is the second layer of
+defense, in a different form: RLS defends bookpitch_app, GRANTs
+defend bookpitch_login.
+
+**Proven live 2026-08-04.** Ran the migration locally, set a probe
+password for bookpitch_login, connected as that role via psql, and
+attempted `SELECT 1 FROM <table> LIMIT 1` against every table.
+Output:
+
+```
+EXPECTED-ALLOWED tables (should all say ALLOWED):
+  app_users                        ALLOWED
+  memberships                      ALLOWED
+  organizations                    ALLOWED
+  roles                            ALLOWED
+  role_permissions                 ALLOWED
+  membership_branches              ALLOWED
+  impersonation_sessions           ALLOWED
+  break_glass_sessions             ALLOWED
+
+EXPECTED-DENIED tables (should all say DENIED):
+  customers                        DENIED     ← client PII
+  appointments                     DENIED
+  staff                            DENIED
+  staff_availability               DENIED
+  services                         DENIED
+  locations                        DENIED
+  branches                         DENIED
+  payments                         DENIED     ← financial
+  message_templates                DENIED
+  message_log                      DENIED
+  notifications                    DENIED
+  treatment_history                DENIED     ← clinical
+  waitlist                         DENIED
+  audit_log                        DENIED     ← forensic
+  invitations                      DENIED
+  ownership_transfers              DENIED
+```
+
+The 8 auth-graph tables carry no clinical or client-PII data (they
+carry email addresses, role names, permission keys, session tokens,
+branch IDs). If prismaLogin is ever silently rerouted to read those,
+the GRANT layer refuses.
+
+**`bookpitch_login`** role: `BYPASSRLS` (see above), `NOSUPERUSER`,
+LOGIN, and `SELECT` grants on ONLY these 8 tables:
 
 - `app_users`
 - `memberships`
@@ -1046,11 +1109,21 @@ fails at the Postgres GRANT layer with `permission denied for table
 customers` — the hot path physically cannot reach clinical, customers,
 appointments, payments, audit_log, etc.
 
-**Ships behind a fallback.** When `DATABASE_URL_LOGIN` is unset,
-`prismaLogin` transparently aliases to `unsafePrismaAdmin` (see
-`lib/db.ts`) — no runtime behavior change. Runtime code is safe to
-deploy immediately. Operator setup (any time after the migration
-lands via GH Actions):
+**Ships behind a bounded fallback.** Fallback rules (see `lib/db.ts`):
+- `DATABASE_URL_LOGIN` unset OR blank/whitespace-only → prismaLogin
+  aliases to unsafePrismaAdmin. Safe fallback; same behavior as
+  pre-SEC-007. Boot log line surfaces this (`db.prismaLogin.init`,
+  `narrowRoleActive: false`) so operators can grep Vercel logs and
+  see the narrow role isn't active yet.
+- `DATABASE_URL_LOGIN` set + nonblank → prismaLogin is built as a
+  distinct client. **If the connection fails at first query (wrong
+  password, missing role, network fail), the failure propagates as a
+  500 — we do NOT silently fall back to unsafePrismaAdmin.** A silent
+  fallback would be a privilege escalation triggered by a typo.
+- Boot log always identifies which var powered the client, so any
+  drift is visible in logs.
+
+Operator setup (any time after the migration lands via GH Actions):
 
 1. Run `ALTER USER bookpitch_login WITH PASSWORD '<generated>'` in
    the Supabase SQL editor.
