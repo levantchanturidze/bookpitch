@@ -106,12 +106,26 @@ jobs:
           )
           # Find an already-open issue with the same title so repeated
           # failures don't spam. Update the body if found; create if not.
+          # SEC-007 followup #2 (2026-08-04): a labeled issue alone wasn't
+          # enough — issue #1 sat unnoticed for 15+ minutes before it was
+          # read out of a report. GitHub only pushes @mentions and
+          # assignments to a user's inbox / email / mobile app by
+          # default, not new-issue creation. Assign the repo owner so
+          # they actually get pinged.
+          ASSIGNEE="${{ github.repository_owner }}"
           EXISTING=$(gh issue list --repo ${{ github.repository }} --state open --search "$TITLE in:title" --json number --jq '.[0].number' 2>/dev/null || echo "")
           if [ -n "$EXISTING" ]; then
+            # Re-assign on every comment so a snoozed notification pings again.
             gh issue comment "$EXISTING" --repo ${{ github.repository }} --body "$BODY"
+            gh issue edit "$EXISTING" --repo ${{ github.repository }} --add-assignee "$ASSIGNEE" 2>/dev/null || true
           else
             # Try to ensure the label exists (cheap, idempotent). Ignore failure.
             gh label create migrate-workflow-failure --repo ${{ github.repository }} --color "d73a4a" --description "F-06 migration workflow failed" 2>/dev/null || true
-            gh issue create --repo ${{ github.repository }} --title "$TITLE" --body "$BODY" --label "migrate-workflow-failure" 2>/dev/null \
+            # Issue-create with assignee. If the assignee flag is rejected
+            # for any reason (permissions, empty owner), fall back to
+            # unassigned so we still open the ticket.
+            gh issue create --repo ${{ github.repository }} --title "$TITLE" --body "$BODY" \
+              --label "migrate-workflow-failure" --assignee "$ASSIGNEE" 2>/dev/null \
+              || gh issue create --repo ${{ github.repository }} --title "$TITLE" --body "$BODY" --label "migrate-workflow-failure" 2>/dev/null \
               || gh issue create --repo ${{ github.repository }} --title "$TITLE" --body "$BODY"
           fi

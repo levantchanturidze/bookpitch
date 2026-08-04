@@ -130,74 +130,76 @@ was in the same category as the sign-in-dead-while-tests-passed
 incident, so failure notification is now part of the workflow itself,
 not an external monitor.
 
-## Two operator actions still open — same shape of URL error on both
+## Both operator actions closed — 2026-08-04
 
-Both remaining vars fail with `28P01 password authentication failed`
-because the URL format the operator used didn't match the shape
-Supabase's pooler requires. This was verified against prod on
-2026-08-04:
+**MIGRATE secret** — updated to the current postgres password with
+`postgres.cglqphbebckvpeyisqqb` username. Workflow re-run
+(30932908856) passed in 1m9s. `_prisma_migrations` in prod has all
+34 rows with correct SHA-256 checksums; future runs are a no-op
+unless a new migration file lands.
 
-- The MIGRATE secret in GitHub Actions: `Authentication failed
-  against database server, the provided database credentials for
-  "postgres" are not valid` — note the bare `"postgres"` in the
-  error message.
-- `DATABASE_URL_SUPERUSER_TXPOOL` on Vercel: `/api/health` returned
-  `errorCode: "28P01"` within seconds of the redeploy that picked up
-  the var. Removed immediately (revert-first rule); prod recovered
-  on `ADMIN_DATABASE_URL` fallback.
+**TXPOOL** — set on Production + Preview with the correct URL shape.
+`/api/health` reports `DATABASE_URL_SUPERUSER_TXPOOL` as the
+admin-side key. Every authenticated request now routes
+`unsafePrismaAdmin` through the transaction pool; the session pool
+via `ADMIN_DATABASE_URL` is fallback-only. Concurrency probe run:
+100 concurrent requests to `/api/health` (which fires three
+parallel `SELECT 1`s per request across prismaApp, unsafePrismaAdmin
+on TXPOOL, and prismaLogin — so up to 300 concurrent tx-pool queries
+in flight), 40 worker threads, all 100 returned 200 in a wall time
+of 2.06s. p50 255ms, p95 540ms, p99 1.9s, zero slow (>10s), zero
+non-200. No connection starvation, no auth thrashing, no deadlock
+signatures.
 
-**The fix for both is the same URL shape.** Supabase's pooler
-requires the username to be `postgres.<project-ref>` regardless of
-which port (5432 session vs. 6543 tx-pool). Every working URL in
-`.env.supabase` follows this pattern; the two the operator set with
-bare `postgres` fail auth. For this project the ref is
-`cglqphbebckvpeyisqqb` (visible in the direct URL host
-`db.cglqphbebckvpeyisqqb.supabase.co`).
+### Diagnostic history — this was harder than it should have been
 
-Correct URL shape for both:
+The first two attempts to activate TXPOOL both returned `28P01`
+under load, and the initial diagnosis (mine) was that the URL had
+bare `postgres` instead of `postgres.<project-ref>`. That was
+wrong. Actual root cause: **the postgres role password had been
+rotated since the secrets were captured**, and the operator's
+`.env.supabase` also had the stale password.
 
-    Session pool (MIGRATE + fallback):
-      postgresql://postgres.cglqphbebckvpeyisqqb:<pw>@aws-0-eu-central-1.pooler.supabase.com:5432/postgres
+The reason the misdiagnosis stuck for so long:
 
-    Transaction pool (TXPOOL):
-      postgresql://postgres.cglqphbebckvpeyisqqb:<pw>@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
+- `verify-postgres.py` v1 defaulted the username to bare `postgres`,
+  which the Supabase pooler rejects at the tenant-routing step with
+  a proprietary `ENOIDENTIFIER` error (no SQLSTATE). The v1 script's
+  classifier didn't recognize that pattern → fell through to
+  `XX000` → the operator got a return code that neither confirmed
+  nor denied the password. The password was never actually tested.
+- The failing `pg` error message for a wrong password on a correctly-
+  formatted `postgres.<ref>@...` URL reports the failure as
+  `for user "postgres"` (pgbouncer strips the suffix before
+  forwarding the failure). That looked like proof of the bare-user
+  hypothesis; it wasn't.
+- Two probes with dummy passwords against the pooler — one with
+  bare `postgres`, one with `postgres.<ref>` — produced two
+  different errors and settled it. The v2 script (current) requires
+  the correct username format, refuses to run with bare user names
+  on pooler hosts, classifies `ENOIDENTIFIER` correctly, and prints
+  the full psql stderr on unclassified errors.
 
-The six things to double-check every time: `postgres.<project-ref>`
-as username, `pooler.supabase.com` subdomain (not `db.`), port `5432`
-for session / `6543` for tx-pool, `?pgbouncer=true&connection_limit=1`
-on the tx-pool query string, and the current postgres role password
-(rotate via the Supabase dashboard's Reset Database Password action;
-that ONLY touches postgres, not bookpitch_app — the bookpitch_app
-password needs a separate `ALTER USER bookpitch_app WITH PASSWORD`
-in the SQL editor, and that mismatch started F-12).
+**Lesson.** A diagnostic tool that swallows the underlying error is
+worse than no tool — it produces confident-looking false negatives.
+`verify-postgres.py` now surfaces raw stderr on any XX000 path.
 
-**Password verification tool.** `scripts/verify-postgres.py` prompts
-for a password via getpass and prints "ok" or a 5-char SQLSTATE.
-Doesn't commit anything, doesn't echo the password. Use it before
-setting either var:
+### Rules newly promoted from this round
 
-    scripts/verify-postgres.py aws-0-eu-central-1.pooler.supabase.com
-
-**After fixing:**
-
-- **MIGRATE secret:** GitHub → Settings → Secrets and variables →
-  Actions → update `DATABASE_URL_SUPERUSER_MIGRATE`. Trigger with
-  `gh workflow run migrate.yml --repo levantchanturidze/bookpitch
-  --ref main`. Any future failure opens a GH issue automatically
-  (verified live 2026-08-04 — issue #2 opened on the last failure).
-  Zero pending migrations — `_prisma_migrations` in prod has all 34
-  rows including the SEC-007 bookpitch_login role migration, with
-  correct SHA-256 checksums. `prisma migrate deploy` will be a no-op
-  the first time it runs cleanly.
-- **TXPOOL:** Vercel → Environment Variables → add
-  `DATABASE_URL_SUPERUSER_TXPOOL` on both Production and Preview
-  with the correct URL shape above. Trigger a redeploy;
-  `/api/health` should report `DATABASE_URL_SUPERUSER_TXPOOL` as
-  the admin-side key instead of `ADMIN_DATABASE_URL`. Once that's
-  live, the concurrency probe against nested `withOrg` under
-  transaction pooling can finally run — the local session-pool probe
-  (P7.4 in the security suite) passes and the shape should carry
-  over, but that's a belief, not proof.
+- Diagnostic tools intended to answer "is this credential valid" must
+  reproduce the exact URL shape the target system expects, and must
+  never suppress the underlying error. If the classifier doesn't
+  recognize a code, print the stderr.
+- `pg` and `pgbouncer` error messages about authentication are
+  unreliable indicators of URL format — the underlying protocol
+  strips role suffixes for reporting. Confirm URL shape from a
+  known-working example, not from the failure message.
+- Workflow-failure GitHub issues need explicit assignees. The Aug 4
+  round proved that a plain labeled issue sits unnoticed for the
+  same reason a passing test suite over a broken app does: nobody
+  looks. `.github/workflows/migrate.yml` now sets the repo owner as
+  assignee on both create and re-comment paths so any snoozed
+  notification re-fires.
 
 ## The fallback removal in lib/db.ts
 
