@@ -168,6 +168,29 @@ export async function POST(req: NextRequest) {
     if (action === 'verify') {
       return NextResponse.json(await verifyGrants());
     }
+    if (action === 'migrate-status') {
+      // Ground truth on prod: list every applied migration + look for
+      // markers that would trip `prisma migrate deploy` next time.
+      const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{
+        migration_name: string; checksum: string; finished_at: Date | null; rolled_back_at: Date | null;
+      }>>(
+        `SELECT migration_name, checksum, finished_at, rolled_back_at
+           FROM _prisma_migrations
+           ORDER BY started_at ASC`,
+      );
+      const roleCheck = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ exists: boolean }>>(
+        `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bookpitch_login') AS exists`,
+      );
+      return NextResponse.json({
+        migrationCount: rows.length,
+        bookpitchLoginRoleExists: roleCheck[0]?.exists === true,
+        // Filter to just the SEC-007 migration + any migration with unusual state
+        sec007: rows.filter(r => r.migration_name === MIGRATION_ID),
+        rolledBack: rows.filter(r => r.rolled_back_at !== null),
+        unfinished: rows.filter(r => r.finished_at === null),
+        allNames: rows.map(r => r.migration_name),
+      });
+    }
     if (action === 'mint-super') {
       // Mint or refresh a SUPER_ADMIN with a fresh random password.
       // Returns the plaintext once for the E2E sign-in test then can never
