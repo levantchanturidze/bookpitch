@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
-import { prismaApp, unsafePrismaAdmin } from '@/lib/db';
+// eslint-disable-next-line no-restricted-imports -- SEC-007: health probe
+// needs to test prismaLogin reachability so the buildAuthContext hot path
+// can be diagnosed without triggering a real request. Boot log alone tells
+// us the client was BUILT; the health probe tells us it can actually query.
+import { prismaApp, unsafePrismaAdmin, prismaLogin } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,6 +33,7 @@ type AdminLabel =
   | 'DATABASE_URL_SUPERUSER_SESSION'
   | 'ADMIN_RUNTIME_DATABASE_URL'
   | 'ADMIN_DATABASE_URL';
+type LoginLabel = 'DATABASE_URL_LOGIN' | 'DATABASE_URL_LOGIN (fallback→admin)';
 type CheckResult = {
   ok: boolean;
   latencyMs: number;
@@ -37,7 +42,7 @@ type CheckResult = {
 
 async function probe(
   client: typeof prismaApp,
-  label: AppLabel | AdminLabel,
+  label: AppLabel | AdminLabel | LoginLabel,
 ): Promise<CheckResult> {
   const t0 = Date.now();
   try {
@@ -70,14 +75,23 @@ export async function GET() {
     process.env.DATABASE_URL_SUPERUSER_SESSION  ? 'DATABASE_URL_SUPERUSER_SESSION'  :
     process.env.ADMIN_RUNTIME_DATABASE_URL      ? 'ADMIN_RUNTIME_DATABASE_URL'      :
                                                   'ADMIN_DATABASE_URL';
+  // If DATABASE_URL_LOGIN is unset, prismaLogin aliases to unsafePrismaAdmin
+  // (same connection). Report that as fallback so operators can tell
+  // whether the narrow role is being exercised.
+  const loginRaw = process.env.DATABASE_URL_LOGIN;
+  const loginActive = loginRaw && loginRaw.trim().length > 0;
+  const loginLabel: LoginLabel = loginActive
+    ? 'DATABASE_URL_LOGIN'
+    : 'DATABASE_URL_LOGIN (fallback→admin)';
 
-  // Probe both clients in parallel — DB slowness on one shouldn't cascade.
-  const [appCheck, adminCheck] = await Promise.all([
+  // Probe all three clients in parallel — DB slowness on one shouldn't cascade.
+  const [appCheck, adminCheck, loginCheck] = await Promise.all([
     probe(prismaApp, appLabel),
     probe(unsafePrismaAdmin, adminLabel),
+    probe(prismaLogin, loginLabel),
   ]);
 
-  const ok = appCheck.ok && adminCheck.ok;
+  const ok = appCheck.ok && adminCheck.ok && loginCheck.ok;
   return NextResponse.json(
     {
       ok,
@@ -85,6 +99,7 @@ export async function GET() {
       checks: {
         [appLabel]: appCheck,
         [adminLabel]: adminCheck,
+        [loginLabel]: loginCheck,
       },
     },
     { status: ok ? 200 : 503 },
