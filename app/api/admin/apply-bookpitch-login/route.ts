@@ -42,15 +42,14 @@ async function isAlreadyApplied(): Promise<boolean> {
 }
 
 async function markApplied(): Promise<void> {
-  // Match the _prisma_migrations shape Prisma writes. checksum is NOT
-  // actually verified by `prisma migrate deploy` at read time — it's
-  // used for drift detection which we'd expect to run against the file.
+  // _prisma_migrations.migration_name is not UNIQUE (only id is PK), so
+  // ON CONFLICT (migration_name) is invalid. Guard with an existence check.
+  if (await isAlreadyApplied()) return;
   await unsafePrismaAdmin.$executeRawUnsafe(
     `INSERT INTO _prisma_migrations
        (id, checksum, finished_at, migration_name, logs, rolled_back_at, started_at, applied_steps_count)
      VALUES
-       (gen_random_uuid()::text, 'one-shot-apply', now(), $1, NULL, NULL, now(), 1)
-     ON CONFLICT (migration_name) DO NOTHING`,
+       (gen_random_uuid()::text, 'one-shot-apply', now(), $1, NULL, NULL, now(), 1)`,
     MIGRATION_ID,
   );
 }
@@ -87,8 +86,11 @@ async function applyMigration(): Promise<{ applied: boolean; alreadyExisted: boo
 }
 
 async function verifyGrants(): Promise<{
-  allowed: Array<{ table: string; ok: boolean; err?: string }>;
-  denied:  Array<{ table: string; ok: boolean; err?: string }>;
+  currentUser: string;
+  roleExists: boolean;
+  allowed?: Array<{ table: string; ok: boolean; err?: string }>;
+  denied?:  Array<{ table: string; ok: boolean; err?: string }>;
+  note?: string;
 }> {
   // Use pg directly so SET ROLE + query + RESET ROLE all run on the same
   // connection (Prisma pooling would drop the SET on connection release).
@@ -101,6 +103,24 @@ async function verifyGrants(): Promise<{
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
+    const cu = await client.query<{ current_user: string }>(`SELECT current_user`);
+    const currentUser = cu.rows[0]?.current_user ?? 'unknown';
+
+    const roleCheck = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bookpitch_login') AS exists`,
+    );
+    const roleExists = roleCheck.rows[0]?.exists === true;
+
+    if (!roleExists) {
+      return { currentUser, roleExists, note: 'role does not exist yet — apply the migration first' };
+    }
+
+    // Grant current_user membership in bookpitch_login so SET ROLE is
+    // allowed. On Supabase, "postgres" is not the true SUPERUSER, so
+    // SET ROLE bookpitch_login is denied unless postgres was GRANTED
+    // membership. Idempotent — a re-grant is a no-op.
+    await client.query(`GRANT bookpitch_login TO CURRENT_USER`);
+
     await client.query(`SET ROLE bookpitch_login`);
     const probe = async (table: string) => {
       try {
@@ -116,7 +136,7 @@ async function verifyGrants(): Promise<{
     for (const t of ALLOWED_TABLES) allowed.push(await probe(t));
     for (const t of DENIED_TABLES)  denied.push(await probe(t));
     await client.query(`RESET ROLE`);
-    return { allowed, denied };
+    return { currentUser, roleExists, allowed, denied };
   } finally {
     await client.end();
   }
