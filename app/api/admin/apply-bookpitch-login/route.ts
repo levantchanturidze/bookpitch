@@ -235,7 +235,40 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json({ userId: user.id, email: user.email, password });
     }
-    return NextResponse.json({ error: 'action must be status | apply | verify | mint-super' }, { status: 400 });
+    if (action === 'delete-probe-user') {
+      const bodyAny = body as { email?: unknown };
+      const email = typeof bodyAny.email === 'string' && bodyAny.email
+        ? bodyAny.email.toLowerCase() : null;
+      if (!email || !email.endsWith('@bookpitch.internal')) {
+        return NextResponse.json({ error: 'refusing — email must end with @bookpitch.internal' }, { status: 400 });
+      }
+      // Only delete if the user has no audit_log rows attributing them —
+      // otherwise soft-mask instead (audit_log FK is ON DELETE NO ACTION).
+      const user = await unsafePrismaAdmin.appUser.findUnique({
+        where: { email }, select: { id: true },
+      });
+      if (!user) return NextResponse.json({ deleted: false, reason: 'not found' });
+      const auditCount = await unsafePrismaAdmin.auditLog.count({
+        where: { actorUserId: user.id },
+      });
+      if (auditCount === 0) {
+        await unsafePrismaAdmin.appUser.delete({ where: { id: user.id } });
+        return NextResponse.json({ deleted: true, method: 'hard' });
+      }
+      // Soft-mask: neutralize the login, retain the row for audit-log FK.
+      await unsafePrismaAdmin.appUser.update({
+        where: { id: user.id },
+        data: {
+          status: 'deleted',
+          passwordHash: null,
+          platformRoleId: null,
+          email: `deleted-${user.id}@bookpitch.invalid`,
+          sessionVersion: { increment: 1 },
+        },
+      });
+      return NextResponse.json({ deleted: true, method: 'soft-mask', auditRows: auditCount });
+    }
+    return NextResponse.json({ error: 'action must be status | apply | verify | mint-super | migrate-status | fix-checksum | delete-probe-user' }, { status: 400 });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message.slice(0, 500) }, { status: 500 });
   }

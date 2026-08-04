@@ -42,6 +42,9 @@ jobs:
   migrate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write   # allow the failure-notify step to open an issue
     steps:
       - uses: actions/checkout@v4
 
@@ -67,3 +70,48 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: npx prisma migrate status
+
+      # SEC-007 followup: the F-06 workflow silently failed for a week
+      # before it was noticed (Aug 2026 audit). Any failure here now opens
+      # or updates a labeled GitHub issue that pages via GitHub's own
+      # notification chain. No external Slack dependency.
+      - name: Notify on failure — open or update a GitHub issue
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TITLE="[urgent] Migration workflow failed"
+          BODY=$(cat <<EOF
+          The Deploy Database Migrations workflow failed on \`main\`.
+
+          **Commit:** \`${COMMIT_SHA}\`
+          **Run:** ${RUN_URL}
+
+          The DB schema in production is now behind the code that just deployed
+          via Vercel. Expand-only migrations tolerate a brief window, but this
+          state is not stable — investigate now, not on the next deploy.
+
+          Common causes (in order of history):
+          - **Stale DATABASE_URL_SUPERUSER_MIGRATE secret** (postgres password rotated after the secret was set — 28P01 in the log)
+          - Migration file syntax error
+          - Advisory-lock contention with a concurrent process
+          - Timeouts on a slow-running migration
+
+          Auto-created by \`.github/workflows/migrate.yml\`. Close manually
+          once the underlying issue is fixed and a successful run is confirmed.
+          EOF
+          )
+          # Find an already-open issue with the same title so repeated
+          # failures don't spam. Update the body if found; create if not.
+          EXISTING=$(gh issue list --repo ${{ github.repository }} --state open --search "$TITLE in:title" --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo ${{ github.repository }} --body "$BODY"
+          else
+            # Try to ensure the label exists (cheap, idempotent). Ignore failure.
+            gh label create migrate-workflow-failure --repo ${{ github.repository }} --color "d73a4a" --description "F-06 migration workflow failed" 2>/dev/null || true
+            gh issue create --repo ${{ github.repository }} --title "$TITLE" --body "$BODY" --label "migrate-workflow-failure" 2>/dev/null \
+              || gh issue create --repo ${{ github.repository }} --title "$TITLE" --body "$BODY"
+          fi

@@ -1,9 +1,48 @@
 # RBAC — Post-launch Findings Backlog
 
 Findings surfaced during the production sign-in bootstrap on 2026-07-30.
-Not fixed in that session by design — each needs its own review + code
-change + tests. Priority markers are the reviewer's initial cut, not
-authoritative.
+Priority markers are the reviewer's initial cut, not authoritative.
+
+## Status snapshot — 2026-08-04
+
+**All P0 items closed.** SEC-007 end-state (narrow bookpitch_login role)
+shipped and verified live in prod.
+
+| ID   | Priority | Status | Notes |
+|------|----------|--------|-------|
+| F-01 | P1 | ✅ Fixed 2026-08-02 | Dev seed accounts masked + org soft-deleted |
+| F-02 | P1 | ✅ Fixed 2026-08-03 | Local-DB guard in seed scripts |
+| F-03 | P2 | ✅ Fixed 2026-08-03 | create-platform-user writes audit row |
+| F-04 | P2 | ✅ Verified clean | /platform ACL layer intact |
+| F-05 | P2 | 🟡 Partial 2026-08-03 | validateCredentials integration test in |
+| F-06 | P1 | 🟡 Workflow active 2026-08-04 | Failure-notification issue-creation step added; secret name variant covered |
+| F-07 | P0 | ✅ Fixed 2026-08-02 | Enforcement mode live in prod |
+| F-08 | P2 | 🟡 §6.1 mostly closed | Subscription/billing dashboard still needs Stripe integration |
+| F-09 | P1 | ✅ Fixed 2026-08-02 | `:own` scope list-mode grant + 6 route migrations |
+| F-10 | P2 | ✅ Fixed 2026-08-03 | Role-aware landing |
+| F-11 | P1 | 🟡 Plumbing shipped, activation partially reverted | See below |
+| F-12 | P0 | ✅ Handled | CLAUDE.md rule + per-var health check |
+
+**SEC findings (from Phase 7 adversarial review):**
+
+| ID     | Severity | Status |
+|--------|----------|--------|
+| SEC-001 | Medium | ✅ Fixed 2026-07-29 |
+| SEC-002 | Low-Med | ✅ Fixed 2026-07-29 |
+| SEC-003 | High | ✅ Fixed 2026-07-29 |
+| SEC-004 | High | ✅ Fixed 2026-08-03 |
+| SEC-005 | Medium | ✅ Fixed 2026-08-03 |
+| SEC-006 | High | ✅ Fixed 2026-08-03 |
+| SEC-007 | High | ✅ Fixed 2026-08-03/04 — narrow bookpitch_login role active |
+
+Full details of SEC findings: `docs/rbac-security-review.md`.
+
+**Open (operator action needed):**
+1. **F-11 tx-pool activation** — `DATABASE_URL_SUPERUSER_TXPOOL` was set on Vercel but with credentials that failed auth (28P01). Removed to keep prod stable. Runtime currently falls back to `ADMIN_DATABASE_URL` (session pool). To activate: re-add `DATABASE_URL_SUPERUSER_TXPOOL` with the tx-pool endpoint (port 6543, `?pgbouncer=true&connection_limit=1`, correct password). Verify `/api/health` reports the new name after redeploy.
+2. **F-08 subscription mutations** — needs Stripe test/live keys wired for the write side.
+3. **F-06 GH secret rotation** — `DATABASE_URL_SUPERUSER_MIGRATE` has a stale postgres password; workflow needs it rotated to match current DB. Failure now opens a GH issue automatically.
+
+**Original 2026-07-30 backlog notes preserved below for reference.**
 
 ## F-01 · Two dev seed accounts in production · P1 · Security · FIXED 2026-08-02
 

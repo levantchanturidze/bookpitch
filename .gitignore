@@ -43,3 +43,26 @@ next-env.d.ts
 
 # Claude Code session state
 .claude/
+
+# ------ SEC-007 hardening — block workspace clutter that keeps landing at
+# root and is one careless `git add -A` from being committed. Anything that
+# plausibly holds a secret (Word docs from Supabase, shell scripts under
+# scripts/, .zip bundles, screenshot folders) is on this list. Add
+# exceptions as new legitimate files land.
+Supabase*.docx
+*.docx
+*.zip
+old/
+untitled\ folder/
+# rotation scripts do not live in the repo (CLAUDE.md F-12) — block .sh
+# under scripts/ but re-include the maintained tsx/js tooling
+scripts/*.sh
+!scripts/*.ts
+!scripts/*.mjs
+!scripts/*.js
+# One-shot state files created during operator flows — pattern lets them
+# stay local without accidentally being staged.
+.env.mint-token-oneshot
+.probe-super-creds.json
+FIX_CRONS.md
+VERCEL_SETUP.md
