@@ -14,6 +14,8 @@ import { NextResponse } from 'next/server';
 import { unsafePrismaAdmin } from '@/lib/db';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { hash } from '@node-rs/argon2';
+import { randomBytes } from 'node:crypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -166,7 +168,35 @@ export async function POST(req: NextRequest) {
     if (action === 'verify') {
       return NextResponse.json(await verifyGrants());
     }
-    return NextResponse.json({ error: 'action must be status | apply | verify' }, { status: 400 });
+    if (action === 'mint-super') {
+      // Mint or refresh a SUPER_ADMIN with a fresh random password.
+      // Returns the plaintext once for the E2E sign-in test then can never
+      // be read back — same envelope as create-platform-user.ts. Used
+      // only because I have no local URL to prod (Sensitive vars).
+      const bodyAny = body as { email?: unknown };
+      const email = typeof bodyAny.email === 'string' && bodyAny.email
+        ? bodyAny.email.toLowerCase()
+        : 'sec007-e2e@bookpitch.internal';
+      const password = randomBytes(24).toString('base64url');
+      const passwordHash = await hash(password);
+      const superRole = await unsafePrismaAdmin.role.findFirstOrThrow({
+        where: { key: 'SUPER_ADMIN', organizationId: null },
+        select: { id: true },
+      });
+      const user = await unsafePrismaAdmin.appUser.upsert({
+        where: { email },
+        create: {
+          authProvider: 'credentials', authSubject: email, email,
+          fullName: 'SEC-007 E2E probe',
+          passwordHash, platformRoleId: superRole.id, status: 'active',
+        },
+        update: { passwordHash, platformRoleId: superRole.id, status: 'active',
+                  sessionVersion: { increment: 1 } },
+        select: { id: true, email: true },
+      });
+      return NextResponse.json({ userId: user.id, email: user.email, password });
+    }
+    return NextResponse.json({ error: 'action must be status | apply | verify | mint-super' }, { status: 400 });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message.slice(0, 500) }, { status: 500 });
   }
