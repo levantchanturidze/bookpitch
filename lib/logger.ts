@@ -8,8 +8,13 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 // - Every emitted line is one JSON object; downstream (Vercel, Datadog,
 //   Sentry) all ingest this shape trivially.
 // - PHI rule: NEVER call log() with a customer name, email, phone, DOB,
-//   allergies, or clinical notes as a value. See `scrubPhi` for the strings
-//   we defensively drop — it's belt & braces, not the primary guard.
+//   allergies, or clinical notes as a value. `scrubPhi` runs unconditionally
+//   inside emit() so keys on PHI_KEY_NAMES get scrubbed to '[redacted]'
+//   before the JSON line hits stdout — it IS the primary guard now.
+//   Developer discipline is still the first layer; the scrubber is the
+//   second. Value-level PII embedded inside string values (a phone number
+//   spliced into an `err.message`) is not caught here — see
+//   docs/rbac-status.md for that follow-up.
 // -----------------------------------------------------------------------------
 
 export type LogContext = {
@@ -45,6 +50,11 @@ type Level = 'debug' | 'info' | 'warn' | 'error';
 
 function emit(level: Level, msg: string, fields?: Record<string, unknown>) {
   const ctx = storage.getStore();
+  // scrubPhi is now the primary guard (not just a Sentry hook). Every
+  // structured payload is scrubbed before the JSON line is emitted, so a
+  // developer who logs `{ email: user.email }` doesn't leak PII to
+  // stdout / Vercel logs / any downstream sink.
+  const scrubbed = fields ? scrubPhi(fields) : undefined;
   const line = {
     ts: new Date().toISOString(),
     level,
@@ -53,7 +63,7 @@ function emit(level: Level, msg: string, fields?: Record<string, unknown>) {
     orgId: ctx?.orgId,
     actorUserId: ctx?.actorUserId,
     route: ctx?.route,
-    ...(fields ?? {}),
+    ...(scrubbed ?? {}),
   };
   // Vercel + Datadog + Sentry-Log-drain all ingest a single JSON line.
   // console.error → stderr, console.log → stdout so the platform surfaces
@@ -75,12 +85,39 @@ export const log = {
 };
 
 // -----------------------------------------------------------------------------
-// Sentry hook — safe to wire even without the SDK installed. When the SDK
-// lands, import Sentry.init and pass `beforeSend: sentryBeforeSend`. This
-// scrubs common PHI-looking values from breadcrumbs and event context.
+// PII scrubbing.
+//
+// Every structured payload passed through emit() is walked and any key
+// matching PHI_KEY_NAMES gets its value replaced with '[redacted]'. This
+// is the primary guard, not a Sentry-only hook — the log line hitting
+// stdout / Vercel logs / any downstream sink is the one that's scrubbed.
+//
+// SEC-007 followup: the old broad pattern /email|phone|...|name/i also
+// matched serviceName / organizationName / providerName / hostname,
+// stripping legitimate operational context. This narrower list matches
+// exact key names known to carry client PII. New PII keys must be added
+// here explicitly — that's the point.
+//
+// Not covered here: value-level PII (a phone number substring inside an
+// arbitrary `err.message` string). That is a separate concern —
+// documented as an open item in docs/rbac-status.md. Fixing it means
+// intercepting err.message at the boundary, not in the logger.
 // -----------------------------------------------------------------------------
 
-const PHI_KEY_PATTERN = /email|phone|dob|allergies|clinical|notes|address|name/i;
+const PHI_KEY_NAMES: ReadonlySet<string> = new Set([
+  // Contact
+  'email', 'phone',
+  // Legal / demographic
+  'dob', 'address',
+  // Client identifiers — patterns we actually pass around
+  'customerName', 'patientName', 'clientName', 'fullName',
+  'customer_name', 'patient_name', 'client_name', 'full_name',
+  // Sensitive-category fields (Georgia 2024 data protection law)
+  'allergies', 'clinicalNotes', 'clinical_notes',
+  // Auth secrets — never in a log line
+  'password', 'passwordHash', 'password_hash', 'token', 'refreshToken',
+  'accessToken', 'apiKey', 'authSecret',
+]);
 
 export function scrubPhi<T>(value: T): T {
   if (value === null || value === undefined) return value;
@@ -88,7 +125,7 @@ export function scrubPhi<T>(value: T): T {
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (PHI_KEY_PATTERN.test(k)) {
+      if (PHI_KEY_NAMES.has(k)) {
         out[k] = '[redacted]';
       } else {
         out[k] = scrubPhi(v);
