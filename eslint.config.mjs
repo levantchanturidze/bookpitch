@@ -57,8 +57,6 @@ const UNSAFE_DB_ALLOWLIST = [
   "prisma/**",
   "scripts/**",
   "tests/**",
-  // TEMPORARY — E2E sign-in verification round. Remove after use.
-  "app/api/admin/apply-bookpitch-login/route.ts",
 ];
 
 const RESTRICT_UNSAFE_DB = {

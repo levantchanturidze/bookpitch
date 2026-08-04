@@ -72,8 +72,6 @@ export function isPublicPath(path: string): boolean {
     path.startsWith('/api/cron') ||
     // Mock gateway page + its callback are dev-only; a runtime notFound()
     // in the page itself hides them in production.
-    path.startsWith('/dev/') ||
-    // TEMPORARY — E2E sign-in verification round.
-    path === '/api/admin/apply-bookpitch-login'
+    path.startsWith('/dev/')
   );
 }

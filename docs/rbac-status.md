@@ -130,59 +130,74 @@ was in the same category as the sign-in-dead-while-tests-passed
 incident, so failure notification is now part of the workflow itself,
 not an external monitor.
 
-## Two operator actions still open
+## Two operator actions still open — same shape of URL error on both
 
-**One:** `DATABASE_URL_SUPERUSER_MIGRATE` GitHub Actions secret is
-stale. The workflow reads it fine — the value has the wrong postgres
-password. Rotate the postgres role's password (via Supabase
-dashboard's Reset Database Password action AND `ALTER USER
-bookpitch_app WITH PASSWORD '...'` in the SQL editor — the dashboard
-reset only touches postgres, not bookpitch_app, and that mismatch
-started F-12), then update the following env vars everywhere with the
-new password:
+Both remaining vars fail with `28P01 password authentication failed`
+because the URL format the operator used didn't match the shape
+Supabase's pooler requires. This was verified against prod on
+2026-08-04:
 
-- `DATABASE_URL_SUPERUSER_MIGRATE` — GitHub → Settings → Secrets and
-  variables → Actions
-- `ADMIN_DATABASE_URL` and `DATABASE_URL_SUPERUSER_SESSION` on Vercel
-  Production and Preview
-- Local `.env.supabase` and `.env.local` for anyone whose dev flow
-  uses them
-- `DATABASE_URL` on Vercel (uses bookpitch_app credentials, different
-  role — needs its own password rotation from the SQL editor step
-  above, then updated the same way)
+- The MIGRATE secret in GitHub Actions: `Authentication failed
+  against database server, the provided database credentials for
+  "postgres" are not valid` — note the bare `"postgres"` in the
+  error message.
+- `DATABASE_URL_SUPERUSER_TXPOOL` on Vercel: `/api/health` returned
+  `errorCode: "28P01"` within seconds of the redeploy that picked up
+  the var. Removed immediately (revert-first rule); prod recovered
+  on `ADMIN_DATABASE_URL` fallback.
 
-After that, trigger the workflow with `gh workflow run migrate.yml
---repo levantchanturidze/bookpitch --ref main`. Any future failure
-opens a GH issue automatically. Zero pending migrations right now —
-`_prisma_migrations` in prod has all 34 rows including the SEC-007
-bookpitch_login role migration, with correct SHA-256 checksums —
-`prisma migrate deploy` will be a no-op the first time it runs
-cleanly.
+**The fix for both is the same URL shape.** Supabase's pooler
+requires the username to be `postgres.<project-ref>` regardless of
+which port (5432 session vs. 6543 tx-pool). Every working URL in
+`.env.supabase` follows this pattern; the two the operator set with
+bare `postgres` fail auth. For this project the ref is
+`cglqphbebckvpeyisqqb` (visible in the direct URL host
+`db.cglqphbebckvpeyisqqb.supabase.co`).
 
-**Two:** `DATABASE_URL_SUPERUSER_TXPOOL` on Vercel had the wrong
-value. When it was set on 2026-08-04, `/api/health` returned `28P01
-password authentication failed` on the admin side within seconds —
-prod was degraded. Per the standing revert-first rule I removed the
-env var immediately, health recovered on fallback to
-`ADMIN_DATABASE_URL`. Root cause is probably one of two things:
-either the password in the value was stale (see item one), or the
-Supabase transaction-pool endpoint requires the username to be
-`postgres.<project-ref>` rather than `postgres` — the tx-pool port
-uses different auth from the direct port. When re-adding, use exactly
-this shape:
+Correct URL shape for both:
 
-    postgresql://postgres.<project-ref>:<password>@aws-<n>-<region>.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
+    Session pool (MIGRATE + fallback):
+      postgresql://postgres.cglqphbebckvpeyisqqb:<pw>@aws-0-eu-central-1.pooler.supabase.com:5432/postgres
 
-Note the six things: `postgres.<project-ref>` username (not bare
-`postgres`), the `pooler.supabase.com` subdomain (not `db.`), port
-`6543` (not `5432`), `pgbouncer=true` and `connection_limit=1` on the
-query string, and the current postgres password. Set on both
-Production and Preview. After redeploy, `/api/health` should report
-`DATABASE_URL_SUPERUSER_TXPOOL` as the admin-side key instead of
-`ADMIN_DATABASE_URL`. Once that's live, the concurrency probe against
-nested `withOrg` under transaction pooling can finally run — the
-local session-pool probe (P7.4 in the security suite) passes and I
-believe the shape carries over, but that's a belief, not proof.
+    Transaction pool (TXPOOL):
+      postgresql://postgres.cglqphbebckvpeyisqqb:<pw>@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
+
+The six things to double-check every time: `postgres.<project-ref>`
+as username, `pooler.supabase.com` subdomain (not `db.`), port `5432`
+for session / `6543` for tx-pool, `?pgbouncer=true&connection_limit=1`
+on the tx-pool query string, and the current postgres role password
+(rotate via the Supabase dashboard's Reset Database Password action;
+that ONLY touches postgres, not bookpitch_app — the bookpitch_app
+password needs a separate `ALTER USER bookpitch_app WITH PASSWORD`
+in the SQL editor, and that mismatch started F-12).
+
+**Password verification tool.** `scripts/verify-postgres.py` prompts
+for a password via getpass and prints "ok" or a 5-char SQLSTATE.
+Doesn't commit anything, doesn't echo the password. Use it before
+setting either var:
+
+    scripts/verify-postgres.py aws-0-eu-central-1.pooler.supabase.com
+
+**After fixing:**
+
+- **MIGRATE secret:** GitHub → Settings → Secrets and variables →
+  Actions → update `DATABASE_URL_SUPERUSER_MIGRATE`. Trigger with
+  `gh workflow run migrate.yml --repo levantchanturidze/bookpitch
+  --ref main`. Any future failure opens a GH issue automatically
+  (verified live 2026-08-04 — issue #2 opened on the last failure).
+  Zero pending migrations — `_prisma_migrations` in prod has all 34
+  rows including the SEC-007 bookpitch_login role migration, with
+  correct SHA-256 checksums. `prisma migrate deploy` will be a no-op
+  the first time it runs cleanly.
+- **TXPOOL:** Vercel → Environment Variables → add
+  `DATABASE_URL_SUPERUSER_TXPOOL` on both Production and Preview
+  with the correct URL shape above. Trigger a redeploy;
+  `/api/health` should report `DATABASE_URL_SUPERUSER_TXPOOL` as
+  the admin-side key instead of `ADMIN_DATABASE_URL`. Once that's
+  live, the concurrency probe against nested `withOrg` under
+  transaction pooling can finally run — the local session-pool probe
+  (P7.4 in the security suite) passes and the shape should carry
+  over, but that's a belief, not proof.
 
 ## The fallback removal in lib/db.ts
 
