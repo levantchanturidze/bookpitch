@@ -176,6 +176,15 @@ export async function acceptInvitation(
       create: { organizationId: invite.organizationId, userId, role: invite.role },
       update: {},
     });
+    // Owner invitations wire the org pointer so spec §9 rule 1 is satisfied
+    // immediately after acceptance — org operations blocked by assertOrgOwnerSet
+    // (updateMemberRole, removeMember, billing) become available right away.
+    if (invite.role === 'owner') {
+      await tx.organization.update({
+        where: { id: invite.organizationId },
+        data: { ownerUserId: userId },
+      });
+    }
     await tx.invitation.update({
       where: { id: invite.id },
       data: { status: 'accepted', acceptedAt: new Date() },
