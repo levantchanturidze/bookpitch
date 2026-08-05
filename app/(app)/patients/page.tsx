@@ -27,7 +27,7 @@ export default async function PatientsPage() {
       include: { treatmentHistory: { orderBy: { createdAt: 'desc' } } },
     });
     await writeAudit(tx, session, 'list', 'customer', null, { count: rows.length });
-    return rows.map(toCustomerDetailDto);
+    return rows.map((r) => toCustomerDetailDto(r, { ctx }));
   });
 
   return (

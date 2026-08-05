@@ -213,9 +213,9 @@ Compiled 2026-08-05 from `main`.
 |---|---|---|---|
 | Settings shell + tabs nav | `app/(app)/settings/layout.tsx` + `components/settings/TabsNav.tsx` | `org.settings.update:org` | Org |
 | Permissions/toggles panel (4 org-level toggles) | `app/(app)/settings/permissions/page.tsx` + `components/settings/PermissionsPanel.tsx` + `app/api/admin/toggles/route.ts` GET/PATCH | `org.settings.update:org` | Org |
-| Toggle: provider financial reports | Column: `organizations.features.providerFinancialReports` — read by NOTHING in code (see referenced-but-missing) | Owner sets | Org |
-| Toggle: provider access to other clinicians' notes | `organizations.features.providerClinicalNotesOthers` — read by NOTHING | Owner sets | Org |
-| Toggle: front-desk full client history | `organizations.features.frontdeskClientFullHistory` — read by NOTHING | Owner sets | Org |
+| Toggle: provider financial reports | Column: `organizations.features.providerFinancialReports` — enforced in `lib/rbac/can.ts::toggleGrantsPermission` (SEC-008 fix 2026-08-05) grants `report.branch` + `report.financial:{branch,org}` when ON | Owner sets | Org |
+| Toggle: provider access to other clinicians' notes | `organizations.features.providerClinicalNotesOthers` — enforced in `lib/rbac/can.ts::toggleGrantsPermission` grants `clinical_note.read:any` when ON; consumed by `lib/customers.ts::decideFullAccess` | Owner sets | Org |
+| Toggle: front-desk full client history | `organizations.features.frontdeskClientFullHistory` — enforced in `lib/rbac/can.ts::toggleGrantsPermission` grants `client.read:full` when ON; consumed by `lib/customers.ts::decideFullAccess` (SEC-008 fix 2026-08-05) | Owner sets | Org |
 | Toggle: front-desk discount ceiling (numeric) | `organizations.features.frontdeskDiscountCeiling` — enforced at `lib/payments/service.ts:244` | Owner sets | Per payment |
 | Reminders configuration page | `app/(app)/reminders/page.tsx` | `booking.update`; template edit needs `org.settings.update:org` | Org |
 | Privacy / DSR panel with customer picker (export / anonymize inline) | `app/(app)/settings/privacy/page.tsx` + `PrivacyView.tsx` | `org.settings.update:org` for the panel; individual actions require their own perms | Org |
@@ -282,7 +282,7 @@ Code paths that exist but no user can trigger via UI or normal API flows.
 - **`sentryBeforeSend`** (`lib/logger.ts`) — Sentry hook wired for `beforeSend` on Sentry SDK init. The Sentry SDK is not installed. Function is exported for the day it lands; today it's called by nothing.
 - **`lib/messaging/email/mock.ts`** + `lib/messaging/sms/mock.ts` — mock providers. Selected when `EMAIL_PROVIDER`/`SMS_PROVIDER` is unset. In prod both are set to real providers; the mocks exist for test + dev.
 - **`prismaReplica`** (`lib/db.ts`) — read replica client. Falls back to `prismaApp` when `DATABASE_URL_APP_REPLICA` is unset. The replica is used explicitly only by the audit viewer (`app/(app)/audit/page.tsx` via `withOrgReplica`). No replica URL is currently set in prod, so it silently aliases to primary.
-- **Analytics feature-flag hook** — `lib/features.ts::isFeatureEnabled` exists with three FLAGS: `assistant_streaming`, `patient_booking_widget`, `insurance_codes`. **None of them are checked anywhere in the codebase.** The plumbing exists (UI toggle, DB storage, cache); the gates don't. See "Referenced but missing" for what should be gating on these.
+- **~~Analytics feature-flag hook~~** — removed 2026-08-05. `lib/features.ts` and its three FLAGS (`assistant_streaming`, `patient_booking_widget`, `insurance_codes`) had no production callers, so the whole module + its test were deleted rather than left as configuration that lies (same class as SEC-008).
 
 # Partially built
 
@@ -292,16 +292,16 @@ Capabilities where the API exists without UI, or the UI exists without a working
 - **Ownership-transfer UI absent.** The endpoints exist: `POST /api/admin/ownership-transfer` (nominate), `POST /api/admin/ownership-transfer/[id]/accept`, `/decline`, `DELETE /api/admin/ownership-transfer/[id]` (revoke). No UI in `/settings/members` or anywhere else surfaces them. The nominee gets an email (`lib/admin/ownership-transfer.ts:104`) and an in-app notification, but there's no page listing pending transfers for the current user to accept.
 - **Waitlist page exists (`/waitlist`), waitlist-notify-customer flow doesn't.** When an appointment is cancelled, `notifyWaitlistForCancelled` marks matching entries `notified` and adds ONE aggregated in-app notification for staff (`lib/waitlist.ts:150`). It does NOT contact the customer — spec `docs/rbac-spec.md` describes this as intentional for MVP. Staff manually reach out via existing channels.
 - **Subscription billing UI vs. Stripe wiring.** The read-only billing panel shows plan + Stripe IDs. Checkout endpoint `POST /api/billing/checkout` exists. Stripe webhook handler `POST /api/webhooks/stripe` exists. But without `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` + `STRIPE_PRICE_ID_*` in prod, none of it does anything. Read-only view is functional; write-side is a dead code path in production.
-- **Assistant streaming.** `lib/assistant/` supports draft generation. `isFeatureEnabled('assistant_streaming')` flag exists but has no callsite. If someone wanted streaming responses they'd have to wire both the flag check and the streaming response path.
-- **Feature flag: `patient_booking_widget`.** The public booking widget at `/book/[slug]` exists and works. The feature flag intended to gate it doesn't check anywhere. So the widget is always on when a location has a `publicSlug`; the flag doesn't disable it.
-- **Feature flag: `insurance_codes`.** ICD-10 code fields on the appointment (`icd10Code`, `icd10Description`) exist in the schema and the appointment PATCH accepts them. The insurance export uses them. No flag gates any of this.
+- **Assistant streaming.** `lib/assistant/` supports draft generation. Streaming responses would require a code change; the previous dead `assistant_streaming` flag was removed.
+- **Public booking widget.** The public booking widget at `/book/[slug]` exists and works. Always on when a location has a `publicSlug`; the previous dead `patient_booking_widget` flag was removed.
+- **Insurance / ICD-10 fields.** ICD-10 code fields on the appointment (`icd10Code`, `icd10Description`) exist in the schema and the appointment PATCH accepts them. The insurance export uses them. Always on; the previous dead `insurance_codes` flag was removed.
 - **Platform impersonation UI.** The endpoint (`POST /api/platform/impersonate`) works and is called from `components/platform/OrgDetail.tsx` via an "Impersonate" button on the members table. Session-end (`POST /api/platform/impersonate/end`) is called by the impersonation banner. But there's no UI to LIST currently-active impersonation sessions across the platform, or to revoke someone else's session — only your own.
 
 # Referenced but missing
 
 The one the user cares most about. Things the permissions table, spec, or UI implies exist but that no code actually enforces or provides.
 
-**Permissions seeded in `prisma/rbac-seed.ts` with no `requirePermission` or `can()` callsite anywhere in the codebase (36 base permissions):**
+**Permissions seeded in `prisma/rbac-seed.ts` with no `requirePermission` or `can()` callsite anywhere in the codebase (36 base permissions).** As of 2026-08-05, each of these is tagged `notYetImplemented: '<bundle_slug>'` in the seed file, and `scripts/check-orphan-perms.ts` (wired into `npm test`) fails CI if a future PR adds a seeded permission without either a callsite or a bundle tag — closing the "grant without check" class SEC-008 belonged to.
 
 - `analytics.read` — spec §5 mentions analytics-tier reads; no enforcement site. `report.branch` is what actually gates `/analytics`.
 - `attachment.manage`, `clinical_note.attachment.manage` — clinical note attachments are seeded as a permission but no `clinical_note_attachments` table exists and no attachment upload/download endpoint exists.
@@ -327,9 +327,9 @@ The one the user cares most about. Things the permissions table, spec, or UI imp
 - `settings.update` — bare form. `org.settings.update:org` is enforced.
 - `user.password_reset` — bare form. `platform.user.password_reset` is enforced.
 
-**Three feature flags with no gate:** `assistant_streaming`, `patient_booking_widget`, `insurance_codes` — all in `lib/features.ts::FLAGS`. `isFeatureEnabled()` is never called in the codebase. The UI-editable toggles produce values that nothing reads.
+**~~Three feature flags with no gate~~ — removed 2026-08-05.** `assistant_streaming`, `patient_booking_widget`, `insurance_codes` in the deleted `lib/features.ts`. `isFeatureEnabled()` was never called; the whole module + its test went with them.
 
-**Three org toggles with no runtime check:** `providerFinancialReports`, `providerClinicalNotesOthers`, `frontdeskClientFullHistory` — defined in `lib/rbac/toggles.ts`, editable via `/platform/orgs/[id]/toggles`, audited on change (SEC-004), but **never read at any decision point in code**. The fourth toggle, `frontdeskDiscountCeiling`, IS read (`lib/payments/service.ts:244`). Owner sets the other three; nothing enforces them.
+**~~Three org toggles with no runtime check~~ — fixed 2026-08-05 as [SEC-008](rbac-security-review.md#sec-008).** `providerFinancialReports`, `providerClinicalNotesOthers`, `frontdeskClientFullHistory` — now consulted in `lib/rbac/can.ts::toggleGrantsPermission` and `lib/customers.ts::decideFullAccess`. Regression probes P8.1–P8.3 in `tests/security-review.test.ts` assert response bodies actually differ on toggle flip. The fourth toggle, `frontdeskDiscountCeiling`, was already enforced at `lib/payments/service.ts:244`.
 
 **Auth.js CallbackUrl cookie neutralized by design, not by config.** `auth.config.ts` sets the `__Secure-authjs.callback-url` cookie with `maxAge: 0` because Auth.js's own middleware sets it unconditionally. That's a workaround for framework behavior, not a documented capability — worth knowing that the cookie exists briefly on every request.
 

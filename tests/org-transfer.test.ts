@@ -12,7 +12,7 @@ const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const {
   nominateTransfer, acceptTransfer, declineTransfer, revokeTransfer, pendingTransfersForNominee,
 } = await import('@/lib/admin/ownership-transfer');
-const { ConflictError, InvalidInputError } = await import('@/lib/auth');
+const { ConflictError, InvalidInputError, NotFoundError } = await import('@/lib/auth');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 
 // -----------------------------------------------------------------------------
@@ -163,7 +163,8 @@ describe('ownership transfer', () => {
 
   it('revoke closes the transfer (nominator only)', async () => {
     const { id } = await nominateTransfer(ownerSession(), targetUserId);
-    await expect(revokeTransfer(targetSession(), id)).rejects.toBeInstanceOf(InvalidInputError);
+    // SEC-007: non-nominator sees 404, not 400 — enumeration-kill.
+    await expect(revokeTransfer(targetSession(), id)).rejects.toBeInstanceOf(NotFoundError);
     await revokeTransfer(ownerSession(), id);
     const t = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id } });
     expect(t.status).toBe('revoked');

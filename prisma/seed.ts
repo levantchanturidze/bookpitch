@@ -205,6 +205,10 @@ async function main() {
         { organizationId: org.id, userId: reception.id, role: UserRole.receptionist },
       ],
     });
+    await tx.organization.update({
+      where: { id: org.id },
+      data: { ownerUserId: owner.id },
+    });
 
     console.log('→ Seeding default reminder templates…');
     await tx.messageTemplate.createMany({
@@ -324,6 +328,10 @@ async function main() {
     });
     await tx.membership.create({
       data: { organizationId: iso.id, userId: isoOwner.id, role: UserRole.owner },
+    });
+    await tx.organization.update({
+      where: { id: iso.id },
+      data: { ownerUserId: isoOwner.id },
     });
     return { isolationOrg: iso };
   });

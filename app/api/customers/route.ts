@@ -14,7 +14,7 @@ export async function GET() {
     const customers = await withOrg(session.organizationId, async (tx) => {
       const rows = await tx.customer.findMany({ orderBy: { createdAt: 'desc' } });
       await writeAudit(tx, session, 'list', 'customer', null, { count: rows.length });
-      return rows.map(toCustomerDto);
+      return rows.map((r) => toCustomerDto(r, { ctx }));
     });
     return { customers };
   });
@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
         data: buildCreateData(input, session.organizationId),
       });
       await writeAudit(tx, session, 'create', 'customer', row.id);
-      return toCustomerDto(row);
+      return toCustomerDto(row, { ctx });
     });
 
     return { customer };

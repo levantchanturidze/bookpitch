@@ -1,10 +1,20 @@
 import type { Customer, TreatmentHistory } from '@prisma/client';
 import { decryptField, encryptField } from '@/lib/crypto';
 import { InvalidInputError } from '@/lib/auth';
+import type { AuthContext } from '@/lib/rbac';
+import { can } from '@/lib/rbac';
 
 // -----------------------------------------------------------------------------
 // Shared types + helpers for the /api/customers layer and Server Actions.
 // Keeps encryption/decryption logic in one place so callers can't forget.
+//
+// SEC-008 (2026-08-05). Every DTO builder now takes an AuthContext so it
+// can strip clinical/allergy/history fields for callers who don't hold
+// `client.read:full` (or its toggle-elevated equivalent — see
+// lib/rbac/can.ts::toggleGrantsPermission for the frontdeskClientFullHistory
+// wire-up). Before this, the DTO returned every field to every authorized
+// caller, and the three "front-desk full history / provider notes:any"
+// toggles changed nothing observable.
 // -----------------------------------------------------------------------------
 
 export type CustomerDto = {
@@ -16,7 +26,10 @@ export type CustomerDto = {
   gender: string | null;
   avatarUrl: string | null;
   joinedDate: string;
-  // Decrypted — safe to send to authorized clients over TLS.
+  // Decrypted when the caller has client.read:full. Redacted to null
+  // otherwise (SEC-008). `undefined` never appears — the field is
+  // ALWAYS present in the response shape, so the client cannot infer
+  // "these are hidden" vs "these were never set."
   allergies: string | null;
   clinicalNotes: string | null;
   consentAt: string | null;
@@ -34,7 +47,31 @@ export type CustomerDetailDto = CustomerDto & {
   }>;
 };
 
-export function toCustomerDto(row: Customer): CustomerDto {
+/**
+ * The visibility decision. Callers pass either an AuthContext (production
+ * path) or an explicit boolean (tests + code paths that already resolved
+ * the check). No default — omission is a compile error.
+ */
+export type CustomerVisibility = { ctx: AuthContext } | { canReadFull: boolean };
+
+function decideFullAccess(v: CustomerVisibility): boolean {
+  if ('canReadFull' in v) return v.canReadFull;
+  const org = v.ctx.activeOrganizationId ?? undefined;
+  // Two independent grants cover the "see clinical fields" tier:
+  //   • client.read:full — OWNER / ADMIN / BRANCH_MANAGER baseline, and
+  //     FRONT_DESK when the frontdeskClientFullHistory toggle elevates.
+  //   • clinical_note.read:any — PROVIDER / SENIOR_PROVIDER when the
+  //     providerClinicalNotesOthers toggle elevates.
+  // Both toggles land here through can()'s SEC-008 elevation branch, so
+  // this one decideFullAccess() is the single enforcement point.
+  return (
+    can(v.ctx, 'client.read:full', { organizationId: org }) ||
+    can(v.ctx, 'clinical_note.read:any', { organizationId: org })
+  );
+}
+
+export function toCustomerDto(row: Customer, v: CustomerVisibility): CustomerDto {
+  const full = decideFullAccess(v);
   return {
     id: row.id,
     name: row.name,
@@ -44,8 +81,9 @@ export function toCustomerDto(row: Customer): CustomerDto {
     gender: row.gender,
     avatarUrl: row.avatarUrl,
     joinedDate: row.joinedDate.toISOString().slice(0, 10),
-    allergies: decryptField(row.allergies),
-    clinicalNotes: decryptField(row.clinicalNotes),
+    // SEC-008 gate. Contact-only tier sees null for both.
+    allergies: full ? decryptField(row.allergies) : null,
+    clinicalNotes: full ? decryptField(row.clinicalNotes) : null,
     consentAt: row.consentAt?.toISOString() ?? null,
     consentVersion: row.consentVersion,
     createdAt: row.createdAt.toISOString(),
@@ -55,15 +93,22 @@ export function toCustomerDto(row: Customer): CustomerDto {
 
 export function toCustomerDetailDto(
   row: Customer & { treatmentHistory: TreatmentHistory[] },
+  v: CustomerVisibility,
 ): CustomerDetailDto {
+  const full = decideFullAccess(v);
   return {
-    ...toCustomerDto(row),
-    treatmentHistory: row.treatmentHistory.map((h) => ({
-      id: h.id,
-      label: h.label,
-      occurredOn: h.occurredOn ? h.occurredOn.toISOString().slice(0, 10) : null,
-      createdAt: h.createdAt.toISOString(),
-    })),
+    ...toCustomerDto(row, v),
+    // Treatment history is per-visit clinical narrative — same tier as
+    // allergies/notes. Contact-only tier sees an empty list rather than
+    // no field at all.
+    treatmentHistory: full
+      ? row.treatmentHistory.map((h) => ({
+          id: h.id,
+          label: h.label,
+          occurredOn: h.occurredOn ? h.occurredOn.toISOString().slice(0, 10) : null,
+          createdAt: h.createdAt.toISOString(),
+        }))
+      : [],
   };
 }
 

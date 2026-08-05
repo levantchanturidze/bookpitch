@@ -70,13 +70,46 @@ const SYSTEM_ROLES: ReadonlyArray<{
 //
 // All decisions documented in docs/rbac-schema-notes.md.
 // -----------------------------------------------------------------------------
-const P: ReadonlyArray<{
+// SEC-008 followup (2026-08-05). `notYetImplemented` marks permissions that
+// are seeded but have no `requirePermission` or `can()` call anywhere. The
+// value is a bundle slug so related perms group together. The seed appends
+// "[NOT YET IMPLEMENTED: <bundle>]" to the description so a support agent
+// granting the perm sees it gates nothing. `scripts/check-orphan-perms.ts`
+// fails CI when a seeded key with no callsite is missing this marker — that
+// stops the orphan set from growing quietly.
+//
+// Bundles:
+//   • booking_block_time      — staff mark themselves unavailable outside
+//                                regular hours; no endpoint, no UI, no DB.
+//   • booking_cancel_distinct — dedicated cancel perms; today the cancel
+//                                path uses booking.update.
+//   • payment_refund          — no refund endpoint.
+//   • payment_shift_close     — end-of-shift cash reconciliation; no code.
+//   • payment_discount        — front-desk discount ceiling IS enforced via
+//                                the frontdeskDiscountCeiling toggle, but no
+//                                requirePermission checks discount:limited /
+//                                :unlimited by name.
+//   • staff_commission        — commission tracking not built.
+//   • resources_rooms         — rooms / equipment as bookable resources.
+//   • report_own_and_payroll  — reports beyond report.branch (which IS
+//                                enforced on /analytics).
+//   • platform_billing        — SUPER-scope subscription mgmt UI + endpoints.
+//   • integrations            — third-party integration mgmt (API keys,
+//                                webhooks). Perm bundle exists; no
+//                                integrations table, no UI, no endpoints.
+//   • dead_alias              — bare-form perms superseded by scope-qualified
+//                                variants that ARE enforced. Candidate for
+//                                removal in the next seed reset (safe once
+//                                nobody's role bundle references them).
+type PermSpec = {
   key: string;
   resource: string;
   action: string;
   scope: string | null;
   desc: string;
-}> = [
+  notYetImplemented?: string;   // bundle slug — see comment above
+};
+const P: ReadonlyArray<PermSpec> = [
   // BOOKINGS ---------------------------------------------------------------
   { key: 'booking.create',           resource: 'booking',  action: 'create',     scope: null,     desc: 'Create a booking' },
   { key: 'booking.read:own',         resource: 'booking',  action: 'read',       scope: 'own',    desc: 'Read own bookings only' },
@@ -85,12 +118,12 @@ const P: ReadonlyArray<{
   { key: 'booking.update:own',       resource: 'booking',  action: 'update',     scope: 'own',    desc: 'Update own bookings' },
   { key: 'booking.update:branch',    resource: 'booking',  action: 'update',     scope: 'branch', desc: 'Update bookings in assigned branches' },
   { key: 'booking.update:org',       resource: 'booking',  action: 'update',     scope: 'org',    desc: 'Update any booking in the org' },
-  { key: 'booking.cancel:own',       resource: 'booking',  action: 'cancel',     scope: 'own',    desc: 'Cancel own bookings' },
-  { key: 'booking.cancel:branch',    resource: 'booking',  action: 'cancel',     scope: 'branch', desc: 'Cancel bookings in assigned branches' },
-  { key: 'booking.cancel:org',       resource: 'booking',  action: 'cancel',     scope: 'org',    desc: 'Cancel any booking in the org' },
-  { key: 'booking.block_time:own',   resource: 'booking',  action: 'block_time', scope: 'own',    desc: 'Block time on own calendar' },
-  { key: 'booking.block_time:branch',resource: 'booking',  action: 'block_time', scope: 'branch', desc: 'Block time in assigned branches' },
-  { key: 'booking.block_time:org',   resource: 'booking',  action: 'block_time', scope: 'org',    desc: 'Block time anywhere in the org' },
+  { key: 'booking.cancel:own',       resource: 'booking',  action: 'cancel',     scope: 'own',    desc: 'Cancel own bookings', notYetImplemented: 'booking_cancel_distinct' },
+  { key: 'booking.cancel:branch',    resource: 'booking',  action: 'cancel',     scope: 'branch', desc: 'Cancel bookings in assigned branches', notYetImplemented: 'booking_cancel_distinct' },
+  { key: 'booking.cancel:org',       resource: 'booking',  action: 'cancel',     scope: 'org',    desc: 'Cancel any booking in the org', notYetImplemented: 'booking_cancel_distinct' },
+  { key: 'booking.block_time:own',   resource: 'booking',  action: 'block_time', scope: 'own',    desc: 'Block time on own calendar', notYetImplemented: 'booking_block_time' },
+  { key: 'booking.block_time:branch',resource: 'booking',  action: 'block_time', scope: 'branch', desc: 'Block time in assigned branches', notYetImplemented: 'booking_block_time' },
+  { key: 'booking.block_time:org',   resource: 'booking',  action: 'block_time', scope: 'org',    desc: 'Block time anywhere in the org', notYetImplemented: 'booking_block_time' },
 
   // CLIENTS ----------------------------------------------------------------
   { key: 'client.create',            resource: 'client',   action: 'create',     scope: null,     desc: 'Add a new client' },
@@ -108,10 +141,10 @@ const P: ReadonlyArray<{
 
   // PAYMENTS ---------------------------------------------------------------
   { key: 'payment.charge',             resource: 'payment', action: 'charge',        scope: null,        desc: 'Accept a payment' },
-  { key: 'payment.refund',             resource: 'payment', action: 'refund',        scope: null,        desc: 'Refund a payment' },
-  { key: 'payment.discount:limited',   resource: 'payment', action: 'discount',      scope: 'limited',   desc: 'Apply a bounded discount (per-org cap)' },
-  { key: 'payment.discount:unlimited', resource: 'payment', action: 'discount',      scope: 'unlimited', desc: 'Apply any discount' },
-  { key: 'payment.shift.close',        resource: 'payment', action: 'shift.close',   scope: null,        desc: 'Close a cash-register shift' },
+  { key: 'payment.refund',             resource: 'payment', action: 'refund',        scope: null,        desc: 'Refund a payment', notYetImplemented: 'payment_refund' },
+  { key: 'payment.discount:limited',   resource: 'payment', action: 'discount',      scope: 'limited',   desc: 'Apply a bounded discount (per-org cap)', notYetImplemented: 'payment_discount' },
+  { key: 'payment.discount:unlimited', resource: 'payment', action: 'discount',      scope: 'unlimited', desc: 'Apply any discount', notYetImplemented: 'payment_discount' },
+  { key: 'payment.shift.close',        resource: 'payment', action: 'shift.close',   scope: null,        desc: 'Close a cash-register shift', notYetImplemented: 'payment_shift_close' },
 
   // STAFF ------------------------------------------------------------------
   { key: 'staff.invite',              resource: 'staff', action: 'invite',            scope: null, desc: 'Send a staff invitation' },
@@ -121,20 +154,20 @@ const P: ReadonlyArray<{
   { key: 'staff.schedule.manage:own', resource: 'staff', action: 'schedule.manage',   scope: 'own',   desc: 'Edit own schedule' },
   { key: 'staff.schedule.manage:branch', resource: 'staff', action: 'schedule.manage',scope: 'branch',desc: 'Edit schedules in assigned branches' },
   { key: 'staff.schedule.manage:org', resource: 'staff', action: 'schedule.manage',   scope: 'org',   desc: 'Edit any staff schedule' },
-  { key: 'staff.commission.manage',   resource: 'staff', action: 'commission.manage', scope: null, desc: 'Set commission rates' },
-  { key: 'staff.commission.read',     resource: 'staff', action: 'commission.read',   scope: null, desc: 'View commission rates (read-only)' },
+  { key: 'staff.commission.manage',   resource: 'staff', action: 'commission.manage', scope: null, desc: 'Set commission rates', notYetImplemented: 'staff_commission' },
+  { key: 'staff.commission.read',     resource: 'staff', action: 'commission.read',   scope: null, desc: 'View commission rates (read-only)', notYetImplemented: 'staff_commission' },
 
   // SERVICES / RESOURCES ---------------------------------------------------
   { key: 'service.manage',          resource: 'service',  action: 'manage', scope: null, desc: 'CRUD services + categories' },
-  { key: 'service.price.manage',    resource: 'service',  action: 'price.manage', scope: null, desc: 'Change service prices' },
-  { key: 'resource.manage:org',     resource: 'resource', action: 'manage', scope: 'org',    desc: 'Manage rooms/equipment (org-wide)' },
-  { key: 'resource.manage:branch',  resource: 'resource', action: 'manage', scope: 'branch', desc: 'Manage rooms/equipment in assigned branches' },
+  { key: 'service.price.manage',    resource: 'service',  action: 'price.manage', scope: null, desc: 'Change service prices', notYetImplemented: 'dead_alias' },
+  { key: 'resource.manage:org',     resource: 'resource', action: 'manage', scope: 'org',    desc: 'Manage rooms/equipment (org-wide)', notYetImplemented: 'resources_rooms' },
+  { key: 'resource.manage:branch',  resource: 'resource', action: 'manage', scope: 'branch', desc: 'Manage rooms/equipment in assigned branches', notYetImplemented: 'resources_rooms' },
 
   // REPORTS ----------------------------------------------------------------
-  { key: 'report.own',              resource: 'report', action: 'read',   scope: 'own',    desc: 'Personal performance' },
+  { key: 'report.own',              resource: 'report', action: 'read',   scope: 'own',    desc: 'Personal performance', notYetImplemented: 'report_own_and_payroll' },
   { key: 'report.branch',           resource: 'report', action: 'read',   scope: 'branch', desc: 'Branch-level reports' },
   { key: 'report.financial:org',    resource: 'report', action: 'financial', scope: 'org', desc: 'Org-wide financial reports' },
-  { key: 'report.payroll',          resource: 'report', action: 'payroll',scope: null,     desc: 'Payroll report' },
+  { key: 'report.payroll',          resource: 'report', action: 'payroll',scope: null,     desc: 'Payroll report', notYetImplemented: 'report_own_and_payroll' },
   { key: 'report.export',           resource: 'report', action: 'export', scope: null,     desc: 'Export any report' },
 
   // ORGANIZATION -----------------------------------------------------------
@@ -143,7 +176,7 @@ const P: ReadonlyArray<{
   { key: 'org.branch.manage',          resource: 'org', action: 'branch.manage',     scope: null,     desc: 'CRUD branches' },
   { key: 'org.billing.manage',         resource: 'org', action: 'billing.manage',    scope: null,     desc: 'Subscription + payment methods' },
   { key: 'org.billing.read',           resource: 'org', action: 'billing.read',      scope: null,     desc: 'View invoices + subscription (read-only)' },
-  { key: 'org.integration.manage',     resource: 'org', action: 'integration.manage',scope: null,     desc: 'Manage API keys + integrations' },
+  { key: 'org.integration.manage',     resource: 'org', action: 'integration.manage',scope: null,     desc: 'Manage API keys + integrations', notYetImplemented: 'integrations' },
   { key: 'org.ownership.transfer',     resource: 'org', action: 'ownership.transfer',scope: null,     desc: 'Transfer org ownership' },
   { key: 'org.delete',                 resource: 'org', action: 'delete',            scope: null,     desc: 'Soft-delete the organization' },
 
@@ -159,8 +192,8 @@ const P: ReadonlyArray<{
   { key: 'platform.impersonate',          resource: 'platform', action: 'impersonate',       scope: 'platform', desc: 'Start an impersonation session (§7.1)' },
   { key: 'platform.role.assign',          resource: 'platform', action: 'role.assign',       scope: 'platform', desc: 'Assign platform roles' },
   { key: 'platform.audit.read',           resource: 'platform', action: 'audit.read',        scope: 'platform', desc: 'Read the platform audit log' },
-  { key: 'platform.billing.manage',       resource: 'platform', action: 'billing.manage',    scope: 'platform', desc: 'Manage subscriptions + invoices platform-wide' },
-  { key: 'platform.billing.read',         resource: 'platform', action: 'billing.read',      scope: 'platform', desc: 'View subscriptions + invoices (read-only)' },
+  { key: 'platform.billing.manage',       resource: 'platform', action: 'billing.manage',    scope: 'platform', desc: 'Manage subscriptions + invoices platform-wide', notYetImplemented: 'platform_billing' },
+  { key: 'platform.billing.read',         resource: 'platform', action: 'billing.read',      scope: 'platform', desc: 'View subscriptions + invoices (read-only)', notYetImplemented: 'platform_billing' },
   { key: 'platform.config.manage',        resource: 'platform', action: 'config.manage',     scope: 'platform', desc: 'Feature flags + global config' },
   { key: 'platform.analytics.read',       resource: 'platform', action: 'analytics.read',    scope: 'platform', desc: 'Aggregate analytics (no PII)' },
 ] as const;
@@ -369,6 +402,12 @@ async function upsertRoles() {
 
 async function upsertPermissions() {
   for (const p of P) {
+    // SEC-008 followup: append the not-yet-implemented marker to the
+    // stored description so a support agent (or a role-editor UI) that
+    // reads the description sees the perm gates nothing today.
+    const desc = p.notYetImplemented
+      ? `${p.desc} [NOT YET IMPLEMENTED: ${p.notYetImplemented}]`
+      : p.desc;
     await unsafePrismaAdmin.permission.upsert({
       where: { key: p.key },
       create: {
@@ -376,13 +415,13 @@ async function upsertPermissions() {
         resource: p.resource,
         action: p.action,
         scope: p.scope,
-        description: p.desc,
+        description: desc,
       },
       update: {
         resource: p.resource,
         action: p.action,
         scope: p.scope,
-        description: p.desc,
+        description: desc,
       },
     });
   }

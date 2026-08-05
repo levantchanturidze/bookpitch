@@ -34,7 +34,7 @@ export async function createCustomerAction(input: CustomerCreateInput) {
       data: buildCreateData(parsed, session.organizationId),
     });
     await writeAudit(tx, session, 'create', 'customer', row.id);
-    return toCustomerDto(row);
+    return toCustomerDto(row, { ctx });
   });
 
   revalidatePath('/patients');
@@ -51,7 +51,7 @@ export async function updateCustomerAction(id: string, input: CustomerUpdateInpu
   const customer = await withOrg(session.organizationId, async (tx) => {
     const row = await tx.customer.update({ where: { id }, data });
     await writeAudit(tx, session, 'update', 'customer', id, { fields });
-    return toCustomerDto(row);
+    return toCustomerDto(row, { ctx });
   });
 
   revalidatePath('/patients');

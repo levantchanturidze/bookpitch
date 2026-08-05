@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
 
 // -----------------------------------------------------------------------------
 // Phase 7 — Adversarial security review.
@@ -1255,6 +1256,248 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
     } finally {
       await unsafePrismaAdmin.staff.delete({ where: { id: grandStaffId } });
       if (isoStaffId) await unsafePrismaAdmin.staff.delete({ where: { id: isoStaffId } });
+    }
+  });
+});
+
+// =============================================================================
+// § 8 — SEC-008 regression probes: the three org toggles were writable +
+// audited but consulted by nothing. Each probe flips one toggle and asserts
+// the RESPONSE BODY of the affected API differs. Never checks UI-only render
+// — the point is that the API changes, not that a hidden button appears.
+// =============================================================================
+const { loadOrgToggles: loadOrgTogglesForSec008, updateOrgToggles: updateOrgTogglesForSec008 } =
+  await import('@/lib/rbac/toggles');
+const routeCustomerItem_Sec008 = await import('@/app/api/customers/[id]/route');
+
+describe('SEC § SEC-008 regression — dead org toggles now change API responses', () => {
+  const loadOrgToggles = loadOrgTogglesForSec008;
+  const updateOrgToggles = updateOrgTogglesForSec008;
+  const routeCustomerItem = routeCustomerItem_Sec008;
+
+  // Save the pre-test toggle state and restore after — so this probe suite
+  // never leaves clinical-visibility flipped for the next test run.
+  let originalToggles: Awaited<ReturnType<typeof loadOrgToggles>>;
+  beforeAll(async () => {
+    originalToggles = await loadOrgToggles(H.grandOrgId);
+  });
+  beforeEach(() => {
+    __clearOrgTogglesCache();
+    authMock.mockReset();
+    __clearAuthContextCache();
+  });
+
+  async function reset() {
+    await updateOrgToggles(H.grandOrgId, originalToggles);
+    __clearOrgTogglesCache();
+    __clearAuthContextCache();
+  }
+
+  // Seed a customer with clinicalNotes + allergies so we can watch what
+  // shows up in the response.
+  async function makeCustomerWithClinicalData(): Promise<string> {
+    const { encryptField } = await import('@/lib/crypto');
+    const c = await unsafePrismaAdmin.customer.create({
+      data: {
+        organizationId: H.grandOrgId,
+        name: 'SEC-008 Probe Patient',
+        email: 'sec008-probe@bookpitch.internal',
+        phone: '+995555000008',
+        allergies: encryptField('probe-penicillin'),
+        clinicalNotes: encryptField('probe-history-note'),
+        consentAt: new Date(),
+        consentVersion: '1.0',
+      },
+      select: { id: true },
+    });
+    // Add a treatment-history row too so we can watch the array flip.
+    await unsafePrismaAdmin.treatmentHistory.create({
+      data: { customerId: c.id, label: 'SEC-008 probe visit' },
+    });
+    return c.id;
+  }
+
+  // Membership helper: give the target user a specific org+role in Grand.
+  async function memberIdForRole(userEmail: string, roleKey: string): Promise<string> {
+    const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: userEmail }, select: { id: true },
+    });
+    const role = await unsafePrismaAdmin.role.findFirstOrThrow({
+      where: { key: roleKey, organizationId: null }, select: { id: true },
+    });
+    const m = await unsafePrismaAdmin.membership.upsert({
+      where: { organizationId_userId: { organizationId: H.grandOrgId, userId: user.id } },
+      create: {
+        organizationId: H.grandOrgId, userId: user.id,
+        role: 'practitioner', roleId: role.id, status: 'active',
+      },
+      update: { roleId: role.id, status: 'active', role: 'practitioner' },
+      select: { id: true, userId: true },
+    });
+    return m.id;
+  }
+
+  // ---- Probe 1: frontdeskClientFullHistory ---------------------------------
+  it('P8.1: frontdeskClientFullHistory — FRONT_DESK gets clinicalNotes redacted when OFF, decrypted when ON', async () => {
+    // Set up a FRONT_DESK member in Grand + a customer with clinical data.
+    // Use a fresh random subject each run so prior soft-masked probes
+    // don't collide on the (auth_provider, auth_subject) unique.
+    const runId = randomUUID().slice(0, 8);
+    const fdEmail = `sec008-fd-${runId}@bookpitch.internal`;
+    const passwordHash = await (await import('@node-rs/argon2')).hash('probe-pw');
+    const fdUser = await unsafePrismaAdmin.appUser.create({
+      data: {
+        authProvider: 'credentials', authSubject: fdEmail, email: fdEmail,
+        fullName: 'SEC-008 FD probe', passwordHash, status: 'active',
+      },
+      select: { id: true, email: true },
+    });
+    const fdMemId = await memberIdForRole(fdEmail, 'FRONT_DESK');
+    const customerId = await makeCustomerWithClinicalData();
+
+    try {
+      // Toggle OFF (default) — FRONT_DESK should NOT see clinicalNotes/allergies
+      await updateOrgToggles(H.grandOrgId, { frontdeskClientFullHistory: false });
+      __clearOrgTogglesCache();
+      __clearAuthContextCache();
+      authMock.mockResolvedValue({
+        user: {
+          id: fdUser.id, email: fdUser.email,
+          activeOrganizationId: H.grandOrgId,
+          membershipId: fdMemId,
+          platformRoleId: null,
+        },
+      });
+      const off = await routeCustomerItem.GET(req('http://x'), {
+        params: Promise.resolve({ id: customerId }),
+      });
+      expect(off.status).toBe(200);
+      const offBody = await json<{ customer: { clinicalNotes: string | null; allergies: string | null; treatmentHistory: unknown[] } }>(off);
+      expect(offBody.customer.clinicalNotes).toBeNull();
+      expect(offBody.customer.allergies).toBeNull();
+      expect(offBody.customer.treatmentHistory).toEqual([]);
+
+      // Toggle ON — FRONT_DESK NOW sees decrypted clinicalNotes
+      await updateOrgToggles(H.grandOrgId, { frontdeskClientFullHistory: true });
+      __clearOrgTogglesCache();
+      __clearAuthContextCache();
+      const on = await routeCustomerItem.GET(req('http://x'), {
+        params: Promise.resolve({ id: customerId }),
+      });
+      const onBody = await json<{ customer: { clinicalNotes: string | null; allergies: string | null; treatmentHistory: unknown[] } }>(on);
+      expect(onBody.customer.clinicalNotes).toBe('probe-history-note');
+      expect(onBody.customer.allergies).toBe('probe-penicillin');
+      expect(onBody.customer.treatmentHistory.length).toBeGreaterThan(0);
+    } finally {
+      await unsafePrismaAdmin.treatmentHistory.deleteMany({ where: { customerId } });
+      await unsafePrismaAdmin.customer.delete({ where: { id: customerId } });
+      await unsafePrismaAdmin.membership.delete({ where: { id: fdMemId } });
+      // Soft-mask on cleanup — audit_log FK is ON DELETE NO ACTION so a
+      // hard-delete of a user with any audit row fails.
+      await unsafePrismaAdmin.appUser.update({
+        where: { id: fdUser.id },
+        data: {
+          status: 'deleted', passwordHash: null,
+          email: `deleted-sec008-fd-${fdUser.id}@bookpitch.invalid`,
+          // auth_subject also — (auth_provider, auth_subject) is UNIQUE,
+          // otherwise the next test-run collides on the fresh upsert.
+          authSubject: `deleted-sec008-fd-${fdUser.id}`,
+          sessionVersion: { increment: 1 },
+        },
+      }).catch(async () => {
+        await unsafePrismaAdmin.appUser.delete({ where: { id: fdUser.id } }).catch(() => {});
+      });
+      await reset();
+    }
+  });
+
+  // ---- Probe 2: providerClinicalNotesOthers --------------------------------
+  it('P8.2: providerClinicalNotesOthers — PROVIDER gets clinicalNotes redacted when OFF, decrypted when ON', async () => {
+    // A PROVIDER who does NOT hold client.read:full by seed. Toggle-elevation
+    // gives them clinical_note.read:any which the DTO reads via can().
+    // Reuse the seeded moonlighter (PROVIDER in Grand).
+    const provUser = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'moonlight@bp.test' },
+      select: { id: true, email: true },
+    });
+    // Moonlighter's membership in Grand isn't in the fixture by default
+    // — the rbac-fixtures add them to Split, not Grand. Add here.
+    const provMemId = await memberIdForRole('moonlight@bp.test', 'PROVIDER');
+    const customerId = await makeCustomerWithClinicalData();
+
+    try {
+      // OFF — PROVIDER sees redacted
+      await updateOrgToggles(H.grandOrgId, {
+        providerClinicalNotesOthers: false,
+        frontdeskClientFullHistory: false,
+      });
+      __clearOrgTogglesCache();
+      __clearAuthContextCache();
+      authMock.mockResolvedValue({
+        user: {
+          id: provUser.id, email: provUser.email,
+          activeOrganizationId: H.grandOrgId,
+          membershipId: provMemId,
+          platformRoleId: null,
+        },
+      });
+      const off = await routeCustomerItem.GET(req('http://x'), {
+        params: Promise.resolve({ id: customerId }),
+      });
+      const offBody = await json<{ customer: { clinicalNotes: string | null; allergies: string | null } }>(off);
+      expect(off.status).toBe(200);
+      expect(offBody.customer.clinicalNotes).toBeNull();
+      expect(offBody.customer.allergies).toBeNull();
+
+      // ON — PROVIDER sees decrypted
+      await updateOrgToggles(H.grandOrgId, {
+        providerClinicalNotesOthers: true,
+      });
+      __clearOrgTogglesCache();
+      __clearAuthContextCache();
+      const on = await routeCustomerItem.GET(req('http://x'), {
+        params: Promise.resolve({ id: customerId }),
+      });
+      const onBody = await json<{ customer: { clinicalNotes: string | null; allergies: string | null } }>(on);
+      expect(onBody.customer.clinicalNotes).toBe('probe-history-note');
+      expect(onBody.customer.allergies).toBe('probe-penicillin');
+    } finally {
+      await unsafePrismaAdmin.treatmentHistory.deleteMany({ where: { customerId } });
+      await unsafePrismaAdmin.customer.delete({ where: { id: customerId } });
+      await unsafePrismaAdmin.membership.delete({ where: { id: provMemId } });
+      await reset();
+    }
+  });
+
+  // ---- Probe 3: providerFinancialReports -----------------------------------
+  it('P8.3: providerFinancialReports — can(PROVIDER, "report.branch") flips with the toggle', async () => {
+    // No live server-component invocation from vitest; test the can()
+    // decision directly. That IS the gate the analytics page uses:
+    //   requirePermission(ctx, 'report.branch', ...)
+    // A flip in can()'s answer is exactly the observable that determines
+    // whether analytics renders or throws Forbidden.
+    const provMemId = await memberIdForRole('moonlight@bp.test', 'PROVIDER');
+    try {
+      // OFF — can() denies report.branch for PROVIDER
+      await updateOrgToggles(H.grandOrgId, { providerFinancialReports: false });
+      __clearOrgTogglesCache();
+      __clearAuthContextCache();
+      const ctxOff = await buildAuthContext(H.moonId, provMemId);
+      expect(ctxOff).not.toBeNull();
+      expect(can(ctxOff!, 'report.branch', { organizationId: H.grandOrgId })).toBe(false);
+      expect(can(ctxOff!, 'report.financial:org', { organizationId: H.grandOrgId })).toBe(false);
+
+      // ON — same caller, same code path — can() now grants both
+      await updateOrgToggles(H.grandOrgId, { providerFinancialReports: true });
+      __clearOrgTogglesCache();
+      __clearAuthContextCache();
+      const ctxOn = await buildAuthContext(H.moonId, provMemId);
+      expect(ctxOn).not.toBeNull();
+      expect(can(ctxOn!, 'report.branch', { organizationId: H.grandOrgId })).toBe(true);
+      expect(can(ctxOn!, 'report.financial:org', { organizationId: H.grandOrgId })).toBe(true);
+    } finally {
+      await unsafePrismaAdmin.membership.delete({ where: { id: provMemId } });
+      await reset();
     }
   });
 });
