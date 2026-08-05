@@ -1500,4 +1500,92 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
       await reset();
     }
   });
+
+  // ---- Probe 4: frontdeskDiscountCeiling — the one enforced toggle with no probe ----
+  it('P8.4: frontdeskDiscountCeiling enforcement — FRONT_DESK above ceiling throws, at or below passes, non-FRONT_DESK bypasses', async () => {
+    // assertDiscountWithinCeiling is the enforcement point (lib/payments/service.ts).
+    // There is no HTTP discount endpoint yet; test the function directly — that
+    // is the only gate the future endpoint will call.
+    const { assertDiscountWithinCeiling } = await import('@/lib/payments/service');
+    await updateOrgToggles(H.splitOrgId, { frontdeskDiscountCeiling: 100 });
+    __clearOrgTogglesCache();
+    try {
+      // Above ceiling — throws.
+      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'FRONT_DESK', 101))
+        .rejects.toBeInstanceOf(InvalidInputError);
+      // At ceiling — passes (ceiling is an inclusive max: > not >=).
+      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'FRONT_DESK', 100))
+        .resolves.toBeUndefined();
+      // Below ceiling — passes.
+      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'FRONT_DESK', 50))
+        .resolves.toBeUndefined();
+      // Non-FRONT_DESK bypasses the ceiling entirely.
+      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'ORG_OWNER', 9999))
+        .resolves.toBeUndefined();
+      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'PROVIDER', 9999))
+        .resolves.toBeUndefined();
+    } finally {
+      await updateOrgToggles(H.splitOrgId, { frontdeskDiscountCeiling: 0 });
+      __clearOrgTogglesCache();
+    }
+  });
+});
+
+// =============================================================================
+// § 9 — SEC-009: changeOrganizationOwner must promote the membership, not
+// just the ownerUserId pointer. Pre-fix, calling the function with an existing
+// member only wrote organizations.ownerUserId; the membership's roleId stayed
+// at the old role. can() reads roleId, so the new "owner" had no owner perms.
+// The audit log recorded a successful ownership change that had not happened.
+// =============================================================================
+const { changeOrganizationOwner: changeOrganizationOwnerSec009 } =
+  await import('@/lib/platform/orgs');
+
+describe('SEC § SEC-009 — changeOrganizationOwner must atomically promote membership', () => {
+  it('P9.1: after changeOrganizationOwner(existing member), can() grants ORG_OWNER perms — not just ownerUserId pointer', async () => {
+    // moonlighter is PROVIDER in Split. After the call, their membership
+    // roleId must be ORG_OWNER, not just the org pointer. Pre-fix, can()
+    // would still return false for org.billing.manage for the new "owner."
+    const actorCtx = await buildAuthContext(H.superUserId, null);
+    if (!actorCtx) throw new Error('could not build super-admin ctx');
+
+    const origMem = await unsafePrismaAdmin.membership.findFirstOrThrow({
+      where: { userId: H.moonId, organizationId: H.splitOrgId },
+      select: { id: true, role: true, roleId: true },
+    });
+    const origOrg = await unsafePrismaAdmin.organization.findUniqueOrThrow({
+      where: { id: H.splitOrgId }, select: { ownerUserId: true },
+    });
+
+    try {
+      await changeOrganizationOwnerSec009(actorCtx, H.splitOrgId, 'moonlight@bp.test');
+      __clearAuthContextCache();
+
+      // Build moonlighter's auth context — reads roleId from DB.
+      const ctx = await buildAuthContext(H.moonId, H.moonSplitMembershipId);
+      expect(ctx).not.toBeNull();
+
+      // These fail pre-fix (roleId still PROVIDER → no org.billing.manage grant).
+      expect(can(ctx!, 'org.billing.manage', { organizationId: H.splitOrgId })).toBe(true);
+      expect(can(ctx!, 'staff.invite', { organizationId: H.splitOrgId })).toBe(true);
+
+      // Verify the DB row, not just the in-memory ctx — proves the membership
+      // was actually written, not inferred from a stale cache.
+      const memAfter = await unsafePrismaAdmin.membership.findFirstOrThrow({
+        where: { userId: H.moonId, organizationId: H.splitOrgId },
+        include: { roleRef: { select: { key: true } } },
+      });
+      expect(memAfter.roleRef?.key).toBe('ORG_OWNER');
+    } finally {
+      await unsafePrismaAdmin.membership.update({
+        where: { id: origMem.id },
+        data: { role: origMem.role, roleId: origMem.roleId },
+      });
+      await unsafePrismaAdmin.organization.update({
+        where: { id: H.splitOrgId },
+        data: { ownerUserId: origOrg.ownerUserId },
+      });
+      __clearAuthContextCache();
+    }
+  });
 });

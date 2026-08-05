@@ -384,15 +384,30 @@ export async function changeOrganizationOwner(
   });
 
   if (existingUser && existingUser.memberships.length > 0) {
-    // Already a member — promote by writing an owner membership row (if not
-    // already one) and updating the org pointer. Requires cross-org write,
-    // so uses unsafePrismaAdmin directly.
-    await unsafePrismaAdmin.$transaction(async (tx) => {
-      await tx.organization.update({
+    // Already a member — promote their membership to ORG_OWNER AND update
+    // the org pointer in one atomic write. SEC-009: doing only the pointer
+    // write produces divergent state: ownerUserId says one person, the
+    // membership roleId says another, so can() still returns the old role.
+    const membershipId = existingUser.memberships[0].id;
+    const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
+      where: { key: 'ORG_OWNER', organizationId: null }, select: { id: true },
+    });
+    await unsafePrismaAdmin.$transaction([
+      unsafePrismaAdmin.membership.update({
+        where: { id: membershipId },
+        data: { role: 'owner', roleId: orgOwnerRole.id },
+      }),
+      unsafePrismaAdmin.organization.update({
         where: { id: orgId },
         data: { ownerUserId: existingUser.id },
-      });
-    });
+      }),
+      // Bump sessionVersion so the new owner's live JWT sees the role
+      // change within SV_TTL_MS (5s) without waiting for the next sign-in.
+      unsafePrismaAdmin.appUser.update({
+        where: { id: existingUser.id },
+        data: { sessionVersion: { increment: 1 } },
+      }),
+    ]);
     await writePlatformAudit(actor, orgId, 'org.owner.change', {
       newOwnerUserId: existingUser.id, promotedExisting: true,
     });

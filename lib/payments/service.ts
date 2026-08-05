@@ -2,6 +2,7 @@ import type { Payment, PrismaClient } from '@prisma/client';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
+import { assertOrgOwnerSet } from '@/lib/admin/last-owner';
 import { notifyEvent } from '@/lib/notifications';
 import { getGateway } from './gateway';
 import { loadOrgToggles } from '@/lib/rbac';
@@ -66,6 +67,7 @@ export async function startCardCheckout(
   // Create the payment first so the gateway sees a real id round-tripped
   // through it. gateway_txn_id is filled in immediately after initiate().
   const payment = await withOrg(session.organizationId, async (tx) => {
+    await assertOrgOwnerSet(tx, session.organizationId);
     const row = await tx.payment.create({
       data: {
         organizationId: session.organizationId,
@@ -114,6 +116,7 @@ export async function settleCash(
   appointmentId: string,
 ): Promise<PaymentDto> {
   return withOrg(session.organizationId, async (tx) => {
+    await assertOrgOwnerSet(tx, session.organizationId);
     const appt = await tx.appointment.findUnique({ where: { id: appointmentId } });
     if (!appt) throw new InvalidInputError('appointment not found');
     if (appt.paymentStatus === 'paid') {

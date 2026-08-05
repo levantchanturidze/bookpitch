@@ -2,7 +2,7 @@ import type { LocationType, UserRole } from '@prisma/client';
 import { ConflictError, InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
-import { assertNotLastOwner } from '@/lib/admin/last-owner';
+import { assertNotLastOwner, assertOrgOwnerSet } from '@/lib/admin/last-owner';
 import { canManageRoleAssignment, buildAuthContext } from '@/lib/rbac';
 
 // -----------------------------------------------------------------------------
@@ -427,6 +427,7 @@ export async function updateMemberRole(
   }
 
   return withOrg(session.organizationId, async (tx) => {
+    await assertOrgOwnerSet(tx, session.organizationId);
     const existing = await tx.membership.findUnique({
       where: { id: membershipId },
       select: { userId: true, roleRef: { select: { key: true } } },
@@ -481,6 +482,7 @@ export async function updateMemberRole(
 
 export async function removeMember(session: ActiveSession, membershipId: string) {
   return withOrg(session.organizationId, async (tx) => {
+    await assertOrgOwnerSet(tx, session.organizationId);
     const existing = await tx.membership.findUnique({
       where: { id: membershipId },
       select: { userId: true, roleRef: { select: { key: true } } },
