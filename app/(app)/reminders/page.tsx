@@ -9,12 +9,19 @@ export const dynamic = 'force-dynamic';
 
 export default async function RemindersPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'booking.update', { organizationId: ctx.activeOrganizationId! }, 'reminders');
+  requirePermission(
+    ctx,
+    'booking.update',
+    { organizationId: ctx.activeOrganizationId! },
+    'reminders',
+  );
   const session = ctxToSession(ctx);
   const { active } = await loadLocationsForOrg(session.organizationId);
   // UI-branching: only callers who can edit org-level settings can trigger
   // the reminder tick. Phase 0 §8.2 called out the old `session.role === 'owner'`.
-  const canRunTick = can(ctx, 'org.settings.update:org', { organizationId: ctx.activeOrganizationId! });
+  const canRunTick = can(ctx, 'org.settings.update:org', {
+    organizationId: ctx.activeOrganizationId!,
+  });
 
   const data = await withOrg(session.organizationId, async (tx) => {
     const org = await tx.organization.findUnique({

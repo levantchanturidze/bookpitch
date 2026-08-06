@@ -23,7 +23,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     // Cancel = PATCH { status: 'cancelled' } — use the stronger cancel perm
     // when the caller is trying to cancel. Otherwise it's an update. We pass
     // the BASE key (no scope suffix); can() walks :org → :branch → :own.
-    const raw = (await req.clone().json().catch(() => null)) as { status?: unknown } | null;
+    const raw = (await req
+      .clone()
+      .json()
+      .catch(() => null)) as { status?: unknown } | null;
     const requiredPerm = raw?.status === 'cancelled' ? 'booking.cancel' : 'booking.update';
     const session = ctxToSession(ctx);
     const { id } = await params;
@@ -33,7 +36,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     // through can()'s list-mode fallback.
     const ownerUserId = await resolveBookingOwner(id, ctx.activeOrganizationId!);
     requirePermission(
-      ctx, requiredPerm,
+      ctx,
+      requiredPerm,
       { organizationId: ctx.activeOrganizationId!, ownerUserId: ownerUserId ?? undefined },
       'appointments',
     );

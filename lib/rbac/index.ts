@@ -14,6 +14,4 @@ export { perm } from './types';
 export { scopedLocationIds, scopedByOwn, resolveBookingOwner, resolveWaitlistOwner } from './scope';
 export { loadOrgToggles, updateOrgToggles, DEFAULT_TOGGLES } from './toggles';
 export type { OrgToggles } from './toggles';
-export type {
-  AuthContext, Resource, Plane, Scope, PermissionKey,
-} from './types';
+export type { AuthContext, Resource, Plane, Scope, PermissionKey } from './types';

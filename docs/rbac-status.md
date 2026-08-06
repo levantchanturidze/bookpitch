@@ -320,6 +320,19 @@ probe fails, the finding is real and gets tracked (with an entry in
 starts passing.
 
 The delta from the original 2026-07-29 review is at the bottom of the
-security-review doc. Every SEC-# finding SEC-001 through SEC-007 has
+security-review doc. Every SEC-# finding SEC-001 through SEC-009 has
 a section explaining what it was, what shipped as the fix, and the
 probe number that guards against regression.
+
+**2026-08-06 additions (65 probes, all green):**
+- **SEC-009 (High)** — `changeOrganizationOwner` diverged
+  `organizations.owner_user_id` from the target's membership role. Fixed
+  atomically. Probe P9.1 asserts the new owner can exercise an owner-only
+  permission (`org.billing.manage`) immediately after the transfer.
+- **P8.4** — added to guard `assertDiscountWithinCeiling` enforcement
+  (previously no test exercised the deny path).
+- **`assertOrgOwnerSet` guard** — membership and billing mutations
+  (`updateMemberRole`, `removeMember`, `startCardCheckout`, `settleCash`)
+  now refuse to proceed on an org with null `ownerUserId`.
+- **Fixture fix** — `prisma/seed.ts` sets `ownerUserId` on every org it
+  creates; dev DB patched for Grand Medical and Isolation Corp.

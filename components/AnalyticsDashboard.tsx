@@ -1,7 +1,26 @@
 import { useMemo } from 'react';
-import { DollarSign, CalendarCheck, TrendingUp, Users, Clock, ShieldCheck, Smile } from 'lucide-react';
+import {
+  DollarSign,
+  CalendarCheck,
+  TrendingUp,
+  Users,
+  Clock,
+  ShieldCheck,
+  Smile,
+} from 'lucide-react';
 import { Appointment, Staff, WorkspaceMode } from '@/lib/types';
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, BarChart, Bar, Cell, Legend } from 'recharts';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  BarChart,
+  Bar,
+  Cell,
+  Legend,
+} from 'recharts';
 
 interface AnalyticsDashboardProps {
   mode: WorkspaceMode;
@@ -15,7 +34,9 @@ export default function AnalyticsDashboard({ mode, appointments, staff }: Analyt
   // Metrics calculations
   const metrics = useMemo(() => {
     // Current date is 2026-07-21
-    const todayBookings = appointments.filter((a) => a.date === '2026-07-21' && a.status !== 'cancelled');
+    const todayBookings = appointments.filter(
+      (a) => a.date === '2026-07-21' && a.status !== 'cancelled',
+    );
     const completedBookings = appointments.filter((a) => a.status === 'completed');
 
     const dailyRevenue = todayBookings.reduce((sum, item) => sum + item.price, 0);
@@ -23,7 +44,8 @@ export default function AnalyticsDashboard({ mode, appointments, staff }: Analyt
 
     // Average transaction size
     const totalCompletedRevenue = completedBookings.reduce((sum, item) => sum + item.price, 0);
-    const avgTicket = completedBookings.length > 0 ? totalCompletedRevenue / completedBookings.length : 125;
+    const avgTicket =
+      completedBookings.length > 0 ? totalCompletedRevenue / completedBookings.length : 125;
 
     // Average occupancy rate (hours booked / total available hours)
     // For prototype, let's compute a realistic ratio based on staff counts
@@ -48,14 +70,20 @@ export default function AnalyticsDashboard({ mode, appointments, staff }: Analyt
       { day: 'Jul 18', revenue: 850, appointments: 5 },
       { day: 'Jul 19', revenue: 1250, appointments: 9 },
       { day: 'Jul 20', revenue: 1480, appointments: 11 },
-      { day: 'Jul 21', revenue: metrics.dailyRevenue || 1850, appointments: metrics.todayBookingsCount || 13 },
+      {
+        day: 'Jul 21',
+        revenue: metrics.dailyRevenue || 1850,
+        appointments: metrics.todayBookingsCount || 13,
+      },
     ];
   }, [metrics]);
 
   // Recharts Data 2: Appointments Booked by Staff Member
   const staffChartData = useMemo(() => {
     return staff.map((st) => {
-      const staffBookings = appointments.filter((a) => a.staffId === st.id && a.status !== 'cancelled');
+      const staffBookings = appointments.filter(
+        (a) => a.staffId === st.id && a.status !== 'cancelled',
+      );
       return {
         name: st.name.split(' ')[1], // Just last name or first name for spacing
         bookings: staffBookings.length,
@@ -67,98 +95,129 @@ export default function AnalyticsDashboard({ mode, appointments, staff }: Analyt
   return (
     <div className="space-y-6" id="analytics-dashboard-root">
       {/* 4 Metric KPI Widgets */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="analytics-kpi-grid">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4" id="analytics-kpi-grid">
         {/* Metric 1 */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 flex items-center justify-between">
+        <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-5">
           <div>
-            <span className="text-[10px] font-bold text-slate-400 tracking-wider block uppercase">
+            <span className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">
               Daily Revenue
             </span>
-            <h3 className="text-xl font-extrabold text-slate-800 mt-1 font-mono">
+            <h3 className="mt-1 font-mono text-xl font-extrabold text-slate-800">
               ${metrics.dailyRevenue.toFixed(2)}
             </h3>
-            <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-0.5 mt-1">
+            <span className="mt-1 flex items-center gap-0.5 text-[10px] font-bold text-emerald-600">
               <TrendingUp className="h-3 w-3" /> +18.4% vs last Tuesday
             </span>
           </div>
-          <div className={`p-3.5 rounded-xl ${isClinic ? 'bg-teal-50 text-teal-600' : 'bg-pink-50 text-pink-600'}`}>
+          <div
+            className={`rounded-xl p-3.5 ${isClinic ? 'bg-teal-50 text-teal-600' : 'bg-pink-50 text-pink-600'}`}
+          >
             <DollarSign className="h-5 w-5" />
           </div>
         </div>
 
         {/* Metric 2 */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 flex items-center justify-between">
+        <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-5">
           <div>
-            <span className="text-[10px] font-bold text-slate-400 tracking-wider block uppercase">
+            <span className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">
               Today's Bookings
             </span>
-            <h3 className="text-xl font-extrabold text-slate-800 mt-1 font-mono">
+            <h3 className="mt-1 font-mono text-xl font-extrabold text-slate-800">
               {metrics.todayBookingsCount}
             </h3>
-            <p className="text-[10px] text-slate-400 mt-1 font-medium">
-              {appointments.filter((a) => a.date === '2026-07-21' && a.status === 'completed').length} completed already
+            <p className="mt-1 text-[10px] font-medium text-slate-400">
+              {
+                appointments.filter((a) => a.date === '2026-07-21' && a.status === 'completed')
+                  .length
+              }{' '}
+              completed already
             </p>
           </div>
-          <div className="p-3.5 bg-blue-50 text-blue-600 rounded-xl">
+          <div className="rounded-xl bg-blue-50 p-3.5 text-blue-600">
             <CalendarCheck className="h-5 w-5" />
           </div>
         </div>
 
         {/* Metric 3 */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 flex items-center justify-between">
+        <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-5">
           <div>
-            <span className="text-[10px] font-bold text-slate-400 tracking-wider block uppercase">
+            <span className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">
               Staff Occupancy
             </span>
-            <h3 className="text-xl font-extrabold text-slate-800 mt-1 font-mono">
+            <h3 className="mt-1 font-mono text-xl font-extrabold text-slate-800">
               {metrics.occupancyRate}%
             </h3>
-            <span className="text-[10px] text-slate-500 font-medium mt-1 block">
+            <span className="mt-1 block text-[10px] font-medium text-slate-500">
               Optimal threshold met
             </span>
           </div>
-          <div className="p-3.5 bg-amber-50 text-amber-600 rounded-xl">
+          <div className="rounded-xl bg-amber-50 p-3.5 text-amber-600">
             <Clock className="h-5 w-5" />
           </div>
         </div>
 
         {/* Metric 4 */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 flex items-center justify-between">
+        <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-5">
           <div>
-            <span className="text-[10px] font-bold text-slate-400 tracking-wider block uppercase">
+            <span className="block text-[10px] font-bold tracking-wider text-slate-400 uppercase">
               Avg Ticket Value
             </span>
-            <h3 className="text-xl font-extrabold text-slate-800 mt-1 font-mono">
+            <h3 className="mt-1 font-mono text-xl font-extrabold text-slate-800">
               ${metrics.avgTicket.toFixed(2)}
             </h3>
-            <p className="text-[10px] text-slate-400 mt-1 font-medium">Per completed session</p>
+            <p className="mt-1 text-[10px] font-medium text-slate-400">Per completed session</p>
           </div>
-          <div className="p-3.5 bg-indigo-50 text-indigo-600 rounded-xl">
+          <div className="rounded-xl bg-indigo-50 p-3.5 text-indigo-600">
             <Smile className="h-5 w-5" />
           </div>
         </div>
       </div>
 
       {/* Visual Analytics Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6" id="analytics-charts-grid">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12" id="analytics-charts-grid">
         {/* Revenue Area Chart (7 Columns) */}
-        <div className="lg:col-span-7 bg-white p-5 rounded-xl border border-slate-200 flex flex-col h-[380px]" id="revenue-chart-card">
+        <div
+          className="flex h-[380px] flex-col rounded-xl border border-slate-200 bg-white p-5 lg:col-span-7"
+          id="revenue-chart-card"
+        >
           <div className="mb-4">
-            <h4 className="text-xs font-bold text-slate-800 tracking-wide uppercase">Revenue Growth Trends</h4>
-            <p className="text-[10px] text-slate-400">Aggregated performance over the past 7 days</p>
+            <h4 className="text-xs font-bold tracking-wide text-slate-800 uppercase">
+              Revenue Growth Trends
+            </h4>
+            <p className="text-[10px] text-slate-400">
+              Aggregated performance over the past 7 days
+            </p>
           </div>
 
-          <div className="flex-1 w-full text-xs">
+          <div className="w-full flex-1 text-xs">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={isClinic ? '#0d9488' : '#db2777'} stopOpacity={0.2} />
-                    <stop offset="95%" stopColor={isClinic ? '#0d9488' : '#db2777'} stopOpacity={0} />
+                    <stop
+                      offset="5%"
+                      stopColor={isClinic ? '#0d9488' : '#db2777'}
+                      stopOpacity={0.2}
+                    />
+                    <stop
+                      offset="95%"
+                      stopColor={isClinic ? '#0d9488' : '#db2777'}
+                      stopOpacity={0}
+                    />
                   </linearGradient>
                 </defs>
-                <XAxis dataKey="day" tickLine={false} axisLine={false} dy={10} style={{ fill: '#94a3b8', fontSize: 10 }} />
-                <YAxis tickLine={false} axisLine={false} style={{ fill: '#94a3b8', fontSize: 10 }} />
+                <XAxis
+                  dataKey="day"
+                  tickLine={false}
+                  axisLine={false}
+                  dy={10}
+                  style={{ fill: '#94a3b8', fontSize: 10 }}
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  style={{ fill: '#94a3b8', fontSize: 10 }}
+                />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: '#1e293b',
@@ -183,19 +242,33 @@ export default function AnalyticsDashboard({ mode, appointments, staff }: Analyt
         </div>
 
         {/* Staff Bookings Count Bar Chart (5 Columns) */}
-        <div className="lg:col-span-5 bg-white p-5 rounded-xl border border-slate-200 flex flex-col h-[380px]" id="staff-chart-card">
+        <div
+          className="flex h-[380px] flex-col rounded-xl border border-slate-200 bg-white p-5 lg:col-span-5"
+          id="staff-chart-card"
+        >
           <div className="mb-4">
-            <h4 className="text-xs font-bold text-slate-800 tracking-wide uppercase">
+            <h4 className="text-xs font-bold tracking-wide text-slate-800 uppercase">
               {isClinic ? 'Doctor Intake Share' : 'Stylist Session Volume'}
             </h4>
             <p className="text-[10px] text-slate-400">Total appointments booked per practitioner</p>
           </div>
 
-          <div className="flex-1 w-full text-xs">
+          <div className="w-full flex-1 text-xs">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={staffChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <XAxis dataKey="name" tickLine={false} axisLine={false} dy={5} style={{ fill: '#94a3b8', fontSize: 10 }} />
-                <YAxis allowDecimals={false} tickLine={false} axisLine={false} style={{ fill: '#94a3b8', fontSize: 10 }} />
+                <XAxis
+                  dataKey="name"
+                  tickLine={false}
+                  axisLine={false}
+                  dy={5}
+                  style={{ fill: '#94a3b8', fontSize: 10 }}
+                />
+                <YAxis
+                  allowDecimals={false}
+                  tickLine={false}
+                  axisLine={false}
+                  style={{ fill: '#94a3b8', fontSize: 10 }}
+                />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: '#1e293b',
@@ -218,58 +291,72 @@ export default function AnalyticsDashboard({ mode, appointments, staff }: Analyt
       </div>
 
       {/* Staff Availability & Roster matrix */}
-      <div className="bg-white p-6 rounded-xl border border-slate-200" id="staff-availability-card">
-        <div className="flex items-center justify-between mb-4">
+      <div className="rounded-xl border border-slate-200 bg-white p-6" id="staff-availability-card">
+        <div className="mb-4 flex items-center justify-between">
           <div>
-            <h4 className="text-xs font-bold text-slate-800 tracking-wide uppercase">Daily Staff Roster & Availability</h4>
-            <p className="text-[10px] text-slate-400">Track practitioners availability, ratings, and operating constraints</p>
+            <h4 className="text-xs font-bold tracking-wide text-slate-800 uppercase">
+              Daily Staff Roster & Availability
+            </h4>
+            <p className="text-[10px] text-slate-400">
+              Track practitioners availability, ratings, and operating constraints
+            </p>
           </div>
-          <span className="text-[10px] bg-slate-50 border border-slate-100 text-slate-500 font-mono font-semibold px-2 py-1 rounded">
+          <span className="rounded border border-slate-100 bg-slate-50 px-2 py-1 font-mono text-[10px] font-semibold text-slate-500">
             ROSTER VERIFIED
           </span>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+          <table className="w-full border-collapse text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-100 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                <th className="py-3 px-4">Staff Member</th>
-                <th className="py-3 px-4">Role / Specialty</th>
-                <th className="py-3 px-4">Roster Days</th>
-                <th className="py-3 px-4">Operational Hours</th>
-                <th className="py-3 px-4 text-center">Satisfaction</th>
+              <tr className="border-b border-slate-100 text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+                <th className="px-4 py-3">Staff Member</th>
+                <th className="px-4 py-3">Role / Specialty</th>
+                <th className="px-4 py-3">Roster Days</th>
+                <th className="px-4 py-3">Operational Hours</th>
+                <th className="px-4 py-3 text-center">Satisfaction</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
               {staff.map((st) => (
-                <tr key={st.id} className="hover:bg-slate-50/50 transition">
-                  <td className="py-3.5 px-4 flex items-center gap-3">
-                    <img src={st.avatar} alt={st.name} className="w-8 h-8 rounded-full object-cover border" referrerPolicy="no-referrer" />
+                <tr key={st.id} className="transition hover:bg-slate-50/50">
+                  <td className="flex items-center gap-3 px-4 py-3.5">
+                    <img
+                      src={st.avatar}
+                      alt={st.name}
+                      className="h-8 w-8 rounded-full border object-cover"
+                      referrerPolicy="no-referrer"
+                    />
                     <div>
-                      <span className="font-bold text-slate-800 block">{st.name}</span>
-                      <span className="text-[10px] text-slate-400 font-mono">{st.email}</span>
+                      <span className="block font-bold text-slate-800">{st.name}</span>
+                      <span className="font-mono text-[10px] text-slate-400">{st.email}</span>
                     </div>
                   </td>
-                  <td className="py-3.5 px-4">
-                    <span className="font-medium text-slate-700 block">{st.role}</span>
+                  <td className="px-4 py-3.5">
+                    <span className="block font-medium text-slate-700">{st.role}</span>
                     <span className="text-[10px] text-slate-400">{st.specialty}</span>
                   </td>
-                  <td className="py-3.5 px-4">
+                  <td className="px-4 py-3.5">
                     <div className="flex flex-wrap gap-1">
                       {st.availability.days.map((d) => (
-                        <span key={d} className="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-medium">
+                        <span
+                          key={d}
+                          className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600"
+                        >
                           {d.substring(0, 3)}
                         </span>
                       ))}
                     </div>
                   </td>
-                  <td className="py-3.5 px-4">
-                    <span className="font-mono text-slate-600 bg-slate-50 px-2 py-0.5 rounded border border-slate-100">
+                  <td className="px-4 py-3.5">
+                    <span className="rounded border border-slate-100 bg-slate-50 px-2 py-0.5 font-mono text-slate-600">
                       {st.availability.hours}
                     </span>
                   </td>
-                  <td className="py-3.5 px-4 text-center">
-                    <span className="text-amber-500 font-bold text-xs">★ {st.rating.toFixed(2)}</span>
+                  <td className="px-4 py-3.5 text-center">
+                    <span className="text-xs font-bold text-amber-500">
+                      ★ {st.rating.toFixed(2)}
+                    </span>
                   </td>
                 </tr>
               ))}

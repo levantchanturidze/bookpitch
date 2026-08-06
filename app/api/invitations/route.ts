@@ -12,7 +12,12 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'staff.invite', { organizationId: ctx.activeOrganizationId! }, 'invitations');
+    requirePermission(
+      ctx,
+      'staff.invite',
+      { organizationId: ctx.activeOrganizationId! },
+      'invitations',
+    );
     const session = ctxToSession(ctx);
     const rows = await withOrg(session.organizationId, (tx) =>
       tx.invitation.findMany({
@@ -29,7 +34,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'staff.invite', { organizationId: ctx.activeOrganizationId! }, 'invitations');
+    requirePermission(
+      ctx,
+      'staff.invite',
+      { organizationId: ctx.activeOrganizationId! },
+      'invitations',
+    );
     const body = (await req.json().catch(() => null)) as {
       email?: unknown;
       role?: unknown;

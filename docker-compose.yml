@@ -20,11 +20,11 @@ services:
       POSTGRES_PASSWORD: bookpitch
       POSTGRES_DB: bookpitch_dev
     ports:
-      - "5433:5432"
+      - '5433:5432'
     volumes:
       - bookpitch-pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bookpitch -d bookpitch_dev"]
+      test: ['CMD-SHELL', 'pg_isready -U bookpitch -d bookpitch_dev']
       interval: 3s
       timeout: 3s
       retries: 10

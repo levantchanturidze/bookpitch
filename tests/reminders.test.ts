@@ -12,10 +12,7 @@ vi.mock('@/auth', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
 const { withoutRls } = await import('@/lib/db');
-const {
-  renderTemplate,
-  DEFAULT_SMS_TEMPLATE,
-} = await import('@/lib/messaging/templates');
+const { renderTemplate, DEFAULT_SMS_TEMPLATE } = await import('@/lib/messaging/templates');
 const { runReminderTick, sendForAppointment } = await import('@/lib/messaging/reminders');
 
 async function clearMessageLogs(appointmentIds: string[]) {
@@ -211,9 +208,7 @@ describe('runReminderTick / sendForAppointment', () => {
 
   afterAll(async () => {
     await clearMessageLogs(trackedApptIds);
-    await withoutRls((tx) =>
-      tx.appointment.deleteMany({ where: { id: { in: trackedApptIds } } }),
-    );
+    await withoutRls((tx) => tx.appointment.deleteMany({ where: { id: { in: trackedApptIds } } }));
     if (noContactCustomerId) {
       await withoutRls((tx) =>
         tx.customer.delete({ where: { id: noContactCustomerId! } }).catch(() => null),
@@ -258,9 +253,7 @@ describe('runReminderTick / sendForAppointment', () => {
     expect(touchedInside).toBe(true);
 
     if (outsideWindowApptId) {
-      const touchedOutside = report.attempts.some(
-        (a) => a.appointmentId === outsideWindowApptId,
-      );
+      const touchedOutside = report.attempts.some((a) => a.appointmentId === outsideWindowApptId);
       expect(touchedOutside).toBe(false);
     }
   });

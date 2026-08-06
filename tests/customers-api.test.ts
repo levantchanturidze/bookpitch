@@ -230,9 +230,12 @@ describe('/api/customers CRUD + encryption + audit', () => {
   it('cross-tenant read still returns only the caller org (RLS holds)', async () => {
     // Phase 4: mockJwt requires a real (userId, orgId) pair. Use the
     // isolation org's own owner to test that they see only their data.
-    const isoOwner = await withoutRls(tx => tx.appUser.findUniqueOrThrow({
-      where: { email: 'isolation@bookpitch.dev' }, select: { id: true },
-    }));
+    const isoOwner = await withoutRls((tx) =>
+      tx.appUser.findUniqueOrThrow({
+        where: { email: 'isolation@bookpitch.dev' },
+        select: { id: true },
+      }),
+    );
     authMock.mockResolvedValue(await mkSession(isolationOrgId, isoOwner.id));
     const res = await routeList.GET();
     const body = await jsonBody<{ customers: Array<{ name: string }> }>(res);

@@ -9,9 +9,7 @@ vi.mock('@/auth', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
 const { withoutRls } = await import('@/lib/db');
-const { buildClaimsExport, listInsurers, renderClaimsCsv } = await import(
-  '@/lib/insurance'
-);
+const { buildClaimsExport, listInsurers, renderClaimsCsv } = await import('@/lib/insurance');
 const { isValidIcd10 } = await import('@/lib/icd10');
 const { InvalidInputError } = await import('@/lib/auth');
 
@@ -228,9 +226,9 @@ describe('buildClaimsExport', () => {
 
   it('rejects from >= to', async () => {
     const now = new Date();
-    await expect(
-      buildClaimsExport(session(), { from: now, to: now }),
-    ).rejects.toBeInstanceOf(InvalidInputError);
+    await expect(buildClaimsExport(session(), { from: now, to: now })).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
   });
 
   it('filters by insurer when provided', async () => {

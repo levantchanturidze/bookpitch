@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
-import { log, newRequestId, updateRequestContext, withRequestContext } from '@/lib/logger';
+import {
+  log,
+  newRequestId,
+  sanitizeErrorMessage,
+  updateRequestContext,
+  withRequestContext,
+} from '@/lib/logger';
 import type { AuthContext } from '@/lib/rbac';
 
 /**
@@ -161,7 +167,7 @@ export function withApi<T>(handler: () => Promise<T>): Promise<NextResponse> {
         log.error('api', {
           durationMs: Date.now() - startedAt,
           status: res.status,
-          error: (err as Error).message,
+          error: sanitizeErrorMessage(err),
         });
       } else {
         log.warn('api', {
@@ -209,7 +215,7 @@ export function withApiRaw(handler: () => Promise<Response>): Promise<Response> 
         log.error('api', {
           durationMs: Date.now() - startedAt,
           status: res.status,
-          error: (err as Error).message,
+          error: sanitizeErrorMessage(err),
         });
       } else {
         log.warn('api', {

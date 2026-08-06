@@ -35,13 +35,16 @@ export default function BillingList({
   return (
     <div className="space-y-6">
       <header className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-6">
-        <div className={`rounded-xl p-3 ${isClinic ? 'bg-teal-50 text-teal-600' : 'bg-pink-50 text-pink-600'}`}>
+        <div
+          className={`rounded-xl p-3 ${isClinic ? 'bg-teal-50 text-teal-600' : 'bg-pink-50 text-pink-600'}`}
+        >
           <Receipt className="h-6 w-6" />
         </div>
         <div className="flex-1">
           <h2 className="text-xl font-extrabold tracking-tight text-slate-900">Billing & POS</h2>
           <p className="mt-0.5 text-xs text-slate-500">
-            {location.name} · card payments go through the configured gateway; cash settles instantly.
+            {location.name} · card payments go through the configured gateway; cash settles
+            instantly.
           </p>
         </div>
         <div className="hidden text-right sm:block">

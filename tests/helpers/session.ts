@@ -6,8 +6,14 @@
 // mock `auth()` must return this exact shape or requireAuthContext() rejects
 // with UnauthenticatedError (missing membership).
 //
+// Phase 5 added authSessionId — a stable random identifier generated at
+// sign-in. Tests that exercise the reauth grant path must supply a consistent
+// authSessionId to both the JWT mock and the verifyPasswordFresh call.
+//
 // Usage:
-//   authMock.mockResolvedValue(await mockJwt(userId, orgId));
+//   const SESSION = 'test-session-id';
+//   authMock.mockResolvedValue(await mockJwt(userId, orgId, SESSION));
+//   await verifyPasswordFresh(userId, 'pass', SESSION, 'platform.mfa.enroll');
 // -----------------------------------------------------------------------------
 
 import { unsafePrismaAdmin } from '@/lib/db';
@@ -15,6 +21,7 @@ import { unsafePrismaAdmin } from '@/lib/db';
 export async function mockJwt(
   userId: string,
   organizationId: string,
+  authSessionId = 'test-session-default',
 ): Promise<{
   user: {
     id: string;
@@ -22,6 +29,7 @@ export async function mockJwt(
     activeOrganizationId: string;
     membershipId: string;
     platformRoleId: string | null;
+    authSessionId: string;
   };
 }> {
   const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
@@ -39,6 +47,7 @@ export async function mockJwt(
       activeOrganizationId: organizationId,
       membershipId: membership.id,
       platformRoleId: user.platformRoleId,
+      authSessionId,
     },
   };
 }
@@ -46,22 +55,22 @@ export async function mockJwt(
 /**
  * Phase 5: mock a JWT for a platform-plane user. No membershipId /
  * activeOrganizationId — platform accounts operate cross-tenant via
- * impersonation and break-glass. lib/auth.getSession() returns null for
- * this shape (correctly — session-scoped org-plane helpers can't run for
- * a platform-only user), but requireAuthContext() builds a valid
- * platform-only AuthContext with ctx.platformPermissions populated.
+ * impersonation and break-glass.
  *
- * Note: getSession() null means routes wrapped ONLY in withApi never
- * proceed. Phase 5 routes use withPlatformApi which calls
- * requireAuthContext directly, so platform-only sessions pass.
+ * Supply authSessionId to match the value used in verifyPasswordFresh calls
+ * for that test — the route's requireFreshPassword reads ctx.authSessionId.
  */
-export async function mockPlatformJwt(email: string): Promise<{
+export async function mockPlatformJwt(
+  email: string,
+  authSessionId = 'test-platform-session',
+): Promise<{
   user: {
     id: string;
     email: string;
     activeOrganizationId: null;
     membershipId: null;
     platformRoleId: string | null;
+    authSessionId: string;
   };
 }> {
   const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
@@ -75,6 +84,7 @@ export async function mockPlatformJwt(email: string): Promise<{
       activeOrganizationId: null,
       membershipId: null,
       platformRoleId: user.platformRoleId,
+      authSessionId,
     },
   };
 }

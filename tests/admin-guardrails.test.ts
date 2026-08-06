@@ -32,23 +32,28 @@ describe('admin guardrails', () => {
   beforeAll(async () => {
     await seedRbacFixtures();
     const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Split Practice' }, select: { id: true },
+      where: { name: 'Split Practice' },
+      select: { id: true },
     });
     orgId = org.id;
     const owner = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'split-owner@bp.test' },
     });
     ownerUserId = owner.id;
-    ownerMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
-      where: { userId: owner.id, organizationId: orgId },
-    })).id;
+    ownerMembershipId = (
+      await unsafePrismaAdmin.membership.findFirstOrThrow({
+        where: { userId: owner.id, organizationId: orgId },
+      })
+    ).id;
     const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'splitmgr@bp.test' },
     });
     managerUserId = mgr.id;
-    managerMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
-      where: { userId: mgr.id, organizationId: orgId },
-    })).id;
+    managerMembershipId = (
+      await unsafePrismaAdmin.membership.findFirstOrThrow({
+        where: { userId: mgr.id, organizationId: orgId },
+      })
+    ).id;
   });
 
   beforeEach(async () => {
@@ -85,13 +90,21 @@ describe('admin guardrails', () => {
 
   it('BRANCH_MANAGER cannot promote a FRONT_DESK to ORG_OWNER (rank)', async () => {
     // Seed a temp FRONT_DESK member to try to promote.
-    const targetUser = await withoutRls((tx) => tx.appUser.create({
-      data: { authProvider: 'credentials', authSubject: `t-${Date.now()}@ex.test`,
-              email: `t-${Date.now()}@ex.test`, passwordHash: 'x' },
-    }));
-    const targetMembership = await withoutRls((tx) => tx.membership.create({
-      data: { userId: targetUser.id, organizationId: orgId, role: 'receptionist' },
-    }));
+    const targetUser = await withoutRls((tx) =>
+      tx.appUser.create({
+        data: {
+          authProvider: 'credentials',
+          authSubject: `t-${Date.now()}@ex.test`,
+          email: `t-${Date.now()}@ex.test`,
+          passwordHash: 'x',
+        },
+      }),
+    );
+    const targetMembership = await withoutRls((tx) =>
+      tx.membership.create({
+        data: { userId: targetUser.id, organizationId: orgId, role: 'receptionist' },
+      }),
+    );
 
     await expect(
       updateMemberRole(managerSession(), targetMembership.id, 'owner'),
@@ -106,24 +119,31 @@ describe('admin guardrails', () => {
 
   it('assertNotLastOwner throws when the target IS the last active ORG_OWNER', async () => {
     await unsafePrismaAdmin.$transaction(async (t) => {
-      await expect(assertNotLastOwner(t, orgId, ownerMembershipId))
-        .rejects.toBeInstanceOf(InvalidInputError);
+      await expect(assertNotLastOwner(t, orgId, ownerMembershipId)).rejects.toBeInstanceOf(
+        InvalidInputError,
+      );
     });
   });
 
   it('assertNotLastOwner passes when another active ORG_OWNER exists', async () => {
     // Add a second owner temporarily.
     const secondUser = await unsafePrismaAdmin.appUser.create({
-      data: { authProvider: 'credentials', authSubject: `so-${Date.now()}@ex.test`,
-              email: `so-${Date.now()}@ex.test`, passwordHash: 'x' },
+      data: {
+        authProvider: 'credentials',
+        authSubject: `so-${Date.now()}@ex.test`,
+        email: `so-${Date.now()}@ex.test`,
+        passwordHash: 'x',
+      },
     });
     const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'ORG_OWNER', organizationId: null },
     });
     const secondOwner = await unsafePrismaAdmin.membership.create({
       data: {
-        userId: secondUser.id, organizationId: orgId,
-        role: 'owner', roleId: orgOwnerRole.id,
+        userId: secondUser.id,
+        organizationId: orgId,
+        role: 'owner',
+        roleId: orgOwnerRole.id,
       },
     });
 
@@ -143,27 +163,34 @@ describe('admin guardrails', () => {
     // helper directly instead — proves the check fires without setting
     // up a synthetic actor.
     await unsafePrismaAdmin.$transaction(async (t) => {
-      await expect(assertNotLastOwner(t, orgId, ownerMembershipId))
-        .rejects.toBeInstanceOf(InvalidInputError);
+      await expect(assertNotLastOwner(t, orgId, ownerMembershipId)).rejects.toBeInstanceOf(
+        InvalidInputError,
+      );
     });
   });
 
   // -------- Session-version bump on role change (spec §9 rule 10) --------
 
-  it('updateMemberRole bumps the TARGET user\'s sessionVersion', async () => {
+  it("updateMemberRole bumps the TARGET user's sessionVersion", async () => {
     // Give split-owner a second ORG_OWNER peer, then try to demote them.
     // Actually simpler: use the BRANCH_MANAGER target — split-owner
     // (actor) can manage BRANCH_MANAGER → FRONT_DESK per the lattice.
-    const beforeSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: managerUserId }, select: { sessionVersion: true },
-    })).sessionVersion;
+    const beforeSV = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { id: managerUserId },
+        select: { sessionVersion: true },
+      })
+    ).sessionVersion;
 
     // ORG_OWNER can manage BRANCH_MANAGER per lattice; demote to FRONT_DESK.
     await updateMemberRole(ownerSession(), managerMembershipId, 'receptionist');
 
-    const afterSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: managerUserId }, select: { sessionVersion: true },
-    })).sessionVersion;
+    const afterSV = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { id: managerUserId },
+        select: { sessionVersion: true },
+      })
+    ).sessionVersion;
     expect(afterSV).toBe(beforeSV + 1);
 
     // Restore BRANCH_MANAGER for other tests.
@@ -187,45 +214,58 @@ describe('admin guardrails', () => {
         data: {
           organizationId: orgId,
           locationId: loc.id,
-          name: 'Guardrail Test', roleTitle: 'Provider',
+          name: 'Guardrail Test',
+          roleTitle: 'Provider',
         },
       });
     });
     const cust = await withoutRls(async (tx) => {
       const found = await tx.customer.findFirst({ where: { organizationId: orgId } });
-      return found ?? tx.customer.create({ data: { organizationId: orgId, name: 'Test Customer' } });
+      return (
+        found ?? tx.customer.create({ data: { organizationId: orgId, name: 'Test Customer' } })
+      );
     });
     const svc = await withoutRls(async (tx) => {
       const found = await tx.service.findFirst({
         where: { organizationId: orgId, locationId: staff.locationId },
       });
-      return found ?? tx.service.create({
-        data: {
-          organizationId: orgId, locationId: staff.locationId, name: 'Test Service',
-          price: 10, durationMinutes: 30,
-        },
-      });
+      return (
+        found ??
+        tx.service.create({
+          data: {
+            organizationId: orgId,
+            locationId: staff.locationId,
+            name: 'Test Service',
+            price: 10,
+            durationMinutes: 30,
+          },
+        })
+      );
     });
     const futureStart = new Date(Date.now() + 30 * 24 * 3600_000);
-    const appt = await withoutRls((tx) => tx.appointment.create({
-      data: {
-        organizationId: orgId,
-        locationId: staff.locationId,
-        customerId: cust.id,
-        staffId: staff.id,
-        serviceId: svc.id,
-        startsAt: futureStart,
-        endsAt: new Date(futureStart.getTime() + 30 * 60_000),
-        serviceName: svc.name,
-        price: svc.price,
-        status: 'pending',
-        paymentStatus: 'unpaid',
-        createdBy: ownerUserId,
-      },
-    }));
+    const appt = await withoutRls((tx) =>
+      tx.appointment.create({
+        data: {
+          organizationId: orgId,
+          locationId: staff.locationId,
+          customerId: cust.id,
+          staffId: staff.id,
+          serviceId: svc.id,
+          startsAt: futureStart,
+          endsAt: new Date(futureStart.getTime() + 30 * 60_000),
+          serviceName: svc.name,
+          price: svc.price,
+          status: 'pending',
+          paymentStatus: 'unpaid',
+          createdBy: ownerUserId,
+        },
+      }),
+    );
 
-    await expect(deleteStaff(ownerSession(), staff.id))
-      .rejects.toMatchObject({ name: 'ConflictError', message: /future booking/ });
+    await expect(deleteStaff(ownerSession(), staff.id)).rejects.toMatchObject({
+      name: 'ConflictError',
+      message: /future booking/,
+    });
 
     // Cleanup
     await withoutRls((tx) => tx.appointment.delete({ where: { id: appt.id } }));

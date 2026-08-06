@@ -70,7 +70,10 @@ describe('a11y — sign-in form', () => {
     const result = await runAxe(html);
     if (result.violations.length) {
       // Print the ids for easy debugging.
-      console.log('violations:', result.violations.map((v) => v.id));
+      console.log(
+        'violations:',
+        result.violations.map((v) => v.id),
+      );
     }
     expect(result.violations).toEqual([]);
   });
@@ -87,7 +90,10 @@ describe('a11y — app shell landmarks + skip link', () => {
     `;
     const result = await runAxe(html);
     if (result.violations.length) {
-      console.log('violations:', result.violations.map((v) => v.id));
+      console.log(
+        'violations:',
+        result.violations.map((v) => v.id),
+      );
     }
     expect(result.violations).toEqual([]);
   });

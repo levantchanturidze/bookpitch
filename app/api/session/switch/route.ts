@@ -22,8 +22,7 @@ export async function POST(req: NextRequest) {
   return withApi(async () => {
     const session = await requireSession();
     const body = (await req.json().catch(() => null)) as { organizationId?: unknown } | null;
-    const organizationId =
-      typeof body?.organizationId === 'string' ? body.organizationId : '';
+    const organizationId = typeof body?.organizationId === 'string' ? body.organizationId : '';
     if (!organizationId) throw new InvalidInputError('organizationId is required');
     await switchActiveOrg(session.userId, organizationId);
     return { ok: true, organizationId, requireReSignIn: true };

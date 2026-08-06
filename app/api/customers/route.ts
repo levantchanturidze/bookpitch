@@ -9,12 +9,17 @@ import { buildCreateData, parseCreateInput, toCustomerDto } from '@/lib/customer
 export async function GET() {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.read:contact',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const customers = await withOrg(session.organizationId, async (tx) => {
       const rows = await tx.customer.findMany({ orderBy: { createdAt: 'desc' } });
       await writeAudit(tx, session, 'list', 'customer', null, { count: rows.length });
-      return rows.map(toCustomerDto);
+      return rows.map((r) => toCustomerDto(r, { ctx }));
     });
     return { customers };
   });
@@ -24,7 +29,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.create', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.create',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const input = parseCreateInput(await req.json().catch(() => null));
 
@@ -33,7 +43,7 @@ export async function POST(req: NextRequest) {
         data: buildCreateData(input, session.organizationId),
       });
       await writeAudit(tx, session, 'create', 'customer', row.id);
-      return toCustomerDto(row);
+      return toCustomerDto(row, { ctx });
     });
 
     return { customer };

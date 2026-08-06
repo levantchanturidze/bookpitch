@@ -16,7 +16,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'staff.deactivate', { organizationId: ctx.activeOrganizationId! }, 'admin');
+    requirePermission(
+      ctx,
+      'staff.deactivate',
+      { organizationId: ctx.activeOrganizationId! },
+      'admin',
+    );
     const { id } = await params;
     await deleteStaff(ctxToSession(ctx), id);
     return { ok: true };

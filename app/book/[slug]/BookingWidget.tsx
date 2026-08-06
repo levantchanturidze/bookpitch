@@ -34,11 +34,12 @@ export default function BookingWidget({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: true } | { ok: false; msg: string } | null>(null);
 
-  const minWhen = useMemo(() => {
+  // useState lazy initializer runs once on mount — exempt from purity constraints.
+  const [minWhen] = useState(() => {
     const d = new Date(Date.now() + 30 * 60 * 1000);
     d.setUTCSeconds(0, 0);
     return d.toISOString().slice(0, 16);
-  }, []);
+  });
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -75,8 +76,8 @@ export default function BookingWidget({
       <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6 text-emerald-800">
         <h2 className="text-lg font-bold">Booking received</h2>
         <p className="mt-1 text-sm">
-          {location.organizationName} will confirm shortly. Check your email or
-          phone for a reminder before the appointment.
+          {location.organizationName} will confirm shortly. Check your email or phone for a reminder
+          before the appointment.
         </p>
       </div>
     );
@@ -174,8 +175,8 @@ export default function BookingWidget({
           className="mt-0.5"
         />
         <span>
-          I agree to {location.organizationName} storing my contact details for
-          this appointment. I can request a copy or deletion at any time.
+          I agree to {location.organizationName} storing my contact details for this appointment. I
+          can request a copy or deletion at any time.
         </span>
       </label>
 

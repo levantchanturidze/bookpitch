@@ -67,14 +67,16 @@ export async function GET() {
   // F-12 diagnosis flow points at the right rotation target. Precedence
   // matches lib/db.ts (new names first, legacy names as fallback). Both
   // sides now name the actually-used variable — no hardcoded label.
-  const appLabel: AppLabel =
-    process.env.DATABASE_URL_APP_NOBYPASSRLS ? 'DATABASE_URL_APP_NOBYPASSRLS'
-                                             : 'DATABASE_URL';
-  const adminLabel: AdminLabel =
-    process.env.DATABASE_URL_SUPERUSER_TXPOOL   ? 'DATABASE_URL_SUPERUSER_TXPOOL'   :
-    process.env.DATABASE_URL_SUPERUSER_SESSION  ? 'DATABASE_URL_SUPERUSER_SESSION'  :
-    process.env.ADMIN_RUNTIME_DATABASE_URL      ? 'ADMIN_RUNTIME_DATABASE_URL'      :
-                                                  'ADMIN_DATABASE_URL';
+  const appLabel: AppLabel = process.env.DATABASE_URL_APP_NOBYPASSRLS
+    ? 'DATABASE_URL_APP_NOBYPASSRLS'
+    : 'DATABASE_URL';
+  const adminLabel: AdminLabel = process.env.DATABASE_URL_SUPERUSER_TXPOOL
+    ? 'DATABASE_URL_SUPERUSER_TXPOOL'
+    : process.env.DATABASE_URL_SUPERUSER_SESSION
+      ? 'DATABASE_URL_SUPERUSER_SESSION'
+      : process.env.ADMIN_RUNTIME_DATABASE_URL
+        ? 'ADMIN_RUNTIME_DATABASE_URL'
+        : 'ADMIN_DATABASE_URL';
   // If DATABASE_URL_LOGIN is unset, prismaLogin aliases to unsafePrismaAdmin
   // (same connection). Report that as fallback so operators can tell
   // whether the narrow role is being exercised.

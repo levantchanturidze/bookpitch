@@ -42,10 +42,7 @@ export default function ResetForm({ token }: { token: string | null }) {
   }
 
   return (
-    <form
-      action={token ? submitConsume : submitRequest}
-      className="space-y-4"
-    >
+    <form action={token ? submitConsume : submitRequest} className="space-y-4">
       {!token && (
         <label className="block">
           <span className="mb-1 block text-xs font-semibold text-slate-600">Email</span>
@@ -89,11 +86,7 @@ export default function ResetForm({ token }: { token: string | null }) {
         disabled={status === 'submitting'}
         className="w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {status === 'submitting'
-          ? 'Working…'
-          : token
-            ? 'Set new password'
-            : 'Send reset link'}
+        {status === 'submitting' ? 'Working…' : token ? 'Set new password' : 'Send reset link'}
       </button>
     </form>
   );

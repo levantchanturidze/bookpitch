@@ -37,6 +37,33 @@ organizations, memberships, or any query that reads tenant-scoped data.
 - Write findings to `docs/` as you go. Anything not written down is lost at the
   next context reset.
 
+## Verify behaviour, not wiring (2026-08-06)
+
+Four bugs in this project shared one shape: sign-in broken while tests were
+green, a workflow failing unnoticed for days, toggles audited but never read,
+permissions granted but never checked. The signal looked healthy and meant
+nothing.
+
+**A control that does not change observable behaviour does not exist.**
+
+Before closing any enforcement PR, confirm the complement path: flip or remove
+the control and observe that an actual response, audit entry, or DB state
+changes. Specifically:
+
+- A permission check must have a test that calls the endpoint *without* the
+  permission and gets a 403, not just one that succeeds with it.
+- A toggle must have a test that flips the toggle and proves the *response
+  body* changes, not just that `updateOrgToggles` returns the new value.
+- A guard must be called in the path that actually runs, not a parallel branch
+  that is skipped in production.
+- A test-level check (`.toEqual('expected')`) that never fails because the
+  expectation mirrors a constant default is not a test — it is documentation
+  that compiles.
+
+If you cannot write the complement assertion without hitting a real endpoint or
+real DB state, write it anyway and let it be slow. A slow true test beats a
+fast vacuous one.
+
 ## Secret handling — hard rule (F-12, 2026-08-02 incident)
 
 - Never echo, cat, grep, or loop over a file containing secrets. Read into a

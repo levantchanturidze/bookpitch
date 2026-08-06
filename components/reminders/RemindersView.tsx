@@ -77,9 +77,7 @@ export default function RemindersView({
       <header className="rounded-2xl border border-slate-200 bg-white p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-xl font-extrabold tracking-tight text-slate-900">
-              Reminders
-            </h2>
+            <h2 className="text-xl font-extrabold tracking-tight text-slate-900">Reminders</h2>
             <p className="mt-1 text-xs text-slate-500">
               SMS + email templates, per-org lead time, and a live send log.
             </p>
@@ -170,22 +168,19 @@ function TemplateCard({
     <section className="rounded-2xl border border-slate-200 bg-white p-6">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className={`rounded-lg p-2 ${isSms ? 'bg-indigo-50 text-indigo-600' : 'bg-amber-50 text-amber-600'}`}>
+          <div
+            className={`rounded-lg p-2 ${isSms ? 'bg-indigo-50 text-indigo-600' : 'bg-amber-50 text-amber-600'}`}
+          >
             <Icon className="h-4 w-4" />
           </div>
           <h3 className="text-sm font-bold text-slate-800">
             {isSms ? 'SMS Template' : 'Email Template'}
           </h3>
         </div>
-        <div className="font-mono text-[10px] text-slate-400">
-          {body.length} chars
-        </div>
+        <div className="font-mono text-[10px] text-slate-400">{body.length} chars</div>
       </div>
 
-      <form
-        action={(fd) => startTransition(() => saveTemplateAction(fd))}
-        className="space-y-3"
-      >
+      <form action={(fd) => startTransition(() => saveTemplateAction(fd))} className="space-y-3">
         <input type="hidden" name="channel" value={channel} />
         <textarea
           name="body"
@@ -293,10 +288,7 @@ function UpcomingRow({ appointment: a }: { appointment: UpcomingAppointment }) {
           </span>
         </p>
       </div>
-      <form
-        action={(fd) => startTransition(() => sendNowAction(fd))}
-        className="shrink-0"
-      >
+      <form action={(fd) => startTransition(() => sendNowAction(fd))} className="shrink-0">
         <input type="hidden" name="appointmentId" value={a.id} />
         <button
           type="submit"
@@ -360,7 +352,9 @@ function LogCard({ log }: { log: LogEntry[] }) {
                   {row.providerMsgId ?? '—'}
                 </td>
                 <td className="px-6 py-2">
-                  <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${STATE_BADGE[row.state]}`}>
+                  <span
+                    className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${STATE_BADGE[row.state]}`}
+                  >
                     {row.state}
                   </span>
                 </td>
@@ -396,7 +390,10 @@ function RetentionCard({ initial }: { initial: number }) {
         </div>
       </div>
       <div className="flex flex-wrap items-end gap-2">
-        <form action={(fd) => startSave(() => saveRetentionYearsAction(fd))} className="flex items-end gap-2">
+        <form
+          action={(fd) => startSave(() => saveRetentionYearsAction(fd))}
+          className="flex items-end gap-2"
+        >
           <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
             Retention
             <div className="mt-1 flex items-center gap-1">

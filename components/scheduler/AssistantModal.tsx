@@ -154,13 +154,19 @@ export default function AssistantModal({
 
         {draft && (
           <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
-            <p className="font-mono text-[10px] tracking-wider text-slate-400 uppercase">
-              Draft
-            </p>
+            <p className="font-mono text-[10px] tracking-wider text-slate-400 uppercase">Draft</p>
             <dl className="grid grid-cols-2 gap-2 text-[11px]">
-              <DraftField label="Patient" value={draft.customerName || '—'} missing={!draft.customerId} />
+              <DraftField
+                label="Patient"
+                value={draft.customerName || '—'}
+                missing={!draft.customerId}
+              />
               <DraftField label="Staff" value={draft.staffName || '—'} missing={!draft.staffId} />
-              <DraftField label="Service" value={draft.serviceName || '—'} missing={!draft.serviceId} />
+              <DraftField
+                label="Service"
+                value={draft.serviceName || '—'}
+                missing={!draft.serviceId}
+              />
               <DraftField
                 label="When (UTC)"
                 value={`${draft.startsAt.slice(0, 10)} ${draft.startsAt.slice(11, 16)}`}
@@ -208,7 +214,9 @@ export default function AssistantModal({
                 }
                 disabled={!canConfirm}
                 className={`rounded-lg px-3 py-1.5 text-[11px] font-bold text-white transition disabled:opacity-40 ${
-                  accent === 'teal' ? 'bg-teal-600 hover:bg-teal-700' : 'bg-pink-600 hover:bg-pink-700'
+                  accent === 'teal'
+                    ? 'bg-teal-600 hover:bg-teal-700'
+                    : 'bg-pink-600 hover:bg-pink-700'
                 }`}
               >
                 Confirm booking

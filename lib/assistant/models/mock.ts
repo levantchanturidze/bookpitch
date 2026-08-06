@@ -1,8 +1,4 @@
-import type {
-  AppointmentAssistant,
-  AssistantContext,
-  AssistantResult,
-} from '../model';
+import type { AppointmentAssistant, AssistantContext, AssistantResult } from '../model';
 
 // -----------------------------------------------------------------------------
 // Mock assistant — deterministic pattern matcher over the org fixtures.

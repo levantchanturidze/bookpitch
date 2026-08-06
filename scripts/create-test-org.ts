@@ -63,17 +63,17 @@ async function main() {
 
   async function upsertOrg(name: string) {
     const existing = await unsafePrismaAdmin.organization.findFirst({
-      where: { name }, select: { id: true, name: true },
+      where: { name },
+      select: { id: true, name: true },
     });
     if (existing) return existing;
     return unsafePrismaAdmin.organization.create({
-      data: { name }, select: { id: true, name: true },
+      data: { name },
+      select: { id: true, name: true },
     });
   }
 
-  async function ensureLocationAndBranch(
-    orgId: string, name: string, type: 'clinic' | 'salon',
-  ) {
+  async function ensureLocationAndBranch(orgId: string, name: string, type: 'clinic' | 'salon') {
     // Phase 2 sync trigger auto-creates a Branch when a Location is inserted,
     // linked via branches.legacy_location_id = locations.id.
     const loc = await unsafePrismaAdmin.location.findFirst({
@@ -113,7 +113,8 @@ async function main() {
 
   async function upsertUser(email: string, fullName: string): Promise<UserOutcome> {
     const existing = await unsafePrismaAdmin.appUser.findUnique({
-      where: { email }, select: { id: true },
+      where: { email },
+      select: { id: true },
     });
     if (existing && !resetPasswords) {
       return { email, created: false, password: null };
@@ -125,7 +126,8 @@ async function main() {
       await unsafePrismaAdmin.appUser.update({
         where: { id: existing.id },
         data: {
-          passwordHash, status: 'active',
+          passwordHash,
+          status: 'active',
           sessionVersion: { increment: 1 }, // invalidate any live JWT
         },
       });
@@ -145,14 +147,18 @@ async function main() {
   }
 
   async function ensureMembership(
-    orgId: string, userEmail: string, legacyRole: 'owner' | 'practitioner' | 'receptionist',
+    orgId: string,
+    userEmail: string,
+    legacyRole: 'owner' | 'practitioner' | 'receptionist',
     systemRoleKey: string,
   ) {
     const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { email: userEmail }, select: { id: true },
+      where: { email: userEmail },
+      select: { id: true },
     });
     const role = await unsafePrismaAdmin.role.findFirstOrThrow({
-      where: { key: systemRoleKey, organizationId: null }, select: { id: true },
+      where: { key: systemRoleKey, organizationId: null },
+      select: { id: true },
     });
     const existing = await unsafePrismaAdmin.membership.findFirst({
       where: { organizationId: orgId, userId: user.id },
@@ -169,7 +175,8 @@ async function main() {
     }
     const created = await unsafePrismaAdmin.membership.create({
       data: {
-        organizationId: orgId, userId: user.id,
+        organizationId: orgId,
+        userId: user.id,
         role: legacyRole as never,
         roleId: role.id,
         status: 'active',
@@ -183,7 +190,8 @@ async function main() {
     // Idempotent: remove any existing scopes not in the desired set, then
     // add missing ones. For test env we just re-add the intended set.
     const existing = await unsafePrismaAdmin.membershipBranch.findMany({
-      where: { membershipId }, select: { branchId: true },
+      where: { membershipId },
+      select: { branchId: true },
     });
     const have = new Set(existing.map((r) => r.branchId));
     const want = new Set(branchIds);
@@ -205,10 +213,12 @@ async function main() {
 
   async function ensureOrgOwnerPointer(orgId: string, ownerEmail: string) {
     const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { email: ownerEmail }, select: { id: true },
+      where: { email: ownerEmail },
+      select: { id: true },
     });
     await unsafePrismaAdmin.organization.update({
-      where: { id: orgId }, data: { ownerUserId: user.id },
+      where: { id: orgId },
+      data: { ownerUserId: user.id },
     });
   }
 
@@ -231,14 +241,14 @@ async function main() {
 
   // Users first — must exist before memberships / owner-pointer updates.
   const users: Record<string, UserOutcome> = {};
-  users.owner     = await upsertUser('owner@bookpitch-test.invalid',     'Test Owner');
-  users.admin     = await upsertUser('admin@bookpitch-test.invalid',     'Test Admin');
-  users.manager   = await upsertUser('manager@bookpitch-test.invalid',   'Test Branch Manager');
+  users.owner = await upsertUser('owner@bookpitch-test.invalid', 'Test Owner');
+  users.admin = await upsertUser('admin@bookpitch-test.invalid', 'Test Admin');
+  users.manager = await upsertUser('manager@bookpitch-test.invalid', 'Test Branch Manager');
   users.frontdesk = await upsertUser('frontdesk@bookpitch-test.invalid', 'Test Front Desk');
-  users.provider  = await upsertUser('provider@bookpitch-test.invalid',  'Test Provider');
-  users.accountant= await upsertUser('accountant@bookpitch-test.invalid','Test Accountant');
-  users.solo      = await upsertUser('solo@bookpitch-test.invalid',      'Test Solo Doc');
-  users.multi     = await upsertUser('multi@bookpitch-test.invalid',     'Test Multi Provider');
+  users.provider = await upsertUser('provider@bookpitch-test.invalid', 'Test Provider');
+  users.accountant = await upsertUser('accountant@bookpitch-test.invalid', 'Test Accountant');
+  users.solo = await upsertUser('solo@bookpitch-test.invalid', 'Test Solo Doc');
+  users.multi = await upsertUser('multi@bookpitch-test.invalid', 'Test Multi Provider');
 
   // Test Clinic memberships. Note: legacy `role` enum only has
   // owner|practitioner|receptionist; the authoritative RBAC pointer is
@@ -246,13 +256,18 @@ async function main() {
   // most-closely matches (`owner` for anything admin-tier so it satisfies
   // the enum) — Phase 2 backfill has already established that the
   // dual-write is required through the Contract migration.
-  const ownerMemId    = await ensureMembership(testClinic.id, users.owner.email,    'owner',        'ORG_OWNER');
-  await ensureMembership(testClinic.id, users.admin.email,     'owner',        'ORG_ADMIN');
-  const mgrMemId      = await ensureMembership(testClinic.id, users.manager.email,  'receptionist', 'BRANCH_MANAGER');
+  const ownerMemId = await ensureMembership(testClinic.id, users.owner.email, 'owner', 'ORG_OWNER');
+  await ensureMembership(testClinic.id, users.admin.email, 'owner', 'ORG_ADMIN');
+  const mgrMemId = await ensureMembership(
+    testClinic.id,
+    users.manager.email,
+    'receptionist',
+    'BRANCH_MANAGER',
+  );
   await ensureMembership(testClinic.id, users.frontdesk.email, 'receptionist', 'FRONT_DESK');
-  await ensureMembership(testClinic.id, users.provider.email,  'practitioner', 'PROVIDER');
-  await ensureMembership(testClinic.id, users.accountant.email,'receptionist', 'ACCOUNTANT');
-  await ensureMembership(testClinic.id, users.multi.email,     'practitioner', 'PROVIDER');
+  await ensureMembership(testClinic.id, users.provider.email, 'practitioner', 'PROVIDER');
+  await ensureMembership(testClinic.id, users.accountant.email, 'receptionist', 'ACCOUNTANT');
+  await ensureMembership(testClinic.id, users.multi.email, 'practitioner', 'PROVIDER');
 
   // Solo practice: solo user is ORG_OWNER (permissions include everything a
   // PROVIDER can do). Spec §2.3 says the single-membership row carries both hats.
@@ -261,12 +276,12 @@ async function main() {
   // Test Clinic 2: multi user gets a second membership so the org switcher
   // has something to switch between; owner of TC2 is the same solo user for
   // convenience (satisfies the not-null ownerUserId later — see helper).
-  await ensureMembership(testClinic2.id, users.solo.email,  'owner',        'ORG_OWNER');
+  await ensureMembership(testClinic2.id, users.solo.email, 'owner', 'ORG_OWNER');
   await ensureMembership(testClinic2.id, users.multi.email, 'practitioner', 'PROVIDER');
 
   // Owner pointers — the RBAC check assertNotLastOwner reads owner_user_id.
-  await ensureOrgOwnerPointer(testClinic.id,   users.owner.email);
-  await ensureOrgOwnerPointer(testClinic2.id,  users.solo.email);
+  await ensureOrgOwnerPointer(testClinic.id, users.owner.email);
+  await ensureOrgOwnerPointer(testClinic2.id, users.solo.email);
   await ensureOrgOwnerPointer(soloPractice.id, users.solo.email);
 
   // Branch scoping — manager sees Downtown ONLY.
@@ -290,20 +305,28 @@ async function main() {
 
   console.log('');
   console.log('=== TEST FIXTURE READY ===');
-  console.log(`Test Clinic  id=${testClinic.id}  branches: Downtown=${downtown.branchId}, Uptown=${uptown.branchId}`);
+  console.log(
+    `Test Clinic  id=${testClinic.id}  branches: Downtown=${downtown.branchId}, Uptown=${uptown.branchId}`,
+  );
   console.log(`Test Clinic 2 id=${testClinic2.id}`);
   console.log(`Solo Practice id=${soloPractice.id}`);
   console.log('');
   console.log('Accounts — copy passwords NOW; they are printed once.');
   const w = { key: 12, email: 40, state: 10 };
-  console.log(`  ${'label'.padEnd(w.key)}  ${'email'.padEnd(w.email)}  ${'state'.padEnd(w.state)}  password`);
-  console.log(`  ${'-'.repeat(w.key)}  ${'-'.repeat(w.email)}  ${'-'.repeat(w.state)}  ${'-'.repeat(32)}`);
+  console.log(
+    `  ${'label'.padEnd(w.key)}  ${'email'.padEnd(w.email)}  ${'state'.padEnd(w.state)}  password`,
+  );
+  console.log(
+    `  ${'-'.repeat(w.key)}  ${'-'.repeat(w.email)}  ${'-'.repeat(w.state)}  ${'-'.repeat(32)}`,
+  );
   for (const [k, e, s, p] of rows) {
     console.log(`  ${k.padEnd(w.key)}  ${e.padEnd(w.email)}  ${s.padEnd(w.state)}  ${p}`);
   }
   console.log('');
   console.log('Rotate passwords immediately by signing in and using /reset.');
-  console.log('Re-run with --reset-passwords to regenerate all (bumps sessionVersion so live JWTs die).');
+  console.log(
+    'Re-run with --reset-passwords to regenerate all (bumps sessionVersion so live JWTs die).',
+  );
 
   await unsafePrismaAdmin.$disconnect();
 }

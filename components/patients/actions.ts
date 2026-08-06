@@ -25,7 +25,12 @@ import {
 
 export async function createCustomerAction(input: CustomerCreateInput) {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'client.create', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  requirePermission(
+    ctx,
+    'client.create',
+    { organizationId: ctx.activeOrganizationId! },
+    'customers',
+  );
   const session = ctxToSession(ctx);
   const parsed = parseCreateInput(input);
 
@@ -34,7 +39,7 @@ export async function createCustomerAction(input: CustomerCreateInput) {
       data: buildCreateData(parsed, session.organizationId),
     });
     await writeAudit(tx, session, 'create', 'customer', row.id);
-    return toCustomerDto(row);
+    return toCustomerDto(row, { ctx });
   });
 
   revalidatePath('/patients');
@@ -43,7 +48,12 @@ export async function createCustomerAction(input: CustomerCreateInput) {
 
 export async function updateCustomerAction(id: string, input: CustomerUpdateInput) {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  requirePermission(
+    ctx,
+    'client.read:contact',
+    { organizationId: ctx.activeOrganizationId! },
+    'customers',
+  );
   const session = ctxToSession(ctx);
   const parsed = parseUpdateInput(input);
   const { data, fields } = buildUpdateData(parsed);
@@ -51,18 +61,23 @@ export async function updateCustomerAction(id: string, input: CustomerUpdateInpu
   const customer = await withOrg(session.organizationId, async (tx) => {
     const row = await tx.customer.update({ where: { id }, data });
     await writeAudit(tx, session, 'update', 'customer', id, { fields });
-    return toCustomerDto(row);
+    return toCustomerDto(row, { ctx });
   });
 
   revalidatePath('/patients');
   return customer;
 }
 
-export async function deleteCustomerAction(id: string): Promise<
-  { ok: true } | { ok: false; reason: 'has_appointments' | 'not_found' }
-> {
+export async function deleteCustomerAction(
+  id: string,
+): Promise<{ ok: true } | { ok: false; reason: 'has_appointments' | 'not_found' }> {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'client.merge', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  requirePermission(
+    ctx,
+    'client.merge',
+    { organizationId: ctx.activeOrganizationId! },
+    'customers',
+  );
   const session = ctxToSession(ctx);
 
   const result = await withOrg(session.organizationId, async (tx) => {
@@ -85,7 +100,12 @@ export async function deleteCustomerAction(id: string): Promise<
 
 export async function addTreatmentHistoryAction(customerId: string, label: string) {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'client.read:full', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  requirePermission(
+    ctx,
+    'client.read:full',
+    { organizationId: ctx.activeOrganizationId! },
+    'customers',
+  );
   const session = ctxToSession(ctx);
   const trimmed = label.trim();
   if (!trimmed) throw new Error('label is required');
@@ -115,13 +135,23 @@ export async function addTreatmentHistoryAction(customerId: string, label: strin
 
 export async function exportCustomerAction(customerId: string): Promise<CustomerExport> {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'client.export', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  requirePermission(
+    ctx,
+    'client.export',
+    { organizationId: ctx.activeOrganizationId! },
+    'customers',
+  );
   return exportCustomerData(ctxToSession(ctx), customerId);
 }
 
 export async function anonymizeCustomerAction(customerId: string): Promise<{ ok: true }> {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'client.export', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  requirePermission(
+    ctx,
+    'client.export',
+    { organizationId: ctx.activeOrganizationId! },
+    'customers',
+  );
   await anonymizeCustomer(ctxToSession(ctx), customerId, 'gdpr');
   revalidatePath('/patients');
   return { ok: true };

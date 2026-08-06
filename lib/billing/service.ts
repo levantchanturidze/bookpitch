@@ -29,11 +29,7 @@ export async function getBilling(session: ActiveSession) {
     org,
     effective: effectivePlan({
       plan: org.plan as PlanId,
-      planStatus: org.planStatus as
-        | 'active'
-        | 'trialing'
-        | 'past_due'
-        | 'canceled',
+      planStatus: org.planStatus as 'active' | 'trialing' | 'past_due' | 'canceled',
       currentPeriodEnd: org.currentPeriodEnd,
     }),
     plans: PLANS,
@@ -94,14 +90,12 @@ export async function startCheckout(
 
 // Applies a Stripe subscription event to the Organization row. Idempotent —
 // same event landing twice is a no-op past the first apply.
-export async function applySubscriptionEvent(
-  subscription: Stripe.Subscription,
-): Promise<void> {
+export async function applySubscriptionEvent(subscription: Stripe.Subscription): Promise<void> {
   const orgId =
     (subscription.metadata?.organizationId as string | undefined) ??
-    ((subscription.customer as string | undefined) ? await lookupOrgByCustomer(
-      subscription.customer as string,
-    ) : undefined);
+    ((subscription.customer as string | undefined)
+      ? await lookupOrgByCustomer(subscription.customer as string)
+      : undefined);
   if (!orgId) {
     log.warn('billing.subscription.no_org', { subscriptionId: subscription.id });
     return;
@@ -157,7 +151,9 @@ function matchPriceToPlan(priceId: string | undefined): PlanId | null {
   return null;
 }
 
-function mapStripeStatus(s: Stripe.Subscription.Status): 'active' | 'trialing' | 'past_due' | 'canceled' {
+function mapStripeStatus(
+  s: Stripe.Subscription.Status,
+): 'active' | 'trialing' | 'past_due' | 'canceled' {
   switch (s) {
     case 'active':
     case 'trialing':

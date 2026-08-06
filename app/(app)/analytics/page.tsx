@@ -9,7 +9,12 @@ export const dynamic = 'force-dynamic';
 
 export default async function AnalyticsPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'report.branch', { organizationId: ctx.activeOrganizationId! }, 'analytics');
+  requirePermission(
+    ctx,
+    'report.branch',
+    { organizationId: ctx.activeOrganizationId! },
+    'analytics',
+  );
   const session = ctxToSession(ctx);
   const { active } = await loadLocationsForOrg(session.organizationId);
 

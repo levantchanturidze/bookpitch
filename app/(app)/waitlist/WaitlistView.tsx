@@ -77,9 +77,7 @@ export default function WaitlistView({
             </select>
           </label>
           <label className="block">
-            <span className="mb-1 block text-[11px] font-semibold text-slate-500">
-              Staff (any)
-            </span>
+            <span className="mb-1 block text-[11px] font-semibold text-slate-500">Staff (any)</span>
             <select name="staffId" className={inputCls}>
               <option value="">Any staff</option>
               {staff.map((s) => (
@@ -108,23 +106,13 @@ export default function WaitlistView({
             <span className="mb-1 block text-[11px] font-semibold text-slate-500">
               Preferred from (UTC)
             </span>
-            <input
-              type="datetime-local"
-              name="preferredFrom"
-              required
-              className={inputCls}
-            />
+            <input type="datetime-local" name="preferredFrom" required className={inputCls} />
           </label>
           <label className="block">
             <span className="mb-1 block text-[11px] font-semibold text-slate-500">
               Preferred to (UTC)
             </span>
-            <input
-              type="datetime-local"
-              name="preferredTo"
-              required
-              className={inputCls}
-            />
+            <input type="datetime-local" name="preferredTo" required className={inputCls} />
           </label>
         </div>
         <label className="block">
@@ -145,20 +133,16 @@ export default function WaitlistView({
           <p className="text-xs font-semibold text-slate-500">Current waitlist ({rows.length})</p>
         </div>
         <div className="divide-y divide-slate-100">
-          {rows.length === 0 && (
-            <p className="p-4 text-xs text-slate-500">No customers waiting.</p>
-          )}
+          {rows.length === 0 && <p className="p-4 text-xs text-slate-500">No customers waiting.</p>}
           {rows.map((r) => (
             <div key={r.id} className="flex items-center justify-between p-3 text-xs">
               <div className="min-w-0">
-                <p className="font-semibold text-slate-800">
-                  {nameById(customers, r.customerId)}
-                </p>
+                <p className="font-semibold text-slate-800">{nameById(customers, r.customerId)}</p>
                 <p className="text-slate-500">
                   {nameById(staff, r.staffId)} · {nameById(services, r.serviceId)} ·{' '}
                   {r.preferredFrom.slice(0, 10)} → {r.preferredTo.slice(0, 10)}
                 </p>
-                {r.notes && <p className="mt-0.5 italic text-slate-400">{r.notes}</p>}
+                {r.notes && <p className="mt-0.5 text-slate-400 italic">{r.notes}</p>}
               </div>
               <div className="flex items-center gap-2">
                 <span

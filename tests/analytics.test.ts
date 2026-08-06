@@ -187,8 +187,12 @@ describe('analytics.computeMetrics + dailyRoster', () => {
           }),
         );
         await withoutRls((tx) => tx.customer.delete({ where: { id: customer.id } }));
-        await withoutRls((tx) => tx.staffAvailability.deleteMany({ where: { staffId: { in: [alpha.id, beta.id] } } }));
-        await withoutRls((tx) => tx.staff.deleteMany({ where: { id: { in: [alpha.id, beta.id] } } }));
+        await withoutRls((tx) =>
+          tx.staffAvailability.deleteMany({ where: { staffId: { in: [alpha.id, beta.id] } } }),
+        );
+        await withoutRls((tx) =>
+          tx.staff.deleteMany({ where: { id: { in: [alpha.id, beta.id] } } }),
+        );
         await withoutRls((tx) => tx.service.delete({ where: { id: service.id } }));
         await withoutRls((tx) => tx.location.delete({ where: { id: location.id } }));
         await withoutRls((tx) => tx.appUser.delete({ where: { id: user.id } }));

@@ -29,27 +29,44 @@ describe('RBAC seed', () => {
       byPlane.get(r.plane)!.push({ key: r.key, rank: r.rank });
     }
     // Platform plane: 4 roles.
-    expect(byPlane.get('platform')?.map(r => r.key).sort()).toEqual(
-      ['BILLING_MANAGER', 'PLATFORM_ADMIN', 'SUPER_ADMIN', 'SUPPORT_AGENT'],
-    );
+    expect(
+      byPlane
+        .get('platform')
+        ?.map((r) => r.key)
+        .sort(),
+    ).toEqual(['BILLING_MANAGER', 'PLATFORM_ADMIN', 'SUPER_ADMIN', 'SUPPORT_AGENT']);
     // Org plane: 8 roles including optionals.
-    expect(byPlane.get('organization')?.map(r => r.key).sort()).toEqual(
-      ['ACCOUNTANT', 'BRANCH_MANAGER', 'FRONT_DESK', 'MARKETING',
-       'ORG_ADMIN', 'ORG_OWNER', 'PROVIDER', 'SENIOR_PROVIDER'],
-    );
+    expect(
+      byPlane
+        .get('organization')
+        ?.map((r) => r.key)
+        .sort(),
+    ).toEqual([
+      'ACCOUNTANT',
+      'BRANCH_MANAGER',
+      'FRONT_DESK',
+      'MARKETING',
+      'ORG_ADMIN',
+      'ORG_OWNER',
+      'PROVIDER',
+      'SENIOR_PROVIDER',
+    ]);
     // Consumer plane: CLIENT marker.
-    expect(byPlane.get('consumer')?.map(r => r.key)).toEqual(['CLIENT']);
+    expect(byPlane.get('consumer')?.map((r) => r.key)).toEqual(['CLIENT']);
     // SUPER_ADMIN outranks everyone.
-    const superAdmin = rows.find(r => r.key === 'SUPER_ADMIN')!;
-    expect(superAdmin.rank).toBeGreaterThan(rows.filter(r => r.key !== 'SUPER_ADMIN')
-                                                 .reduce((m, r) => Math.max(m, r.rank), 0));
+    const superAdmin = rows.find((r) => r.key === 'SUPER_ADMIN')!;
+    expect(superAdmin.rank).toBeGreaterThan(
+      rows.filter((r) => r.key !== 'SUPER_ADMIN').reduce((m, r) => Math.max(m, r.rank), 0),
+    );
   });
 
   it('SUPER_ADMIN holds every permission (spec §4.1 — no ceiling)', async () => {
     const superRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'SUPER_ADMIN', organizationId: null },
     });
-    const bundle = await unsafePrismaAdmin.rolePermission.count({ where: { roleId: superRole.id } });
+    const bundle = await unsafePrismaAdmin.rolePermission.count({
+      where: { roleId: superRole.id },
+    });
     const total = await unsafePrismaAdmin.permission.count();
     expect(bundle).toBe(total);
     expect(total).toBeGreaterThan(50); // sanity: enumeration didn't disappear
@@ -59,14 +76,20 @@ describe('RBAC seed', () => {
     const clientRole = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'CLIENT', organizationId: null },
     });
-    const bundle = await unsafePrismaAdmin.rolePermission.count({ where: { roleId: clientRole.id } });
+    const bundle = await unsafePrismaAdmin.rolePermission.count({
+      where: { roleId: clientRole.id },
+    });
     expect(bundle).toBe(0);
   });
 
   it('ORG_OWNER holds org.billing.manage but ORG_ADMIN does not (spec §2.1)', async () => {
     const [owner, admin] = await Promise.all([
-      unsafePrismaAdmin.role.findFirstOrThrow({ where: { key: 'ORG_OWNER',  organizationId: null } }),
-      unsafePrismaAdmin.role.findFirstOrThrow({ where: { key: 'ORG_ADMIN',  organizationId: null } }),
+      unsafePrismaAdmin.role.findFirstOrThrow({
+        where: { key: 'ORG_OWNER', organizationId: null },
+      }),
+      unsafePrismaAdmin.role.findFirstOrThrow({
+        where: { key: 'ORG_ADMIN', organizationId: null },
+      }),
     ]);
     const ownerHas = await unsafePrismaAdmin.rolePermission.findFirst({
       where: { roleId: owner.id, permissionKey: 'org.billing.manage' },
@@ -78,7 +101,7 @@ describe('RBAC seed', () => {
     expect(adminHas).toBeNull();
   });
 
-  it('PROVIDER cannot read other clinicians\' notes by default (⚙️, spec §6.2)', async () => {
+  it("PROVIDER cannot read other clinicians' notes by default (⚙️, spec §6.2)", async () => {
     const provider = await unsafePrismaAdmin.role.findFirstOrThrow({
       where: { key: 'PROVIDER', organizationId: null },
     });
@@ -96,13 +119,15 @@ describe('RBAC seed', () => {
   it('re-running the seed is a no-op (idempotency)', async () => {
     // Take a fingerprint keyed on the (role.key, permission.key) pairs.
     const fingerprint = async () => {
-      const rows = await unsafePrismaAdmin.$queryRaw<Array<{ role_key: string; permission_key: string }>>`
+      const rows = await unsafePrismaAdmin.$queryRaw<
+        Array<{ role_key: string; permission_key: string }>
+      >`
         SELECT r.key AS role_key, rp.permission_key
           FROM role_permissions rp
           JOIN roles r ON r.id = rp.role_id AND r.organization_id IS NULL
          ORDER BY r.key, rp.permission_key
       `;
-      return rows.map(r => `${r.role_key}::${r.permission_key}`).join('\n');
+      return rows.map((r) => `${r.role_key}::${r.permission_key}`).join('\n');
     };
     const before = await fingerprint();
     await seedRbac();

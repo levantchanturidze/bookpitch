@@ -40,48 +40,65 @@ describe('can()', () => {
   describe('scope resolution', () => {
     it('ORG_OWNER (:org grant) can update any booking in the org', async () => {
       const ctx = await ctxFor('split-owner@bp.test', 'Split Practice');
-      expect(can(ctx, 'booking.update', {
-        organizationId: ctx.activeOrganizationId!,
-        branchId: 'anything',
-      })).toBe(true);
+      expect(
+        can(ctx, 'booking.update', {
+          organizationId: ctx.activeOrganizationId!,
+          branchId: 'anything',
+        }),
+      ).toBe(true);
     });
 
     it('PROVIDER (:own grant) can update their own booking', async () => {
       const ctx = await ctxFor('moonlight@bp.test', 'Split Practice');
-      expect(can(ctx, 'booking.update', {
-        organizationId: ctx.activeOrganizationId!,
-        ownerUserId: ctx.userId,
-      })).toBe(true);
+      expect(
+        can(ctx, 'booking.update', {
+          organizationId: ctx.activeOrganizationId!,
+          ownerUserId: ctx.userId,
+        }),
+      ).toBe(true);
     });
 
-    it('PROVIDER cannot update someone else\'s booking', async () => {
+    it("PROVIDER cannot update someone else's booking", async () => {
       const ctx = await ctxFor('moonlight@bp.test', 'Split Practice');
-      expect(can(ctx, 'booking.update', {
-        organizationId: ctx.activeOrganizationId!,
-        ownerUserId: '00000000-0000-0000-0000-000000000099',
-      })).toBe(false);
+      expect(
+        can(ctx, 'booking.update', {
+          organizationId: ctx.activeOrganizationId!,
+          ownerUserId: '00000000-0000-0000-0000-000000000099',
+        }),
+      ).toBe(false);
     });
 
     it('BRANCH_MANAGER (:branch grant) can update bookings in scoped branches only', async () => {
       const ctx = await ctxFor('splitmgr@bp.test', 'Split Practice');
-      const [downtown, airport] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ id: string; name: string }>>(
+      const [downtown, airport] = await unsafePrismaAdmin.$queryRawUnsafe<
+        Array<{ id: string; name: string }>
+      >(
         `SELECT b.id, b.name FROM branches b JOIN organizations o ON o.id = b.organization_id
           WHERE o.name = 'Split Practice' AND b.name IN ('Downtown','Airport') ORDER BY b.name`,
       );
       // Wait — Airport lex < Downtown, so [0] is Airport. Rebind explicitly.
-      const byName = Object.fromEntries((await unsafePrismaAdmin.branch.findMany({
-        where: { organization: { name: 'Split Practice' } },
-      })).map(b => [b.name, b.id]));
-      expect(can(ctx, 'booking.update', {
-        organizationId: ctx.activeOrganizationId!,
-        branchId: byName.Downtown,
-      })).toBe(true);
-      expect(can(ctx, 'booking.update', {
-        organizationId: ctx.activeOrganizationId!,
-        branchId: byName.Airport,
-      })).toBe(false);
+      const byName = Object.fromEntries(
+        (
+          await unsafePrismaAdmin.branch.findMany({
+            where: { organization: { name: 'Split Practice' } },
+          })
+        ).map((b) => [b.name, b.id]),
+      );
+      expect(
+        can(ctx, 'booking.update', {
+          organizationId: ctx.activeOrganizationId!,
+          branchId: byName.Downtown,
+        }),
+      ).toBe(true);
+      expect(
+        can(ctx, 'booking.update', {
+          organizationId: ctx.activeOrganizationId!,
+          branchId: byName.Airport,
+        }),
+      ).toBe(false);
       // Unused refs — TS strict on unused variables.
-      void downtown; void airport;
+      void downtown;
+      void airport;
     });
   });
 
@@ -91,9 +108,11 @@ describe('can()', () => {
       const otherOrg = await unsafePrismaAdmin.organization.findFirstOrThrow({
         where: { name: 'Split Practice' },
       });
-      expect(can(ctx, 'booking.read', {
-        organizationId: otherOrg.id,
-      })).toBe(false);
+      expect(
+        can(ctx, 'booking.read', {
+          organizationId: otherOrg.id,
+        }),
+      ).toBe(false);
     });
 
     it('platform.* permissions ignore active org (no tenant check)', async () => {
@@ -106,17 +125,21 @@ describe('can()', () => {
   describe('fail-closed', () => {
     it('unknown permission key → false', async () => {
       const ctx = await ctxFor('split-owner@bp.test', 'Split Practice');
-      expect(can(ctx, 'nonexistent.foo:org', {
-        organizationId: ctx.activeOrganizationId!,
-      })).toBe(false);
+      expect(
+        can(ctx, 'nonexistent.foo:org', {
+          organizationId: ctx.activeOrganizationId!,
+        }),
+      ).toBe(false);
     });
 
     it('suspended organization → deny even with :org grant', async () => {
       const ctx = await ctxFor('split-owner@bp.test', 'Split Practice');
       const suspendedCtx = { ...ctx, organizationStatus: 'suspended' as const };
-      expect(can(suspendedCtx, 'booking.update', {
-        organizationId: ctx.activeOrganizationId!,
-      })).toBe(false);
+      expect(
+        can(suspendedCtx, 'booking.update', {
+          organizationId: ctx.activeOrganizationId!,
+        }),
+      ).toBe(false);
     });
 
     it('platform-only session (no membership) → org-plane permissions deny', async () => {
@@ -129,7 +152,9 @@ describe('can()', () => {
         roleKey: null,
         roleRank: 0,
         permissions: new Set() as ReadonlySet<ReturnType<typeof perm>>,
-        platformPermissions: new Set([perm('platform.org.suspend')]) as ReadonlySet<ReturnType<typeof perm>>,
+        platformPermissions: new Set([perm('platform.org.suspend')]) as ReadonlySet<
+          ReturnType<typeof perm>
+        >,
         branchIds: new Set() as ReadonlySet<string>,
         impersonation: null,
         isImpersonating: false,
@@ -143,6 +168,7 @@ describe('can()', () => {
           frontdeskClientFullHistory: false,
           frontdeskDiscountCeiling: 0,
         },
+        authSessionId: '',
       } as const;
       expect(can(ctx, 'booking.read', { organizationId: 'anything' })).toBe(false);
       expect(can(ctx, 'platform.org.suspend')).toBe(true);
@@ -159,13 +185,17 @@ describe('can()', () => {
       // with the same key that guards would call with.
       __setRestrictedDuringImpersonation(new Set([perm('booking.update')]));
       const impCtx = { ...ctx, isImpersonating: true };
-      expect(can(impCtx, 'booking.update', {
-        organizationId: ctx.activeOrganizationId!,
-      })).toBe(false);
+      expect(
+        can(impCtx, 'booking.update', {
+          organizationId: ctx.activeOrganizationId!,
+        }),
+      ).toBe(false);
       // Not restricted while non-impersonating.
-      expect(can(ctx, 'booking.update', {
-        organizationId: ctx.activeOrganizationId!,
-      })).toBe(true);
+      expect(
+        can(ctx, 'booking.update', {
+          organizationId: ctx.activeOrganizationId!,
+        }),
+      ).toBe(true);
     });
   });
 });

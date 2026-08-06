@@ -30,17 +30,28 @@ describe('per-org policy toggles', () => {
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    splitOrgId = (await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Split Practice' }, select: { id: true },
-    })).id;
-    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
-    moonMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
-      where: { userId: moon.id, organizationId: splitOrgId },
-    })).id;
-    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'splitmgr@bp.test' } });
-    mgrMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
-      where: { userId: mgr.id, organizationId: splitOrgId },
-    })).id;
+    splitOrgId = (
+      await unsafePrismaAdmin.organization.findFirstOrThrow({
+        where: { name: 'Split Practice' },
+        select: { id: true },
+      })
+    ).id;
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'moonlight@bp.test' },
+    });
+    moonMembershipId = (
+      await unsafePrismaAdmin.membership.findFirstOrThrow({
+        where: { userId: moon.id, organizationId: splitOrgId },
+      })
+    ).id;
+    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'splitmgr@bp.test' },
+    });
+    mgrMembershipId = (
+      await unsafePrismaAdmin.membership.findFirstOrThrow({
+        where: { userId: mgr.id, organizationId: splitOrgId },
+      })
+    ).id;
   });
 
   beforeEach(() => {
@@ -65,7 +76,9 @@ describe('per-org policy toggles', () => {
   it('PROVIDER cannot read others clinical notes when toggle is OFF', async () => {
     await updateOrgToggles(splitOrgId, { providerClinicalNotesOthers: false });
     __clearAuthContextCache();
-    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'moonlight@bp.test' },
+    });
     const ctx = await buildAuthContext(moon.id, moonMembershipId);
     expect(ctx).not.toBeNull();
     expect(can(ctx!, 'clinical_note.read:any', { organizationId: splitOrgId })).toBe(false);
@@ -91,14 +104,21 @@ describe('per-org policy toggles', () => {
     }
 
     __clearAuthContextCache();
-    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'moonlight@bp.test' },
+    });
     const ctx = await buildAuthContext(moon.id, moonMembershipId);
     expect(can(ctx!, 'clinical_note.read:any', { organizationId: splitOrgId })).toBe(true);
 
     // Cleanup: remove the temp grant so the seed converges again on next run.
     if (!existing) {
       await unsafePrismaAdmin.rolePermission.delete({
-        where: { roleId_permissionKey: { roleId: providerRole.id, permissionKey: 'clinical_note.read:any' } },
+        where: {
+          roleId_permissionKey: {
+            roleId: providerRole.id,
+            permissionKey: 'clinical_note.read:any',
+          },
+        },
       });
     }
   });
@@ -110,11 +130,14 @@ describe('per-org policy toggles', () => {
       where: { key: 'FRONT_DESK', organizationId: null },
     });
     await unsafePrismaAdmin.membership.update({
-      where: { id: mgrMembershipId }, data: { roleId: fdRole.id },
+      where: { id: mgrMembershipId },
+      data: { roleId: fdRole.id },
     });
     await updateOrgToggles(splitOrgId, { frontdeskClientFullHistory: false });
     __clearAuthContextCache();
-    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'splitmgr@bp.test' } });
+    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'splitmgr@bp.test' },
+    });
     const ctx = await buildAuthContext(mgr.id, mgrMembershipId);
     expect(ctx!.roleKey).toBe('FRONT_DESK');
     expect(can(ctx!, 'client.read:full', { organizationId: splitOrgId })).toBe(false);
@@ -126,25 +149,26 @@ describe('per-org policy toggles', () => {
       where: { key: 'BRANCH_MANAGER', organizationId: null },
     });
     await unsafePrismaAdmin.membership.update({
-      where: { id: mgrMembershipId }, data: { roleId: bmRole.id },
+      where: { id: mgrMembershipId },
+      data: { roleId: bmRole.id },
     });
   });
 
   it('discount ceiling helper: no-op when actor is not FRONT_DESK', async () => {
     // ORG_OWNER can apply any discount — the helper skips the check.
-    await expect(assertDiscountWithinCeiling(splitOrgId, 'ORG_OWNER', 1_000_000)).resolves.toBeUndefined();
+    await expect(
+      assertDiscountWithinCeiling(splitOrgId, 'ORG_OWNER', 1_000_000),
+    ).resolves.toBeUndefined();
   });
 
   it('discount ceiling helper: rejects amounts above ceiling for FRONT_DESK', async () => {
     await updateOrgToggles(splitOrgId, { frontdeskDiscountCeiling: 10 });
-    await expect(
-      assertDiscountWithinCeiling(splitOrgId, 'FRONT_DESK', 25),
-    ).rejects.toBeInstanceOf(InvalidInputError);
+    await expect(assertDiscountWithinCeiling(splitOrgId, 'FRONT_DESK', 25)).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
     await expect(
       assertDiscountWithinCeiling(splitOrgId, 'FRONT_DESK', 10),
     ).resolves.toBeUndefined();
-    await expect(
-      assertDiscountWithinCeiling(splitOrgId, 'FRONT_DESK', 5),
-    ).resolves.toBeUndefined();
+    await expect(assertDiscountWithinCeiling(splitOrgId, 'FRONT_DESK', 5)).resolves.toBeUndefined();
   });
 });

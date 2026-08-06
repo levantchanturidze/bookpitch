@@ -10,7 +10,12 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'service.manage', { organizationId: ctx.activeOrganizationId! }, 'insurance');
+    requirePermission(
+      ctx,
+      'service.manage',
+      { organizationId: ctx.activeOrganizationId! },
+      'insurance',
+    );
     return { insurers: await listInsurers(ctxToSession(ctx)) };
   });
 }

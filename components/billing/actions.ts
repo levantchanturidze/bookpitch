@@ -12,7 +12,12 @@ import { settleCash, startCardCheckout } from '@/lib/payments/service';
 
 export async function startCardCheckoutAction(fd: FormData) {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'payment.charge', { organizationId: ctx.activeOrganizationId! }, 'payments');
+  requirePermission(
+    ctx,
+    'payment.charge',
+    { organizationId: ctx.activeOrganizationId! },
+    'payments',
+  );
   const appointmentId = String(fd.get('appointmentId') ?? '');
   const { redirectUrl } = await startCardCheckout(ctxToSession(ctx), appointmentId);
   redirect(redirectUrl);
@@ -20,7 +25,12 @@ export async function startCardCheckoutAction(fd: FormData) {
 
 export async function settleCashAction(fd: FormData) {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'payment.charge', { organizationId: ctx.activeOrganizationId! }, 'payments');
+  requirePermission(
+    ctx,
+    'payment.charge',
+    { organizationId: ctx.activeOrganizationId! },
+    'payments',
+  );
   const appointmentId = String(fd.get('appointmentId') ?? '');
   await settleCash(ctxToSession(ctx), appointmentId);
   revalidatePath('/billing');

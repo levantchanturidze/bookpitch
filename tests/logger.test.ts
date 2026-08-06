@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { scrubPhi, sentryBeforeSend, withRequestContext, log } from '@/lib/logger';
+import {
+  scrubPhi,
+  sentryBeforeSend,
+  withRequestContext,
+  log,
+  sanitizeErrorMessage,
+} from '@/lib/logger';
 
 // -----------------------------------------------------------------------------
 // scrubPhi behavior — narrow, exact-key match (SEC-007 followup).
@@ -33,8 +39,12 @@ describe('logger.scrubPhi — narrow exact-key match', () => {
 
   it('redacts snake_case variants', () => {
     const scrubbed = scrubPhi({
-      customer_name: 'x', patient_name: 'x', client_name: 'x',
-      full_name: 'x', clinical_notes: 'x', password_hash: 'x',
+      customer_name: 'x',
+      patient_name: 'x',
+      client_name: 'x',
+      full_name: 'x',
+      clinical_notes: 'x',
+      password_hash: 'x',
     }) as Record<string, unknown>;
     expect(scrubbed.customer_name).toBe('[redacted]');
     expect(scrubbed.patient_name).toBe('[redacted]');
@@ -46,8 +56,13 @@ describe('logger.scrubPhi — narrow exact-key match', () => {
 
   it('redacts auth secrets', () => {
     const scrubbed = scrubPhi({
-      password: 'p', passwordHash: 'h', token: 't',
-      refreshToken: 'r', accessToken: 'a', apiKey: 'k', authSecret: 's',
+      password: 'p',
+      passwordHash: 'h',
+      token: 't',
+      refreshToken: 'r',
+      accessToken: 'a',
+      apiKey: 'k',
+      authSecret: 's',
     }) as Record<string, unknown>;
     for (const [k, v] of Object.entries(scrubbed)) {
       expect(v, `secret key ${k} must be redacted`).toBe('[redacted]');
@@ -129,7 +144,9 @@ describe('log.* emits — scrubbed line reaches stdout/stderr', () => {
     });
     try {
       log.info('probe', { email: 'patient@example.com', orgId: 'org-x', serviceName: 'Cleaning' });
-    } finally { spy.mockRestore(); }
+    } finally {
+      spy.mockRestore();
+    }
 
     const line = JSON.parse(lines[0]);
     expect(line.email).toBe('[redacted]');
@@ -148,7 +165,9 @@ describe('log.* emits — scrubbed line reaches stdout/stderr', () => {
     try {
       log.warn('probe.warn', { patientName: 'Sarah', code: 'X' });
       log.error('probe.err', { fullName: 'Sarah I', latencyMs: 12 });
-    } finally { spy.mockRestore(); }
+    } finally {
+      spy.mockRestore();
+    }
 
     const w = JSON.parse(errLines[0]);
     const e = JSON.parse(errLines[1]);
@@ -164,11 +183,12 @@ describe('log.* emits — scrubbed line reaches stdout/stderr', () => {
       lines.push(String(s));
     });
     try {
-      withRequestContext(
-        { requestId: 'req-a', orgId: 'org-b', actorUserId: 'user-c' },
-        () => log.info('ctx.check', { serviceName: 'Consult' }),
+      withRequestContext({ requestId: 'req-a', orgId: 'org-b', actorUserId: 'user-c' }, () =>
+        log.info('ctx.check', { serviceName: 'Consult' }),
       );
-    } finally { spy.mockRestore(); }
+    } finally {
+      spy.mockRestore();
+    }
 
     const line = JSON.parse(lines[0]);
     expect(line.requestId).toBe('req-a');
@@ -188,18 +208,41 @@ describe('log.* emits — scrubbed line reaches stdout/stderr', () => {
     });
     try {
       log.info('all.pii', {
-        email: 'patient@example.com', phone: '+995551234567', dob: '1990-01-01',
-        address: '1 Main St', customerName: 'A', patientName: 'B',
-        clientName: 'C', fullName: 'D', allergies: 'E', clinicalNotes: 'F',
-        password: 'p', passwordHash: 'h', token: 't',
+        email: 'patient@example.com',
+        phone: '+995551234567',
+        dob: '1990-01-01',
+        address: '1 Main St',
+        customerName: 'A',
+        patientName: 'B',
+        clientName: 'C',
+        fullName: 'D',
+        allergies: 'E',
+        clinicalNotes: 'F',
+        password: 'p',
+        passwordHash: 'h',
+        token: 't',
       });
-    } finally { spy.mockRestore(); }
+    } finally {
+      spy.mockRestore();
+    }
 
     const line = JSON.parse(lines[0]) as Record<string, unknown>;
     // Regression: none of the PII values survive.
-    for (const k of ['email','phone','dob','address','customerName','patientName',
-                     'clientName','fullName','allergies','clinicalNotes',
-                     'password','passwordHash','token']) {
+    for (const k of [
+      'email',
+      'phone',
+      'dob',
+      'address',
+      'customerName',
+      'patientName',
+      'clientName',
+      'fullName',
+      'allergies',
+      'clinicalNotes',
+      'password',
+      'passwordHash',
+      'token',
+    ]) {
       expect(line[k], `${k} leaked`).toBe('[redacted]');
     }
   });
@@ -211,13 +254,70 @@ describe('log.* emits — scrubbed line reaches stdout/stderr', () => {
 describe('sentryBeforeSend', () => {
   it('scrubs PHI and adds orgId/requestId tags from the request context', () => {
     const event = { message: 'oops', tags: { env: 'prod' }, extra: { email: 'e@x.com' } };
-    const out = withRequestContext(
-      { requestId: 'req-1', orgId: 'org-42' },
-      () => sentryBeforeSend(event),
+    const out = withRequestContext({ requestId: 'req-1', orgId: 'org-42' }, () =>
+      sentryBeforeSend(event),
     ) as { tags: Record<string, string>; extra: { email: string } };
     expect(out.tags.orgId).toBe('org-42');
     expect(out.tags.requestId).toBe('req-1');
     expect(out.tags.env).toBe('prod');
     expect(out.extra.email).toBe('[redacted]');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// sanitizeErrorMessage — F4 regression tests (value-level PII in err.message).
+//
+// Strips patterns that routinely appear in third-party error strings before
+// the message reaches a log call. Each test below corresponds to a specific
+// incident vector:
+//   - PostgreSQL DETAIL clauses expose the email/phone value that caused a
+//     unique-constraint violation ("Key (email)=(user@host) already exists").
+//   - SMS providers (SMS Office, Twilio) echo the destination number in
+//     delivery-failure messages.
+//   - Email providers (Postmark, Resend) echo the To address.
+//   - pg/Prisma connection errors expose the DATABASE_URL credential string.
+// -----------------------------------------------------------------------------
+describe('sanitizeErrorMessage — F4 PII-in-error-message scrubbing', () => {
+  it('strips PostgreSQL DETAIL clause', () => {
+    const msg = sanitizeErrorMessage(
+      new Error(
+        'duplicate key value violates unique constraint "app_users_email_key"\nDETAIL: Key (email)=(patient@example.com) already exists.',
+      ),
+    );
+    expect(msg).not.toContain('patient@example.com');
+    expect(msg).toContain('DETAIL: [redacted]');
+  });
+
+  it('strips E.164 phone numbers', () => {
+    const msg = sanitizeErrorMessage(new Error('SMS failed: could not deliver to +995551234567'));
+    expect(msg).not.toContain('+995551234567');
+    expect(msg).toContain('[phone]');
+  });
+
+  it('strips email addresses from error messages', () => {
+    const msg = sanitizeErrorMessage(
+      new Error('Postmark error: recipient admin@clinic.ge bounced'),
+    );
+    expect(msg).not.toContain('admin@clinic.ge');
+    expect(msg).toContain('[email]');
+  });
+
+  it('strips connection strings', () => {
+    const msg = sanitizeErrorMessage(
+      new Error('connect ECONNREFUSED postgresql://bookpitch_app:s3cr3t@db.host/main'),
+    );
+    expect(msg).not.toContain('s3cr3t');
+    expect(msg).toContain('postgresql://[connection-string]');
+  });
+
+  it('handles non-Error values', () => {
+    expect(sanitizeErrorMessage('raw string with user@host.com')).toContain('[email]');
+    expect(sanitizeErrorMessage(42)).toBe('42');
+    expect(sanitizeErrorMessage(null)).toBe('null');
+  });
+
+  it('complement: benign messages pass through unchanged', () => {
+    const raw = 'connection timeout after 5000ms';
+    expect(sanitizeErrorMessage(new Error(raw))).toBe(raw);
   });
 });

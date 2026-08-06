@@ -28,11 +28,12 @@ export default defineConfig({
     //                                          dev via DATABASE_URL alone
     //                                          works when that URL points at
     //                                          a role with DDL grants.
-    url: process.env.DATABASE_URL_SUPERUSER_MIGRATE
-      ?? process.env.DATABASE_URL_SUPERUSER_SESSION
-      ?? process.env.ADMIN_DATABASE_URL
-      ?? process.env.DIRECT_URL
-      ?? process.env.DATABASE_URL,
+    url:
+      process.env.DATABASE_URL_SUPERUSER_MIGRATE ??
+      process.env.DATABASE_URL_SUPERUSER_SESSION ??
+      process.env.ADMIN_DATABASE_URL ??
+      process.env.DIRECT_URL ??
+      process.env.DATABASE_URL,
     shadowDatabaseUrl: process.env.SHADOW_DATABASE_URL,
   },
 });

@@ -41,10 +41,5 @@ export default async function AuditPage({
     }),
   );
 
-  return (
-    <AuditView
-      rows={rows}
-      initial={{ customer, actor, action, entity, from, to }}
-    />
-  );
+  return <AuditView rows={rows} initial={{ customer, actor, action, entity, from, to }} />;
 }

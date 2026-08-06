@@ -18,7 +18,9 @@ import type { NextRequest } from 'next/server';
 function req(url: string): NextRequest {
   return new Request(url) as unknown as NextRequest;
 }
-async function json<T = unknown>(res: Response): Promise<T> { return (await res.json()) as T; }
+async function json<T = unknown>(res: Response): Promise<T> {
+  return (await res.json()) as T;
+}
 
 type Row = {
   actorEmail: string | null;
@@ -73,10 +75,12 @@ describe('/api/platform/audit', () => {
   it('action prefix filter matches startsWith', async () => {
     // Write an audit row with a distinctive action.
     const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Split Practice' }, select: { id: true },
+      where: { name: 'Split Practice' },
+      select: { id: true },
     });
     const u = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { email: 'platform-admin@bp.test' }, select: { id: true },
+      where: { email: 'platform-admin@bp.test' },
+      select: { id: true },
     });
     const marker = `probe.audit.${Date.now()}`;
     await unsafePrismaAdmin.auditLog.create({
@@ -93,7 +97,7 @@ describe('/api/platform/audit', () => {
     expect(res.status).toBe(200);
     const body = await json<{ rows: Row[] }>(res);
     expect(body.rows.length).toBeGreaterThan(0);
-    expect(body.rows.every(r => r.action.startsWith(marker))).toBe(true);
+    expect(body.rows.every((r) => r.action.startsWith(marker))).toBe(true);
   });
 
   it('audit_log UPDATE still blocked (re-verify Phase 1 §9.11)', async () => {

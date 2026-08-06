@@ -14,9 +14,9 @@ export default function OfflinePage() {
         </div>
         <h1 className="text-base font-extrabold text-slate-900">You&apos;re offline</h1>
         <p className="mt-2 text-xs text-slate-500">
-          Your device isn&apos;t connected right now. The app will reconnect automatically as
-          soon as your network comes back — bookings and payments always live on the server, so
-          nothing gets lost.
+          Your device isn&apos;t connected right now. The app will reconnect automatically as soon
+          as your network comes back — bookings and payments always live on the server, so nothing
+          gets lost.
         </p>
       </div>
     </main>

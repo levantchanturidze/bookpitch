@@ -34,9 +34,7 @@ const TTL_MS = 30_000;
 const MAX = 1_000;
 
 function cacheKey(membershipId: string | null, sessionVersion: number, userId: string): string {
-  return membershipId
-    ? `m:${membershipId}:${sessionVersion}`
-    : `u:${userId}:${sessionVersion}`;
+  return membershipId ? `m:${membershipId}:${sessionVersion}` : `u:${userId}:${sessionVersion}`;
 }
 
 /** Test-only helper. Do not call from application code. */
@@ -69,7 +67,11 @@ export async function buildAuthContext(
   const user = await prismaLogin.appUser.findUnique({
     where: { id: userId },
     select: {
-      id: true, email: true, status: true, sessionVersion: true, platformRoleId: true,
+      id: true,
+      email: true,
+      status: true,
+      sessionVersion: true,
+      platformRoleId: true,
     },
   });
   if (!user || user.status !== 'active') return null;
@@ -128,10 +130,17 @@ export async function buildAuthContext(
       // (which have a real ctx.orgToggles) or through platform.* perms
       // that don't consult toggles.
       orgToggles: DEFAULT_TOGGLES,
+      // Set empty here; requireAuthContext() replaces it with the JWT claim.
+      authSessionId: '',
     };
   } else {
-    const built = await buildOrgContext(user, membershipId, platformPermissions,
-                                        impersonation, breakGlass);
+    const built = await buildOrgContext(
+      user,
+      membershipId,
+      platformPermissions,
+      impersonation,
+      breakGlass,
+    );
     if (!built) return null;
     ctx = built;
   }
@@ -153,7 +162,7 @@ async function loadPlatformPermissions(
     where: { roleId: platformRoleId },
     select: { permissionKey: true },
   });
-  return new Set(rows.map(r => perm(r.permissionKey)));
+  return new Set(rows.map((r) => perm(r.permissionKey)));
 }
 
 /**
@@ -219,10 +228,10 @@ async function buildOrgContext(
     },
   });
   if (!membership) return null;
-  if (membership.userId !== user.id) return null;                 // wrong user
-  if (membership.status !== 'active') return null;                // suspended / removed
-  if (!membership.organization) return null;                      // org deleted
-  if (!membership.roleId || !membership.roleRef) return null;     // role_id NULL — pre-backfill
+  if (membership.userId !== user.id) return null; // wrong user
+  if (membership.status !== 'active') return null; // suspended / removed
+  if (!membership.organization) return null; // org deleted
+  if (!membership.roleId || !membership.roleRef) return null; // role_id NULL — pre-backfill
 
   // Fetch role permissions + org toggles in parallel — one round trip each,
   // both bounded by their own caches (org toggles also 30s TTL).
@@ -234,7 +243,7 @@ async function buildOrgContext(
     loadOrgToggles(membership.organizationId),
   ]);
   const permissions: ReadonlySet<PermissionKey> = new Set(
-    permRows.map(r => perm(r.permissionKey)),
+    permRows.map((r) => perm(r.permissionKey)),
   );
 
   return {
@@ -246,7 +255,7 @@ async function buildOrgContext(
     roleRank: membership.roleRef.rank,
     permissions,
     platformPermissions,
-    branchIds: new Set(membership.branches.map(b => b.branchId)),
+    branchIds: new Set(membership.branches.map((b) => b.branchId)),
     impersonation,
     isImpersonating: impersonation !== null,
     breakGlass,
@@ -254,5 +263,7 @@ async function buildOrgContext(
     sessionVersion: user.sessionVersion,
     organizationStatus: membership.organization.status as AuthContext['organizationStatus'],
     orgToggles,
+    // Set empty here; requireAuthContext() replaces it with the JWT claim.
+    authSessionId: '',
   };
 }

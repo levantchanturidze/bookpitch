@@ -24,7 +24,8 @@ export async function POST(req: NextRequest) {
   return withPlatformApi('role.assign', async (ctx) => {
     requirePermission(ctx, 'platform.role.assign', undefined, 'platform');
     const body = (await req.json().catch(() => null)) as {
-      email?: unknown; roleKey?: unknown;
+      email?: unknown;
+      roleKey?: unknown;
     } | null;
     if (!body || typeof body.email !== 'string') {
       throw new InvalidInputError('email is required');

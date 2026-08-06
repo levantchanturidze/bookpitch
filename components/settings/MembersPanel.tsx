@@ -3,11 +3,7 @@
 import { useState, useTransition } from 'react';
 import type { UserRole } from '@prisma/client';
 import { Link2, Plus, Trash2 } from 'lucide-react';
-import {
-  inviteMemberAction,
-  removeMemberAction,
-  updateMemberRoleAction,
-} from './actions';
+import { inviteMemberAction, removeMemberAction, updateMemberRoleAction } from './actions';
 
 export type MemberRow = {
   membershipId: string;
@@ -81,18 +77,18 @@ export default function MembersPanel({
           <Plus className="h-3.5 w-3.5" /> Invite member
         </button>
       </div>
-      {error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-      )}
+      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
       {inviteUrl && (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs text-emerald-900">
           <div className="flex items-start gap-2">
             <Link2 className="mt-0.5 h-4 w-4 shrink-0" />
             <div className="flex-1">
-              <p className="font-bold">Invitation sent to <span className="font-mono">{inviteUrl.email}</span></p>
+              <p className="font-bold">
+                Invitation sent to <span className="font-mono">{inviteUrl.email}</span>
+              </p>
               <p className="mt-1">
-                They&apos;ll receive an email with a link to accept. If email delivery is
-                delayed, copy the link below and send it out-of-band:
+                They&apos;ll receive an email with a link to accept. If email delivery is delayed,
+                copy the link below and send it out-of-band:
               </p>
               <p className="mt-2 rounded-lg bg-white px-3 py-2 font-mono text-[11px] break-all text-slate-900">
                 {inviteUrl.url}

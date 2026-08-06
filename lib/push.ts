@@ -1,6 +1,6 @@
 import webpush from 'web-push';
 import { withoutRls } from '@/lib/db';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 // -----------------------------------------------------------------------------
 // Web Push subscriptions + sender.
@@ -62,9 +62,7 @@ export async function saveSubscription(input: SaveSubscriptionInput): Promise<{ 
 }
 
 export async function removeSubscription(endpoint: string): Promise<void> {
-  await withoutRls((tx) =>
-    tx.pushSubscription.delete({ where: { endpoint } }).catch(() => null),
-  );
+  await withoutRls((tx) => tx.pushSubscription.delete({ where: { endpoint } }).catch(() => null));
 }
 
 export type PushPayload = {
@@ -85,9 +83,7 @@ export async function pushToUser(
     log.warn('push.vapid_missing');
     return { delivered: 0, pruned: 0 };
   }
-  const subs = await withoutRls((tx) =>
-    tx.pushSubscription.findMany({ where: { userId } }),
-  );
+  const subs = await withoutRls((tx) => tx.pushSubscription.findMany({ where: { userId } }));
   if (!subs.length) return { delivered: 0, pruned: 0 };
 
   let delivered = 0;
@@ -105,16 +101,14 @@ export async function pushToUser(
         if (status === 404 || status === 410) {
           dead.push(s.endpoint);
         } else {
-          log.warn('push.send_failed', { status, error: (err as Error).message });
+          log.warn('push.send_failed', { status, error: sanitizeErrorMessage(err) });
         }
       }
     }),
   );
 
   if (dead.length) {
-    await withoutRls((tx) =>
-      tx.pushSubscription.deleteMany({ where: { endpoint: { in: dead } } }),
-    );
+    await withoutRls((tx) => tx.pushSubscription.deleteMany({ where: { endpoint: { in: dead } } }));
   }
   return { delivered, pruned: dead.length };
 }

@@ -9,5 +9,5 @@ export default async function PlatformOrgsPage() {
   const ctx = await requireAuthContext();
   requirePermission(ctx, 'platform.analytics.read', undefined, 'platform');
   const orgs = await listOrganizations();
-  return <OrgList orgs={orgs.map(o => ({ ...o, createdAt: o.createdAt.toISOString() }))} />;
+  return <OrgList orgs={orgs.map((o) => ({ ...o, createdAt: o.createdAt.toISOString() }))} />;
 }

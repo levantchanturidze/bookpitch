@@ -57,8 +57,10 @@ export function can(
   // 2a. Suspended / archived orgs deny everything org-plane. Break-glass
   //     overrides so SUPER_ADMIN can inspect a suspended org (fraud triage,
   //     deletion prep).
-  if ((ctx.organizationStatus === 'suspended' || ctx.organizationStatus === 'archived') &&
-      !bgReaches) {
+  if (
+    (ctx.organizationStatus === 'suspended' || ctx.organizationStatus === 'archived') &&
+    !bgReaches
+  ) {
     return false;
   }
 
@@ -122,6 +124,69 @@ export function can(
   //     don't take a scope suffix — presence in the set is the whole check.
   if (granted.has(p)) return true;
 
+  // 4e. SEC-008 — org-toggle-based elevation. Some org toggles grant an
+  //     additional permission to a specific role at request time. Kept
+  //     OUT of ctx.permissions on purpose: (a) toggle flips take effect
+  //     immediately, without waiting for the 30s AuthContext cache TTL;
+  //     (b) the elevation lives here so a caller reading the seed can't
+  //     find a grant that "shouldn't be there" — the elevation is
+  //     explicit in code, not in the role→permissions bundle. Every
+  //     path that changes based on a toggle documents it in the SEC-008
+  //     entry of docs/rbac-security-review.md.
+  if (toggleGrantsPermission(ctx, p)) return true;
+
+  return false;
+}
+
+/**
+ * SEC-008 — three org toggles that were writable + audited but consulted
+ * by no code, until this landed. Each maps to a role → permission
+ * elevation:
+ *
+ *   • providerFinancialReports    → grants report.branch AND
+ *     report.financial:org to PROVIDER + SENIOR_PROVIDER. Off by
+ *     default; PROVIDER cannot reach analytics or financial reports
+ *     until the owner turns it on.
+ *
+ *   • providerClinicalNotesOthers → grants clinical_note.read:any to
+ *     PROVIDER + SENIOR_PROVIDER (they already have :own). Off by
+ *     default; a PROVIDER can only read their own clinical notes.
+ *     `clinical_note.*` permissions have no endpoint yet, so today
+ *     this elevation shows up structurally (can() returns true) but
+ *     the observable behaviour change is downstream — see
+ *     `toCustomerDetailDto` where the customer's clinicalNotes field
+ *     is redacted from responses when the caller lacks
+ *     clinical_note.read:any (or client.read:full).
+ *
+ *   • frontdeskClientFullHistory  → grants client.read:full to
+ *     FRONT_DESK (they have :contact only). Off by default; front-desk
+ *     sees name/phone/email but not allergies, clinicalNotes, or the
+ *     full treatment history. `toCustomerDetailDto` is the enforcement
+ *     point — it strips those fields when the caller can't read :full.
+ *
+ * A response body probe per toggle lives in tests/security-review.test.ts
+ * (§ SEC-008 — proves the /api/customers/[id] and /api/customers
+ * responses actually differ when a toggle is flipped, not just that a
+ * requirePermission would deny).
+ */
+function toggleGrantsPermission(ctx: AuthContext, p: PermissionKey): boolean {
+  const role = ctx.roleKey;
+  const t = ctx.orgToggles;
+
+  if ((role === 'PROVIDER' || role === 'SENIOR_PROVIDER') && t.providerFinancialReports) {
+    if (p === perm('report.branch')) return true;
+    if (p === perm('report.financial:org')) return true;
+    if (p === perm('report.financial:branch')) return true;
+  }
+
+  if ((role === 'PROVIDER' || role === 'SENIOR_PROVIDER') && t.providerClinicalNotesOthers) {
+    if (p === perm('clinical_note.read:any')) return true;
+  }
+
+  if (role === 'FRONT_DESK' && t.frontdeskClientFullHistory) {
+    if (p === perm('client.read:full')) return true;
+  }
+
   return false;
 }
 
@@ -134,6 +199,7 @@ export function can(
  */
 function isBreakGlassReadableKey(p: string): boolean {
   if (p.startsWith('clinical_note.read')) return true;
-  if (p === 'client.read:basic' || p === 'client.read:contact' || p === 'client.read:full') return true;
+  if (p === 'client.read:basic' || p === 'client.read:contact' || p === 'client.read:full')
+    return true;
   return false;
 }

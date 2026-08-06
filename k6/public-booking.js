@@ -90,8 +90,7 @@ export default function (data) {
   if (res.status === 429) rateLimited.add(1);
   if (res.status === 409) slotTaken.add(1);
   check(res, {
-    'book 2xx or expected 4xx': (r) =>
-      r.status === 201 || r.status === 429 || r.status === 409,
+    'book 2xx or expected 4xx': (r) => r.status === 201 || r.status === 429 || r.status === 409,
   });
   sleep(1);
 }

@@ -205,6 +205,10 @@ async function main() {
         { organizationId: org.id, userId: reception.id, role: UserRole.receptionist },
       ],
     });
+    await tx.organization.update({
+      where: { id: org.id },
+      data: { ownerUserId: owner.id },
+    });
 
     console.log('→ Seeding default reminder templates…');
     await tx.messageTemplate.createMany({
@@ -212,14 +216,12 @@ async function main() {
         {
           organizationId: org.id,
           channel: 'sms',
-          body:
-            'Hi {PatientName}, reminder: your {ServiceName} with {StaffName} is on {Date} at {Time}. — Grand Medical Suite',
+          body: 'Hi {PatientName}, reminder: your {ServiceName} with {StaffName} is on {Date} at {Time}. — Grand Medical Suite',
         },
         {
           organizationId: org.id,
           channel: 'email',
-          body:
-            'Hi {PatientName},\n\nA quick reminder of your upcoming {ServiceName} with {StaffName} on {Date} at {Time}.\n\nSee you then!\nGrand Medical Suite',
+          body: 'Hi {PatientName},\n\nA quick reminder of your upcoming {ServiceName} with {StaffName} on {Date} at {Time}.\n\nSee you then!\nGrand Medical Suite',
         },
       ],
     });
@@ -243,10 +245,7 @@ async function main() {
       select: { id: true, name: true, price: true, durationMinutes: true, locationId: true },
     });
     const customersById = new Map(
-      (await tx.customer.findMany({ where: { organizationId: org.id } })).map((c) => [
-        c.email,
-        c,
-      ]),
+      (await tx.customer.findMany({ where: { organizationId: org.id } })).map((c) => [c.email, c]),
     );
 
     // Map prototype ids (s1..s5, p1..p5) to real rows by name/email.
@@ -324,6 +323,10 @@ async function main() {
     });
     await tx.membership.create({
       data: { organizationId: iso.id, userId: isoOwner.id, role: UserRole.owner },
+    });
+    await tx.organization.update({
+      where: { id: iso.id },
+      data: { ownerUserId: isoOwner.id },
     });
     return { isolationOrg: iso };
   });

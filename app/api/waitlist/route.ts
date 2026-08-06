@@ -10,13 +10,19 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'booking.read', { organizationId: ctx.activeOrganizationId! }, 'waitlist');
+    requirePermission(
+      ctx,
+      'booking.read',
+      { organizationId: ctx.activeOrganizationId! },
+      'waitlist',
+    );
     // Phase 6: branch scoping — BRANCH_MANAGER only sees rows in their
     // assigned branches (plus flexible/no-location rows).
     const scoped = await scopedLocationIds(ctx);
     const ownUserId = scopedByOwn(ctx, 'booking.read');
     const rows = await listWaitlist(ctxToSession(ctx), {
-      scopedLocationIds: scoped, ownUserId,
+      scopedLocationIds: scoped,
+      ownUserId,
     });
     return { waitlist: rows };
   });
@@ -27,7 +33,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'booking.create', { organizationId: ctx.activeOrganizationId! }, 'waitlist');
+    requirePermission(
+      ctx,
+      'booking.create',
+      { organizationId: ctx.activeOrganizationId! },
+      'waitlist',
+    );
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) throw new InvalidInputError('invalid body');
     const iso = (k: string) => (typeof body[k] === 'string' ? new Date(String(body[k])) : null);

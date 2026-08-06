@@ -45,9 +45,7 @@ export function useNotifications() {
       // after the next mark-all-read POST + subsequent poll).
       setItems((prev) => {
         const readIds = new Set(prev.filter((n) => n.read).map((n) => n.id));
-        return body.notifications.map((n) =>
-          readIds.has(n.id) ? { ...n, read: true } : n,
-        );
+        return body.notifications.map((n) => (readIds.has(n.id) ? { ...n, read: true } : n));
       });
     } catch {
       // Network blip / aborted — try again next tick.

@@ -68,9 +68,7 @@ describe('push subscription persistence', () => {
       auth: 'a2',
     });
     expect(second.id).toBe(first.id);
-    const row = await withoutRls((tx) =>
-      tx.pushSubscription.findUnique({ where: { endpoint } }),
-    );
+    const row = await withoutRls((tx) => tx.pushSubscription.findUnique({ where: { endpoint } }));
     expect(row?.p256dh).toBe('p2');
   });
 
@@ -114,9 +112,7 @@ describe('push subscription persistence', () => {
     const r = await pushToUser(userId, { title: 't', body: 'b' });
     expect(r.delivered).toBe(1);
     expect(r.pruned).toBe(1);
-    const rows = await withoutRls((tx) =>
-      tx.pushSubscription.findMany({ where: { userId } }),
-    );
+    const rows = await withoutRls((tx) => tx.pushSubscription.findMany({ where: { userId } }));
     expect(rows.map((r) => r.id)).toContain(alive.id);
     expect(rows.map((r) => r.id)).not.toContain(dead.id);
   });

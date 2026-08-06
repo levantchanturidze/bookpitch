@@ -4,7 +4,7 @@ import type { UserRole } from '@prisma/client';
 import { withOrg, withoutRls } from '@/lib/db';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { buildAuthContext, canManageRoleAssignment } from '@/lib/rbac';
 
 // Legacy enum → Phase 3 role key. Kept here (small mapping duplicated
@@ -97,7 +97,7 @@ export async function createInvitation(
       `You've been invited to join a Bookpitch workspace as ${role}.\n\nAccept within 72 hours:\n\n${url}`,
     );
   } catch (err) {
-    log.warn('invitation.email_failed', { error: (err as Error).message });
+    log.warn('invitation.email_failed', { error: sanitizeErrorMessage(err) });
   }
   return { id: inv.id, url };
 }
@@ -124,9 +124,7 @@ export async function acceptInvitation(
 
   // Read the invitation without a session (there IS no session — the user
   // may not exist yet). Bypasses RLS via withoutRls.
-  const invite = await withoutRls((tx) =>
-    tx.invitation.findUnique({ where: { tokenHash } }),
-  );
+  const invite = await withoutRls((tx) => tx.invitation.findUnique({ where: { tokenHash } }));
   if (!invite) throw new InvalidInputError('invalid or expired invitation');
   if (invite.status !== 'pending') {
     throw new InvalidInputError('invitation is no longer pending');
@@ -176,6 +174,15 @@ export async function acceptInvitation(
       create: { organizationId: invite.organizationId, userId, role: invite.role },
       update: {},
     });
+    // Owner invitations wire the org pointer so spec §9 rule 1 is satisfied
+    // immediately after acceptance — org operations blocked by assertOrgOwnerSet
+    // (updateMemberRole, removeMember, billing) become available right away.
+    if (invite.role === 'owner') {
+      await tx.organization.update({
+        where: { id: invite.organizationId },
+        data: { ownerUserId: userId },
+      });
+    }
     await tx.invitation.update({
       where: { id: invite.id },
       data: { status: 'accepted', acceptedAt: new Date() },
@@ -190,10 +197,7 @@ export async function acceptInvitation(
   });
 }
 
-export async function revokeInvitation(
-  session: ActiveSession,
-  id: string,
-): Promise<void> {
+export async function revokeInvitation(session: ActiveSession, id: string): Promise<void> {
   // Authorization enforced by caller via requirePermission(ctx, 'staff.invite').
   await withOrg(session.organizationId, (tx) =>
     tx.invitation.update({

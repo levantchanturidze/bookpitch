@@ -43,8 +43,10 @@ function StatusSummary({ orgs }: { orgs: OrgRow[] }) {
 
   const statusOrder: Array<keyof typeof s.byStatus> = ['active', 'trial', 'suspended', 'archived'];
   const statusColor: Record<string, string> = {
-    active: 'text-emerald-300', trial: 'text-sky-300',
-    suspended: 'text-red-300', archived: 'text-slate-500',
+    active: 'text-emerald-300',
+    trial: 'text-sky-300',
+    suspended: 'text-red-300',
+    archived: 'text-slate-500',
   };
 
   return (
@@ -53,12 +55,14 @@ function StatusSummary({ orgs }: { orgs: OrgRow[] }) {
       <SummaryCard
         label="By status"
         value={
-          <div className="flex flex-wrap gap-1 text-[10px] font-mono">
-            {statusOrder.filter(k => s.byStatus[k]).map(k => (
-              <span key={k} className={statusColor[k]}>
-                {k}: {s.byStatus[k]}
-              </span>
-            ))}
+          <div className="flex flex-wrap gap-1 font-mono text-[10px]">
+            {statusOrder
+              .filter((k) => s.byStatus[k])
+              .map((k) => (
+                <span key={k} className={statusColor[k]}>
+                  {k}: {s.byStatus[k]}
+                </span>
+              ))}
           </div>
         }
       />
@@ -79,19 +83,25 @@ function StatusSummary({ orgs }: { orgs: OrgRow[] }) {
 }
 
 function SummaryCard({
-  label, value, hint, tone = 'default',
+  label,
+  value,
+  hint,
+  tone = 'default',
 }: {
   label: string;
   value: React.ReactNode;
   hint?: string;
   tone?: 'default' | 'strong' | 'warn';
 }) {
-  const border = tone === 'warn'   ? 'border-amber-800 bg-amber-950' :
-                 tone === 'strong' ? 'border-slate-700 bg-slate-800'
-                                   : 'border-slate-800 bg-slate-900';
+  const border =
+    tone === 'warn'
+      ? 'border-amber-800 bg-amber-950'
+      : tone === 'strong'
+        ? 'border-slate-700 bg-slate-800'
+        : 'border-slate-800 bg-slate-900';
   return (
     <div className={`rounded-lg border p-3 ${border}`}>
-      <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="font-mono text-[10px] tracking-wider text-slate-500 uppercase">{label}</p>
       <div className="mt-1 font-mono text-lg font-bold text-slate-100">{value}</div>
       {hint && <p className="mt-0.5 text-[10px] text-slate-500">{hint}</p>}
     </div>
@@ -99,10 +109,10 @@ function SummaryCard({
 }
 
 const STATUS_STYLE: Record<string, string> = {
-  active:    'bg-emerald-900 text-emerald-200',
-  trial:     'bg-sky-900 text-sky-200',
+  active: 'bg-emerald-900 text-emerald-200',
+  trial: 'bg-sky-900 text-sky-200',
   suspended: 'bg-red-900 text-red-200',
-  archived:  'bg-slate-800 text-slate-500',
+  archived: 'bg-slate-800 text-slate-500',
 };
 
 export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
@@ -120,7 +130,7 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
       <StatusSummary orgs={orgs} />
       <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
         <table className="w-full text-left text-xs">
-          <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+          <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
             <tr>
               <th className="px-4 py-2 font-medium">Name</th>
               <th className="px-2 py-2 font-medium">Vertical</th>
@@ -142,7 +152,9 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
                 </td>
                 <td className="px-2 py-2 text-slate-400">{o.vertical ?? '—'}</td>
                 <td className="px-2 py-2">
-                  <span className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] uppercase ${STATUS_STYLE[o.status] ?? 'bg-slate-800 text-slate-400'}`}>
+                  <span
+                    className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] uppercase ${STATUS_STYLE[o.status] ?? 'bg-slate-800 text-slate-400'}`}
+                  >
                     {o.status}
                   </span>
                 </td>
@@ -155,9 +167,11 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
                   {o.ownerEmail ?? '—'}
                 </td>
                 <td className="px-2 py-2 text-[10px]">
-                  {o.allowSupportImpersonation
-                    ? <span className="text-emerald-300">enabled</span>
-                    : <span className="text-slate-500">disabled</span>}
+                  {o.allowSupportImpersonation ? (
+                    <span className="text-emerald-300">enabled</span>
+                  ) : (
+                    <span className="text-slate-500">disabled</span>
+                  )}
                 </td>
                 <td className="px-4 py-2 font-mono text-[10px] text-slate-500">
                   {o.createdAt.slice(0, 10)}

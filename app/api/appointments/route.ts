@@ -21,7 +21,12 @@ import {
 export async function GET(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'booking.read', { organizationId: ctx.activeOrganizationId! }, 'appointments');
+    requirePermission(
+      ctx,
+      'booking.read',
+      { organizationId: ctx.activeOrganizationId! },
+      'appointments',
+    );
     const session = ctxToSession(ctx);
     const url = new URL(req.url);
     const locationId = url.searchParams.get('locationId') ?? undefined;
@@ -43,10 +48,11 @@ export async function GET(req: NextRequest) {
     if (scoped && locationId && !scoped.includes(locationId)) {
       throw new InvalidInputError('locationId is outside your branch scope');
     }
-    const locationFilter =
-      locationId ? { locationId }
-      : scoped ? { locationId: { in: scoped } }
-      : {};
+    const locationFilter = locationId
+      ? { locationId }
+      : scoped
+        ? { locationId: { in: scoped } }
+        : {};
 
     // F-09 fix: :own-scoped roles (PROVIDER's `booking.read:own`) MUST see
     // only their own bookings. can() grants the call in list mode; the
@@ -87,7 +93,12 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'booking.create', { organizationId: ctx.activeOrganizationId! }, 'appointments');
+    requirePermission(
+      ctx,
+      'booking.create',
+      { organizationId: ctx.activeOrganizationId! },
+      'appointments',
+    );
     const session = ctxToSession(ctx);
     const input = parseCreateInput(await req.json().catch(() => null));
 

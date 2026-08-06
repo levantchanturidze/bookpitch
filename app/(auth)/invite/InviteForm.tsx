@@ -36,9 +36,7 @@ export default function InviteForm({ token }: { token: string }) {
         <input name="fullName" required className={inputCls} autoComplete="name" />
       </label>
       <label className="block">
-        <span className="mb-1 block text-xs font-semibold text-slate-600">
-          Choose a password
-        </span>
+        <span className="mb-1 block text-xs font-semibold text-slate-600">Choose a password</span>
         <input
           name="password"
           type="password"
@@ -52,9 +50,7 @@ export default function InviteForm({ token }: { token: string }) {
         </span>
       </label>
 
-      {error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-      )}
+      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
 
       <button
         type="submit"

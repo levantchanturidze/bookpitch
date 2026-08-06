@@ -46,8 +46,8 @@ export async function canManageRoleAssignment(
     },
     select: { id: true, key: true, rank: true },
   });
-  const actorRole = roles.find(r => r.key === actor.roleKey);
-  const targetRole = roles.find(r => r.key === targetRoleKey);
+  const actorRole = roles.find((r) => r.key === actor.roleKey);
+  const targetRole = roles.find((r) => r.key === targetRoleKey);
   if (!actorRole || !targetRole) return false;
 
   // Guard 1: numeric rank. Strict >, not >=, to block same-rank peer moves.

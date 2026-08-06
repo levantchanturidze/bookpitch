@@ -58,9 +58,7 @@ export default function SignupForm() {
       <div className="border-t border-slate-100 pt-4">
         <p className="mb-3 text-xs font-semibold text-slate-500">Workspace</p>
         <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-slate-600">
-            Organisation name
-          </span>
+          <span className="mb-1 block text-xs font-semibold text-slate-600">Organisation name</span>
           <input name="orgName" required className={inputCls} />
         </label>
         <div className="mt-3 grid grid-cols-2 gap-3">
@@ -78,9 +76,7 @@ export default function SignupForm() {
         </div>
       </div>
 
-      {error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-      )}
+      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
 
       <button
         type="submit"

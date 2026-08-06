@@ -53,9 +53,7 @@ describe('notifyEvent + notifications REST', () => {
 
   afterAll(async () => {
     if (trackedIds.length) {
-      await withoutRls((tx) =>
-        tx.notification.deleteMany({ where: { id: { in: trackedIds } } }),
-      );
+      await withoutRls((tx) => tx.notification.deleteMany({ where: { id: { in: trackedIds } } }));
     }
   });
 
@@ -75,9 +73,7 @@ describe('notifyEvent + notifications REST', () => {
     trackedIds.push(event.id);
 
     // Row persisted with sane defaults; the header's 30s poll picks it up.
-    const row = await withoutRls((tx) =>
-      tx.notification.findUnique({ where: { id: event.id } }),
-    );
+    const row = await withoutRls((tx) => tx.notification.findUnique({ where: { id: event.id } }));
     expect(row).toBeTruthy();
     expect(row?.read).toBe(false);
     expect(row?.title).toBe('test notify');
@@ -95,9 +91,12 @@ describe('notifyEvent + notifications REST', () => {
 
   it('cross-tenant list stays 0 for isolation org (RLS)', async () => {
     // Phase 4: real (userId, orgId) pair required. Use isolation's own owner.
-    const isoOwner = await withoutRls(tx => tx.appUser.findUniqueOrThrow({
-      where: { email: 'isolation@bookpitch.dev' }, select: { id: true },
-    }));
+    const isoOwner = await withoutRls((tx) =>
+      tx.appUser.findUniqueOrThrow({
+        where: { email: 'isolation@bookpitch.dev' },
+        select: { id: true },
+      }),
+    );
     authMock.mockResolvedValue(await mkSession(isolationOrgId, isoOwner.id));
     const res = await listRoute.GET();
     const body = await jsonBody<{ notifications: unknown[] }>(res);
@@ -115,9 +114,7 @@ describe('notifyEvent + notifications REST', () => {
     const res = await markRoute.POST();
     expect(res.status).toBe(200);
 
-    const row = await withoutRls((tx) =>
-      tx.notification.findUnique({ where: { id: created.id } }),
-    );
+    const row = await withoutRls((tx) => tx.notification.findUnique({ where: { id: created.id } }));
     expect(row?.read).toBe(true);
   });
 

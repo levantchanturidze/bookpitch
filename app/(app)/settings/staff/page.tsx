@@ -9,10 +9,7 @@ export default async function SettingsStaffPage() {
   const ctx = await requireAuthContext();
   requirePermission(ctx, 'staff.update', { organizationId: ctx.activeOrganizationId! }, 'admin');
   const session = ctxToSession(ctx);
-  const [staffRows, locationRows] = await Promise.all([
-    listStaff(session),
-    listLocations(session),
-  ]);
+  const [staffRows, locationRows] = await Promise.all([listStaff(session), listLocations(session)]);
   const locations: LocationRef[] = locationRows.map((l) => ({
     id: l.id,
     name: l.name,

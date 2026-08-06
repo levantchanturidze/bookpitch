@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import type Stripe from 'stripe';
 import { getStripe } from '@/lib/billing/stripe';
 import { applySubscriptionEvent } from '@/lib/billing/service';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,7 +15,8 @@ export const dynamic = 'force-dynamic';
 // verify: return 401 immediately.
 export async function POST(req: NextRequest) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!secret) return NextResponse.json({ error: 'STRIPE_WEBHOOK_SECRET not set' }, { status: 500 });
+  if (!secret)
+    return NextResponse.json({ error: 'STRIPE_WEBHOOK_SECRET not set' }, { status: 500 });
   const sig = req.headers.get('stripe-signature');
   if (!sig) return NextResponse.json({ error: 'missing stripe-signature' }, { status: 401 });
 
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
   try {
     event = stripe.webhooks.constructEvent(raw, sig, secret);
   } catch (err) {
-    log.warn('stripe.webhook.signature_invalid', { error: (err as Error).message });
+    log.warn('stripe.webhook.signature_invalid', { error: sanitizeErrorMessage(err) });
     return NextResponse.json({ error: 'invalid signature' }, { status: 401 });
   }
 

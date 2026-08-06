@@ -9,9 +9,8 @@ vi.mock('@/auth', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
 const { withoutRls } = await import('@/lib/db');
-const { AssistantQuotaExceededError, consumeAssistantQuota, currentYearMonth } = await import(
-  '@/lib/assistant/quota'
-);
+const { AssistantQuotaExceededError, consumeAssistantQuota, currentYearMonth } =
+  await import('@/lib/assistant/quota');
 
 // -----------------------------------------------------------------------------
 // Per-org monthly assistant quota. Uses a throwaway org so it doesn't perturb
@@ -36,9 +35,7 @@ describe('assistant quota — monthly per-org cap', () => {
 
   beforeEach(async () => {
     // Wipe rows for our probe org between tests.
-    await withoutRls((tx) =>
-      tx.assistantUsage.deleteMany({ where: { organizationId: orgId } }),
-    );
+    await withoutRls((tx) => tx.assistantUsage.deleteMany({ where: { organizationId: orgId } }));
   });
 
   it('increments the current-month counter atomically', async () => {
@@ -60,9 +57,7 @@ describe('assistant quota — monthly per-org cap', () => {
     process.env.ASSISTANT_MONTHLY_CAP_PER_ORG = '2';
     await consumeAssistantQuota(orgId);
     await consumeAssistantQuota(orgId);
-    await expect(consumeAssistantQuota(orgId)).rejects.toBeInstanceOf(
-      AssistantQuotaExceededError,
-    );
+    await expect(consumeAssistantQuota(orgId)).rejects.toBeInstanceOf(AssistantQuotaExceededError);
   });
 
   it('cap=0 disables enforcement entirely', async () => {

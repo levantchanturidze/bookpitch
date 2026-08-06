@@ -9,7 +9,12 @@ export const dynamic = 'force-dynamic';
 
 export default async function BillingPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'payment.charge', { organizationId: ctx.activeOrganizationId! }, 'billing');
+  requirePermission(
+    ctx,
+    'payment.charge',
+    { organizationId: ctx.activeOrganizationId! },
+    'billing',
+  );
   const session = ctxToSession(ctx);
   const { active } = await loadLocationsForOrg(session.organizationId);
 

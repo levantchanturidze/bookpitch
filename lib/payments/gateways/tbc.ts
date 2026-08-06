@@ -1,10 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type {
-  InitiateInput,
-  InitiateResult,
-  PaymentGateway,
-  WebhookResult,
-} from '../gateway';
+import type { InitiateInput, InitiateResult, PaymentGateway, WebhookResult } from '../gateway';
 import { GatewayVerificationError } from '../gateway';
 
 // -----------------------------------------------------------------------------

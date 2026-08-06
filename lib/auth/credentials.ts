@@ -66,7 +66,8 @@ export async function validateCredentials(
               include: { roleRef: { select: { key: true } } },
             }
           : {
-              orderBy: { createdAt: 'asc' }, take: 1,
+              orderBy: { createdAt: 'asc' },
+              take: 1,
               where: { status: 'active' },
               include: { roleRef: { select: { key: true } } },
             },

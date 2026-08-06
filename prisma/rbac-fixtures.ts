@@ -106,12 +106,12 @@ async function ensureBranchScope(membershipId: string, branchIds: string[]): Pro
     where: { membershipId },
     select: { branchId: true },
   });
-  const have = new Set(existing.map(r => r.branchId));
-  const toAdd = branchIds.filter(b => !have.has(b));
-  const toRemove = existing.filter(r => !branchIds.includes(r.branchId));
+  const have = new Set(existing.map((r) => r.branchId));
+  const toAdd = branchIds.filter((b) => !have.has(b));
+  const toRemove = existing.filter((r) => !branchIds.includes(r.branchId));
   if (toAdd.length > 0) {
     await unsafePrismaAdmin.membershipBranch.createMany({
-      data: toAdd.map(branchId => ({ membershipId, branchId })),
+      data: toAdd.map((branchId) => ({ membershipId, branchId })),
       skipDuplicates: true,
     });
   }
@@ -138,8 +138,8 @@ export async function seedRbacFixtures(): Promise<void> {
   // ---- Split Practice: three-branch org with a scoped manager ----
   const split = await upsertOrg('Split Practice', { vertical: 'clinic' });
   const downtown = await upsertBranch(split.id, 'Downtown');
-  const uptown   = await upsertBranch(split.id, 'Uptown');
-  const airport  = await upsertBranch(split.id, 'Airport');
+  const uptown = await upsertBranch(split.id, 'Uptown');
+  const airport = await upsertBranch(split.id, 'Airport');
   // Legacy `locations` compat — analytics and other pages still read
   // from `locations`. Give Split Practice one so those queries don't
   // 404 in tests. Phase 6: link the Downtown branch to this legacy
@@ -214,7 +214,9 @@ export async function seedRbacFixtures(): Promise<void> {
 }
 
 async function ensurePlatformUser(
-  email: string, roleKey: string, passwordHash: string,
+  email: string,
+  roleKey: string,
+  passwordHash: string,
   opts: { mfa?: boolean } = {},
 ) {
   const role = await unsafePrismaAdmin.role.findFirstOrThrow({

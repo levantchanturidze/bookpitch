@@ -13,7 +13,12 @@ export const metadata = { title: 'Scheduler · Bookpitch' };
 // client SchedulerView. Server Actions revalidate this route after each write.
 export default async function SchedulerPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'booking.read', { organizationId: ctx.activeOrganizationId! }, 'appointments');
+  requirePermission(
+    ctx,
+    'booking.read',
+    { organizationId: ctx.activeOrganizationId! },
+    'appointments',
+  );
   const session = ctxToSession(ctx);
   const { active } = await loadLocationsForOrg(session.organizationId);
 

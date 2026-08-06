@@ -33,14 +33,17 @@ export async function GET(req: NextRequest) {
       const v = url.searchParams.get(k);
       return v && v.length ? v : null;
     };
-    const rows = await queryPlatformAudit({
-      actorUserId: s('actor'),
-      organizationId: s('org'),
-      action: s('action'),
-      fromDate: s('from') ? new Date(s('from')!) : null,
-      toDate: s('to') ? new Date(s('to')!) : null,
-      limit: Number(s('limit') ?? 200),
-    }, { maskPii });
+    const rows = await queryPlatformAudit(
+      {
+        actorUserId: s('actor'),
+        organizationId: s('org'),
+        action: s('action'),
+        fromDate: s('from') ? new Date(s('from')!) : null,
+        toDate: s('to') ? new Date(s('to')!) : null,
+        limit: Number(s('limit') ?? 200),
+      },
+      { maskPii },
+    );
     return { rows };
   });
 }

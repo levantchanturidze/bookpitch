@@ -9,7 +9,12 @@ import { InvalidInputError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
 import { log } from '@/lib/logger';
 
-const PLATFORM_ROLE_KEYS = ['SUPER_ADMIN', 'PLATFORM_ADMIN', 'SUPPORT_AGENT', 'BILLING_MANAGER'] as const;
+const PLATFORM_ROLE_KEYS = [
+  'SUPER_ADMIN',
+  'PLATFORM_ADMIN',
+  'SUPPORT_AGENT',
+  'BILLING_MANAGER',
+] as const;
 export type PlatformRoleKey = (typeof PLATFORM_ROLE_KEYS)[number] | null;
 
 export type PlatformRoleHolder = {
@@ -26,7 +31,10 @@ export async function listPlatformRoleHolders(): Promise<PlatformRoleHolder[]> {
   const rows = await unsafePrismaAdmin.appUser.findMany({
     where: { platformRoleId: { not: null } },
     select: {
-      id: true, email: true, fullName: true, createdAt: true,
+      id: true,
+      email: true,
+      fullName: true,
+      createdAt: true,
       platformRole: { select: { key: true, plane: true } },
     },
     orderBy: { email: 'asc' },
@@ -64,7 +72,9 @@ export async function assignPlatformRole(
     throw new InvalidInputError('email is invalid');
   }
   if (roleKey !== null && !PLATFORM_ROLE_KEYS.includes(roleKey)) {
-    throw new InvalidInputError(`roleKey must be one of: ${PLATFORM_ROLE_KEYS.join(', ')}, or null`);
+    throw new InvalidInputError(
+      `roleKey must be one of: ${PLATFORM_ROLE_KEYS.join(', ')}, or null`,
+    );
   }
 
   // Defensive: caller must have SUPER_ADMIN to grant SUPER_ADMIN. Since the
@@ -82,7 +92,8 @@ export async function assignPlatformRole(
   const target = await unsafePrismaAdmin.appUser.findUnique({
     where: { email },
     select: {
-      id: true, platformRole: { select: { id: true, key: true } },
+      id: true,
+      platformRole: { select: { id: true, key: true } },
     },
   });
   if (!target) throw new InvalidInputError('user not found');
@@ -98,7 +109,8 @@ export async function assignPlatformRole(
   // two).
   if (previousRoleKey === 'SUPER_ADMIN' && roleKey !== 'SUPER_ADMIN') {
     const superRole = await unsafePrismaAdmin.role.findFirstOrThrow({
-      where: { key: 'SUPER_ADMIN', organizationId: null }, select: { id: true },
+      where: { key: 'SUPER_ADMIN', organizationId: null },
+      select: { id: true },
     });
     const others = await unsafePrismaAdmin.appUser.count({
       where: {
@@ -117,7 +129,8 @@ export async function assignPlatformRole(
   let newRoleId: string | null = null;
   if (roleKey !== null) {
     const role = await unsafePrismaAdmin.role.findFirstOrThrow({
-      where: { key: roleKey, organizationId: null }, select: { id: true },
+      where: { key: roleKey, organizationId: null },
+      select: { id: true },
     });
     newRoleId = role.id;
   }
@@ -132,7 +145,7 @@ export async function assignPlatformRole(
     }),
     unsafePrismaAdmin.auditLog.create({
       data: {
-        organizationId: null,   // platform-scoped action
+        organizationId: null, // platform-scoped action
         actorUserId: actor.userId,
         action: roleKey === null ? 'platform.role.revoke' : 'platform.role.assign',
         entity: 'staff',
@@ -147,8 +160,10 @@ export async function assignPlatformRole(
   ]);
 
   log.info('platform.role.assigned', {
-    actorUserId: actor.userId, targetUserId: target.id,
-    previousRoleKey, newRoleKey: roleKey,
+    actorUserId: actor.userId,
+    targetUserId: target.id,
+    previousRoleKey,
+    newRoleKey: roleKey,
   });
 
   return { userId: target.id, newRoleKey: roleKey, previousRoleKey };

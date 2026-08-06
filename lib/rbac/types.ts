@@ -15,9 +15,7 @@ export type Plane = 'platform' | 'organization' | 'consumer';
  * `basic/contact/full` are client-detail tiers.
  */
 export type Scope =
-  | 'own' | 'branch' | 'org' | 'platform'
-  | 'limited' | 'unlimited'
-  | 'basic' | 'contact' | 'full';
+  'own' | 'branch' | 'org' | 'platform' | 'limited' | 'unlimited' | 'basic' | 'contact' | 'full';
 
 /**
  * Permission key — the string form matches the rows in the `permissions`
@@ -105,6 +103,17 @@ export type AuthContext = {
 
   /** Session version at build time. Used by the cache to detect staleness. */
   readonly sessionVersion: number;
+
+  /**
+   * Stable unique identifier for this login session, sourced from the JWT
+   * authSessionId claim. Generated once at sign-in; preserved across JWT
+   * rotations; absent (empty string) in contexts built via buildAuthContext
+   * directly (e.g. tests) rather than via requireAuthContext.
+   *
+   * Used by requireFreshPassword to bind reauth grants to the originating
+   * session so that session A cannot consume a grant created by session B.
+   */
+  readonly authSessionId: string;
 
   /** Org lifecycle status. Suspended/archived → can() denies everything
    *  spec §9 rule ("suspended organization → deny", CLAUDE.md invariant 2). */

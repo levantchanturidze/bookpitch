@@ -59,9 +59,7 @@ export async function queryAudit(tx: TxClient, filter: AuditFilter): Promise<Aud
   // viewer more useful. Cheap batched lookup.
   const customerIds = Array.from(
     new Set(
-      rows
-        .filter((r) => r.entity === 'customer' && r.entityId)
-        .map((r) => r.entityId as string),
+      rows.filter((r) => r.entity === 'customer' && r.entityId).map((r) => r.entityId as string),
     ),
   );
   const customers = customerIds.length
@@ -81,7 +79,6 @@ export async function queryAudit(tx: TxClient, filter: AuditFilter): Promise<Aud
     actorId: r.actorUserId,
     at: r.at.toISOString(),
     meta: r.meta,
-    customerName:
-      r.entity === 'customer' && r.entityId ? (nameById.get(r.entityId) ?? null) : null,
+    customerName: r.entity === 'customer' && r.entityId ? (nameById.get(r.entityId) ?? null) : null,
   }));
 }

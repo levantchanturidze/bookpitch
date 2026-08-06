@@ -127,7 +127,10 @@ export default function SchedulerView(props: Props) {
     });
   };
 
-  const handleUpdate = (id: string, patch: { status?: AppointmentStatus; paymentStatus?: PaymentStatus }) => {
+  const handleUpdate = (
+    id: string,
+    patch: { status?: AppointmentStatus; paymentStatus?: PaymentStatus },
+  ) => {
     setError(null);
     startTransition(async () => {
       try {
@@ -145,7 +148,9 @@ export default function SchedulerView(props: Props) {
       <section className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-7">
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className={`rounded-lg p-2 ${isClinic ? 'bg-teal-50 text-teal-600' : 'bg-pink-50 text-pink-600'}`}>
+            <div
+              className={`rounded-lg p-2 ${isClinic ? 'bg-teal-50 text-teal-600' : 'bg-pink-50 text-pink-600'}`}
+            >
               {isClinic ? <Stethoscope className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
             </div>
             <div>
@@ -268,7 +273,9 @@ export default function SchedulerView(props: Props) {
                 <p className="text-xs font-medium">No appointments for this date</p>
               </div>
             ) : (
-              filtered.map((a) => <AppointmentRow key={a.id} a={a} onSelect={() => setSelected(a)} />)
+              filtered.map((a) => (
+                <AppointmentRow key={a.id} a={a} onSelect={() => setSelected(a)} />
+              ))
             )}
           </div>
         </div>
@@ -367,7 +374,9 @@ function MonthNav({ anchor, onChange }: { anchor: Date; onChange: (d: Date) => v
   return (
     <div className="flex items-center gap-1 rounded-lg border border-slate-100 bg-slate-50 p-1">
       <button
-        onClick={() => onChange(new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - 1, 1)))}
+        onClick={() =>
+          onChange(new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - 1, 1)))
+        }
         className="rounded-md p-1.5 text-slate-600 transition hover:bg-white"
         title="Previous month"
       >
@@ -377,7 +386,9 @@ function MonthNav({ anchor, onChange }: { anchor: Date; onChange: (d: Date) => v
         {anchor.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })}
       </span>
       <button
-        onClick={() => onChange(new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 1, 1)))}
+        onClick={() =>
+          onChange(new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 1, 1)))
+        }
         className="rounded-md p-1.5 text-slate-600 transition hover:bg-white"
         title="Next month"
       >
@@ -437,7 +448,7 @@ function MonthGrid({
               {count > 0 && (
                 <div className="flex w-full justify-end">
                   <span
-                    className={`rounded-full px-1.5 py-0.5 font-mono text-[9px] font-bold leading-none ${
+                    className={`rounded-full px-1.5 py-0.5 font-mono text-[9px] leading-none font-bold ${
                       isSelected
                         ? 'bg-white text-slate-900'
                         : isClinic
@@ -486,9 +497,7 @@ function AppointmentRow({ a, onSelect }: { a: AppointmentDto; onSelect: () => vo
       />
       <div className="min-w-0 flex-1 pl-2">
         <div className="mb-0.5 flex items-center justify-between">
-          <span className="block truncate text-xs font-bold text-slate-800">
-            {a.customer.name}
-          </span>
+          <span className="block truncate text-xs font-bold text-slate-800">{a.customer.name}</span>
           <span className="flex items-center gap-1 font-mono text-[10px] font-medium text-slate-400">
             <Clock className="h-2.5 w-2.5" /> {a.time} ({a.durationMinutes}m)
           </span>
@@ -499,7 +508,9 @@ function AppointmentRow({ a, onSelect }: { a: AppointmentDto; onSelect: () => vo
             Staff: <strong className="font-sans text-slate-600">{a.staff.name}</strong>
           </span>
           <div className="flex items-center gap-1.5">
-            <span className={`rounded-full border px-1.5 py-0.5 text-[9px] ${STATUS_BADGES[a.status]}`}>
+            <span
+              className={`rounded-full border px-1.5 py-0.5 text-[9px] ${STATUS_BADGES[a.status]}`}
+            >
               {a.status}
             </span>
             <span
@@ -544,7 +555,10 @@ function DetailModal({
             </span>
             <h3 className="text-base font-bold text-slate-800">{a.serviceName}</h3>
           </div>
-          <button onClick={onClose} className="p-1 text-sm font-semibold text-slate-400 hover:text-slate-600">
+          <button
+            onClick={onClose}
+            className="p-1 text-sm font-semibold text-slate-400 hover:text-slate-600"
+          >
             ✕
           </button>
         </div>
@@ -556,7 +570,9 @@ function DetailModal({
             </div>
             <div className="min-w-0 flex-1">
               <span className="block text-xs font-bold text-slate-800">{a.customer.name}</span>
-              <span className="block font-mono text-[10px] text-slate-500">{a.customer.phone ?? '—'}</span>
+              <span className="block font-mono text-[10px] text-slate-500">
+                {a.customer.phone ?? '—'}
+              </span>
             </div>
           </div>
 
@@ -564,7 +580,9 @@ function DetailModal({
             <div>
               <span className="mb-0.5 block font-semibold text-slate-400">DATE & TIME</span>
               <p className="font-mono font-medium text-slate-700">{a.date}</p>
-              <p className="font-mono text-slate-500">at {a.time} ({a.durationMinutes} mins)</p>
+              <p className="font-mono text-slate-500">
+                at {a.time} ({a.durationMinutes} mins)
+              </p>
             </div>
             <div>
               <span className="mb-0.5 block font-semibold text-slate-400">STAFF</span>

@@ -30,8 +30,15 @@ describe('canManageRoleAssignment', () => {
 
   it('ORG_OWNER can manage every org-plane role', async () => {
     const owner = await ctxFor('split-owner@bp.test', 'Split Practice');
-    for (const target of ['ORG_ADMIN', 'BRANCH_MANAGER', 'FRONT_DESK', 'PROVIDER',
-                          'SENIOR_PROVIDER', 'ACCOUNTANT', 'MARKETING']) {
+    for (const target of [
+      'ORG_ADMIN',
+      'BRANCH_MANAGER',
+      'FRONT_DESK',
+      'PROVIDER',
+      'SENIOR_PROVIDER',
+      'ACCOUNTANT',
+      'MARKETING',
+    ]) {
       expect(await canManageRoleAssignment(owner, target)).toBe(true);
     }
   });

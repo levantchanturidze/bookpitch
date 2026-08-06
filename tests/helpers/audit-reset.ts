@@ -16,16 +16,10 @@ export async function resetAuditForOrgs(orgIds: string[]): Promise<void> {
   if (orgIds.length === 0) return;
   // ALTER TABLE ... DISABLE TRIGGER USER cannot run inside a subtransaction
   // in Postgres, so keep this outside withoutRls().
-  await unsafePrismaAdmin.$executeRawUnsafe(
-    'ALTER TABLE "audit_log" DISABLE TRIGGER USER',
-  );
+  await unsafePrismaAdmin.$executeRawUnsafe('ALTER TABLE "audit_log" DISABLE TRIGGER USER');
   try {
-    await withoutRls((tx) =>
-      tx.auditLog.deleteMany({ where: { organizationId: { in: orgIds } } }),
-    );
+    await withoutRls((tx) => tx.auditLog.deleteMany({ where: { organizationId: { in: orgIds } } }));
   } finally {
-    await unsafePrismaAdmin.$executeRawUnsafe(
-      'ALTER TABLE "audit_log" ENABLE TRIGGER USER',
-    );
+    await unsafePrismaAdmin.$executeRawUnsafe('ALTER TABLE "audit_log" ENABLE TRIGGER USER');
   }
 }

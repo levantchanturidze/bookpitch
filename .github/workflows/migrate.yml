@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      issues: write   # allow the failure-notify step to open an issue
+      issues: write # allow the failure-notify step to open an issue
     steps:
       - uses: actions/checkout@v4
 

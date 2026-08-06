@@ -7,7 +7,12 @@ export const dynamic = 'force-dynamic';
 
 export default async function SettingsLocationsPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'org.branch.manage', { organizationId: ctx.activeOrganizationId! }, 'admin');
+  requirePermission(
+    ctx,
+    'org.branch.manage',
+    { organizationId: ctx.activeOrganizationId! },
+    'admin',
+  );
   const rows = await listLocations(ctxToSession(ctx));
   const locations: LocationRow[] = rows.map((l) => ({
     id: l.id,

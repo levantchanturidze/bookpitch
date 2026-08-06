@@ -14,7 +14,12 @@ import {
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.read:contact',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const { id } = await params;
 
@@ -25,7 +30,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       });
       if (!row) return null;
       await writeAudit(tx, session, 'read', 'customer', id);
-      return toCustomerDetailDto(row);
+      return toCustomerDetailDto(row, { ctx });
     });
 
     if (!customer) throw new NotFoundError('customer not found');
@@ -37,7 +42,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.read:contact',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const { id } = await params;
     const input = parseUpdateInput(await req.json().catch(() => null));
@@ -48,7 +58,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       if (!existing) return null;
       const row = await tx.customer.update({ where: { id }, data });
       await writeAudit(tx, session, 'update', 'customer', id, { fields });
-      return toCustomerDto(row);
+      return toCustomerDto(row, { ctx });
     });
 
     if (!customer) throw new NotFoundError('customer not found');
@@ -62,7 +72,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.merge', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.merge',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const { id } = await params;
 

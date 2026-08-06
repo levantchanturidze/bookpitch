@@ -3,7 +3,7 @@ import { hash } from '@node-rs/argon2';
 import { unsafePrismaAdmin, withoutRls } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 // -----------------------------------------------------------------------------
 // Password reset flow.
@@ -73,7 +73,7 @@ export async function requestPasswordReset(input: RequestResetInput): Promise<vo
   } catch (err) {
     // Provider failure is not fatal — the mock provider succeeds trivially,
     // and a real provider outage should not block the user's request loop.
-    log.warn('password_reset.request.provider_failed', { error: (err as Error).message });
+    log.warn('password_reset.request.provider_failed', { error: sanitizeErrorMessage(err) });
   }
 }
 
@@ -93,7 +93,9 @@ export async function consumeReset(input: ConsumeResetInput): Promise<{ userId: 
   if (!row) throw new InvalidInputError('invalid or expired token');
   if (row.expires.getTime() < Date.now()) {
     // Best-effort cleanup; don't leak the reason.
-    await unsafePrismaAdmin.verificationToken.delete({ where: { token: tokenHash } }).catch(() => {});
+    await unsafePrismaAdmin.verificationToken
+      .delete({ where: { token: tokenHash } })
+      .catch(() => {});
     throw new InvalidInputError('invalid or expired token');
   }
 

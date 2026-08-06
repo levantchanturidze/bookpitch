@@ -6,7 +6,12 @@ import { createLocation, listLocations } from '@/lib/admin';
 export async function GET() {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'org.branch.manage', { organizationId: ctx.activeOrganizationId! }, 'admin');
+    requirePermission(
+      ctx,
+      'org.branch.manage',
+      { organizationId: ctx.activeOrganizationId! },
+      'admin',
+    );
     return { locations: await listLocations(ctxToSession(ctx)) };
   });
 }
@@ -14,7 +19,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'org.branch.manage', { organizationId: ctx.activeOrganizationId! }, 'admin');
+    requirePermission(
+      ctx,
+      'org.branch.manage',
+      { organizationId: ctx.activeOrganizationId! },
+      'admin',
+    );
     const body = await req.json().catch(() => null);
     return { location: await createLocation(ctxToSession(ctx), body) };
   });

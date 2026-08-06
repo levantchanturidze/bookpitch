@@ -32,8 +32,12 @@ export const INITIAL_PATIENTS: Patient[] = [
     joinedDate: '2024-03-12',
     avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
     notes: 'Penicillin allergy. Prefers afternoon bookings. Very sensitive skin.',
-    history: ['Annual Physical (Jan 2026)', 'Derm Check (Nov 2025)', 'Facial Glow Treatment (Jun 2026)'],
-    allergies: 'Penicillin, Tree nuts'
+    history: [
+      'Annual Physical (Jan 2026)',
+      'Derm Check (Nov 2025)',
+      'Facial Glow Treatment (Jun 2026)',
+    ],
+    allergies: 'Penicillin, Tree nuts',
   },
   {
     id: 'p2',
@@ -45,8 +49,12 @@ export const INITIAL_PATIENTS: Patient[] = [
     joinedDate: '2023-11-05',
     avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150',
     notes: 'Hypertension history. Takes Metoprolol. Prefers quiet clinic rooms.',
-    history: ['Cardio Review (Mar 2026)', 'Teeth Cleaning (Feb 2026)', 'Swedish Massage (May 2026)'],
-    allergies: 'None'
+    history: [
+      'Cardio Review (Mar 2026)',
+      'Teeth Cleaning (Feb 2026)',
+      'Swedish Massage (May 2026)',
+    ],
+    allergies: 'None',
   },
   {
     id: 'p3',
@@ -58,8 +66,12 @@ export const INITIAL_PATIENTS: Patient[] = [
     joinedDate: '2025-01-19',
     avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
     notes: 'No medical conditions. Uses retinol (warn before peel treatments).',
-    history: ['Chemical Peel (Apr 2026)', 'General Consultation (Mar 2026)', 'Hydrafacial (Jul 2026)'],
-    allergies: 'Aspirin (minor reaction)'
+    history: [
+      'Chemical Peel (Apr 2026)',
+      'General Consultation (Mar 2026)',
+      'Hydrafacial (Jul 2026)',
+    ],
+    allergies: 'Aspirin (minor reaction)',
   },
   {
     id: 'p4',
@@ -72,7 +84,7 @@ export const INITIAL_PATIENTS: Patient[] = [
     avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150',
     notes: 'Active runner, chronic lower back stiffness. Prefers firm pressure.',
     history: ['Physio Consultation (Jun 2026)', 'Deep Tissue Massage (Jul 2026)'],
-    allergies: 'Adhesive tape'
+    allergies: 'Adhesive tape',
   },
   {
     id: 'p5',
@@ -85,8 +97,8 @@ export const INITIAL_PATIENTS: Patient[] = [
     avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
     notes: 'Prefers organic/vegan beauty products. Looking for a new hair color routine.',
     history: ['Balayage & Styling (Dec 2025)', 'Pedicure (Apr 2026)'],
-    allergies: 'Lactose'
-  }
+    allergies: 'Lactose',
+  },
 ];
 
 export const INITIAL_STAFF: Staff[] = [
@@ -102,8 +114,8 @@ export const INITIAL_STAFF: Staff[] = [
     rating: 4.9,
     availability: {
       days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
-      hours: '08:30 - 16:30'
-    }
+      hours: '08:30 - 16:30',
+    },
   },
   {
     id: 's2',
@@ -117,8 +129,8 @@ export const INITIAL_STAFF: Staff[] = [
     rating: 4.8,
     availability: {
       days: ['Monday', 'Wednesday', 'Friday'],
-      hours: '09:00 - 17:00'
-    }
+      hours: '09:00 - 17:00',
+    },
   },
   {
     id: 's3',
@@ -132,8 +144,8 @@ export const INITIAL_STAFF: Staff[] = [
     rating: 4.95,
     availability: {
       days: ['Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
-      hours: '10:00 - 19:00'
-    }
+      hours: '10:00 - 19:00',
+    },
   },
   {
     id: 's4',
@@ -147,8 +159,8 @@ export const INITIAL_STAFF: Staff[] = [
     rating: 4.75,
     availability: {
       days: ['Monday', 'Tuesday', 'Thursday', 'Friday'],
-      hours: '09:00 - 18:00'
-    }
+      hours: '09:00 - 18:00',
+    },
   },
   {
     id: 's5',
@@ -162,9 +174,9 @@ export const INITIAL_STAFF: Staff[] = [
     rating: 4.85,
     availability: {
       days: ['Tuesday', 'Thursday', 'Friday'],
-      hours: '08:00 - 16:00'
-    }
-  }
+      hours: '08:00 - 16:00',
+    },
+  },
 ];
 
 export const INITIAL_APPOINTMENTS: Appointment[] = [
@@ -180,7 +192,7 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     status: 'completed',
     paymentStatus: 'paid',
     reminderSent: true,
-    notes: 'Regular checkup. Patient complained of mild seasonal allergies.'
+    notes: 'Regular checkup. Patient complained of mild seasonal allergies.',
   },
   {
     id: 'a2',
@@ -194,7 +206,7 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     status: 'confirmed',
     paymentStatus: 'unpaid',
     reminderSent: true,
-    notes: 'Follow-up check after dosage increase.'
+    notes: 'Follow-up check after dosage increase.',
   },
   {
     id: 'a3',
@@ -208,7 +220,7 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     status: 'confirmed',
     paymentStatus: 'paid',
     reminderSent: true,
-    notes: 'Avoid strong salicylic wash, client uses over-the-counter retinol.'
+    notes: 'Avoid strong salicylic wash, client uses over-the-counter retinol.',
   },
   {
     id: 'a4',
@@ -222,7 +234,7 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     status: 'confirmed',
     paymentStatus: 'unpaid',
     reminderSent: false,
-    notes: 'Focus on lower lumbar recovery techniques.'
+    notes: 'Focus on lower lumbar recovery techniques.',
   },
   {
     id: 'a5',
@@ -236,7 +248,7 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     status: 'pending',
     paymentStatus: 'unpaid',
     reminderSent: false,
-    notes: 'Consultation about changing dark brown hair to honey blonde.'
+    notes: 'Consultation about changing dark brown hair to honey blonde.',
   },
   {
     id: 'a6',
@@ -250,7 +262,7 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     status: 'confirmed',
     paymentStatus: 'unpaid',
     reminderSent: false,
-    notes: 'Wants classic red color and light skin scrub.'
+    notes: 'Wants classic red color and light skin scrub.',
   },
   {
     id: 'a7',
@@ -264,8 +276,8 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     status: 'completed',
     paymentStatus: 'paid',
     reminderSent: true,
-    notes: 'Prescription refill processed successfully.'
-  }
+    notes: 'Prescription refill processed successfully.',
+  },
 ];
 
 export const INITIAL_NOTIFICATIONS: AppNotification[] = [
@@ -275,7 +287,7 @@ export const INITIAL_NOTIFICATIONS: AppNotification[] = [
     message: 'Amina Al-Mansoor requested Luxury Balayage & Cut with Chloe Fontaine.',
     time: '10 mins ago',
     type: 'booking',
-    read: false
+    read: false,
   },
   {
     id: 'n2',
@@ -283,7 +295,7 @@ export const INITIAL_NOTIFICATIONS: AppNotification[] = [
     message: 'Sarah Jenkins paid $120.00 for General Consultation.',
     time: '1 hour ago',
     type: 'payment',
-    read: false
+    read: false,
   },
   {
     id: 'n3',
@@ -291,7 +303,7 @@ export const INITIAL_NOTIFICATIONS: AppNotification[] = [
     message: 'SMS automated reminder sent to Michael Chen for Cardiology Assessment.',
     time: '3 hours ago',
     type: 'reminder',
-    read: true
+    read: true,
   },
   {
     id: 'n4',
@@ -299,8 +311,8 @@ export const INITIAL_NOTIFICATIONS: AppNotification[] = [
     message: '2 appointments synchronized with cloud server database successfully.',
     time: '4 hours ago',
     type: 'sync',
-    read: true
-  }
+    read: true,
+  },
 ];
 
 export const REVENUE_DATA: RevenueRecord[] = [
@@ -310,5 +322,5 @@ export const REVENUE_DATA: RevenueRecord[] = [
   { date: 'Jul 18', revenue: 850, bookings: 5, clinicType: 'salon' },
   { date: 'Jul 19', revenue: 1250, bookings: 9, clinicType: 'salon' },
   { date: 'Jul 20', revenue: 1480, bookings: 11, clinicType: 'clinic' },
-  { date: 'Jul 21', revenue: 1850, bookings: 13, clinicType: 'clinic' }
+  { date: 'Jul 21', revenue: 1850, bookings: 13, clinicType: 'clinic' },
 ];

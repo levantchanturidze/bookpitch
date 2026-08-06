@@ -117,9 +117,7 @@ describe('TbcGateway.verifyWebhook', () => {
       status: 'Succeeded',
     });
     const headers = new Headers({ 'x-signature': 'not-a-valid-signature' });
-    await expect(tbc.verifyWebhook(headers, body)).rejects.toBeInstanceOf(
-      GatewayVerificationError,
-    );
+    await expect(tbc.verifyWebhook(headers, body)).rejects.toBeInstanceOf(GatewayVerificationError);
   });
 
   it('rejects unknown status strings', async () => {
@@ -129,8 +127,6 @@ describe('TbcGateway.verifyWebhook', () => {
       status: 'wat',
     });
     const headers = new Headers({ 'x-signature': sign(body) });
-    await expect(tbc.verifyWebhook(headers, body)).rejects.toBeInstanceOf(
-      GatewayVerificationError,
-    );
+    await expect(tbc.verifyWebhook(headers, body)).rejects.toBeInstanceOf(GatewayVerificationError);
   });
 });

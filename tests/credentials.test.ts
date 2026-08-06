@@ -55,7 +55,7 @@ describe('validateCredentials — real path (F-05)', () => {
     expect(r!.activeOrganizationId).toBeNull();
     expect(r!.membershipId).toBeNull();
     expect(r!.platformRoleId).not.toBeNull();
-    expect(r!.roleKey).toBeNull();  // no org-plane role
+    expect(r!.roleKey).toBeNull(); // no org-plane role
   });
 
   it('rejects wrong password → null (no exception)', async () => {
@@ -109,7 +109,8 @@ describe('validateCredentials — real path (F-05)', () => {
     // moonlight@bp.test is PROVIDER in both Grand Medical and Split Practice
     // per rbac-fixtures.ts. Ask for Split's org id specifically.
     const split = await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Split Practice' }, select: { id: true },
+      where: { name: 'Split Practice' },
+      select: { id: true },
     });
     const r = await validateCredentials({
       email: 'moonlight@bp.test',
@@ -124,7 +125,8 @@ describe('validateCredentials — real path (F-05)', () => {
   it('multi-org user + requestedOrgId they do NOT belong to → null', async () => {
     // Solo Practice is soloDoc's org; moonlight has no membership there.
     const solo = await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Solo Practice' }, select: { id: true },
+      where: { name: 'Solo Practice' },
+      select: { id: true },
     });
     const r = await validateCredentials({
       email: 'moonlight@bp.test',

@@ -35,12 +35,18 @@ describe('org switcher — no residue after switch', () => {
       where: { email: 'moonlight@bp.test' },
     });
     moonId = moon.id;
-    grandOrgId = (await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Grand Medical & Aurora Spa Group' }, select: { id: true },
-    })).id;
-    splitOrgId = (await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Split Practice' }, select: { id: true },
-    })).id;
+    grandOrgId = (
+      await unsafePrismaAdmin.organization.findFirstOrThrow({
+        where: { name: 'Grand Medical & Aurora Spa Group' },
+        select: { id: true },
+      })
+    ).id;
+    splitOrgId = (
+      await unsafePrismaAdmin.organization.findFirstOrThrow({
+        where: { name: 'Split Practice' },
+        select: { id: true },
+      })
+    ).id;
     // Pick a Grand Medical customer to try to reach post-switch.
     const c = await unsafePrismaAdmin.customer.findFirst({ where: { organizationId: grandOrgId } });
     if (!c) throw new Error('seed must include a Grand Medical customer');

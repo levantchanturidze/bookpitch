@@ -45,9 +45,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!organization) redirect('/signin');
 
   const visibleNavIds = new Set(
-    NAV_ITEMS.filter((item) =>
-      can(ctx, item.requiredPermission, { organizationId: orgId }),
-    ).map((item) => item.id),
+    NAV_ITEMS.filter((item) => can(ctx, item.requiredPermission, { organizationId: orgId })).map(
+      (item) => item.id,
+    ),
   );
 
   return (
@@ -56,7 +56,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           rendered ABOVE the Shell so they're visible before any org content
           — see docs/rbac-spec.md §7.1 rule 4 and §7.2 rule 5. */}
       <PlatformSessionBanner
-        impersonation={ctx.impersonation ? { expiresAt: ctx.impersonation.expiresAt.toISOString() } : null}
+        impersonation={
+          ctx.impersonation ? { expiresAt: ctx.impersonation.expiresAt.toISOString() } : null
+        }
         breakGlass={ctx.breakGlass ? { expiresAt: ctx.breakGlass.expiresAt.toISOString() } : null}
       />
       <Shell

@@ -50,8 +50,27 @@ export async function assertNotLastOwner(
     },
   });
   if (others === 0) {
+    throw new InvalidInputError('org must keep at least one active ORG_OWNER (spec §9 rule 1)');
+  }
+}
+
+/**
+ * Throws if the org has no `owner_user_id` pointer set. An org in this
+ * state is partially provisioned — membership and billing mutations must
+ * not proceed until an owner is designated via the platform admin panel.
+ *
+ * Only reachable in practice via `createOrganization` where `ownerEmail`
+ * is omitted. The guard makes the invariant real at runtime rather than
+ * only at seed time.
+ */
+export async function assertOrgOwnerSet(tx: TxClient, organizationId: string): Promise<void> {
+  const org = await tx.organization.findUnique({
+    where: { id: organizationId },
+    select: { ownerUserId: true },
+  });
+  if (!org?.ownerUserId) {
     throw new InvalidInputError(
-      'org must keep at least one active ORG_OWNER (spec §9 rule 1)',
+      'this organization has no designated owner — assign one in the platform admin panel before managing memberships or billing',
     );
   }
 }

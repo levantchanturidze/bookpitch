@@ -24,6 +24,27 @@ regression tests. Each finding maps to a probe in
   from `RESTRICTED_DURING_IMPERSONATION`. Regression probes P6.13 + P6.14
   are now plain `it(...)` and pass. See
   [§6 Delta findings](#delta-findings) below.
+- **2026-08-05 inventory-driven pass** — the full-surface inventory
+  (`docs/features-en.md`) surfaced **SEC-008 (High)** — three org toggles
+  writable + audit-logged but read by no code — and a companion sweep of
+  20 seeded permissions with no requirePermission/can() callsite.
+  Toggles wired into `can()` (regression probes P8.1–P8.3);
+  orphaned permissions each tagged `notYetImplemented: '<bundle>'` in
+  `prisma/rbac-seed.ts`; CI check
+  (`scripts/check-orphan-perms.ts`, `npm run check:orphan-perms`) fails
+  the build when a new seeded permission lands without either a
+  callsite or a bundle tag. See [SEC-008](#sec-008) below.
+- **2026-08-06 follow-up pass** — post-SEC-008 review surfaced
+  **SEC-009 (High)** — `changeOrganizationOwner` updated
+  `organizations.owner_user_id` but left the target's `memberships.role`
+  and `memberships.role_id` unchanged. After the call the audit log
+  recorded a successful ownership transfer; `can()` still evaluated the
+  target against their old role, so the new owner could not exercise any
+  owner-only permission. Fixed atomically in the same transaction.
+  Regression probe P9.1. Additionally: P8.4 added to guard
+  `assertDiscountWithinCeiling` enforcement (the only discount-ceiling
+  gate had no test; removing it would not have broken CI).
+  See [SEC-009](#sec-009) below.
 
 ## Executive summary
 
@@ -36,6 +57,82 @@ regression tests. Each finding maps to a probe in
 | [SEC-005](#sec-005) | Medium | Impersonation | `platform.config.manage` missing from `RESTRICTED_DURING_IMPERSONATION` — impersonating actor can flip clinical-visibility toggles | **Fixed** 2026-08-03 |
 | [SEC-006](#sec-006) | High | Availability | `assignPlatformRole` can demote the last SUPER_ADMIN and brick `platform.role.assign` | **Fixed** 2026-08-03 |
 | [SEC-007](#sec-007) | High | RLS bypass | Superuser Prisma client `prismaAdmin` exported publicly — 6 ordinary request paths bypass RLS. Bookpitch_app NOBYPASSRLS is the spec's 2nd layer of tenant isolation and it was inactive at these callsites | **Fixed** 2026-08-03; end-state `bookpitch_login` migration shipped 2026-08-04 (operator activation pending) |
+| [SEC-008](#sec-008) | High | Silent non-enforcement | Three org toggles (`providerFinancialReports`, `providerClinicalNotesOthers`, `frontdeskClientFullHistory`) editable + audit-logged + read by nothing. Toggle appears to grant elevated visibility; no code path enforces the grant. Same class as the 20 seeded permissions with no callsite (orphan-perm sweep) | **Fixed** 2026-08-05 |
+| [SEC-009](#sec-009) | High | Ownership transfer | `changeOrganizationOwner` updated the org pointer but not the target's membership role. Audit log recorded success; new owner's `can()` still evaluated against old role. Owner-only actions (billing, ownership transfer) denied to the new owner until next full role sync | **Fixed** 2026-08-06 |
+
+## Round 4 findings (2026-08-06 adversarial pass)
+
+| ID | Severity | Surface | Title | Status |
+|---|---|---|---|---|
+| F1 | High | Distributed state | `requireFreshPassword` used an in-memory Map for reauth grants — grants invisible across Vercel instances; a different cold instance always denied the destructive action | **Fixed** 2026-08-06 |
+| F2 | High | Break-glass MFA | Break-glass re-auth required only password (no TOTP) despite spec §7.2 rule 3 | **Fixed** 2026-08-06 |
+| F3 | Medium | Onboard abuse | `/api/onboard` had no rate limiting, no body-size guard, no CAPTCHA gate, and exposed discriminating error messages (email enumeration) | **Fixed** 2026-08-06 |
+| F4 | Medium | PII in logs | Raw `err.message` from pg/Stripe/SMS providers logged without sanitisation — DETAIL clauses expose email values that triggered unique-constraint violations | **Fixed** 2026-08-06 |
+| F5 | Low | Superuser URL | `DATABASE_URL_SUPERUSER` fallback chain ended at `APP_URL`, a public HTTP address. In the env-var-misconfiguration case `unsafePrismaAdmin` would have tried to open the Next.js frontend as a Postgres endpoint | **Fixed** 2026-08-06 |
+| F6 | Medium | CI gap | No CI workflow existed — lint, tsc, test, guard checks, orphan-perm check ran only on developer machines | **Fixed** 2026-08-06 |
+| F7 | Info | Permission drift | `payment.discount:limited` and `payment.discount:unlimited` seeded but no route enforces them (no discount UX exists yet). Tagged `notYetImplemented: 'payment_discount'` per SEC-008 process | **Documented** 2026-08-06 |
+
+Seven findings. **No new critical findings.** The platform plane now satisfies spec §7.2 rule 3 (password + TOTP for break-glass). Distributed reauth state and log-PII are both closed.
+
+### F1 — Distributed reauth state
+
+**Root cause:** `requireFreshPassword` / `verifyPasswordFresh` stored grants in a module-level `Map`. Every Vercel cold-start got an empty map; the route handler that performed the reauth and the route handler that consumed the grant were frequently on different instances.
+
+**Fix:** Replaced the in-memory map with a `platform_reauth_grant` table (primary key = `user_id`, expiry column). An L1 in-process cache is kept as an optimisation for the same-instance fast path but is never the _only_ check. The `platform_rate_limit` table (already added for SEC-007) provides the attempt counter.
+
+**Migration:** `prisma/migrations/20260806000000_platform_security/migration.sql` — `platform_reauth_grant`, `platform_rate_limit`.
+
+**Tests:** `tests/platform-password-reauth.test.ts` — all 6 tests, including freshness expiry with a negative `maxAgeMs` window.
+
+### F2 — Break-glass MFA gap
+
+**Root cause:** `startBreakGlass` called `verifyPasswordFresh` but had a `TODO` comment for the TOTP step. `mfaEnabled=true` was written to the seed user but never checked.
+
+**Fix:**
+- `lib/platform/mfa.ts` — new module: `generateTotpEnrollment`, `confirmTotpEnrollment`, `verifyTotp`. Secrets stored AES-256-GCM encrypted (same `FIELD_ENCRYPTION_KEY` as clinical notes). Replay protection via `mfa_last_totp_window` (BigInt, updated atomically on each successful verify).
+- `lib/platform/break-glass.ts` — added `await verifyTotp(input.actor.userId, input.totpCode)` after password step.
+- `app/api/platform/break-glass/route.ts` — `totpCode` now a required body field.
+- `app/api/platform/mfa/enroll/route.ts`, `confirm/route.ts` — new enrollment API endpoints.
+
+**Migration:** `mfa_totp TEXT`, `mfa_last_totp_window BIGINT` columns on `app_users`.
+
+**Tests:** `tests/platform-mfa.test.ts` — enrollment (SUPER_ADMIN can enroll, others 403), confirmation (correct code enables MFA, wrong code rejected), `verifyTotp` (valid, reuse, invalid, not-enrolled), break-glass without MFA → 400. `tests/platform-break-glass.test.ts` — all break-glass tests updated to include `totpCode`.
+
+### F3 — Onboard endpoint abuse protection
+
+**Root cause:** `/api/onboard` was a public endpoint with no rate limiting, no body-size cap, and no CAPTCHA. `InvalidInputError` messages including `'email already registered'` were forwarded to the response, enabling email enumeration.
+
+**Fix:**
+- 16 KB body-size guard (reads `content-length` before JSON parsing).
+- IP-keyed rate limit: 5 signups per IP per hour via `consumeGlobalBucket`.
+- Optional Cloudflare Turnstile CAPTCHA (active when `TURNSTILE_SECRET_KEY` is set; skipped in dev/test).
+- All `InvalidInputError` responses now return the generic `{ error: 'invalid request' }` body.
+
+**Tests:** `tests/onboard-security.test.ts` — oversized payload, duplicate-email (generic 400), invalid email (generic 400), rate limit exhaustion, cross-IP isolation, CAPTCHA skip in dev mode, valid-payload 201.
+
+**Bonus fix:** `onboardOrg` (the service function) did not set `owner_user_id` on the created org, violating invariant 5. Fixed in `lib/onboarding.ts` — `owner_user_id` is now set atomically inside the creation transaction.
+
+### F4 — PII in error log messages
+
+**Root cause:** Ten call sites passed `(err as Error).message` directly to `log.error`. Third-party drivers (pg, Postmark, SMS Office, Stripe) embed the triggering value in failure messages (`DETAIL: Key (email)=(…) already exists.`). `scrubPhi` only strips known structured key names; it does not scan string values.
+
+**Fix:** `sanitizeErrorMessage(err)` in `lib/logger.ts` strips PostgreSQL DETAIL clauses, E.164 phone numbers, email addresses, and connection strings from the raw `err.message`. Every affected `log.error` / `log.warn` call site updated to use it.
+
+**Tests:** `tests/logger.test.ts` — six `sanitizeErrorMessage` tests covering each pattern (DETAIL clause, phone, email, connection string, non-Error value, benign passthrough).
+
+### F5 — Superuser URL fallback to APP_URL
+
+**Root cause:** `SUPERUSER_URL` in `lib/db.ts` fell back to `process.env.APP_URL` if all four superuser DB env vars were absent. `APP_URL` is the public Next.js hostname. Connecting to it as a Postgres endpoint would time out, but the env-var misconfiguration case now silently produces a broken admin client instead of failing loudly at startup.
+
+**Fix:** Removed `APP_URL` from the fallback chain. `SUPERUSER_URL` is now `undefined` when no superuser env var is set, which causes Prisma to throw at the first use rather than swallowing the misconfiguration.
+
+### F6 — No CI workflow
+
+**Fix:** `.github/workflows/ci.yml` — runs on `push`/`pull_request` targeting `main`. Steps: format check, lint, `tsc --noEmit`, `prisma validate`, `prisma migrate diff` (no pending migrations), `prisma generate`, `npm test` (all 418 tests), `check-guards`, `check-orphan-perms`, `next build`.
+
+### F7 — Permission drift (documented, not a runtime bug)
+
+`payment.discount:limited` and `payment.discount:unlimited` are seeded in `prisma/rbac-seed.ts` but no route enforces them — there is no discount UX yet. Tagged `notYetImplemented: 'payment_discount'` per the SEC-008 process. CI `check-orphan-perms` will catch any addition without a corresponding enforcement callsite.
 
 Three real findings across 37 probes. **No critical findings.** The
 Phase 1 append-only invariant holds, RLS holds, cross-tenant data is
@@ -1222,3 +1319,268 @@ No further concerning sites remain. `bookpitch_login` narrow-role
 migration (option 3 above) remains the correct end state for the
 `buildAuthContext` group — that's the last place the hottest path in
 the codebase touches a superuser client.
+
+## SEC-008 — Three org toggles are writable, audit-logged, and consulted by no code · High
+
+**Attack surface:** silent non-enforcement (grant-without-check)
+**Discovered:** 2026-08-05, from the `docs/features-en.md` full-surface
+inventory
+**Regression tests:** `tests/security-review.test.ts` §8 — P8.1, P8.2, P8.3
+
+### Behaviour
+
+`updateOrgToggles` (lib/rbac/toggles.ts) stores four toggle keys under
+`organizations.features`; the admin UI at `/settings/organization/policy`
+edits all four; SEC-004's fix writes an audit row on every flip. Three
+of the four toggles were nonetheless dead code before this fix:
+
+- `providerFinancialReports` — spec §6.2: "grant PROVIDER access to
+  branch/org financial reports."
+- `providerClinicalNotesOthers` — spec §6.2: "PROVIDER can read peers'
+  clinical notes."
+- `frontdeskClientFullHistory` — spec §6.2: "FRONT_DESK sees full
+  client history + clinical notes."
+
+Only `frontdeskDiscountCeiling` was actually enforced (at
+`lib/payments/service.ts:244`).
+
+Concretely: `can(ctx, 'client.read:full', ...)` returned the same
+answer with the toggle ON or OFF, because `toggles.ts` populates
+`ctx.orgToggles` but nothing downstream consumes it. Neither did the
+customer DTO builder — a call from FRONT_DESK to `GET /api/customers/[id]`
+returned the same body regardless of toggle state.
+
+### Impact
+
+An owner opening `/settings/organization/policy`, toggling
+"providers see peers' clinical notes" ON, saving, and seeing an
+audit row → concludes providers now have that visibility. They do
+not. The grant is a lie. Same for the other two.
+
+This is the same class as an orphan seeded permission (a permission
+row exists, no code consults it) — the sweep for that class found
+20 more, tracked separately (see the CI check below).
+
+### Affected files
+
+- `lib/rbac/can.ts:224-260` — no branch consulted `ctx.orgToggles`
+  after the `granted.has(p)` check
+- `lib/customers.ts` — `toCustomerDto` / `toCustomerDetailDto` had
+  no visibility parameter, so every authorised caller got every
+  field (allergies + clinicalNotes decrypted, treatmentHistory in
+  full)
+- Every DTO caller passed no visibility context — 6 sites
+
+### Suggested fix (as applied)
+
+1. **`toggleGrantsPermission(ctx, p)` in `lib/rbac/can.ts`** — called
+   right before the final `return false` in `can()`. Maps the three
+   boolean toggles to the specific permissions they grant. Same
+   pattern as the `frontdeskDiscountCeiling` check at
+   `lib/payments/service.ts:244`, but for scope-based grants rather
+   than numeric ceilings.
+
+   ```ts
+   if (granted.has(p)) return true;
+   if (toggleGrantsPermission(ctx, p)) return true;   // SEC-008
+   return false;
+   ```
+
+2. **Customer DTO gates on visibility.** New `CustomerVisibility` type
+   in `lib/customers.ts`; `toCustomerDto` + `toCustomerDetailDto` both
+   require it; `decideFullAccess(v)` consults BOTH `client.read:full`
+   (FRONT_DESK toggle branch) OR `clinical_note.read:any` (PROVIDER
+   toggle branch). Contact tier gets `allergies: null`,
+   `clinicalNotes: null`, `treatmentHistory: []` — the field is always
+   present so the client cannot infer "these are hidden" vs "never set."
+
+3. **All six DTO callers updated** to pass `{ ctx }`:
+   `app/api/customers/route.ts` (GET list + POST create),
+   `app/api/customers/[id]/route.ts` (GET detail + PATCH),
+   `app/(app)/patients/page.tsx` (server component list),
+   `components/patients/actions.ts` (create + update Server Actions).
+
+### Regression tests
+
+Three probes in `tests/security-review.test.ts` §8 — each toggles
+the flag on, hits the real path, asserts the observable response
+body actually differs:
+
+- **P8.1** — `frontdeskClientFullHistory`. FRONT_DESK reads
+  `/api/customers/[id]`. With toggle OFF, `clinicalNotes` is null;
+  with toggle ON, `clinicalNotes` is the decrypted string. Positive
+  control asserts allergies flip in the same way.
+- **P8.2** — `providerClinicalNotesOthers`. PROVIDER reads a peer's
+  customer over `/api/customers/[id]`. Same shape as P8.1: OFF =
+  null, ON = decrypted.
+- **P8.3** — `providerFinancialReports`. `can(PROVIDER,
+  'report.branch', { organizationId })` returns false with toggle
+  OFF and true with toggle ON.
+
+All three probes are plain `it(...)` and pass.
+
+### Sweep — companion CI check for the orphan-permission class
+
+The same shape applies to seeded permissions that have no
+`requirePermission` / `can()` / `perm()` callsite. Grep of
+`prisma/rbac-seed.ts` against `app/`, `lib/`, `auth.ts` found 20
+such orphans across 11 feature bundles:
+
+| Bundle | Count | Example key |
+|---|---|---|
+| `booking_block_time` | 3 | `booking.block_time:branch` |
+| `booking_cancel_distinct` | 3 | `booking.cancel:branch` (currently folded into `booking.update`) |
+| `payment_discount` | 2 | `payment.discount:branch` |
+| `payment_refund` | 1 | `payment.refund:org` |
+| `payment_shift_close` | 1 | `payment.shift_close:branch` |
+| `staff_commission` | 2 | `staff.commission.write:branch` |
+| `resources_rooms` | 2 | `resources.room.manage:branch` |
+| `report_own_and_payroll` | 2 | `report.own:own`, `report.payroll:org` |
+| `platform_billing` | 1 | `platform.billing.read` |
+| `integrations` | 1 | `org.integration.manage:org` |
+| `dead_alias` | 1 | `service.price.manage:org` (superseded by `service.write:org`) |
+
+Rather than build 20 features or delete 20 seeded rows, each is
+tagged in `prisma/rbac-seed.ts` with
+`notYetImplemented: '<bundle_slug>'` and the CI script
+`scripts/check-orphan-perms.ts` fails the build when a seeded
+permission has no callsite AND no bundle tag. Wired into
+`npm test` after `test:guards`.
+
+Verified: injecting a fake `zzz.fake.orphan` P entry makes the
+check exit 1 with a targeted listing. Removing it, exit 0.
+
+### Related cleanup — dead feature flags removed
+
+`lib/features.ts` declared three flags (`assistant_streaming`,
+`patient_booking_widget`, `insurance_codes`) that no production code
+called — same "grant without check" pattern as SEC-008 in miniature.
+Rather than wire them to nothing in particular, the whole file plus
+its test was deleted in the same commit. `lib/rbac/toggles.ts` no
+longer references it.
+
+### Resolution — 2026-08-05
+
+SEC-008 closed the same day it was found. Not because the review
+missed it in earlier passes — the review looked at "what is
+enforced" and found no gap; SEC-008 lives in the inverse question,
+"what is granted but never enforced," which only became visible
+when the full-surface inventory listed every setting alongside
+every code path. This is now covered end-to-end:
+
+- `can()` consults the toggles (P8.3)
+- The DTO gates on `client.read:full` OR `clinical_note.read:any`
+  (P8.1, P8.2)
+- CI blocks any new seeded permission that ships without a callsite
+  or a `notYetImplemented` bundle tag
+
+---
+
+<a name="sec-009"></a>
+## SEC-009 — `changeOrganizationOwner` diverges pointer from membership · High
+
+**Attack surface**: privilege escalation / silent non-enforcement
+**Reproduction**: `tests/security-review.test.ts` §9 — SEC-009, probe `P9.1`
+
+### Behaviour
+
+`changeOrganizationOwner` in `lib/platform/orgs.ts` (platform-admin
+operation) wrote the new owner's user id into `organizations.owner_user_id`
+but left two columns on the target's `memberships` row unchanged:
+`role` (the legacy `'owner'` string) and `role_id` (the FK into `roles`).
+
+Because `buildAuthContext` resolves permissions through `role_id`, and
+`can()` evaluates permissions against those resolved grants, the new owner
+left the function with their old role's permission set. For a PROVIDER
+gaining ownership, `can(ctx, 'org.billing.manage')` returned `false`; the
+person could not view billing, initiate a plan change, or start a new
+ownership transfer. The previous owner's membership kept its `role='owner'`
+row and was the only account that could actually exercise owner-level
+authority. Neither the audit log nor the UI made this discrepancy visible.
+
+### Why the audit log is misleading here
+
+`writeAudit(tx, session, 'update', 'organization', orgId, ...)` was
+called inside the old transaction and recorded `{ ownerUserId: newOwnerId }`.
+The log entry looks like a complete successful transfer. Divergence between
+`owner_user_id` and the membership `role_id` is not surfaced.
+
+### Impact
+
+- **Effective privilege escalation kept by the previous owner.** Their
+  membership retains `role='owner'` / `role_id = <ORG_OWNER>`, so their
+  `can()` results are unaffected. They remain the only party with real
+  billing and transfer authority.
+- **New owner's authority is paper-only.** They appear as owner in the
+  UI (pointer changed) but are denied every owner-only permission check
+  until a full role sync.
+- **No secondary signal.** The audit log records success, the platform
+  admin UI shows the new owner's email, no error is surfaced.
+- Reachable only by platform admins (SUPER_ADMIN / PLATFORM_ADMIN) —
+  org members cannot call `changeOrganizationOwner` directly. Risk is
+  bounded to platform-admin-initiated transfers producing a broken state
+  silently.
+
+### Affected file
+
+`lib/platform/orgs.ts` — `changeOrganizationOwner`, the "already a
+member" branch that previously only called:
+```ts
+await unsafePrismaAdmin.organization.update({
+  where: { id: orgId }, data: { ownerUserId: existingUser.id }
+});
+```
+
+### Fix — 2026-08-06
+
+The operation is now a single `$transaction` that promotes the
+membership and updates the pointer atomically, or fails entirely:
+
+```ts
+const membershipId = existingUser.memberships[0].id;
+const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
+  where: { key: 'ORG_OWNER', organizationId: null }, select: { id: true },
+});
+await unsafePrismaAdmin.$transaction([
+  unsafePrismaAdmin.membership.update({
+    where: { id: membershipId },
+    data: { role: 'owner', roleId: orgOwnerRole.id },
+  }),
+  unsafePrismaAdmin.organization.update({
+    where: { id: orgId },
+    data: { ownerUserId: existingUser.id },
+  }),
+  unsafePrismaAdmin.appUser.update({
+    where: { id: existingUser.id },
+    data: { sessionVersion: { increment: 1 } },
+  }),
+]);
+```
+
+`sessionVersion` bump forces the new owner's JWT to be re-issued within
+`SV_TTL_MS` (5 s), so the corrected `role_id` is picked up at the next
+authenticated request without a sign-out/sign-in cycle.
+
+### Regression test
+
+`P9.1` in `tests/security-review.test.ts` §9 — SEC-009:
+
+1. Calls `changeOrganizationOwner` targeting a PROVIDER (moonlighter in
+   Split Practice).
+2. Rebuilds the auth context via `buildAuthContext`.
+3. Asserts `can(ctx, 'org.billing.manage', ...)` is `true` — proves the
+   new owner can actually exercise an owner-only permission, not just that
+   the pointer changed.
+4. Asserts `memberAfter.roleRef?.key === 'ORG_OWNER'` — proves the
+   membership row was promoted.
+5. Cleans up by restoring the original role and org pointer so the fixture
+   state is unchanged for other probes.
+
+### Companion change — P8.4 (discount-ceiling enforcement)
+
+`assertDiscountWithinCeiling` in `lib/payments/service.ts` was the only
+gate for the `frontdeskDiscountCeiling` toggle. No test exercised the
+deny path — removing the guard would not have broken CI. Probe P8.4
+asserts that FRONT_DESK above the ceiling is rejected, at-or-below passes,
+and non-FRONT_DESK callers bypass the check (correct per spec §6.2).
+

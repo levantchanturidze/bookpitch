@@ -20,7 +20,9 @@ const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 
 async function jwtFor(email: string) {
   const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
-  const membership = await unsafePrismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } });
+  const membership = await unsafePrismaAdmin.membership.findFirstOrThrow({
+    where: { userId: user.id },
+  });
   return {
     user: {
       id: user.id,
