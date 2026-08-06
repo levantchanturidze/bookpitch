@@ -7,9 +7,14 @@ const { unsafePrismaAdmin } = await import('@/lib/db');
 const onboardRoute = await import('@/app/api/onboard/route');
 
 import type { NextRequest } from 'next/server';
-async function json<T = unknown>(res: Response): Promise<T> { return (await res.json()) as T; }
+async function json<T = unknown>(res: Response): Promise<T> {
+  return (await res.json()) as T;
+}
 
-function onboardReq(body: Record<string, unknown>, extra: { ip?: string; contentLength?: number } = {}): NextRequest {
+function onboardReq(
+  body: Record<string, unknown>,
+  extra: { ip?: string; contentLength?: number } = {},
+): NextRequest {
   const raw = JSON.stringify(body);
   return new Request('http://x/api/onboard', {
     method: 'POST',
@@ -52,17 +57,17 @@ describe('POST /api/onboard — F3 security controls', () => {
 
   beforeEach(async () => {
     // Flush the rate-limit buckets for the IPs used below so tests are independent.
-    await unsafePrismaAdmin.platformRateLimit.deleteMany({
-      where: { bucket: { startsWith: 'onboard:ip:' } },
-    }).catch(() => {});
+    await unsafePrismaAdmin.platformRateLimit
+      .deleteMany({
+        where: { bucket: { startsWith: 'onboard:ip:' } },
+      })
+      .catch(() => {});
   });
 
   // ── Body size guard ─────────────────────────────────────────────────────────
 
   it('rejects payload with content-length > 16 KB', async () => {
-    const res = await onboardRoute.POST(
-      onboardReq(goodBody, { contentLength: 17 * 1024 }),
-    );
+    const res = await onboardRoute.POST(onboardReq(goodBody, { contentLength: 17 * 1024 }));
     expect(res.status).toBe(400);
     const body = await json<{ error: string }>(res);
     // Generic message — no leaking of which validation failed.
@@ -71,23 +76,30 @@ describe('POST /api/onboard — F3 security controls', () => {
 
   // ── Enumeration-safe responses ──────────────────────────────────────────────
 
-  it('duplicate email → generic 400 (does not expose "email taken")', async () => {
-    // Seed an existing user with this email via direct service call.
+  it('duplicate email → same 202 as a new email (enumeration-safe)', async () => {
+    // Seed an existing user with this email via the direct service call.
     const { onboardOrg } = await import('@/lib/onboarding');
     const dup = `dup-${Date.now()}@example.dev`;
-    const r = await onboardOrg({ email: dup, password: 'strongpass123', fullName: 'A', orgName: 'B' });
+    const r = await onboardOrg({
+      email: dup,
+      password: 'strongpass123',
+      fullName: 'A',
+      orgName: 'B',
+    });
     createdUsers.push(r.userId);
     createdOrgs.push(r.organizationId);
 
     const res = await onboardRoute.POST(onboardReq({ ...goodBody, email: dup }, { ip: '1.2.3.4' }));
-    expect(res.status).toBe(400);
-    const b = await json<{ error: string }>(res);
-    // Must be generic — not "email already registered" or similar.
-    expect(b.error).toBe('invalid request');
+    // Route returns 202 whether the email is new or duplicate — no enumeration leak.
+    expect(res.status).toBe(202);
+    const b = await json<{ ok: boolean }>(res);
+    expect(b.ok).toBe(true);
   });
 
   it('invalid email → generic 400 (same message as duplicate email)', async () => {
-    const res = await onboardRoute.POST(onboardReq({ ...goodBody, email: 'not-an-email' }, { ip: '1.2.3.5' }));
+    const res = await onboardRoute.POST(
+      onboardReq({ ...goodBody, email: 'not-an-email' }, { ip: '1.2.3.5' }),
+    );
     expect(res.status).toBe(400);
     const b = await json<{ error: string }>(res);
     expect(b.error).toBe('invalid request');
@@ -107,7 +119,7 @@ describe('POST /api/onboard — F3 security controls', () => {
     expect(res.status).toBe(400);
   });
 
-  it('requests from different IPs are not affected by each other\'s rate limit', async () => {
+  it("requests from different IPs are not affected by each other's rate limit", async () => {
     const ip1 = '10.0.0.1';
     const ip2 = '10.0.0.2';
     // Exhaust ip1.
@@ -126,32 +138,31 @@ describe('POST /api/onboard — F3 security controls', () => {
 
   it('skips CAPTCHA check when TURNSTILE_SECRET_KEY is absent (dev/test mode)', async () => {
     // TURNSTILE_SECRET_KEY is not set in test env, so captchaOk=true always.
-    // A valid payload with no turnstileToken must reach onboardOrg (not bail early).
+    // A valid payload with no turnstileToken must reach createPendingRegistration (not bail early).
     const email = `captcha-skip-${Date.now()}@example.dev`;
     const res = await onboardRoute.POST(onboardReq({ ...goodBody, email }, { ip: '2.2.2.2' }));
-    // Either 201 (created) or 400 (validation) — NOT a CAPTCHA-specific 400 with
-    // a different body. This confirms Turnstile is not enforced in test mode.
-    if (res.status === 201) {
-      const b = await json<{ userId: string; organizationId: string }>(res);
-      createdUsers.push(b.userId);
-      createdOrgs.push(b.organizationId);
-    } else {
-      // Some minor validation rejection is fine; what matters is we didn't 400 on CAPTCHA.
+    // 202 (accepted) = CAPTCHA was skipped and the pending registration was created.
+    // 400 = some other validation rejection (still confirms CAPTCHA was not enforced).
+    // Specifically must NOT be a CAPTCHA-specific error body.
+    if (res.status !== 202) {
       const b = await json<{ error: string }>(res);
       expect(b.error).not.toBe('captcha_failed');
     }
   });
 
-  // ── Valid request creates org + returns 201 ─────────────────────────────────
+  // ── Valid request creates pending registration + returns 202 ─────────────────
 
-  it('valid payload creates org and returns 201', async () => {
+  it('valid payload returns 202 and creates a pending registration', async () => {
     const email = `valid-${Date.now()}@example.dev`;
     const res = await onboardRoute.POST(onboardReq({ ...goodBody, email }, { ip: '3.3.3.3' }));
-    expect(res.status).toBe(201);
-    const b = await json<{ userId: string; organizationId: string }>(res);
-    expect(b.userId).toBeTruthy();
-    expect(b.organizationId).toBeTruthy();
-    createdUsers.push(b.userId);
-    createdOrgs.push(b.organizationId);
+    expect(res.status).toBe(202);
+    const b = await json<{ ok: boolean }>(res);
+    expect(b.ok).toBe(true);
+    // The pending row must exist in DB — no org/user created yet.
+    const pending = await unsafePrismaAdmin.pendingRegistration.findFirst({
+      where: { email },
+      select: { id: true },
+    });
+    expect(pending).toBeTruthy();
   });
 });
