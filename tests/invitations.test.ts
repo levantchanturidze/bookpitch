@@ -9,9 +9,7 @@ vi.mock('@/auth', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
 const { withoutRls } = await import('@/lib/db');
-const { createInvitation, acceptInvitation, revokeInvitation } = await import(
-  '@/lib/invitations'
-);
+const { createInvitation, acceptInvitation, revokeInvitation } = await import('@/lib/invitations');
 const { InvalidInputError } = await import('@/lib/auth');
 
 describe('invitations — create, accept, revoke', () => {

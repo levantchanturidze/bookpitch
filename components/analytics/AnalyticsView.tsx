@@ -11,14 +11,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import {
-  CalendarCheck,
-  DollarSign,
-  Percent,
-  TrendingDown,
-  TrendingUp,
-  Users,
-} from 'lucide-react';
+import { CalendarCheck, DollarSign, Percent, TrendingDown, TrendingUp, Users } from 'lucide-react';
 import type { Metrics, RosterRow } from '@/lib/analytics';
 
 type Props = {
@@ -28,7 +21,7 @@ type Props = {
 
 export default function AnalyticsView({ metrics, roster }: Props) {
   const accent =
-    metrics.location.type === 'clinic' ? '#0d9488' /* teal-600 */ : '#db2777' /* pink-600 */;
+    metrics.location.type === 'clinic' ? '#0d9488' /* teal-600 */ : '#db2777'; /* pink-600 */
 
   return (
     <div className="space-y-6">
@@ -64,9 +57,7 @@ export default function AnalyticsView({ metrics, roster }: Props) {
         <KpiCard
           label="Staff occupancy"
           value={
-            metrics.occupancy.percent == null
-              ? 'N/A'
-              : `${metrics.occupancy.percent.toFixed(0)}%`
+            metrics.occupancy.percent == null ? 'N/A' : `${metrics.occupancy.percent.toFixed(0)}%`
           }
           suffix={
             metrics.occupancy.percent == null
@@ -138,7 +129,12 @@ export default function AnalyticsView({ metrics, roster }: Props) {
                   margin={{ top: 8, right: 16, bottom: 0, left: 8 }}
                 >
                   <CartesianGrid strokeDasharray="2 4" stroke="#e2e8f0" horizontal={false} />
-                  <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <XAxis
+                    type="number"
+                    tick={{ fill: '#94a3b8', fontSize: 10 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
                   <YAxis
                     type="category"
                     dataKey="staffName"
@@ -147,7 +143,9 @@ export default function AnalyticsView({ metrics, roster }: Props) {
                     tickLine={false}
                     width={110}
                   />
-                  <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }} />
+                  <Tooltip
+                    contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}
+                  />
                   <Bar dataKey="bookings" fill={accent} radius={[0, 6, 6, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -178,7 +176,11 @@ export default function AnalyticsView({ metrics, roster }: Props) {
                 <td className="px-6 py-2 font-bold text-slate-800">{r.staffName}</td>
                 <td className="px-2 py-2 text-slate-500">{r.roleTitle}</td>
                 <td className="px-2 py-2 font-mono text-[11px] text-slate-600">
-                  {r.window ? `${r.window.start} – ${r.window.end}` : <span className="text-slate-400">off today</span>}
+                  {r.window ? (
+                    `${r.window.start} – ${r.window.end}`
+                  ) : (
+                    <span className="text-slate-400">off today</span>
+                  )}
                 </td>
                 <td className="px-2 py-2 font-mono text-[11px] text-slate-600">
                   {r.bookedMinutes} / {r.availableMinutes} min
@@ -216,12 +218,16 @@ function KpiCard({
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5">
       <div className="flex items-start justify-between">
-        <span className="font-mono text-[10px] tracking-wider text-slate-400 uppercase">{label}</span>
+        <span className="font-mono text-[10px] tracking-wider text-slate-400 uppercase">
+          {label}
+        </span>
         <Icon className="h-4 w-4 text-slate-300" />
       </div>
       <p className="mt-3 text-2xl font-extrabold text-slate-900">
         {value}
-        {suffix && <span className="ml-1 font-mono text-xs font-normal text-slate-400">{suffix}</span>}
+        {suffix && (
+          <span className="ml-1 font-mono text-xs font-normal text-slate-400">{suffix}</span>
+        )}
       </p>
       {delta !== undefined && (
         <div className="mt-2 flex items-center gap-1 text-[11px]">

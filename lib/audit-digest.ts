@@ -50,9 +50,7 @@ export async function buildDigest(
       exports: rows.filter((r) => r.action === 'export').length,
       anonymizes: rows.filter((r) => r.action === 'anonymize').length,
       customerReads: rows.filter((r) => r.action === 'list' || r.action === 'read').length,
-      customerWrites: rows.filter((r) =>
-        ['create', 'update', 'delete'].includes(r.action),
-      ).length,
+      customerWrites: rows.filter((r) => ['create', 'update', 'delete'].includes(r.action)).length,
       total: rows.length,
     };
     const byActor = new Map<string, number>();
@@ -127,9 +125,7 @@ export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }
 }
 
 export async function runDigestForAllOrgs(): Promise<{ orgs: number; emails: number }> {
-  const orgs = await withoutRls((tx) =>
-    tx.organization.findMany({ select: { id: true } }),
-  );
+  const orgs = await withoutRls((tx) => tx.organization.findMany({ select: { id: true } }));
   let emails = 0;
   for (const org of orgs) {
     const d = await buildDigest(org.id);

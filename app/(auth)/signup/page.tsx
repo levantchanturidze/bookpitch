@@ -11,7 +11,7 @@ export default function SignupPage() {
             Create your Bookpitch workspace
           </h1>
           <p className="mt-1 text-xs text-slate-500">
-            You'll be the owner. Add staff and a full schedule after signing in.
+            You&apos;ll be the owner. Add staff and a full schedule after signing in.
           </p>
         </div>
         <SignupForm />

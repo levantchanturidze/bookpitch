@@ -47,7 +47,9 @@ function connectionString(): string {
     process.env.DATABASE_URL_APP_NOBYPASSRLS ??
     process.env.DATABASE_URL;
   if (!url) {
-    throw new Error('no database URL set — check DATABASE_URL_SUPERUSER_* or legacy ADMIN_DATABASE_URL / DATABASE_URL.');
+    throw new Error(
+      'no database URL set — check DATABASE_URL_SUPERUSER_* or legacy ADMIN_DATABASE_URL / DATABASE_URL.',
+    );
   }
   // pg refuses the `schema=public` query parameter that Prisma likes. Strip
   // it — search_path defaults to public anyway.
@@ -70,35 +72,56 @@ async function withClient<T>(fn: (c: Client) => Promise<T>): Promise<T> {
 async function dryRun(): Promise<void> {
   await withClient(async (c) => {
     const queries: Array<[label: string, sql: string]> = [
-      ['1. organizations w/ vertical to fill', `
+      [
+        '1. organizations w/ vertical to fill',
+        `
         SELECT count(DISTINCT o.id)::int AS n
           FROM organizations o
           JOIN locations l ON l.organization_id = o.id
-         WHERE o.vertical IS NULL`],
-      ['2. branches to create (one per unmirrored location)', `
+         WHERE o.vertical IS NULL`,
+      ],
+      [
+        '2. branches to create (one per unmirrored location)',
+        `
         SELECT count(*)::int AS n
           FROM locations l
           LEFT JOIN branches b ON b.legacy_location_id = l.id
-         WHERE b.id IS NULL`],
-      ['3. organizations w/ owner_user_id to fill', `
+         WHERE b.id IS NULL`,
+      ],
+      [
+        '3. organizations w/ owner_user_id to fill',
+        `
         SELECT count(*)::int AS n
           FROM organizations o
          WHERE o.owner_user_id IS NULL
            AND EXISTS (SELECT 1 FROM memberships m
-                        WHERE m.organization_id = o.id AND m.role = 'owner')`],
-      ['4. memberships needing role_id (owner+practitioner+receptionist)', `
+                        WHERE m.organization_id = o.id AND m.role = 'owner')`,
+      ],
+      [
+        '4. memberships needing role_id (owner+practitioner+receptionist)',
+        `
         SELECT count(*)::int AS n
           FROM memberships
          WHERE role_id IS NULL
-           AND role IN ('owner','practitioner','receptionist')`],
-      ['5. memberships needing joined_at', `
-        SELECT count(*)::int AS n FROM memberships WHERE joined_at IS NULL`],
-      ['6. memberships to flip is_bookable=true', `
+           AND role IN ('owner','practitioner','receptionist')`,
+      ],
+      [
+        '5. memberships needing joined_at',
+        `
+        SELECT count(*)::int AS n FROM memberships WHERE joined_at IS NULL`,
+      ],
+      [
+        '6. memberships to flip is_bookable=true',
+        `
         SELECT count(*)::int AS n FROM memberships
-         WHERE role IN ('owner','practitioner') AND is_bookable = FALSE`],
-      ['7. platform SUPER_ADMIN seed (levaaani@gmail.com)', `
+         WHERE role IN ('owner','practitioner') AND is_bookable = FALSE`,
+      ],
+      [
+        '7. platform SUPER_ADMIN seed (levaaani@gmail.com)',
+        `
         SELECT count(*)::int AS n FROM app_users
-         WHERE email = 'levaaani@gmail.com' AND platform_role_id IS NULL`],
+         WHERE email = 'levaaani@gmail.com' AND platform_role_id IS NULL`,
+      ],
     ];
 
     console.log('=== Phase 2 backfill — dry run ===');
@@ -283,10 +306,16 @@ async function rollback(): Promise<void> {
 // Entrypoint
 // -----------------------------------------------------------------------------
 const CMDS = {
-  'dry-run': async () => { await dryRun(); return 0; },
-  'apply':   async () => apply(),
-  'verify':  async () => verify(),
-  'rollback': async () => { await rollback(); return 0; },
+  'dry-run': async () => {
+    await dryRun();
+    return 0;
+  },
+  apply: async () => apply(),
+  verify: async () => verify(),
+  rollback: async () => {
+    await rollback();
+    return 0;
+  },
 } as const;
 
 async function main() {

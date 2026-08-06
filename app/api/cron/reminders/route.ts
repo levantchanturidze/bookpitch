@@ -19,9 +19,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const orgs = await withoutRls((tx) =>
-    tx.organization.findMany({ select: { id: true } }),
-  );
+  const orgs = await withoutRls((tx) => tx.organization.findMany({ select: { id: true } }));
   const reports = await Promise.all(orgs.map((o) => runReminderTick(o.id)));
   return NextResponse.json({ orgs: reports.length, reports });
 }

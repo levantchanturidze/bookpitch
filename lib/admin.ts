@@ -81,7 +81,12 @@ export async function updateLocation(session: ActiveSession, id: string, body: u
   return withOrg(session.organizationId, async (tx) => {
     const row = await tx.location.update({
       where: { id },
-      data: { type: input.type, name: input.name, timezone: input.timezone, taxRate: input.taxRate },
+      data: {
+        type: input.type,
+        name: input.name,
+        timezone: input.timezone,
+        taxRate: input.taxRate,
+      },
     });
     await writeAudit(tx, session, 'update', 'staff', null, { location: id });
     return row;
@@ -294,15 +299,15 @@ function parseServiceInput(body: unknown): ServiceInput {
   if (!name) throw new InvalidInputError('name is required');
   const price = typeof b.price === 'number' ? b.price : Number(b.price);
   if (!Number.isFinite(price) || price < 0) throw new InvalidInputError('price must be >= 0');
-  const duration = typeof b.durationMinutes === 'number' ? b.durationMinutes : Number(b.durationMinutes);
+  const duration =
+    typeof b.durationMinutes === 'number' ? b.durationMinutes : Number(b.durationMinutes);
   if (!Number.isInteger(duration) || duration <= 0) {
     throw new InvalidInputError('durationMinutes must be a positive integer');
   }
   return {
     locationId: b.locationId,
     name,
-    category:
-      typeof b.category === 'string' && b.category.trim() ? b.category.trim() : null,
+    category: typeof b.category === 'string' && b.category.trim() ? b.category.trim() : null,
     price,
     durationMinutes: duration,
     isActive: typeof b.isActive === 'boolean' ? b.isActive : true,
@@ -442,9 +447,7 @@ export async function updateMemberRole(
     if (existing.roleRef?.key) {
       const canManageCurrent = await canManageRoleAssignment(actorCtx, existing.roleRef.key);
       if (!canManageCurrent) {
-        throw new InvalidInputError(
-          `your role cannot modify a ${existing.roleRef.key} member`,
-        );
+        throw new InvalidInputError(`your role cannot modify a ${existing.roleRef.key} member`);
       }
     }
 
@@ -502,9 +505,7 @@ export async function removeMember(session: ActiveSession, membershipId: string)
     if (existing.roleRef?.key) {
       const canManage = await canManageRoleAssignment(actorCtx, existing.roleRef.key);
       if (!canManage) {
-        throw new InvalidInputError(
-          `your role cannot remove a ${existing.roleRef.key} member`,
-        );
+        throw new InvalidInputError(`your role cannot remove a ${existing.roleRef.key} member`);
       }
     }
 

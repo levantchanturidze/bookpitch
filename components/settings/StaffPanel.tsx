@@ -40,7 +40,10 @@ export default function StaffPanel({
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const save = (id: string | null, input: Omit<StaffRow, 'id' | 'availability' | 'locationName'>) => {
+  const save = (
+    id: string | null,
+    input: Omit<StaffRow, 'id' | 'availability' | 'locationName'>,
+  ) => {
     setError(null);
     startTransition(async () => {
       try {
@@ -78,9 +81,7 @@ export default function StaffPanel({
           <Plus className="h-3.5 w-3.5" /> Add staff
         </button>
       </div>
-      {error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-      )}
+      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
@@ -162,12 +163,7 @@ export default function StaffPanel({
         />
       )}
 
-      {availOpen && (
-        <AvailabilityEditor
-          staff={availOpen}
-          onClose={() => setAvailOpen(null)}
-        />
-      )}
+      {availOpen && <AvailabilityEditor staff={availOpen} onClose={() => setAvailOpen(null)} />}
     </section>
   );
 }
@@ -296,13 +292,7 @@ function StaffForm({
   );
 }
 
-function AvailabilityEditor({
-  staff,
-  onClose,
-}: {
-  staff: StaffRow;
-  onClose: () => void;
-}) {
+function AvailabilityEditor({ staff, onClose }: { staff: StaffRow; onClose: () => void }) {
   const initial: Array<{ start: string; end: string }> = WEEKDAYS.map((_, weekday) => {
     const w = staff.availability.find((a) => a.weekday === weekday);
     return { start: w?.startTime ?? '', end: w?.endTime ?? '' };

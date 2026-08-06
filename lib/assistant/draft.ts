@@ -1,6 +1,10 @@
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { withOrg } from '@/lib/db';
-import { assertStaffAtLocation, assertWithinAvailability, loadServiceForLocation } from '@/lib/appointments';
+import {
+  assertStaffAtLocation,
+  assertWithinAvailability,
+  loadServiceForLocation,
+} from '@/lib/appointments';
 import { getAssistant, type AssistantContext, type AssistantResult } from './model';
 import { consumeAssistantQuota } from './quota';
 import { RateLimit } from '@/lib/rate-limit';
@@ -20,8 +24,7 @@ export type ValidatedDraft = Extract<AssistantResult, { status: 'draft' }> & {
 };
 
 export type DraftAppointmentResult =
-  | { status: 'draft'; draft: ValidatedDraft }
-  | { status: 'clarify'; question: string };
+  { status: 'draft'; draft: ValidatedDraft } | { status: 'clarify'; question: string };
 
 export async function draftAppointment(
   session: ActiveSession,

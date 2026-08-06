@@ -26,8 +26,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withPlatformApi('org.toggles.set', async (ctx) => {
     requirePermission(ctx, 'platform.config.manage', undefined, 'platform');
-    await requireFreshPassword(ctx.userId);
     const { id } = await params;
+    await requireFreshPassword(ctx.userId, ctx.authSessionId, 'platform.org.configure', {
+      orgId: id,
+    });
     const body = (await req.json().catch(() => null)) as {
       providerFinancialReports?: unknown;
       providerClinicalNotesOthers?: unknown;
@@ -45,7 +47,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (typeof body.frontdeskClientFullHistory === 'boolean') {
       patch.frontdeskClientFullHistory = body.frontdeskClientFullHistory;
     }
-    if (typeof body.frontdeskDiscountCeiling === 'number' && Number.isFinite(body.frontdeskDiscountCeiling)) {
+    if (
+      typeof body.frontdeskDiscountCeiling === 'number' &&
+      Number.isFinite(body.frontdeskDiscountCeiling)
+    ) {
       if (body.frontdeskDiscountCeiling < 0) {
         throw new InvalidInputError('frontdeskDiscountCeiling must be >= 0');
       }
@@ -79,7 +84,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       },
     });
     log.info('platform.org.toggles.update', {
-      orgId: id, actorUserId: ctx.userId, changed: Object.keys(patch),
+      orgId: id,
+      actorUserId: ctx.userId,
+      changed: Object.keys(patch),
     });
     return { toggles: next };
   });

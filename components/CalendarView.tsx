@@ -1,5 +1,20 @@
 import React, { useState, useMemo } from 'react';
-import { Calendar as CalendarIcon, Clock, User, CheckCircle2, AlertCircle, Plus, ChevronLeft, ChevronRight, Filter, DollarSign, FileText, Phone, Sparkles, Stethoscope } from 'lucide-react';
+import {
+  Calendar as CalendarIcon,
+  Clock,
+  User,
+  CheckCircle2,
+  AlertCircle,
+  Plus,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  DollarSign,
+  FileText,
+  Phone,
+  Sparkles,
+  Stethoscope,
+} from 'lucide-react';
 import { Appointment, Patient, Staff, WorkspaceMode } from '@/lib/types';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -153,36 +168,43 @@ export default function CalendarView({
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6" id="calendar-view-container">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-12" id="calendar-view-container">
       {/* Calendar Controller & Picker (7 Columns) */}
-      <div className="lg:col-span-7 bg-white p-6 rounded-xl border border-slate-200" id="calendar-left-pane">
-        <div className="flex items-center justify-between mb-6">
+      <div
+        className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-7"
+        id="calendar-left-pane"
+      >
+        <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-lg ${isClinic ? 'bg-teal-50 text-teal-600' : 'bg-pink-50 text-pink-600'}`}>
+            <div
+              className={`rounded-lg p-2 ${isClinic ? 'bg-teal-50 text-teal-600' : 'bg-pink-50 text-pink-600'}`}
+            >
               {isClinic ? <Stethoscope className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
             </div>
             <div>
-              <h2 className="text-xl font-bold text-slate-800 font-sans">
+              <h2 className="font-sans text-xl font-bold text-slate-800">
                 {isClinic ? 'Medical Appointments' : 'Salon Appointments'}
               </h2>
-              <p className="text-xs text-slate-400">Manage {isClinic ? 'patient visits' : 'styling sessions'}</p>
+              <p className="text-xs text-slate-400">
+                Manage {isClinic ? 'patient visits' : 'styling sessions'}
+              </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-1 border border-slate-100 rounded-lg p-1 bg-slate-50">
+          <div className="flex items-center gap-1 rounded-lg border border-slate-100 bg-slate-50 p-1">
             <button
               onClick={prevMonth}
-              className="p-1.5 hover:bg-white rounded-md transition text-slate-600"
+              className="rounded-md p-1.5 text-slate-600 transition hover:bg-white"
               title="Previous Month"
             >
               <ChevronLeft className="h-4 w-4" />
             </button>
-            <span className="px-3 py-1 font-semibold text-xs text-slate-700 min-w-[100px] text-center">
+            <span className="min-w-[100px] px-3 py-1 text-center text-xs font-semibold text-slate-700">
               {currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
             </span>
             <button
               onClick={nextMonth}
-              className="p-1.5 hover:bg-white rounded-md transition text-slate-600"
+              className="rounded-md p-1.5 text-slate-600 transition hover:bg-white"
               title="Next Month"
             >
               <ChevronRight className="h-4 w-4" />
@@ -191,7 +213,7 @@ export default function CalendarView({
         </div>
 
         {/* Calendar Grid */}
-        <div className="grid grid-cols-7 gap-1 text-center mb-2 font-mono text-[10px] font-bold text-slate-400 tracking-wider">
+        <div className="mb-2 grid grid-cols-7 gap-1 text-center font-mono text-[10px] font-bold tracking-wider text-slate-400">
           <div>SUN</div>
           <div>MON</div>
           <div>TUE</div>
@@ -203,35 +225,40 @@ export default function CalendarView({
 
         <div className="grid grid-cols-7 gap-2">
           {daysInMonth.map((day, idx) => {
-            if (!day) return <div key={`empty-${idx}`} className="aspect-square bg-slate-50/50 rounded-lg"></div>;
+            if (!day)
+              return (
+                <div key={`empty-${idx}`} className="aspect-square rounded-lg bg-slate-50/50"></div>
+              );
 
             const dStr = day.toISOString().split('T')[0];
             const isSelected = dStr === selectedDateStr;
             const isToday = dStr === '2026-07-21';
 
             // Count bookings for this day
-            const bookingsCount = appointments.filter((a) => a.date === dStr && a.status !== 'cancelled').length;
+            const bookingsCount = appointments.filter(
+              (a) => a.date === dStr && a.status !== 'cancelled',
+            ).length;
 
             return (
               <button
                 key={dStr}
                 onClick={() => setSelectedDateStr(dStr)}
-                className={`relative aspect-square p-2 rounded-xl flex flex-col justify-between transition group border ${
+                className={`group relative flex aspect-square flex-col justify-between rounded-xl border p-2 transition ${
                   isSelected
                     ? isClinic
-                      ? 'bg-teal-600 text-white border-teal-600 shadow-md shadow-teal-100'
-                      : 'bg-pink-600 text-white border-pink-600 shadow-md shadow-pink-100'
+                      ? 'border-teal-600 bg-teal-600 text-white shadow-md shadow-teal-100'
+                      : 'border-pink-600 bg-pink-600 text-white shadow-md shadow-pink-100'
                     : isToday
-                      ? 'bg-slate-50 text-slate-800 border-slate-300 font-bold'
-                      : 'bg-white text-slate-700 border-slate-100 hover:border-slate-300 hover:bg-slate-50'
+                      ? 'border-slate-300 bg-slate-50 font-bold text-slate-800'
+                      : 'border-slate-100 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
                 }`}
                 id={`calendar-day-btn-${dStr}`}
               >
                 <span className="text-xs font-semibold">{day.getDate()}</span>
                 {bookingsCount > 0 && (
-                  <div className="w-full flex justify-end">
+                  <div className="flex w-full justify-end">
                     <span
-                      className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono font-bold leading-none ${
+                      className={`rounded-full px-1.5 py-0.5 font-mono text-[9px] leading-none font-bold ${
                         isSelected
                           ? 'bg-white text-slate-900'
                           : isClinic
@@ -249,25 +276,25 @@ export default function CalendarView({
         </div>
 
         {/* Quick legend */}
-        <div className="mt-5 pt-4 border-t border-slate-100 flex flex-wrap justify-between items-center text-xs text-slate-500 gap-2">
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4 text-xs text-slate-500">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span> Confirmed
+              <span className="h-2 w-2 rounded-full bg-emerald-500"></span> Confirmed
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-amber-500"></span> Pending
+              <span className="h-2 w-2 rounded-full bg-amber-500"></span> Pending
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-blue-500"></span> Completed
+              <span className="h-2 w-2 rounded-full bg-blue-500"></span> Completed
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-rose-500"></span> Cancelled
+              <span className="h-2 w-2 rounded-full bg-rose-500"></span> Cancelled
             </span>
           </div>
 
           <button
             onClick={() => setIsBookModalOpen(true)}
-            className={`flex items-center gap-1.5 px-4 py-2 text-white font-medium rounded-xl text-xs transition shadow-sm ${
+            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium text-white shadow-sm transition ${
               isClinic
                 ? 'bg-teal-600 hover:bg-teal-700 hover:shadow-teal-100'
                 : 'bg-pink-600 hover:bg-pink-700 hover:shadow-pink-100'
@@ -281,11 +308,11 @@ export default function CalendarView({
       </div>
 
       {/* Appointment Day List (5 Columns) */}
-      <div className="lg:col-span-5 flex flex-col gap-6" id="calendar-right-pane">
+      <div className="flex flex-col gap-6 lg:col-span-5" id="calendar-right-pane">
         {/* Filters */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-col gap-3">
+        <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-400 tracking-wider flex items-center gap-1">
+            <span className="flex items-center gap-1 text-xs font-bold tracking-wider text-slate-400">
               <Filter className="h-3 w-3" /> LIST FILTERS
             </span>
             <button
@@ -293,7 +320,7 @@ export default function CalendarView({
                 setFilterStaff('all');
                 setFilterStatus('all');
               }}
-              className="text-[10px] text-slate-400 hover:text-slate-600 underline"
+              className="text-[10px] text-slate-400 underline hover:text-slate-600"
             >
               Reset Filters
             </button>
@@ -301,18 +328,27 @@ export default function CalendarView({
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-slate-500 font-bold block mb-1">Filter Staff</label>
+              <label className="mb-1 block text-[10px] font-bold text-slate-500">
+                Filter Staff
+              </label>
               <select
                 value={filterStaff}
                 onChange={(e) => setFilterStaff(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 text-xs text-slate-700 rounded-lg p-2 focus:ring-1 focus:ring-teal-500"
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700 focus:ring-1 focus:ring-teal-500"
               >
                 <option value="all">All Staff</option>
                 {staff
                   .filter((st) => {
                     // Filter staff relevant to current mode if needed,
                     // but we can list all available
-                    return isClinic ? st.role.includes('GP') || st.role.includes('Director') || st.role.includes('Physio') || st.role.includes('Cardio') : st.role.includes('Stylist') || st.role.includes('Esthetician') || st.role.includes('Therapist');
+                    return isClinic
+                      ? st.role.includes('GP') ||
+                          st.role.includes('Director') ||
+                          st.role.includes('Physio') ||
+                          st.role.includes('Cardio')
+                      : st.role.includes('Stylist') ||
+                          st.role.includes('Esthetician') ||
+                          st.role.includes('Therapist');
                   })
                   .map((st) => (
                     <option key={st.id} value={st.id}>
@@ -323,11 +359,11 @@ export default function CalendarView({
             </div>
 
             <div>
-              <label className="text-[10px] text-slate-500 font-bold block mb-1">Status</label>
+              <label className="mb-1 block text-[10px] font-bold text-slate-500">Status</label>
               <select
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 text-xs text-slate-700 rounded-lg p-2 focus:ring-1 focus:ring-teal-500"
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700 focus:ring-1 focus:ring-teal-500"
               >
                 <option value="all">All Statuses</option>
                 <option value="pending">Pending</option>
@@ -340,26 +376,33 @@ export default function CalendarView({
         </div>
 
         {/* Booking list for the day */}
-        <div className="bg-white p-6 rounded-xl border border-slate-200 flex-1 flex flex-col">
-          <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-50">
+        <div className="flex flex-1 flex-col rounded-xl border border-slate-200 bg-white p-6">
+          <div className="mb-4 flex items-center justify-between border-b border-slate-50 pb-3">
             <div>
               <h3 className="text-sm font-bold text-slate-800">
-                Bookings for {new Date(selectedDateStr).toLocaleDateString('en-US', { day: 'numeric', month: 'short', weekday: 'short' })}
+                Bookings for{' '}
+                {new Date(selectedDateStr).toLocaleDateString('en-US', {
+                  day: 'numeric',
+                  month: 'short',
+                  weekday: 'short',
+                })}
               </h3>
-              <p className="text-[10px] text-slate-400">Total: {filteredAppointments.length} bookings</p>
+              <p className="text-[10px] text-slate-400">
+                Total: {filteredAppointments.length} bookings
+              </p>
             </div>
-            <span className="text-xs font-mono bg-slate-100 px-2 py-1 text-slate-600 rounded">
+            <span className="rounded bg-slate-100 px-2 py-1 font-mono text-xs text-slate-600">
               {selectedDateStr}
             </span>
           </div>
 
           {/* List Wrapper */}
-          <div className="flex-1 overflow-y-auto space-y-3 max-h-[360px] pr-1">
+          <div className="max-h-[360px] flex-1 space-y-3 overflow-y-auto pr-1">
             {filteredAppointments.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-center py-12 text-slate-400">
-                <CalendarIcon className="h-8 w-8 stroke-1 text-slate-300 mb-2" />
+              <div className="flex h-full flex-col items-center justify-center py-12 text-center text-slate-400">
+                <CalendarIcon className="mb-2 h-8 w-8 stroke-1 text-slate-300" />
                 <p className="text-xs font-medium">No appointments for this date</p>
-                <p className="text-[10px] mt-0.5">Click the Book button or select another date.</p>
+                <p className="mt-0.5 text-[10px]">Click the Book button or select another date.</p>
               </div>
             ) : (
               filteredAppointments.map((app) => {
@@ -370,47 +413,55 @@ export default function CalendarView({
                   <div
                     key={app.id}
                     onClick={() => setSelectedAppointment(app)}
-                    className="p-3 border border-slate-100 hover:border-slate-200 hover:bg-slate-50/50 rounded-xl cursor-pointer transition flex items-start gap-3 relative overflow-hidden"
+                    className="relative flex cursor-pointer items-start gap-3 overflow-hidden rounded-xl border border-slate-100 p-3 transition hover:border-slate-200 hover:bg-slate-50/50"
                   >
                     {/* Color bar indicator */}
                     <div
-                      className="absolute left-0 top-0 bottom-0 w-1.5"
+                      className="absolute top-0 bottom-0 left-0 w-1.5"
                       style={{ backgroundColor: st?.color || '#cbd5e1' }}
                     ></div>
 
                     {/* Patient Avatar or Icon */}
                     <img
-                      src={patient?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150'}
+                      src={
+                        patient?.avatar ||
+                        'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150'
+                      }
                       alt={patient?.name}
-                      className="w-9 h-9 rounded-lg object-cover bg-slate-100 flex-shrink-0"
+                      className="h-9 w-9 flex-shrink-0 rounded-lg bg-slate-100 object-cover"
                       referrerPolicy="no-referrer"
                     />
 
                     {/* Meta info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between mb-0.5">
-                        <span className="text-xs font-bold text-slate-800 truncate block">
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-0.5 flex items-center justify-between">
+                        <span className="block truncate text-xs font-bold text-slate-800">
                           {patient?.name || 'Unknown Patient'}
                         </span>
-                        <span className="text-[10px] font-mono font-medium text-slate-400 flex items-center gap-1">
+                        <span className="flex items-center gap-1 font-mono text-[10px] font-medium text-slate-400">
                           <Clock className="h-2.5 w-2.5" /> {app.time} ({app.duration}m)
                         </span>
                       </div>
 
-                      <p className="text-[10px] text-slate-500 font-medium truncate">
+                      <p className="truncate text-[10px] font-medium text-slate-500">
                         {app.service}
                       </p>
 
-                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100/50">
-                        <span className="text-[9px] text-slate-400 font-mono">
-                          {staffLabel}: <strong className="text-slate-600 font-sans">{st?.name.split(' ')[1]}</strong>
+                      <div className="mt-2 flex items-center justify-between border-t border-slate-100/50 pt-2">
+                        <span className="font-mono text-[9px] text-slate-400">
+                          {staffLabel}:{' '}
+                          <strong className="font-sans text-slate-600">
+                            {st?.name.split(' ')[1]}
+                          </strong>
                         </span>
                         <div className="flex items-center gap-1.5">
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${statusBadges[app.status]}`}>
+                          <span
+                            className={`rounded-full border px-1.5 py-0.5 text-[9px] ${statusBadges[app.status]}`}
+                          >
                             {app.status}
                           </span>
                           <span
-                            className={`text-[9px] font-mono px-1 rounded ${
+                            className={`rounded px-1 font-mono text-[9px] ${
                               app.paymentStatus === 'paid'
                                 ? 'bg-emerald-50 text-emerald-600'
                                 : 'bg-slate-100 text-slate-500'
@@ -433,18 +484,18 @@ export default function CalendarView({
       <AnimatePresence>
         {/* ADD APPOINTMENT MODAL */}
         {isBookModalOpen && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-xl w-full max-w-md p-6 border border-slate-200 shadow-lg"
+              className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-lg"
             >
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-base font-bold text-slate-800 flex items-center gap-1.5">
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="flex items-center gap-1.5 text-base font-bold text-slate-800">
                   <Plus className="h-4 w-4" /> Book Appointment
                 </h3>
-                <span className="text-xs font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-500">
                   {selectedDateStr}
                 </span>
               </div>
@@ -452,14 +503,14 @@ export default function CalendarView({
               <form onSubmit={handleBookSubmit} className="space-y-4">
                 {/* Patient Selection */}
                 <div>
-                  <label className="text-xs text-slate-500 font-bold block mb-1">
+                  <label className="mb-1 block text-xs font-bold text-slate-500">
                     Select {patientLabel} *
                   </label>
                   <select
                     required
                     value={formPatientId}
                     onChange={(e) => setFormPatientId(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-700"
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-700"
                   >
                     <option value="">-- Choose {patientLabel} --</option>
                     {patients.map((p) => (
@@ -472,19 +523,26 @@ export default function CalendarView({
 
                 {/* Staff Selection */}
                 <div>
-                  <label className="text-xs text-slate-500 font-bold block mb-1">
+                  <label className="mb-1 block text-xs font-bold text-slate-500">
                     Assign {staffLabel} *
                   </label>
                   <select
                     required
                     value={formStaffId}
                     onChange={(e) => setFormStaffId(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-700"
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-700"
                   >
                     <option value="">-- Choose {staffLabel} --</option>
                     {staff
                       .filter((st) => {
-                        return isClinic ? st.role.includes('GP') || st.role.includes('Director') || st.role.includes('Physio') || st.role.includes('Cardio') : st.role.includes('Stylist') || st.role.includes('Esthetician') || st.role.includes('Therapist');
+                        return isClinic
+                          ? st.role.includes('GP') ||
+                              st.role.includes('Director') ||
+                              st.role.includes('Physio') ||
+                              st.role.includes('Cardio')
+                          : st.role.includes('Stylist') ||
+                              st.role.includes('Esthetician') ||
+                              st.role.includes('Therapist');
                       })
                       .map((st) => (
                         <option key={st.id} value={st.id}>
@@ -496,14 +554,14 @@ export default function CalendarView({
 
                 {/* Service Selection */}
                 <div>
-                  <label className="text-xs text-slate-500 font-bold block mb-1">
+                  <label className="mb-1 block text-xs font-bold text-slate-500">
                     Select {serviceLabel} *
                   </label>
                   <select
                     required
                     value={formService}
                     onChange={(e) => handleServiceChange(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-700"
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-700"
                   >
                     <option value="">-- Choose {serviceLabel} --</option>
                     {servicesList.map((srv) => (
@@ -517,36 +575,40 @@ export default function CalendarView({
                 {/* Date & Time block */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-xs text-slate-500 font-bold block mb-1">Start Time</label>
+                    <label className="mb-1 block text-xs font-bold text-slate-500">
+                      Start Time
+                    </label>
                     <input
                       type="time"
                       required
                       value={formTime}
                       onChange={(e) => setFormTime(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-700"
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700"
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-slate-500 font-bold block mb-1">Price ($)</label>
+                    <label className="mb-1 block text-xs font-bold text-slate-500">Price ($)</label>
                     <input
                       type="number"
                       required
                       value={formPrice}
                       onChange={(e) => setFormPrice(Number(e.target.value))}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-700"
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700"
                     />
                   </div>
                 </div>
 
                 {/* Notes */}
                 <div>
-                  <label className="text-xs text-slate-500 font-bold block mb-1">Appointment Notes</label>
+                  <label className="mb-1 block text-xs font-bold text-slate-500">
+                    Appointment Notes
+                  </label>
                   <textarea
                     value={formNotes}
                     onChange={(e) => setFormNotes(e.target.value)}
                     placeholder="e.g. skin sensitivities, cardiac follow-up..."
                     rows={2}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-700 resize-none"
+                    className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700"
                   />
                 </div>
 
@@ -555,13 +617,13 @@ export default function CalendarView({
                   <button
                     type="button"
                     onClick={() => setIsBookModalOpen(false)}
-                    className="px-4 py-2 border border-slate-200 text-slate-500 hover:bg-slate-50 rounded-xl text-xs font-semibold"
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-50"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className={`px-4 py-2 text-white rounded-xl text-xs font-semibold transition ${
+                    className={`rounded-xl px-4 py-2 text-xs font-semibold text-white transition ${
                       isClinic ? 'bg-teal-600 hover:bg-teal-700' : 'bg-pink-600 hover:bg-pink-700'
                     }`}
                   >
@@ -575,17 +637,17 @@ export default function CalendarView({
 
         {/* DETAILED APPOINTMENT ACTION DIALOG */}
         {selectedAppointment && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-xl w-full max-w-md p-6 border border-slate-200 shadow-lg relative"
+              className="relative w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-lg"
             >
               {/* Header */}
-              <div className="flex items-start justify-between mb-4">
+              <div className="mb-4 flex items-start justify-between">
                 <div>
-                  <span className="text-[10px] font-mono uppercase font-bold tracking-wide text-slate-400">
+                  <span className="font-mono text-[10px] font-bold tracking-wide text-slate-400 uppercase">
                     Booking Details
                   </span>
                   <h3 className="text-base font-bold text-slate-800">
@@ -594,7 +656,7 @@ export default function CalendarView({
                 </div>
                 <button
                   onClick={() => setSelectedAppointment(null)}
-                  className="text-slate-400 hover:text-slate-600 text-sm font-semibold p-1"
+                  className="p-1 text-sm font-semibold text-slate-400 hover:text-slate-600"
                 >
                   ✕
                 </button>
@@ -607,18 +669,21 @@ export default function CalendarView({
 
                 return (
                   <div className="space-y-4">
-                    <div className="bg-slate-50 p-3.5 rounded-xl flex items-center gap-3 border border-slate-100">
+                    <div className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 p-3.5">
                       <img
-                        src={patient?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150'}
+                        src={
+                          patient?.avatar ||
+                          'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150'
+                        }
                         alt={patient?.name}
-                        className="w-10 h-10 rounded-full object-cover"
+                        className="h-10 w-10 rounded-full object-cover"
                         referrerPolicy="no-referrer"
                       />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-xs font-bold text-slate-800 block">
+                      <div className="min-w-0 flex-1">
+                        <span className="block text-xs font-bold text-slate-800">
                           {patient?.name}
                         </span>
-                        <span className="text-[10px] text-slate-500 font-mono block">
+                        <span className="block font-mono text-[10px] text-slate-500">
                           {patient?.phone} • {patient?.email}
                         </span>
                         <button
@@ -628,7 +693,7 @@ export default function CalendarView({
                               setSelectedAppointment(null);
                             }
                           }}
-                          className="text-[10px] text-teal-600 hover:underline mt-1 font-semibold flex items-center gap-1"
+                          className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-teal-600 hover:underline"
                         >
                           <FileText className="h-3 w-3" /> View Patient Chart
                         </button>
@@ -638,56 +703,62 @@ export default function CalendarView({
                     {/* Metadata lines */}
                     <div className="grid grid-cols-2 gap-3 text-xs">
                       <div>
-                        <span className="text-slate-400 font-semibold block mb-0.5">DATE & TIME</span>
-                        <p className="text-slate-700 font-mono font-medium">
+                        <span className="mb-0.5 block font-semibold text-slate-400">
+                          DATE & TIME
+                        </span>
+                        <p className="font-mono font-medium text-slate-700">
                           {selectedAppointment.date}
                         </p>
-                        <p className="text-slate-500 font-mono">
+                        <p className="font-mono text-slate-500">
                           at {selectedAppointment.time} ({selectedAppointment.duration} mins)
                         </p>
                       </div>
                       <div>
-                        <span className="text-slate-400 font-semibold block mb-0.5">{staffLabel.toUpperCase()}</span>
-                        <p className="text-slate-700 font-medium">
-                          {st?.name}
-                        </p>
-                        <p className="text-slate-400 text-[10px]">
-                          {st?.role}
-                        </p>
+                        <span className="mb-0.5 block font-semibold text-slate-400">
+                          {staffLabel.toUpperCase()}
+                        </span>
+                        <p className="font-medium text-slate-700">{st?.name}</p>
+                        <p className="text-[10px] text-slate-400">{st?.role}</p>
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3 text-xs border-t border-slate-100 pt-3">
+                    <div className="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3 text-xs">
                       <div>
-                        <span className="text-slate-400 font-semibold block mb-0.5">COST & FEES</span>
-                        <p className="text-slate-800 font-bold text-sm">
+                        <span className="mb-0.5 block font-semibold text-slate-400">
+                          COST & FEES
+                        </span>
+                        <p className="text-sm font-bold text-slate-800">
                           ${selectedAppointment.price.toFixed(2)}
                         </p>
                       </div>
                       <div>
-                        <span className="text-slate-400 font-semibold block mb-0.5">PAYMENT</span>
+                        <span className="mb-0.5 block font-semibold text-slate-400">PAYMENT</span>
                         <span
-                          className={`text-[10px] font-mono px-2 py-0.5 rounded ${
+                          className={`rounded px-2 py-0.5 font-mono text-[10px] ${
                             selectedAppointment.paymentStatus === 'paid'
-                              ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
-                              : 'bg-amber-50 text-amber-600 border border-amber-100'
+                              ? 'border border-emerald-100 bg-emerald-50 text-emerald-600'
+                              : 'border border-amber-100 bg-amber-50 text-amber-600'
                           }`}
                         >
-                          {selectedAppointment.paymentStatus === 'paid' ? 'Paid / Settled' : 'Unpaid'}
+                          {selectedAppointment.paymentStatus === 'paid'
+                            ? 'Paid / Settled'
+                            : 'Unpaid'}
                         </span>
                       </div>
                     </div>
 
                     {selectedAppointment.notes && (
-                      <div className="bg-blue-50/50 p-2.5 rounded-lg border border-blue-100/50 text-[11px] text-slate-600">
-                        <strong className="text-slate-700 block mb-0.5">Special Instructions:</strong>
+                      <div className="rounded-lg border border-blue-100/50 bg-blue-50/50 p-2.5 text-[11px] text-slate-600">
+                        <strong className="mb-0.5 block text-slate-700">
+                          Special Instructions:
+                        </strong>
                         {selectedAppointment.notes}
                       </div>
                     )}
 
                     {/* Action controls */}
-                    <div className="pt-3 border-t border-slate-100 space-y-2">
-                      <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wide block">
+                    <div className="space-y-2 border-t border-slate-100 pt-3">
+                      <span className="block font-mono text-[10px] font-bold tracking-wide text-slate-400 uppercase">
                         Update Status
                       </span>
 
@@ -697,7 +768,7 @@ export default function CalendarView({
                             onUpdateAppointmentStatus(selectedAppointment.id, 'confirmed');
                             setSelectedAppointment(null);
                           }}
-                          className="px-2.5 py-1 text-[11px] font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-100 rounded-lg transition"
+                          className="rounded-lg border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-100"
                         >
                           ✓ Confirm
                         </button>
@@ -706,7 +777,7 @@ export default function CalendarView({
                             onUpdateAppointmentStatus(selectedAppointment.id, 'completed');
                             setSelectedAppointment(null);
                           }}
-                          className="px-2.5 py-1 text-[11px] font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-100 rounded-lg transition"
+                          className="rounded-lg border border-blue-100 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700 transition hover:bg-blue-100"
                         >
                           ✓ Check-in / Complete
                         </button>
@@ -715,7 +786,7 @@ export default function CalendarView({
                             onUpdateAppointmentStatus(selectedAppointment.id, 'cancelled');
                             setSelectedAppointment(null);
                           }}
-                          className="px-2.5 py-1 text-[11px] font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-100 rounded-lg transition"
+                          className="rounded-lg border border-rose-100 bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700 transition hover:bg-rose-100"
                         >
                           ✕ Cancel Visit
                         </button>
@@ -728,7 +799,7 @@ export default function CalendarView({
                               onUpdatePaymentStatus(selectedAppointment.id, 'paid');
                               setSelectedAppointment(null);
                             }}
-                            className="w-full flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition"
+                            className="flex w-full items-center justify-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-slate-800"
                           >
                             <DollarSign className="h-3.5 w-3.5" /> Mark as Paid (Cash/Terminal)
                           </button>

@@ -54,10 +54,10 @@ export const DEFAULT_TOGGLES: OrgToggles = {
 // The JSON keys stored under organizations.features. Namespaced so a
 // future migration to a dedicated table stays a rename.
 const KEY = {
-  providerFinancialReports:    'toggle.provider.financial_reports',
+  providerFinancialReports: 'toggle.provider.financial_reports',
   providerClinicalNotesOthers: 'toggle.provider.clinical_notes_others',
-  frontdeskClientFullHistory:  'toggle.frontdesk.client_full_history',
-  frontdeskDiscountCeiling:    'toggle.frontdesk.discount_ceiling',
+  frontdeskClientFullHistory: 'toggle.frontdesk.client_full_history',
+  frontdeskDiscountCeiling: 'toggle.frontdesk.discount_ceiling',
 } as const;
 
 const TTL_MS = 30_000;
@@ -74,10 +74,22 @@ function parseToggles(raw: unknown): OrgToggles {
     return typeof v === 'number' && v >= 0 ? v : fallback;
   };
   return {
-    providerFinancialReports:    bool('providerFinancialReports',    DEFAULT_TOGGLES.providerFinancialReports),
-    providerClinicalNotesOthers: bool('providerClinicalNotesOthers', DEFAULT_TOGGLES.providerClinicalNotesOthers),
-    frontdeskClientFullHistory:  bool('frontdeskClientFullHistory',  DEFAULT_TOGGLES.frontdeskClientFullHistory),
-    frontdeskDiscountCeiling:    num ('frontdeskDiscountCeiling',    DEFAULT_TOGGLES.frontdeskDiscountCeiling),
+    providerFinancialReports: bool(
+      'providerFinancialReports',
+      DEFAULT_TOGGLES.providerFinancialReports,
+    ),
+    providerClinicalNotesOthers: bool(
+      'providerClinicalNotesOthers',
+      DEFAULT_TOGGLES.providerClinicalNotesOthers,
+    ),
+    frontdeskClientFullHistory: bool(
+      'frontdeskClientFullHistory',
+      DEFAULT_TOGGLES.frontdeskClientFullHistory,
+    ),
+    frontdeskDiscountCeiling: num(
+      'frontdeskDiscountCeiling',
+      DEFAULT_TOGGLES.frontdeskDiscountCeiling,
+    ),
   };
 }
 
@@ -105,15 +117,20 @@ export async function updateOrgToggles(
 ): Promise<OrgToggles> {
   const row = await withoutRls((tx) =>
     tx.organization.findUniqueOrThrow({
-      where: { id: orgId }, select: { features: true },
+      where: { id: orgId },
+      select: { features: true },
     }),
   );
   const current = (row.features ?? {}) as Record<string, unknown>;
   const next: Record<string, unknown> = { ...current };
-  if (patch.providerFinancialReports    !== undefined) next[KEY.providerFinancialReports]    = patch.providerFinancialReports;
-  if (patch.providerClinicalNotesOthers !== undefined) next[KEY.providerClinicalNotesOthers] = patch.providerClinicalNotesOthers;
-  if (patch.frontdeskClientFullHistory  !== undefined) next[KEY.frontdeskClientFullHistory]  = patch.frontdeskClientFullHistory;
-  if (patch.frontdeskDiscountCeiling    !== undefined) next[KEY.frontdeskDiscountCeiling]    = patch.frontdeskDiscountCeiling;
+  if (patch.providerFinancialReports !== undefined)
+    next[KEY.providerFinancialReports] = patch.providerFinancialReports;
+  if (patch.providerClinicalNotesOthers !== undefined)
+    next[KEY.providerClinicalNotesOthers] = patch.providerClinicalNotesOthers;
+  if (patch.frontdeskClientFullHistory !== undefined)
+    next[KEY.frontdeskClientFullHistory] = patch.frontdeskClientFullHistory;
+  if (patch.frontdeskDiscountCeiling !== undefined)
+    next[KEY.frontdeskDiscountCeiling] = patch.frontdeskDiscountCeiling;
 
   await withoutRls((tx) =>
     tx.organization.update({

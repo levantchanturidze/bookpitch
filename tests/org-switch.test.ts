@@ -73,18 +73,18 @@ describe('org switcher', () => {
   });
 
   it('switchActiveOrg refuses an org the user is not a member of', async () => {
-    await expect(switchActiveOrg(userId, orgUnrelated)).rejects.toBeInstanceOf(
-      InvalidInputError,
-    );
+    await expect(switchActiveOrg(userId, orgUnrelated)).rejects.toBeInstanceOf(InvalidInputError);
   });
 
   it('switchActiveOrg bumps sessionVersion for a valid membership', async () => {
     const before = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: userId }, select: { sessionVersion: true },
+      where: { id: userId },
+      select: { sessionVersion: true },
     });
     await switchActiveOrg(userId, orgB);
     const after = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: userId }, select: { sessionVersion: true },
+      where: { id: userId },
+      select: { sessionVersion: true },
     });
     expect(after.sessionVersion).toBe(before.sessionVersion + 1);
   });

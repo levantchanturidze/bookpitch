@@ -1,9 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import type {
-  AppointmentAssistant,
-  AssistantContext,
-  AssistantResult,
-} from '../model';
+import type { AppointmentAssistant, AssistantContext, AssistantResult } from '../model';
 
 // -----------------------------------------------------------------------------
 // Gemini adapter — real LLM path. Only initialised when ASSISTANT_MODEL=gemini.
@@ -61,9 +57,7 @@ export class GeminiAssistant implements AppointmentAssistant {
     const call = () =>
       client.models.generateContent({
         model: 'gemini-2.5-flash',
-        contents: [
-          { role: 'user', parts: [{ text: systemPreamble + '\n\n' + userTurn }] },
-        ],
+        contents: [{ role: 'user', parts: [{ text: systemPreamble + '\n\n' + userTurn }] }],
         config: {
           responseMimeType: 'application/json',
           responseSchema: RESPONSE_SCHEMA,
@@ -123,11 +117,11 @@ function buildPreamble(ctx: AssistantContext): string {
     ``,
     `Location: ${ctx.location.name} (${ctx.location.type})`,
     `Staff:`,
-    ...ctx.staff.map((s) => `  - ${s.name} — ${s.roleTitle}${s.specialty ? ` (${s.specialty})` : ''}`),
-    `Services:`,
-    ...ctx.services.map(
-      (s) => `  - ${s.name} — ${s.durationMinutes} min, ${s.price} GEL`,
+    ...ctx.staff.map(
+      (s) => `  - ${s.name} — ${s.roleTitle}${s.specialty ? ` (${s.specialty})` : ''}`,
     ),
+    `Services:`,
+    ...ctx.services.map((s) => `  - ${s.name} — ${s.durationMinutes} min, ${s.price} GEL`),
     `Customers (short list):`,
     ...ctx.customers.slice(0, 30).map((c) => `  - ${c.name}`),
   ].join('\n');

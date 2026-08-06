@@ -22,25 +22,31 @@ describe('buildAuthContext', () => {
   beforeAll(async () => {
     await seedRbacFixtures();
 
-    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'moonlight@bp.test' } });
+    const moon = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'moonlight@bp.test' },
+    });
     moonId = moon.id;
     const moonMems = await unsafePrismaAdmin.membership.findMany({
       where: { userId: moon.id },
       include: { organization: { select: { name: true } } },
     });
-    grandMoonMemId = moonMems.find(m => m.organization.name.startsWith('Grand'))!.id;
-    splitMoonMemId = moonMems.find(m => m.organization.name === 'Split Practice')!.id;
+    grandMoonMemId = moonMems.find((m) => m.organization.name.startsWith('Grand'))!.id;
+    splitMoonMemId = moonMems.find((m) => m.organization.name === 'Split Practice')!.id;
 
-    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email: 'splitmgr@bp.test' } });
+    const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'splitmgr@bp.test' },
+    });
     splitMgrId = mgr.id;
-    const mgrMem = await unsafePrismaAdmin.membership.findFirstOrThrow({ where: { userId: mgr.id } });
+    const mgrMem = await unsafePrismaAdmin.membership.findFirstOrThrow({
+      where: { userId: mgr.id },
+    });
     splitMgrMemId = mgrMem.id;
     const branches = await unsafePrismaAdmin.branch.findMany({
       where: { organization: { name: 'Split Practice' } },
       orderBy: { name: 'asc' },
     });
-    downtown = branches.find(b => b.name === 'Downtown')!.id;
-    uptown   = branches.find(b => b.name === 'Uptown')!.id;
+    downtown = branches.find((b) => b.name === 'Downtown')!.id;
+    uptown = branches.find((b) => b.name === 'Uptown')!.id;
 
     __clearAuthContextCache();
   });
@@ -55,7 +61,7 @@ describe('buildAuthContext', () => {
     expect(ctx).not.toBeNull();
     expect(ctx!.roleKey).toBe('PROVIDER');
     expect(ctx!.membershipId).toBe(grandMoonMemId);
-    expect(ctx!.branchIds.size).toBe(0);          // PROVIDER has no branch scope
+    expect(ctx!.branchIds.size).toBe(0); // PROVIDER has no branch scope
     expect(ctx!.permissions.size).toBeGreaterThan(0);
     expect(ctx!.platformPermissions.size).toBe(0); // moonlighter has no platform role
     expect(ctx!.isImpersonating).toBe(false);

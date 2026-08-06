@@ -22,12 +22,20 @@ export async function POST(req: NextRequest) {
     const reason = typeof body.reason === 'string' ? body.reason : '';
     const ticketId = typeof body.ticketId === 'string' ? body.ticketId : '';
     if (!organizationId || !targetUserId || !reason || !ticketId) {
-      throw new InvalidInputError('organizationId, targetUserId, reason, ticketId are all required');
+      throw new InvalidInputError(
+        'organizationId, targetUserId, reason, ticketId are all required',
+      );
     }
     const ip = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip');
     const userAgent = req.headers.get('user-agent');
     return startImpersonation({
-      actor: ctx, targetUserId, organizationId, reason, ticketId, ip, userAgent,
+      actor: ctx,
+      targetUserId,
+      organizationId,
+      reason,
+      ticketId,
+      ip,
+      userAgent,
     });
   });
 }

@@ -8,7 +8,12 @@ import { draftAppointment } from '@/lib/assistant/draft';
 export async function POST(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'assistant');
+    requirePermission(
+      ctx,
+      'client.read:contact',
+      { organizationId: ctx.activeOrganizationId! },
+      'assistant',
+    );
     const body = (await req.json().catch(() => null)) as {
       prompt?: unknown;
       locationId?: unknown;

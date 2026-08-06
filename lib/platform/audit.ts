@@ -23,14 +23,11 @@ export type PlatformAuditFilter = {
   limit?: number;
 };
 
-export async function queryPlatformAudit(
-  filter: PlatformAuditFilter,
-  opts: { maskPii: boolean },
-) {
+export async function queryPlatformAudit(filter: PlatformAuditFilter, opts: { maskPii: boolean }) {
   const where: Record<string, unknown> = {};
-  if (filter.actorUserId)     where.actorUserId = filter.actorUserId;
-  if (filter.organizationId)  where.organizationId = filter.organizationId;
-  if (filter.action)          where.action = { startsWith: filter.action };
+  if (filter.actorUserId) where.actorUserId = filter.actorUserId;
+  if (filter.organizationId) where.organizationId = filter.organizationId;
+  if (filter.action) where.action = { startsWith: filter.action };
   if (filter.fromDate || filter.toDate) {
     where.at = {
       ...(filter.fromDate ? { gte: filter.fromDate } : {}),
@@ -43,7 +40,7 @@ export async function queryPlatformAudit(
     orderBy: { at: 'desc' },
     take: filter.limit ?? 200,
     include: {
-      actor:      { select: { email: true, fullName: true } },
+      actor: { select: { email: true, fullName: true } },
       onBehalfOf: { select: { email: true, fullName: true } },
       organization: { select: { name: true } },
     },
@@ -57,11 +54,11 @@ export async function queryPlatformAudit(
     entityId: r.entityId,
     organizationId: r.organizationId,
     organizationName: r.organization?.name ?? null,
-    actorEmail: opts.maskPii ? maskEmail(r.actor?.email ?? null) : r.actor?.email ?? null,
-    actorName: opts.maskPii ? maskName(r.actor?.fullName ?? null) : r.actor?.fullName ?? null,
+    actorEmail: opts.maskPii ? maskEmail(r.actor?.email ?? null) : (r.actor?.email ?? null),
+    actorName: opts.maskPii ? maskName(r.actor?.fullName ?? null) : (r.actor?.fullName ?? null),
     onBehalfOfEmail: opts.maskPii
       ? maskEmail(r.onBehalfOf?.email ?? null)
-      : r.onBehalfOf?.email ?? null,
+      : (r.onBehalfOf?.email ?? null),
     reason: r.reason,
     impersonationSessionId: r.impersonationSessionId,
     breakGlassSessionId: r.breakGlassSessionId,

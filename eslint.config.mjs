@@ -1,6 +1,6 @@
-import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTs from "eslint-config-next/typescript";
+import { defineConfig, globalIgnores } from 'eslint/config';
+import nextVitals from 'eslint-config-next/core-web-vitals';
+import nextTs from 'eslint-config-next/typescript';
 
 // SEC-007: allowlist for files that may import unsafePrismaAdmin or
 // withoutRls from '@/lib/db'. Every entry has a documented reason
@@ -11,72 +11,79 @@ import nextTs from "eslint-config-next/typescript";
 // § SEC-007.
 const UNSAFE_DB_ALLOWLIST = [
   // Group A — login / no-session-yet paths (org context does not exist)
-  "auth.ts",
-  "lib/auth/credentials.ts",
-  "lib/auth/password-reset.ts",
-  "app/api/auth/reset/request/route.ts",
-  "lib/onboarding.ts",
-  "lib/invitations.ts",
-  "lib/org-switch.ts",
-  "lib/rbac/context.ts",
-  "lib/public-booking.ts",
+  'auth.ts',
+  'lib/auth/credentials.ts',
+  'lib/auth/password-reset.ts',
+  'app/api/auth/reset/request/route.ts',
+  'lib/onboarding.ts',
+  'lib/invitations.ts',
+  'lib/org-switch.ts',
+  'lib/rbac/context.ts',
+  'lib/public-booking.ts',
 
   // Group B — platform-plane by design (SUPER/PLATFORM roles, cross-tenant)
-  "app/platform/audit/page.tsx",
-  "app/platform/break-glass/page.tsx",
-  "app/api/platform/audit/route.ts",
-  "app/api/platform/orgs/*/toggles/route.ts",
-  "lib/platform/orgs.ts",
-  "lib/platform/roles.ts",
-  "lib/platform/impersonation.ts",
-  "lib/platform/break-glass.ts",
-  "lib/platform/audit.ts",
-  "lib/platform/password-reauth.ts",
+  'app/platform/audit/page.tsx',
+  'app/platform/break-glass/page.tsx',
+  'app/api/platform/audit/route.ts',
+  'app/api/platform/orgs/*/toggles/route.ts',
+  'lib/platform/orgs.ts',
+  'lib/platform/roles.ts',
+  'lib/platform/impersonation.ts',
+  'lib/platform/break-glass.ts',
+  'lib/platform/audit.ts',
+  'lib/platform/password-reauth.ts',
+  // F1/F2 additions: distributed reauth grant + TOTP MFA (SEC-007 Group B)
+  'lib/platform/rate-limit.ts',
+  'lib/platform/mfa.ts',
 
   // Group C — system cron / webhook / probe (no session)
-  "app/api/cron/db-partitions/route.ts",
-  "app/api/cron/reminders/route.ts",
-  "app/api/cron/retention/route.ts",
-  "app/api/health/route.ts",
-  "lib/audit-digest.ts",
-  "lib/housekeeping.ts",
-  "lib/messaging/reminders.ts",
-  "lib/billing/service.ts",
-  "lib/payments/service.ts",
-  "lib/features.ts",
+  'app/api/cron/db-partitions/route.ts',
+  'app/api/cron/reminders/route.ts',
+  'app/api/cron/retention/route.ts',
+  'app/api/health/route.ts',
+  'lib/audit-digest.ts',
+  'lib/housekeeping.ts',
+  'lib/messaging/reminders.ts',
+  'lib/billing/service.ts',
+  'lib/payments/service.ts',
 
   // Group D — RBAC/ownership infrastructure crossing tenants
-  "lib/rbac/rank.ts",
-  "lib/rbac/toggles.ts",
-  "lib/admin/ownership-transfer.ts",
-  "lib/push.ts",
-  "lib/gdpr.ts",
+  'lib/rbac/rank.ts',
+  'lib/rbac/toggles.ts',
+  'lib/admin/ownership-transfer.ts',
+  'lib/push.ts',
+  'lib/gdpr.ts',
 
   // The clients themselves + tests/seeds/scripts are also exempt.
-  "lib/db.ts",
-  "prisma/**",
-  "scripts/**",
-  "tests/**",
+  'lib/db.ts',
+  'prisma/**',
+  'scripts/**',
+  'tests/**',
 ];
 
 const RESTRICT_UNSAFE_DB = {
-  "no-restricted-imports": ["error", {
-    paths: [{
-      name: "@/lib/db",
-      // `prismaLogin` is on this list too — even though it has narrow SELECT
-      // grants when DATABASE_URL_LOGIN is set, it can transparently fall
-      // back to unsafePrismaAdmin. Restrict its import to the same
-      // reviewable surface. Only lib/rbac/context.ts (buildAuthContext) is
-      // meant to use it; new callers should surface for review.
-      importNames: ["unsafePrismaAdmin", "withoutRls", "prismaLogin"],
-      message:
-        "SEC-007: these bypass RLS. Use `withOrg(orgId, tx => …)` instead. " +
-        "If a cross-tenant reach is genuinely required (login path, platform " +
-        "plane, cron), add this file to UNSAFE_DB_ALLOWLIST in eslint.config.mjs " +
-        "with a comment explaining which group (A/B/C/D) it belongs to. See " +
-        "docs/rbac-security-review.md § SEC-007.",
-    }],
-  }],
+  'no-restricted-imports': [
+    'error',
+    {
+      paths: [
+        {
+          name: '@/lib/db',
+          // `prismaLogin` is on this list too — even though it has narrow SELECT
+          // grants when DATABASE_URL_LOGIN is set, it can transparently fall
+          // back to unsafePrismaAdmin. Restrict its import to the same
+          // reviewable surface. Only lib/rbac/context.ts (buildAuthContext) is
+          // meant to use it; new callers should surface for review.
+          importNames: ['unsafePrismaAdmin', 'withoutRls', 'prismaLogin'],
+          message:
+            'SEC-007: these bypass RLS. Use `withOrg(orgId, tx => …)` instead. ' +
+            'If a cross-tenant reach is genuinely required (login path, platform ' +
+            'plane, cron), add this file to UNSAFE_DB_ALLOWLIST in eslint.config.mjs ' +
+            'with a comment explaining which group (A/B/C/D) it belongs to. See ' +
+            'docs/rbac-security-review.md § SEC-007.',
+        },
+      ],
+    },
+  ],
 };
 
 const eslintConfig = defineConfig([
@@ -85,37 +92,37 @@ const eslintConfig = defineConfig([
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
+    '.next/**',
+    'out/**',
+    'build/**',
+    'next-env.d.ts',
     // Reference-only prototype (not part of the Next.js app):
-    "prototype/**",
+    'prototype/**',
   ]),
   // Ported prototype code lives here verbatim until P1.3 wires it in.
   // Downgrade rules that only fire because of that not-yet-refactored code.
   {
-    files: ["components/**/*.{ts,tsx}", "lib/types.ts"],
+    files: ['components/**/*.{ts,tsx}', 'lib/types.ts'],
     rules: {
-      "react-hooks/set-state-in-effect": "warn",
-      "react-hooks/purity": "warn",
-      "react/no-unescaped-entities": "warn",
-      "@typescript-eslint/no-unused-vars": "warn",
-      "@typescript-eslint/no-explicit-any": "warn",
-      "@next/next/no-img-element": "warn",
+      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/purity': 'warn',
+      'react/no-unescaped-entities': 'warn',
+      '@typescript-eslint/no-unused-vars': 'warn',
+      '@typescript-eslint/no-explicit-any': 'warn',
+      '@next/next/no-img-element': 'warn',
     },
   },
   // SEC-007: default rule for every runtime source file — block
   // unsafePrismaAdmin / withoutRls imports.
   {
-    files: ["app/**/*.{ts,tsx}", "lib/**/*.{ts,tsx}", "auth.ts"],
+    files: ['app/**/*.{ts,tsx}', 'lib/**/*.{ts,tsx}', 'auth.ts'],
     rules: RESTRICT_UNSAFE_DB,
   },
   // Allowlist: turn the rule OFF for files that legitimately need
   // cross-tenant reach. Each entry is auditable in git blame.
   {
     files: UNSAFE_DB_ALLOWLIST,
-    rules: { "no-restricted-imports": "off" },
+    rules: { 'no-restricted-imports': 'off' },
   },
 ]);
 

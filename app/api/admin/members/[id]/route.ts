@@ -7,7 +7,12 @@ import { removeMember, updateMemberRole } from '@/lib/admin';
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'staff.role.assign', { organizationId: ctx.activeOrganizationId! }, 'admin');
+    requirePermission(
+      ctx,
+      'staff.role.assign',
+      { organizationId: ctx.activeOrganizationId! },
+      'admin',
+    );
     const { id } = await params;
     const body = (await req.json().catch(() => ({}))) as { role?: unknown };
     if (typeof body.role !== 'string') throw new InvalidInputError('role is required');
@@ -19,7 +24,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'staff.deactivate', { organizationId: ctx.activeOrganizationId! }, 'admin');
+    requirePermission(
+      ctx,
+      'staff.deactivate',
+      { organizationId: ctx.activeOrganizationId! },
+      'admin',
+    );
     const { id } = await params;
     await removeMember(ctxToSession(ctx), id);
     return { ok: true };

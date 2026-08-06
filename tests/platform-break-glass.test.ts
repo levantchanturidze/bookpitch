@@ -13,9 +13,9 @@ const { mockPlatformJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 const { __clearPasswordReauthCache } = await import('@/lib/platform/password-reauth');
 const { unsafePrismaAdmin } = await import('@/lib/db');
-const bgRoute        = await import('@/app/api/platform/break-glass/route');
-const bgEndRoute     = await import('@/app/api/platform/break-glass/end/route');
-const orgsListRoute  = await import('@/app/api/platform/orgs/route');
+const bgRoute = await import('@/app/api/platform/break-glass/route');
+const bgEndRoute = await import('@/app/api/platform/break-glass/end/route');
+const orgsListRoute = await import('@/app/api/platform/orgs/route');
 const { requireAuthContext, can } = await import('@/lib/rbac');
 // MFA helpers for seeding TOTP state + generating codes in tests
 const { generateSecret, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
@@ -26,7 +26,9 @@ import type { NextRequest } from 'next/server';
 function req(url: string, init?: RequestInit): NextRequest {
   return new Request(url, init) as unknown as NextRequest;
 }
-async function json<T = unknown>(res: Response): Promise<T> { return (await res.json()) as T; }
+async function json<T = unknown>(res: Response): Promise<T> {
+  return (await res.json()) as T;
+}
 
 // TOTP plugin set shared with lib/platform/mfa.ts
 const TOTP_OPTS = {
@@ -47,15 +49,18 @@ describe('/api/platform/break-glass', () => {
   beforeAll(async () => {
     await seedRbacFixtures();
     const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Split Practice' }, select: { id: true },
+      where: { name: 'Split Practice' },
+      select: { id: true },
     });
     orgId = org.id;
     const su = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { email: 'superadmin@bp.test' }, select: { id: true },
+      where: { email: 'superadmin@bp.test' },
+      select: { id: true },
     });
     superUserId = su.id;
     const pa = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { email: 'platform-admin@bp.test' }, select: { id: true },
+      where: { email: 'platform-admin@bp.test' },
+      select: { id: true },
     });
     platformAdminId = pa.id;
 
@@ -86,56 +91,71 @@ describe('/api/platform/break-glass', () => {
 
   it('SUPER_ADMIN starts with correct password + TOTP', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-    const res = await bgRoute.POST(req('http://x', {
-      method: 'POST',
-      body: JSON.stringify({
-        password: 'devpass123',
-        totpCode: await freshTotpCode(totpSecret),
-        reason: 'triage-check', ticketId: 'BG-1',
+    const res = await bgRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({
+          password: 'devpass123',
+          totpCode: await freshTotpCode(totpSecret),
+          reason: 'triage-check',
+          ticketId: 'BG-1',
+        }),
       }),
-    }));
+    );
     expect(res.status).toBe(200);
     const body = await json<{ sessionId: string }>(res);
-    const s = await unsafePrismaAdmin.breakGlassSession.findUniqueOrThrow({ where: { id: body.sessionId } });
+    const s = await unsafePrismaAdmin.breakGlassSession.findUniqueOrThrow({
+      where: { id: body.sessionId },
+    });
     expect(s.actorUserId).toBe(superUserId);
     expect(s.reason).toBe('triage-check');
   });
 
   it('wrong password → 400', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-    const res = await bgRoute.POST(req('http://x', {
-      method: 'POST',
-      body: JSON.stringify({
-        password: 'wrong',
-        totpCode: await freshTotpCode(totpSecret),
-        reason: 'wrong-pw-check', ticketId: 'BG-2',
+    const res = await bgRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({
+          password: 'wrong',
+          totpCode: await freshTotpCode(totpSecret),
+          reason: 'wrong-pw-check',
+          ticketId: 'BG-2',
+        }),
       }),
-    }));
+    );
     expect(res.status).toBe(400);
   });
 
   it('invalid TOTP code → 400', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-    const res = await bgRoute.POST(req('http://x', {
-      method: 'POST',
-      body: JSON.stringify({
-        password: 'devpass123',
-        totpCode: '000000',
-        reason: 'bad-totp', ticketId: 'BG-2b',
+    const res = await bgRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({
+          password: 'devpass123',
+          totpCode: '000000',
+          reason: 'bad-totp',
+          ticketId: 'BG-2b',
+        }),
       }),
-    }));
+    );
     expect(res.status).toBe(400);
   });
 
   it('PLATFORM_ADMIN cannot start (SUPER_ADMIN only)', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
-    const res = await bgRoute.POST(req('http://x', {
-      method: 'POST',
-      body: JSON.stringify({
-        password: 'devpass123', totpCode: '000000',
-        reason: 'not-allowed', ticketId: 'BG-3',
+    const res = await bgRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({
+          password: 'devpass123',
+          totpCode: '000000',
+          reason: 'not-allowed',
+          ticketId: 'BG-3',
+        }),
       }),
-    }));
+    );
     expect(res.status).toBe(403);
   });
 
@@ -144,7 +164,8 @@ describe('/api/platform/break-glass', () => {
       data: {
         actorUserId: superUserId,
         targetOrganizationId: orgId,
-        reason: 'ctx-check', ticketId: 'BG-4',
+        reason: 'ctx-check',
+        ticketId: 'BG-4',
         expiresAt: new Date(Date.now() + 60 * 60_000),
       },
     });
@@ -159,7 +180,8 @@ describe('/api/platform/break-glass', () => {
     expect(can(ctx, 'client.read:full', { organizationId: orgId })).toBe(true);
     // …but NOT in a different org.
     const otherOrg = await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Isolation Corp' }, select: { id: true },
+      where: { name: 'Isolation Corp' },
+      select: { id: true },
     });
     expect(can(ctx, 'clinical_note.read:any', { organizationId: otherOrg.id })).toBe(false);
   });
@@ -169,7 +191,8 @@ describe('/api/platform/break-glass', () => {
       data: {
         actorUserId: superUserId,
         targetOrganizationId: null,
-        reason: 'audit-read', ticketId: 'BG-5',
+        reason: 'audit-read',
+        ticketId: 'BG-5',
         expiresAt: new Date(Date.now() + 60 * 60_000),
       },
     });
@@ -184,7 +207,7 @@ describe('/api/platform/break-glass', () => {
     const res = await orgsListRoute.GET();
     expect(res.status).toBe(200);
     // audit write is a floating .catch — wait a tick.
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 50));
     const afterCount = await unsafePrismaAdmin.auditLog.count({
       where: { breakGlassSessionId: bg.id, action: { startsWith: 'break_glass.read.' } },
     });
@@ -195,7 +218,8 @@ describe('/api/platform/break-glass', () => {
     await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: superUserId,
-        reason: 'expired', ticketId: 'BG-6',
+        reason: 'expired',
+        ticketId: 'BG-6',
         startedAt: new Date(Date.now() - 2 * 60 * 60_000),
         expiresAt: new Date(Date.now() - 60 * 60_000),
       },
@@ -213,7 +237,8 @@ describe('/api/platform/break-glass', () => {
     const bg = await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: superUserId,
-        reason: 'no-update', ticketId: 'BG-7',
+        reason: 'no-update',
+        ticketId: 'BG-7',
         expiresAt: new Date(Date.now() + 60 * 60_000),
       },
     });
@@ -253,17 +278,23 @@ describe('/api/platform/break-glass', () => {
     const bg = await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: superUserId,
-        reason: 'end-check', ticketId: 'BG-8',
+        reason: 'end-check',
+        ticketId: 'BG-8',
         expiresAt: new Date(Date.now() + 60 * 60_000),
       },
     });
     __clearAuthContextCache();
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-    const res = await bgEndRoute.POST(req('http://x', {
-      method: 'POST', body: JSON.stringify({ reason: 'done' }),
-    }));
+    const res = await bgEndRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'done' }),
+      }),
+    );
     expect(res.status).toBe(200);
-    const after = await unsafePrismaAdmin.breakGlassSession.findUniqueOrThrow({ where: { id: bg.id } });
+    const after = await unsafePrismaAdmin.breakGlassSession.findUniqueOrThrow({
+      where: { id: bg.id },
+    });
     expect(after.endedAt).toBeTruthy();
     expect(after.endedReason).toBe('done');
   });

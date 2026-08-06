@@ -22,7 +22,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'org.ownership.transfer', { organizationId: ctx.activeOrganizationId! }, 'admin');
+    requirePermission(
+      ctx,
+      'org.ownership.transfer',
+      { organizationId: ctx.activeOrganizationId! },
+      'admin',
+    );
     const body = (await req.json().catch(() => ({}))) as { toUserId?: unknown };
     const toUserId = typeof body.toUserId === 'string' ? body.toUserId : '';
     if (!toUserId) throw new InvalidInputError('toUserId is required');

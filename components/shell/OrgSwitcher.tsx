@@ -79,7 +79,9 @@ export default function OrgSwitcher({
             >
               <span>
                 <span className="block font-semibold">{m.organizationName}</span>
-                <span className="text-[10px] uppercase text-slate-400">{m.roleKey ?? m.legacyRole}</span>
+                <span className="text-[10px] text-slate-400 uppercase">
+                  {m.roleKey ?? m.legacyRole}
+                </span>
               </span>
               {m.organizationId === activeOrganizationId && (
                 <Check className="h-3.5 w-3.5 text-emerald-600" />

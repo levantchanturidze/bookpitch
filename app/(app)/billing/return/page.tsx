@@ -16,7 +16,12 @@ export default async function BillingReturnPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'payment.charge', { organizationId: ctx.activeOrganizationId! }, 'billing');
+  requirePermission(
+    ctx,
+    'payment.charge',
+    { organizationId: ctx.activeOrganizationId! },
+    'billing',
+  );
   const session = ctxToSession(ctx);
   const sp = await searchParams;
   const paymentId = typeof sp.paymentId === 'string' ? sp.paymentId : '';
@@ -47,8 +52,8 @@ export default async function BillingReturnPage({
           </div>
           <h1 className="text-base font-extrabold text-slate-900">Payment received</h1>
           <p className="mt-2 text-xs text-slate-500">
-            {payment?.appointment?.customer.name}&apos;s {payment?.appointment?.serviceName}{' '}
-            is settled.
+            {payment?.appointment?.customer.name}&apos;s {payment?.appointment?.serviceName} is
+            settled.
           </p>
         </>
       ) : status === 'unpaid' ? (
@@ -69,9 +74,7 @@ export default async function BillingReturnPage({
             <XCircle className="h-6 w-6 stroke-[2.5]" />
           </div>
           <h1 className="text-base font-extrabold text-slate-900">Payment not found</h1>
-          <p className="mt-2 text-xs text-slate-500">
-            No matching payment for this session.
-          </p>
+          <p className="mt-2 text-xs text-slate-500">No matching payment for this session.</p>
         </>
       )}
 

@@ -34,18 +34,24 @@ import type { AuthContext, PermissionKey, Resource } from './types';
  * Read the JWT, resolve the AuthContext, throw if the caller isn't signed
  * in. Returns the built context (never null on success — null indicates a
  * broken session, which is a 401 not a 403).
+ *
+ * Patches ctx.authSessionId from the JWT's authSessionId claim so that
+ * requireFreshPassword can bind reauth grants to the specific login session.
  */
 export async function requireAuthContext(): Promise<AuthContext> {
   const session = await auth();
   const jwt = session as unknown as {
-    user?: { id?: string; membershipId?: string | null };
+    user?: { id?: string; membershipId?: string | null; authSessionId?: string };
   } | null;
   const userId = jwt?.user?.id;
   if (!userId) throw new UnauthenticatedError();
   const membershipId = jwt.user?.membershipId ?? null;
+  const authSessionId = jwt.user?.authSessionId ?? '';
   const ctx = await buildAuthContext(userId, membershipId);
   if (!ctx) throw new UnauthenticatedError();
-  return ctx;
+  // Return a new object with the session-specific authSessionId. The cached
+  // ctx has authSessionId='' because buildAuthContext doesn't have JWT access.
+  return authSessionId ? { ...ctx, authSessionId } : ctx;
 }
 
 /**
@@ -54,10 +60,15 @@ export async function requireAuthContext(): Promise<AuthContext> {
  */
 export function isEnforcing(module: string | null | undefined): boolean {
   const raw = process.env.RBAC_ENFORCE_MODULES;
-  if (!raw) return false;                          // shadow
-  if (raw.trim() === '*') return true;             // enforce all
-  if (!module) return false;                       // no module = play safe = shadow
-  const set = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
+  if (!raw) return false; // shadow
+  if (raw.trim() === '*') return true; // enforce all
+  if (!module) return false; // no module = play safe = shadow
+  const set = new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
   return set.has(module);
 }
 

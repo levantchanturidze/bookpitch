@@ -52,8 +52,7 @@ export default function PrivacyView({
 
   async function anonymizeOne() {
     if (!customerId) return;
-    if (!confirm('This clears the customer’s PII (name/email/phone/DOB/notes). Continue?'))
-      return;
+    if (!confirm('This clears the customer’s PII (name/email/phone/DOB/notes). Continue?')) return;
     setMsg(null);
     setBusy('anonymize');
     const res = await fetch(`/api/customers/${customerId}/anonymize`, {
@@ -135,7 +134,8 @@ export default function PrivacyView({
                   {r.customerName ? ` · ${r.customerName}` : ''}
                 </p>
                 <p className="text-slate-500">
-                  by {r.actorEmail ?? 'system'} · {new Date(r.at).toISOString().slice(0, 16).replace('T', ' ')}
+                  by {r.actorEmail ?? 'system'} ·{' '}
+                  {new Date(r.at).toISOString().slice(0, 16).replace('T', ' ')}
                 </p>
               </div>
               <div className="text-right">

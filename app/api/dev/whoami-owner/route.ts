@@ -10,7 +10,12 @@ import { requireAuthContext, requirePermission } from '@/lib/rbac';
 export async function GET() {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'org.settings.update:org', { organizationId: ctx.activeOrganizationId! }, 'dev');
+    requirePermission(
+      ctx,
+      'org.settings.update:org',
+      { organizationId: ctx.activeOrganizationId! },
+      'dev',
+    );
     return { ok: true, session: ctxToSession(ctx) };
   });
 }

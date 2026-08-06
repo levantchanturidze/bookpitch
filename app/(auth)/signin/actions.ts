@@ -5,10 +5,7 @@ import { signIn } from '@/auth';
 
 export type SignInState = { error: string | null };
 
-export async function signInAction(
-  _prev: SignInState,
-  formData: FormData,
-): Promise<SignInState> {
+export async function signInAction(_prev: SignInState, formData: FormData): Promise<SignInState> {
   try {
     await signIn('credentials', {
       email: formData.get('email'),

@@ -16,9 +16,8 @@ vi.mock('@/auth', () => ({
 // (which uses the id in further Prisma queries) doesn't blow up on cast.
 const { locationMock } = vi.hoisted(() => ({ locationMock: vi.fn() }));
 vi.mock('@/lib/active-location', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/active-location')>(
-    '@/lib/active-location',
-  );
+  const actual =
+    await vi.importActual<typeof import('@/lib/active-location')>('@/lib/active-location');
   return { ...actual, loadLocationsForOrg: locationMock };
 });
 
@@ -42,7 +41,11 @@ const USERS: FixtureUser[] = [
     email: 'split-owner@bp.test',
     roleKey: 'ORG_OWNER',
     canByNavId: {
-      scheduler: true,  patients: true, reminders: true, billing: true, analytics: true,
+      scheduler: true,
+      patients: true,
+      reminders: true,
+      billing: true,
+      analytics: true,
     },
   },
   {
@@ -56,7 +59,11 @@ const USERS: FixtureUser[] = [
     // billing / analytics still deny (payment.charge / report.branch not
     // in the :own scope pattern).
     canByNavId: {
-      scheduler: true, patients: true, reminders: true, billing: false, analytics: false,
+      scheduler: true,
+      patients: true,
+      reminders: true,
+      billing: false,
+      analytics: false,
     },
   },
   {
@@ -66,7 +73,11 @@ const USERS: FixtureUser[] = [
       // BRANCH_MANAGER: booking.read:branch YES, client.read:contact YES,
       // booking.update:branch YES (list-mode / no resource), payment.charge YES,
       // report.branch YES.
-      scheduler: true, patients: true, reminders: true, billing: true, analytics: true,
+      scheduler: true,
+      patients: true,
+      reminders: true,
+      billing: true,
+      analytics: true,
     },
   },
 ];
@@ -74,12 +85,14 @@ const USERS: FixtureUser[] = [
 async function jwtFor(email: string) {
   const { unsafePrismaAdmin } = await import('@/lib/db');
   const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({ where: { email } });
-  const membership = await unsafePrismaAdmin.membership.findFirstOrThrow({
-    where: { userId: user.id, organization: { name: 'Split Practice' } },
-  }).catch(async () =>
-    // Some users only have a Grand Medical membership; fall back.
-    unsafePrismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } }),
-  );
+  const membership = await unsafePrismaAdmin.membership
+    .findFirstOrThrow({
+      where: { userId: user.id, organization: { name: 'Split Practice' } },
+    })
+    .catch(async () =>
+      // Some users only have a Grand Medical membership; fall back.
+      unsafePrismaAdmin.membership.findFirstOrThrow({ where: { userId: user.id } }),
+    );
   return {
     user: {
       id: user.id,

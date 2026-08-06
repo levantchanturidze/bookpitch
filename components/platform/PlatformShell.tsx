@@ -5,9 +5,9 @@ import { usePathname } from 'next/navigation';
 import { AlertTriangle, ShieldAlert } from 'lucide-react';
 
 const NAV = [
-  { href: '/platform/orgs',        label: 'Organizations' },
-  { href: '/platform/roles',       label: 'Platform roles' },
-  { href: '/platform/audit',       label: 'Audit log' },
+  { href: '/platform/orgs', label: 'Organizations' },
+  { href: '/platform/roles', label: 'Platform roles' },
+  { href: '/platform/audit', label: 'Audit log' },
   { href: '/platform/break-glass', label: 'Break-glass' },
 ] as const;
 
@@ -37,10 +37,10 @@ export default function PlatformShell({
         <div className="sticky top-0 z-50 border-b-2 border-red-500 bg-red-950/90 px-4 py-2 backdrop-blur">
           <div className="mx-auto flex max-w-7xl items-center gap-3">
             <ShieldAlert className="h-4 w-4 text-red-300" />
-            <p className="text-xs font-bold tracking-wide uppercase text-red-100">
+            <p className="text-xs font-bold tracking-wide text-red-100 uppercase">
               Break-glass session active
               {breakGlassExpiresAt && (
-                <span className="ml-2 font-mono normal-case tracking-normal text-red-200">
+                <span className="ml-2 font-mono tracking-normal text-red-200 normal-case">
                   · expires {new Date(breakGlassExpiresAt).toLocaleTimeString()}
                 </span>
               )}
@@ -64,7 +64,7 @@ export default function PlatformShell({
         <div className="sticky top-0 z-50 border-b border-amber-500 bg-amber-900/80 px-4 py-2">
           <div className="mx-auto flex max-w-7xl items-center gap-3">
             <AlertTriangle className="h-4 w-4 text-amber-300" />
-            <p className="text-xs font-bold uppercase tracking-wide text-amber-100">
+            <p className="text-xs font-bold tracking-wide text-amber-100 uppercase">
               Impersonation session active
             </p>
             <button
@@ -84,12 +84,10 @@ export default function PlatformShell({
       <header className="border-b border-slate-800 bg-slate-900 px-6 py-3">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-widest text-slate-500">
+            <p className="font-mono text-[10px] tracking-widest text-slate-500 uppercase">
               Bookpitch Platform
             </p>
-            <h1 className="font-display text-sm font-extrabold tracking-tight">
-              Operator console
-            </h1>
+            <h1 className="font-display text-sm font-extrabold tracking-tight">Operator console</h1>
           </div>
           <div className="flex items-center gap-2 text-xs text-slate-400">
             <span className="font-mono">{email}</span>

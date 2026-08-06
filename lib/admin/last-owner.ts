@@ -50,9 +50,7 @@ export async function assertNotLastOwner(
     },
   });
   if (others === 0) {
-    throw new InvalidInputError(
-      'org must keep at least one active ORG_OWNER (spec §9 rule 1)',
-    );
+    throw new InvalidInputError('org must keep at least one active ORG_OWNER (spec §9 rule 1)');
   }
 }
 
@@ -65,12 +63,10 @@ export async function assertNotLastOwner(
  * is omitted. The guard makes the invariant real at runtime rather than
  * only at seed time.
  */
-export async function assertOrgOwnerSet(
-  tx: TxClient,
-  organizationId: string,
-): Promise<void> {
+export async function assertOrgOwnerSet(tx: TxClient, organizationId: string): Promise<void> {
   const org = await tx.organization.findUnique({
-    where: { id: organizationId }, select: { ownerUserId: true },
+    where: { id: organizationId },
+    select: { ownerUserId: true },
   });
   if (!org?.ownerUserId) {
     throw new InvalidInputError(

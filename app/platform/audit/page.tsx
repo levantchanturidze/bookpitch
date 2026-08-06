@@ -23,17 +23,29 @@ export default async function PlatformAuditPage({
   });
   const maskPii = user.platformRole?.key === 'SUPPORT_AGENT';
 
-  const rows = await queryPlatformAudit({
-    actorUserId: s('actor'),
-    organizationId: s('org'),
-    action: s('action'),
-    fromDate: s('from') ? new Date(s('from')!) : null,
-    toDate: s('to') ? new Date(s('to')!) : null,
-    limit: 200,
-  }, { maskPii });
+  const rows = await queryPlatformAudit(
+    {
+      actorUserId: s('actor'),
+      organizationId: s('org'),
+      action: s('action'),
+      fromDate: s('from') ? new Date(s('from')!) : null,
+      toDate: s('to') ? new Date(s('to')!) : null,
+      limit: 200,
+    },
+    { maskPii },
+  );
 
-  return <AuditView rows={rows} maskPii={maskPii} initial={{
-    actor: s('actor') ?? '', org: s('org') ?? '', action: s('action') ?? '',
-    from: s('from') ?? '', to: s('to') ?? '',
-  }} />;
+  return (
+    <AuditView
+      rows={rows}
+      maskPii={maskPii}
+      initial={{
+        actor: s('actor') ?? '',
+        org: s('org') ?? '',
+        action: s('action') ?? '',
+        from: s('from') ?? '',
+        to: s('to') ?? '',
+      }}
+    />
+  );
 }

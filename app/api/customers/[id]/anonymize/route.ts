@@ -10,7 +10,12 @@ import { anonymizeCustomer, type AnonymizeReason } from '@/lib/gdpr';
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.export', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.export',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const { id } = await params;
     const body = (await req.json().catch(() => ({}))) as { reason?: unknown };
     const reason = (typeof body.reason === 'string' ? body.reason : 'gdpr') as AnonymizeReason;

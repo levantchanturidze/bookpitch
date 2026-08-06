@@ -14,7 +14,12 @@ export const metadata = { title: 'Patients · Bookpitch' };
 // list stays in sync without any client-side refetch.
 export default async function PatientsPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+  requirePermission(
+    ctx,
+    'client.read:contact',
+    { organizationId: ctx.activeOrganizationId! },
+    'customers',
+  );
   const session = ctxToSession(ctx);
   const { active } = await loadLocationsForOrg(session.organizationId);
   // UI-branching: only callers who can export get the GDPR export button.
@@ -30,11 +35,5 @@ export default async function PatientsPage() {
     return rows.map((r) => toCustomerDetailDto(r, { ctx }));
   });
 
-  return (
-    <PatientList
-      customers={customers}
-      locationType={active.type}
-      isOwner={canExport}
-    />
-  );
+  return <PatientList customers={customers} locationType={active.type} isOwner={canExport} />;
 }

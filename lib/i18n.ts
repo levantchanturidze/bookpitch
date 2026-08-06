@@ -53,8 +53,7 @@ const CATALOG: Record<Locale, Record<string, string>> = {
     'signin.submit': 'Sign in',
     'signin.forgot': 'Forgot password?',
     'reset.title': 'Reset password',
-    'reset.emailHint':
-      'Enter your email and we’ll send a reset link if the address is on file.',
+    'reset.emailHint': 'Enter your email and we’ll send a reset link if the address is on file.',
     'reset.newPassword': 'New password',
     'reset.sendLink': 'Send reset link',
     'reset.setPassword': 'Set new password',

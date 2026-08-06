@@ -43,11 +43,7 @@ function scanSeed(): Array<{ key: string; notYetImplemented: string | null }> {
 
 function scanEnforced(): Set<string> {
   const enforced = new Set<string>();
-  const targets = [
-    path.join(ROOT, 'app'),
-    path.join(ROOT, 'lib'),
-    path.join(ROOT, 'auth.ts'),
-  ];
+  const targets = [path.join(ROOT, 'app'), path.join(ROOT, 'lib'), path.join(ROOT, 'auth.ts')];
   const files: string[] = [];
   for (const t of targets) {
     if (statSync(t).isDirectory()) walk(t, files);
@@ -111,8 +107,8 @@ function main(): number {
     for (const key of unmarkedOrphans) console.error(`  ${key}`);
     console.error('');
     console.error('Either add a callsite in the same PR OR tag the P entry with a');
-    console.error("bundle slug (see the top-of-file comment for existing bundles).");
-    console.error("Grant-with-no-enforcement is silent-non-enforcement — SEC-008 class.");
+    console.error('bundle slug (see the top-of-file comment for existing bundles).');
+    console.error('Grant-with-no-enforcement is silent-non-enforcement — SEC-008 class.');
     return 1;
   }
 

@@ -56,9 +56,7 @@ describe('/api/payments/{checkout,cash}', () => {
 
   afterAll(async () => {
     if (createdPaymentIds.length) {
-      await withoutRls((tx) =>
-        tx.payment.deleteMany({ where: { id: { in: createdPaymentIds } } }),
-      );
+      await withoutRls((tx) => tx.payment.deleteMany({ where: { id: { in: createdPaymentIds } } }));
     }
     // Restore the seeded appointment to unpaid for other suites.
     await withoutRls((tx) =>
@@ -69,7 +67,10 @@ describe('/api/payments/{checkout,cash}', () => {
     );
   });
 
-  beforeEach(() => { authMock.mockReset(); __clearAuthContextCache(); });
+  beforeEach(() => {
+    authMock.mockReset();
+    __clearAuthContextCache();
+  });
 
   it('checkout creates an unpaid payment + returns a mock-gateway redirect URL', async () => {
     authMock.mockResolvedValue(await mkSession(orgId, userId));

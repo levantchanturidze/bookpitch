@@ -15,9 +15,9 @@ describe('planFromId', () => {
 
 describe('effectivePlan', () => {
   it('active pro → pro', () => {
-    expect(
-      effectivePlan({ plan: 'pro', planStatus: 'active', currentPeriodEnd: null }).id,
-    ).toBe('pro');
+    expect(effectivePlan({ plan: 'pro', planStatus: 'active', currentPeriodEnd: null }).id).toBe(
+      'pro',
+    );
   });
   it('trialing clinic → clinic', () => {
     expect(
@@ -25,9 +25,9 @@ describe('effectivePlan', () => {
     ).toBe('clinic');
   });
   it('past_due still grants paid tier (grace)', () => {
-    expect(
-      effectivePlan({ plan: 'pro', planStatus: 'past_due', currentPeriodEnd: null }).id,
-    ).toBe('pro');
+    expect(effectivePlan({ plan: 'pro', planStatus: 'past_due', currentPeriodEnd: null }).id).toBe(
+      'pro',
+    );
   });
   it('canceled + period in future keeps paid tier', () => {
     const future = new Date(Date.now() + 24 * 3600 * 1000);
@@ -37,9 +37,9 @@ describe('effectivePlan', () => {
   });
   it('canceled + period past drops to free', () => {
     const past = new Date(Date.now() - 24 * 3600 * 1000);
-    expect(
-      effectivePlan({ plan: 'pro', planStatus: 'canceled', currentPeriodEnd: past }).id,
-    ).toBe('free');
+    expect(effectivePlan({ plan: 'pro', planStatus: 'canceled', currentPeriodEnd: past }).id).toBe(
+      'free',
+    );
   });
 });
 

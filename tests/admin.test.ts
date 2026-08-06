@@ -78,7 +78,12 @@ describe('admin CRUD × 4 surfaces', () => {
     orgId = seed.orgId;
     otherOrgId = seed.otherId;
     userId = seed.userId;
-    ownerSession = { organizationId: orgId, userId, email: 'admin-owner@bookpitch.dev', role: 'owner' };
+    ownerSession = {
+      organizationId: orgId,
+      userId,
+      email: 'admin-owner@bookpitch.dev',
+      role: 'owner',
+    };
     otherOwnerSession = {
       organizationId: otherOrgId,
       userId: seed.otherUserId,
@@ -88,10 +93,14 @@ describe('admin CRUD × 4 surfaces', () => {
     trackedUserIds.push(userId, seed.otherUserId);
 
     cleanup.push(async () => {
-      await withoutRls((tx) => tx.staffAvailability.deleteMany({ where: { staffId: { in: trackedStaffIds } } }));
+      await withoutRls((tx) =>
+        tx.staffAvailability.deleteMany({ where: { staffId: { in: trackedStaffIds } } }),
+      );
       await withoutRls((tx) => tx.staff.deleteMany({ where: { id: { in: trackedStaffIds } } }));
       await withoutRls((tx) => tx.service.deleteMany({ where: { id: { in: trackedServiceIds } } }));
-      await withoutRls((tx) => tx.location.deleteMany({ where: { id: { in: trackedLocationIds } } }));
+      await withoutRls((tx) =>
+        tx.location.deleteMany({ where: { id: { in: trackedLocationIds } } }),
+      );
       await withoutRls((tx) =>
         tx.membership.deleteMany({ where: { organizationId: { in: [orgId, otherOrgId] } } }),
       );
@@ -100,7 +109,9 @@ describe('admin CRUD × 4 surfaces', () => {
       const { resetAuditForOrgs } = await import('./helpers/audit-reset');
       await resetAuditForOrgs([orgId, otherOrgId]);
       await withoutRls((tx) => tx.appUser.deleteMany({ where: { id: { in: trackedUserIds } } }));
-      await withoutRls((tx) => tx.organization.deleteMany({ where: { id: { in: [orgId, otherOrgId] } } }));
+      await withoutRls((tx) =>
+        tx.organization.deleteMany({ where: { id: { in: [orgId, otherOrgId] } } }),
+      );
     });
   });
 
@@ -120,7 +131,7 @@ describe('admin CRUD × 4 surfaces', () => {
     expect(list.some((l) => l.id === loc.id)).toBe(true);
   });
 
-  it('other-org owner cannot see this org\'s locations (RLS)', async () => {
+  it("other-org owner cannot see this org's locations (RLS)", async () => {
     const otherList = await listLocations(otherOwnerSession);
     expect(otherList.every((l) => l.id !== trackedLocationIds[0])).toBe(true);
   });
@@ -184,7 +195,9 @@ describe('admin CRUD × 4 surfaces', () => {
   it('cannot demote or remove yourself (self-protection)', async () => {
     const members = await listMembers(ownerSession);
     const self = members.find((m) => m.userId === userId)!;
-    await expect(updateMemberRole(ownerSession, self.membershipId, 'receptionist')).rejects.toMatchObject({
+    await expect(
+      updateMemberRole(ownerSession, self.membershipId, 'receptionist'),
+    ).rejects.toMatchObject({
       name: 'InvalidInputError',
     });
     await expect(removeMember(ownerSession, self.membershipId)).rejects.toMatchObject({

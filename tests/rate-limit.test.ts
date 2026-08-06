@@ -38,9 +38,7 @@ describe('rate-limit — per-org fixed-window', () => {
 
   it('throws RateLimitedError past the limit within the same minute', async () => {
     for (let i = 0; i < 2; i++) await consumeRateLimit(orgId, 'assistant', 2);
-    await expect(consumeRateLimit(orgId, 'assistant', 2)).rejects.toBeInstanceOf(
-      RateLimitedError,
-    );
+    await expect(consumeRateLimit(orgId, 'assistant', 2)).rejects.toBeInstanceOf(RateLimitedError);
   });
 
   it('rolls the window at the top of the next minute', async () => {

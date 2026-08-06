@@ -15,7 +15,8 @@ export async function POST(req: NextRequest) {
     // evaluated against the actual owner rather than can()'s list-mode fallback.
     const ownerUserId = await resolveBookingOwner(appointmentId, ctx.activeOrganizationId!);
     requirePermission(
-      ctx, 'booking.update',
+      ctx,
+      'booking.update',
       { organizationId: ctx.activeOrganizationId!, ownerUserId: ownerUserId ?? undefined },
       'reminders',
     );

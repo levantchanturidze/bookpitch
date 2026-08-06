@@ -3,11 +3,7 @@
 import { useState, useTransition } from 'react';
 import type { LocationType } from '@prisma/client';
 import { Plus, Trash2 } from 'lucide-react';
-import {
-  createLocationAction,
-  deleteLocationAction,
-  updateLocationAction,
-} from './actions';
+import { createLocationAction, deleteLocationAction, updateLocationAction } from './actions';
 
 export type LocationRow = {
   id: string;
@@ -60,9 +56,7 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
           <Plus className="h-3.5 w-3.5" /> Add location
         </button>
       </div>
-      {error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-      )}
+      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
@@ -134,12 +128,7 @@ function LocationForm({
   initial?: LocationRow;
   isPending: boolean;
   onCancel: () => void;
-  onSubmit: (v: {
-    type: LocationType;
-    name: string;
-    timezone: string;
-    taxRate: number;
-  }) => void;
+  onSubmit: (v: { type: LocationType; name: string; timezone: string; taxRate: number }) => void;
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [type, setType] = useState<LocationType>(initial?.type ?? 'clinic');

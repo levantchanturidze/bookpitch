@@ -8,7 +8,12 @@ export const dynamic = 'force-dynamic';
 
 export default async function BillingPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'org.billing.read', { organizationId: ctx.activeOrganizationId! }, 'billing');
+  requirePermission(
+    ctx,
+    'org.billing.read',
+    { organizationId: ctx.activeOrganizationId! },
+    'billing',
+  );
   const session = ctxToSession(ctx);
   const { org, effective, plans } = await getBilling(session);
 
@@ -19,9 +24,7 @@ export default async function BillingPage() {
         <p className="mt-1 text-xs text-slate-500">
           You are on the <strong>{effective.name}</strong> plan.{' '}
           {org.currentPeriodEnd && (
-            <span>
-              Current period ends {org.currentPeriodEnd.toISOString().slice(0, 10)}.
-            </span>
+            <span>Current period ends {org.currentPeriodEnd.toISOString().slice(0, 10)}.</span>
           )}
         </p>
       </div>

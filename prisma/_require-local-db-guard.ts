@@ -26,7 +26,11 @@ if (raw) {
   const isLocal = /(^|@)(localhost|127\.0\.0\.1)(:|\/)/.test(raw);
   if (!isLocal && process.env.BOOKPITCH_ALLOW_NON_LOCAL_SEED !== '1') {
     let host = '<unparseable>';
-    try { host = new URL(raw).hostname || '<empty>'; } catch { /* leave */ }
+    try {
+      host = new URL(raw).hostname || '<empty>';
+    } catch {
+      /* leave */
+    }
     console.error(`[seed guard] refusing to run against non-local DB (host=${host}).`);
     console.error('The script that imported this guard calls deleteMany and/or seeds test');
     console.error('users with a repo-committed default password. Set');

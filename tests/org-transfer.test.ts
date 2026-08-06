@@ -10,7 +10,11 @@ vi.mock('@/auth', () => ({
 const { unsafePrismaAdmin } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const {
-  nominateTransfer, acceptTransfer, declineTransfer, revokeTransfer, pendingTransfersForNominee,
+  nominateTransfer,
+  acceptTransfer,
+  declineTransfer,
+  revokeTransfer,
+  pendingTransfersForNominee,
 } = await import('@/lib/admin/ownership-transfer');
 const { ConflictError, InvalidInputError, NotFoundError } = await import('@/lib/auth');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
@@ -37,26 +41,35 @@ describe('ownership transfer', () => {
   beforeAll(async () => {
     await seedRbacFixtures();
     const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Split Practice' }, select: { id: true },
+      where: { name: 'Split Practice' },
+      select: { id: true },
     });
     orgId = org.id;
-    ownerUserId = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { email: 'split-owner@bp.test' },
-    })).id;
-    ownerMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
-      where: { userId: ownerUserId, organizationId: orgId },
-    })).id;
+    ownerUserId = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { email: 'split-owner@bp.test' },
+      })
+    ).id;
+    ownerMembershipId = (
+      await unsafePrismaAdmin.membership.findFirstOrThrow({
+        where: { userId: ownerUserId, organizationId: orgId },
+      })
+    ).id;
     const target = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'moonlight@bp.test' },
     });
     targetUserId = target.id;
-    targetMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
-      where: { userId: target.id, organizationId: orgId },
-    })).id;
+    targetMembershipId = (
+      await unsafePrismaAdmin.membership.findFirstOrThrow({
+        where: { userId: target.id, organizationId: orgId },
+      })
+    ).id;
     // Non-member for negative tests.
-    outsiderUserId = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { email: 'solo@bp.test' },
-    })).id;
+    outsiderUserId = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { email: 'solo@bp.test' },
+      })
+    ).id;
   });
 
   beforeEach(async () => {
@@ -71,7 +84,8 @@ describe('ownership transfer', () => {
       where: { key: 'PROVIDER', organizationId: null },
     });
     await unsafePrismaAdmin.organization.update({
-      where: { id: orgId }, data: { ownerUserId },
+      where: { id: orgId },
+      data: { ownerUserId },
     });
     await unsafePrismaAdmin.membership.update({
       where: { id: ownerMembershipId },
@@ -88,34 +102,50 @@ describe('ownership transfer', () => {
   });
 
   const ownerSession = () => ({
-    userId: ownerUserId, email: 'split-owner@bp.test',
-    organizationId: orgId, membershipId: ownerMembershipId,
+    userId: ownerUserId,
+    email: 'split-owner@bp.test',
+    organizationId: orgId,
+    membershipId: ownerMembershipId,
   });
   const targetSession = () => ({
-    userId: targetUserId, email: 'moonlight@bp.test',
-    organizationId: orgId, membershipId: targetMembershipId,
+    userId: targetUserId,
+    email: 'moonlight@bp.test',
+    organizationId: orgId,
+    membershipId: targetMembershipId,
   });
 
   it('nominate rejects self-nomination', async () => {
-    await expect(nominateTransfer(ownerSession(), ownerUserId)).rejects.toBeInstanceOf(InvalidInputError);
+    await expect(nominateTransfer(ownerSession(), ownerUserId)).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
   });
 
   it('nominate rejects a non-member target', async () => {
-    await expect(nominateTransfer(ownerSession(), outsiderUserId)).rejects.toBeInstanceOf(InvalidInputError);
+    await expect(nominateTransfer(ownerSession(), outsiderUserId)).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
   });
 
   it('nominate refuses a second pending transfer for the same org', async () => {
     await nominateTransfer(ownerSession(), targetUserId);
-    await expect(nominateTransfer(ownerSession(), targetUserId)).rejects.toBeInstanceOf(ConflictError);
+    await expect(nominateTransfer(ownerSession(), targetUserId)).rejects.toBeInstanceOf(
+      ConflictError,
+    );
   });
 
   it('accept swaps ownership + roles + bumps both sessionVersions', async () => {
-    const beforeOwnerSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: ownerUserId }, select: { sessionVersion: true },
-    })).sessionVersion;
-    const beforeTargetSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: targetUserId }, select: { sessionVersion: true },
-    })).sessionVersion;
+    const beforeOwnerSV = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { id: ownerUserId },
+        select: { sessionVersion: true },
+      })
+    ).sessionVersion;
+    const beforeTargetSV = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { id: targetUserId },
+        select: { sessionVersion: true },
+      })
+    ).sessionVersion;
 
     const { id } = await nominateTransfer(ownerSession(), targetUserId);
     const res = await acceptTransfer(targetSession(), id);
@@ -136,17 +166,25 @@ describe('ownership transfer', () => {
     });
     expect(ownerMembershipRefreshed.roleRef?.key).toBe('ORG_ADMIN');
 
-    const transferAfter = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id } });
+    const transferAfter = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({
+      where: { id },
+    });
     expect(transferAfter.status).toBe('accepted');
 
     // Both users' sessionVersions bumped — nominee gets +1 on nominate
     // AND +1 on accept; the ownerUserId gets +1 on accept.
-    const afterOwnerSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: ownerUserId }, select: { sessionVersion: true },
-    })).sessionVersion;
-    const afterTargetSV = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: targetUserId }, select: { sessionVersion: true },
-    })).sessionVersion;
+    const afterOwnerSV = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { id: ownerUserId },
+        select: { sessionVersion: true },
+      })
+    ).sessionVersion;
+    const afterTargetSV = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { id: targetUserId },
+        select: { sessionVersion: true },
+      })
+    ).sessionVersion;
     expect(afterOwnerSV).toBeGreaterThan(beforeOwnerSV);
     expect(afterTargetSV).toBeGreaterThan(beforeTargetSV);
   });
@@ -184,7 +222,9 @@ describe('ownership transfer', () => {
     });
     await expect(acceptTransfer(targetSession(), row.id)).rejects.toBeInstanceOf(InvalidInputError);
     // And should be marked expired.
-    const after = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id: row.id } });
+    const after = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({
+      where: { id: row.id },
+    });
     expect(after.status).toBe('expired');
   });
 

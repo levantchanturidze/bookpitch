@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
-import { log, newRequestId, sanitizeErrorMessage, updateRequestContext, withRequestContext } from '@/lib/logger';
+import {
+  log,
+  newRequestId,
+  sanitizeErrorMessage,
+  updateRequestContext,
+  withRequestContext,
+} from '@/lib/logger';
 import type { AuthContext } from '@/lib/rbac';
 
 /**

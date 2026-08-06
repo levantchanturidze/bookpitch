@@ -30,7 +30,8 @@ export default function BreakGlassForm({
             <ShieldAlert className="h-6 w-6 text-red-300" />
             <div>
               <p className="font-mono text-xs text-red-200">
-                Session {activeSession.sessionId} · target: {activeSession.targetOrganizationId ?? '(platform-wide)'}
+                Session {activeSession.sessionId} · target:{' '}
+                {activeSession.targetOrganizationId ?? '(platform-wide)'}
               </p>
               <p className="mt-1 font-mono text-xs text-red-300">
                 Expires: {new Date(activeSession.expiresAt).toLocaleString()}
@@ -64,14 +65,18 @@ export default function BreakGlassForm({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            password, reason, ticketId,
+            password,
+            reason,
+            ticketId,
             targetOrganizationId: target || null,
           }),
         });
         if (!res.ok) throw new Error(await res.text());
         setPassword('');
         router.refresh();
-      } catch (err) { setError((err as Error).message); }
+      } catch (err) {
+        setError((err as Error).message);
+      }
     });
   };
 
@@ -80,10 +85,9 @@ export default function BreakGlassForm({
       <div>
         <h2 className="text-lg font-bold text-red-300">Activate break-glass access</h2>
         <p className="mt-1 max-w-2xl text-xs text-slate-400">
-          Every read during this session is written to the audit log with a
-          break-glass tag. Session expires after 60 minutes. Alert email
-          fires immediately. Use only when a customer-authorised access is
-          required and impersonation isn&apos;t sufficient.
+          Every read during this session is written to the audit log with a break-glass tag. Session
+          expires after 60 minutes. Alert email fires immediately. Use only when a
+          customer-authorised access is required and impersonation isn&apos;t sufficient.
         </p>
       </div>
 
@@ -93,8 +97,11 @@ export default function BreakGlassForm({
         </div>
       )}
 
-      <form onSubmit={submit} className="space-y-3 rounded-lg border-2 border-red-500 bg-slate-900 p-6">
-        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">
+      <form
+        onSubmit={submit}
+        className="space-y-3 rounded-lg border-2 border-red-500 bg-slate-900 p-6"
+      >
+        <label className="block text-xs font-bold tracking-wider text-slate-500 uppercase">
           Password
           <input
             type="password"
@@ -105,7 +112,7 @@ export default function BreakGlassForm({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-2 text-sm text-slate-100"
           />
         </label>
-        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">
+        <label className="block text-xs font-bold tracking-wider text-slate-500 uppercase">
           Reason (min 5 chars)
           <textarea
             value={reason}
@@ -116,7 +123,7 @@ export default function BreakGlassForm({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-2 text-sm text-slate-100"
           />
         </label>
-        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">
+        <label className="block text-xs font-bold tracking-wider text-slate-500 uppercase">
           Ticket ID
           <input
             value={ticketId}
@@ -125,7 +132,7 @@ export default function BreakGlassForm({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-2 font-mono text-sm text-slate-100"
           />
         </label>
-        <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">
+        <label className="block text-xs font-bold tracking-wider text-slate-500 uppercase">
           Target organization ID (optional)
           <input
             value={target}

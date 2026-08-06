@@ -21,7 +21,10 @@ describe('RBAC Phase 3 fixtures', () => {
     // pages that still read locations; the Phase 2 sync trigger mirrors that
     // into an extra branch. Only assert on the three named-manually branches.
     const named = new Set(['Downtown', 'Uptown', 'Airport']);
-    const filtered = split.branches.map(b => b.name).filter(n => named.has(n)).sort();
+    const filtered = split.branches
+      .map((b) => b.name)
+      .filter((n) => named.has(n))
+      .sort();
     expect(filtered).toEqual(['Airport', 'Downtown', 'Uptown']);
   });
 
@@ -37,7 +40,7 @@ describe('RBAC Phase 3 fixtures', () => {
       },
     });
     expect(membership.roleRef?.key).toBe('BRANCH_MANAGER');
-    const names = membership.branches.map(b => b.branch.name).sort();
+    const names = membership.branches.map((b) => b.branch.name).sort();
     expect(names).toEqual(['Downtown', 'Uptown']);
     expect(names).not.toContain('Airport');
   });
@@ -57,7 +60,7 @@ describe('RBAC Phase 3 fixtures', () => {
     for (const m of mems) {
       expect(m.roleRef?.key).toBe('PROVIDER');
     }
-    const orgNames = mems.map(m => m.organization.name).sort();
+    const orgNames = mems.map((m) => m.organization.name).sort();
     expect(orgNames).toEqual(['Grand Medical & Aurora Spa Group', 'Split Practice']);
   });
 

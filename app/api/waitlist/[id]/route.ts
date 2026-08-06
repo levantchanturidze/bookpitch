@@ -6,10 +6,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // DELETE /api/waitlist/:id — staff-visible.
-export async function DELETE(
-  _req: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
     const { id } = await params;
@@ -19,7 +16,8 @@ export async function DELETE(
     // grant the delete for ANY waitlist row.
     const ownerUserId = await resolveWaitlistOwner(id, ctx.activeOrganizationId!);
     requirePermission(
-      ctx, 'booking.update',
+      ctx,
+      'booking.update',
       { organizationId: ctx.activeOrganizationId!, ownerUserId: ownerUserId ?? undefined },
       'waitlist',
     );

@@ -14,7 +14,12 @@ import {
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.read:contact',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const { id } = await params;
 
@@ -37,7 +42,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.read:contact',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const { id } = await params;
     const input = parseUpdateInput(await req.json().catch(() => null));
@@ -62,7 +72,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.merge', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.merge',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const { id } = await params;
 

@@ -310,7 +310,9 @@ function LocationSwitcher({
       {locations.map((loc) => {
         const active = loc.id === activeLocation.id;
         const activeColor =
-          loc.type === 'clinic' ? 'bg-white text-teal-800 shadow-sm' : 'bg-white text-pink-800 shadow-sm';
+          loc.type === 'clinic'
+            ? 'bg-white text-teal-800 shadow-sm'
+            : 'bg-white text-pink-800 shadow-sm';
         return (
           <form key={loc.id} action={setActiveLocationAction.bind(null, loc.id)}>
             <button
@@ -378,9 +380,7 @@ function NotificationBell({ open, onToggle }: { open: boolean; onToggle: () => v
               </div>
               <div className="max-h-[280px] space-y-2 overflow-y-auto pr-1">
                 {items.length === 0 ? (
-                  <div className="py-8 text-center text-xs text-slate-400">
-                    No recent activity.
-                  </div>
+                  <div className="py-8 text-center text-xs text-slate-400">No recent activity.</div>
                 ) : (
                   items.map((n) => (
                     <div
@@ -392,16 +392,12 @@ function NotificationBell({ open, onToggle }: { open: boolean; onToggle: () => v
                       }`}
                     >
                       <div className="flex items-start justify-between gap-1">
-                        <span className="text-[11px] font-bold text-slate-800">
-                          {n.title}
-                        </span>
+                        <span className="text-[11px] font-bold text-slate-800">{n.title}</span>
                         <span className="font-mono text-[9px] text-slate-400">
                           {formatRelative(n.createdAt)}
                         </span>
                       </div>
-                      {n.body && (
-                        <p className="mt-0.5 text-[10px] text-slate-500">{n.body}</p>
-                      )}
+                      {n.body && <p className="mt-0.5 text-[10px] text-slate-500">{n.body}</p>}
                     </div>
                   ))
                 )}

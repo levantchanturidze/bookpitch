@@ -15,7 +15,8 @@ export const dynamic = 'force-dynamic';
 // verify: return 401 immediately.
 export async function POST(req: NextRequest) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!secret) return NextResponse.json({ error: 'STRIPE_WEBHOOK_SECRET not set' }, { status: 500 });
+  if (!secret)
+    return NextResponse.json({ error: 'STRIPE_WEBHOOK_SECRET not set' }, { status: 500 });
   const sig = req.headers.get('stripe-signature');
   if (!sig) return NextResponse.json({ error: 'missing stripe-signature' }, { status: 401 });
 

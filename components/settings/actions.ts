@@ -107,9 +107,10 @@ export async function deleteServiceAction(id: string) {
  * UI can show it to the sender (in case email delivery failed / isn't
  * configured).
  */
-export async function inviteMemberAction(
-  input: { email: string; role: UserRole },
-): Promise<CreateInvitationResult> {
+export async function inviteMemberAction(input: {
+  email: string;
+  role: UserRole;
+}): Promise<CreateInvitationResult> {
   const session = await ctxFor('staff.invite', 'admin');
   const result = await createInvitation(session, input);
   REVALIDATE_ALL();

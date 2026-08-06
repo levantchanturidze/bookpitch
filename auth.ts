@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import { PrismaAdapter } from '@auth/prisma-adapter';
@@ -32,6 +33,9 @@ declare module 'next-auth' {
       membershipId: string | null;
       platformRoleId: string | null;
       roleKey: string | null;
+      // Stable random ID generated at sign-in; preserved across JWT rotations.
+      // Used to bind reauth grants to the specific session that verified the password.
+      authSessionId: string;
     } & DefaultSession['user'];
   }
 }
@@ -45,6 +49,10 @@ declare module '@auth/core/jwt' {
     platformRoleId: string | null;
     roleKey: string | null;
     sessionVersion: number;
+    // Stable unique identifier for this login session. Generated once at
+    // sign-in; preserved across JWT rotations; invalidated by sign-out.
+    // Do not expose to client-side JavaScript.
+    authSessionId: string;
   }
 }
 
@@ -87,9 +95,9 @@ async function alertOnPlatformLogin(userId: string, email: string): Promise<void
       alertTo,
       '[Bookpitch] Platform-role sign-in',
       `A platform-role user just signed in.\n\n` +
-      `User: ${email} (${userId})\n` +
-      `At: ${new Date().toISOString()}\n\n` +
-      `If this wasn't you, reset your password and rotate any credentials.`,
+        `User: ${email} (${userId})\n` +
+        `At: ${new Date().toISOString()}\n\n` +
+        `If this wasn't you, reset your password and rotate any credentials.`,
     );
   } catch (err) {
     log.warn('auth.platform_login_alert_failed', { err: (err as Error).message });
@@ -102,19 +110,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     Credentials({
       credentials: {
-        email:    { label: 'Email',    type: 'email' },
+        email: { label: 'Email', type: 'email' },
         password: { label: 'Password', type: 'password' },
         // Optional target org. Populated by the org-switch flow
         // (lib/org-switch.ts) which triggers a fresh sign-in with the
         // desired org selected. Absent → picks the first active membership.
-        orgId:    { label: 'orgId',    type: 'text' },
+        orgId: { label: 'orgId', type: 'text' },
       },
       async authorize(credentials) {
         const email = credentials?.email;
         const password = credentials?.password;
-        const requestedOrgId = typeof credentials?.orgId === 'string' && credentials.orgId
-          ? credentials.orgId
-          : null;
+        const requestedOrgId =
+          typeof credentials?.orgId === 'string' && credentials.orgId ? credentials.orgId : null;
         if (typeof email !== 'string' || typeof password !== 'string') return null;
         const result = await validateCredentials({ email, password, requestedOrgId });
         if (!result) return null;
@@ -149,7 +156,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.platformRoleId = u.platformRoleId;
         token.roleKey = u.roleKey ?? null;
         token.sessionVersion = u.sessionVersion ?? 1;
+        // Generate a stable random session identifier at sign-in time.
+        // Preserved across JWT rotations; never regenerated for the same session.
+        // Binds reauth grants to exactly this login session.
+        token.authSessionId = randomBytes(32).toString('hex');
       }
+      // authSessionId is preserved on rotation because we never overwrite it.
       return token;
     },
     async session({ session, token }) {
@@ -160,12 +172,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (current === null || current !== token.sessionVersion) {
         return { ...session, user: undefined as unknown as typeof session.user };
       }
-      session.user.id                   = token.userId;
-      session.user.email                = token.email ?? session.user.email;
+      session.user.id = token.userId;
+      session.user.email = token.email ?? session.user.email;
       session.user.activeOrganizationId = token.activeOrganizationId;
-      session.user.membershipId         = token.membershipId;
-      session.user.platformRoleId       = token.platformRoleId;
-      session.user.roleKey              = token.roleKey;
+      session.user.membershipId = token.membershipId;
+      session.user.platformRoleId = token.platformRoleId;
+      session.user.roleKey = token.roleKey;
+      session.user.authSessionId = token.authSessionId ?? '';
       return session;
     },
   },

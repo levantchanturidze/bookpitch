@@ -38,17 +38,18 @@ const { buildAuthContext, can, requireAuthContext } = await import('@/lib/rbac')
 const { switchActiveOrg } = await import('@/lib/org-switch');
 const { InvalidInputError } = await import('@/lib/auth');
 
-const routeCustomers    = await import('@/app/api/customers/route');
+const routeCustomers = await import('@/app/api/customers/route');
 const routeCustomerItem = await import('@/app/api/customers/[id]/route');
 const routeCustomerExport = await import('@/app/api/customers/[id]/export/route');
 const routeAppointments = await import('@/app/api/appointments/route');
-const routeMembers      = await import('@/app/api/admin/members/[id]/route');
-const routeSessSwitch   = await import('@/app/api/session/switch/route');
+const routeMembers = await import('@/app/api/admin/members/[id]/route');
+const routeSessSwitch = await import('@/app/api/session/switch/route');
 const routePlatformOrgs = await import('@/app/api/platform/orgs/route');
-const routePlatformOrgItem    = await import('@/app/api/platform/orgs/[id]/route');
+const routePlatformOrgItem = await import('@/app/api/platform/orgs/[id]/route');
 const routePlatformOrgToggles = await import('@/app/api/platform/orgs/[id]/toggles/route');
-const routePlatformRoles      = await import('@/app/api/platform/roles/route');
-const { verifyPasswordFresh, __clearPasswordReauthCache } = await import('@/lib/platform/password-reauth');
+const routePlatformRoles = await import('@/app/api/platform/roles/route');
+const { verifyPasswordFresh, __clearPasswordReauthCache } =
+  await import('@/lib/platform/password-reauth');
 const { __clearOrgTogglesCache } = await import('@/lib/rbac/toggles');
 const { RESTRICTED_DURING_IMPERSONATION } = await import('@/lib/rbac/impersonation');
 const { perm } = await import('@/lib/rbac/types');
@@ -57,7 +58,13 @@ import type { NextRequest } from 'next/server';
 function req(url: string, init?: RequestInit): NextRequest {
   return new Request(url, init) as unknown as NextRequest;
 }
-async function json<T = unknown>(res: Response): Promise<T> { return (await res.json()) as T; }
+async function json<T = unknown>(res: Response): Promise<T> {
+  return (await res.json()) as T;
+}
+
+// Matches the default authSessionId returned by mockPlatformJwt so that
+// verifyPasswordFresh grants created in tests are visible to the route's ctx.authSessionId.
+const SUPER_PLATFORM_SESSION = 'test-platform-session';
 
 // -----------------------------------------------------------------------------
 // Shared handles resolved once for every probe.
@@ -226,9 +233,11 @@ describe('SEC § cross-tenant isolation', () => {
     const foreign = '00000000-0000-0000-0000-000000000042';
     const from = new Date(Date.UTC(2020, 0, 1)).toISOString();
     const to = new Date(Date.UTC(2100, 0, 1)).toISOString();
-    const res = await routeAppointments.GET(req(
-      `http://x/api/appointments?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&locationId=${foreign}`,
-    ));
+    const res = await routeAppointments.GET(
+      req(
+        `http://x/api/appointments?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&locationId=${foreign}`,
+      ),
+    );
     expect(res.status).toBe(400);
   });
 
@@ -309,10 +318,12 @@ describe('SEC § privilege escalation', () => {
       where: { key: 'ORG_ADMIN', organizationId: null },
     });
     const originalRole = await unsafePrismaAdmin.membership.findUniqueOrThrow({
-      where: { id: H.splitMgrMembershipId }, select: { roleId: true },
+      where: { id: H.splitMgrMembershipId },
+      select: { roleId: true },
     });
     await unsafePrismaAdmin.membership.update({
-      where: { id: H.splitMgrMembershipId }, data: { roleId: orgAdminRole.id },
+      where: { id: H.splitMgrMembershipId },
+      data: { roleId: orgAdminRole.id },
     });
     __clearAuthContextCache();
     authMock.mockResolvedValue(await mockJwt(H.splitMgrId, H.splitOrgId));
@@ -328,7 +339,8 @@ describe('SEC § privilege escalation', () => {
     expect(roleAfter.roleRef?.key).toBe('PROVIDER'); // unchanged
     // Restore.
     await unsafePrismaAdmin.membership.update({
-      where: { id: H.splitMgrMembershipId }, data: { roleId: originalRole.roleId },
+      where: { id: H.splitMgrMembershipId },
+      data: { roleId: originalRole.roleId },
     });
   });
 
@@ -337,22 +349,27 @@ describe('SEC § privilege escalation', () => {
     // Here we canary with a fresh probe against a helper call.
     const { assertNotLastOwner } = await import('@/lib/admin/last-owner');
     await unsafePrismaAdmin.$transaction(async (t) => {
-      await expect(assertNotLastOwner(t, H.splitOrgId, H.splitOwnerMembershipId))
-        .rejects.toBeInstanceOf(InvalidInputError);
+      await expect(
+        assertNotLastOwner(t, H.splitOrgId, H.splitOwnerMembershipId),
+      ).rejects.toBeInstanceOf(InvalidInputError);
     });
   });
 
   it('P2.4: switchActiveOrg to a non-member org throws InvalidInputError', async () => {
     // Grand Medical owner tries to switch into Split Practice.
-    await expect(switchActiveOrg(H.grandOwnerId, H.splitOrgId))
-      .rejects.toBeInstanceOf(InvalidInputError);
+    await expect(switchActiveOrg(H.grandOwnerId, H.splitOrgId)).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
   });
 
   it('P2.5: /api/session/switch to a non-member org returns 400', async () => {
     authMock.mockResolvedValue(await mockJwt(H.grandOwnerId, H.grandOrgId));
-    const res = await routeSessSwitch.POST(req('http://x', {
-      method: 'POST', body: JSON.stringify({ organizationId: H.splitOrgId }),
-    }));
+    const res = await routeSessSwitch.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({ organizationId: H.splitOrgId }),
+      }),
+    );
     expect(res.status).toBe(400);
   });
 
@@ -361,8 +378,10 @@ describe('SEC § privilege escalation', () => {
     await expect(
       createInvitation(
         {
-          userId: H.splitMgrId, email: 'splitmgr@bp.test',
-          organizationId: H.splitOrgId, membershipId: H.splitMgrMembershipId,
+          userId: H.splitMgrId,
+          email: 'splitmgr@bp.test',
+          organizationId: H.splitOrgId,
+          membershipId: H.splitMgrMembershipId,
         },
         { email: `escalate-${Date.now()}@ex.test`, role: 'owner' },
       ),
@@ -400,7 +419,8 @@ describe('SEC § impersonation + break-glass', () => {
         actorUserId: H.platformAdminId,
         onBehalfOfUserId: H.splitOwnerId,
         organizationId: H.splitOrgId,
-        reason: 'expired-probe', ticketId: 'SEC-P3.1',
+        reason: 'expired-probe',
+        ticketId: 'SEC-P3.1',
         startedAt: new Date(Date.now() - 2 * 60 * 60_000),
         expiresAt: new Date(Date.now() - 60 * 60_000),
       },
@@ -415,7 +435,8 @@ describe('SEC § impersonation + break-glass', () => {
     await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: H.superUserId,
-        reason: 'expired-probe', ticketId: 'SEC-P3.2',
+        reason: 'expired-probe',
+        ticketId: 'SEC-P3.2',
         startedAt: new Date(Date.now() - 2 * 60 * 60_000),
         expiresAt: new Date(Date.now() - 60 * 60_000),
       },
@@ -432,7 +453,8 @@ describe('SEC § impersonation + break-glass', () => {
         actorUserId: H.platformAdminId,
         onBehalfOfUserId: H.splitOwnerId,
         organizationId: H.splitOrgId,
-        reason: 'ended-probe', ticketId: 'SEC-P3.3',
+        reason: 'ended-probe',
+        ticketId: 'SEC-P3.3',
         expiresAt: new Date(Date.now() + 60 * 60_000),
         endedAt: new Date(),
       },
@@ -459,7 +481,8 @@ describe('SEC § impersonation + break-glass', () => {
       data: {
         actorUserId: H.superUserId,
         targetOrganizationId: H.grandOrgId,
-        reason: 'bg-clinical-reach', ticketId: 'SEC-P3.5',
+        reason: 'bg-clinical-reach',
+        ticketId: 'SEC-P3.5',
         expiresAt: new Date(Date.now() + 60 * 60_000),
       },
     });
@@ -479,14 +502,20 @@ describe('SEC § impersonation + break-glass', () => {
       where: { key: 'ORG_OWNER', organizationId: null },
     });
     const memb = await unsafePrismaAdmin.membership.create({
-      data: { userId: H.platformAdminId, organizationId: H.splitOrgId, role: 'owner', roleId: orgOwnerRole.id },
+      data: {
+        userId: H.platformAdminId,
+        organizationId: H.splitOrgId,
+        role: 'owner',
+        roleId: orgOwnerRole.id,
+      },
     });
     await unsafePrismaAdmin.impersonationSession.create({
       data: {
         actorUserId: H.platformAdminId,
         onBehalfOfUserId: H.splitOwnerId,
         organizationId: H.splitOrgId,
-        reason: 'restrict-probe', ticketId: 'SEC-P3.6',
+        reason: 'restrict-probe',
+        ticketId: 'SEC-P3.6',
         expiresAt: new Date(Date.now() + 60 * 60_000),
       },
     });
@@ -504,7 +533,8 @@ describe('SEC § impersonation + break-glass', () => {
     const bg = await unsafePrismaAdmin.breakGlassSession.create({
       data: {
         actorUserId: H.superUserId,
-        reason: 'bg-audit-probe', ticketId: 'SEC-P3.7',
+        reason: 'bg-audit-probe',
+        ticketId: 'SEC-P3.7',
         expiresAt: new Date(Date.now() + 60 * 60_000),
       },
     });
@@ -522,43 +552,42 @@ describe('SEC § impersonation + break-glass', () => {
     expect(after).toBeGreaterThan(before);
   });
 
-  it(
-    "P3.8: break-glass read audit-write failure fails closed (SEC-003 fixed)",
-    async () => {
-      // Spec §7.2 rule 6: reads MUST be audited during a break-glass
-      // session. lib/platform/api.ts now surrounds the audit write with a
-      // try/catch that logs at error level and throws — withApi maps that
-      // throw to a 500 and re-throws so Next.js surfaces the failure.
-      //
-      // Reproduction: mock the audit insert to throw → hit /platform/orgs
-      // as SUPER in break-glass mode → the call must either throw or
-      // return a 5xx (never a 200).
-      const bg = await unsafePrismaAdmin.breakGlassSession.create({
-        data: {
-          actorUserId: H.superUserId,
-          reason: 'audit-suppress', ticketId: 'SEC-P3.8',
-          expiresAt: new Date(Date.now() + 60 * 60_000),
-        },
-      });
-      __clearAuthContextCache();
-      const spy = vi.spyOn(unsafePrismaAdmin.auditLog, 'create')
-        .mockRejectedValueOnce(new Error('simulated audit failure'));
-      authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-      let status = 0;
-      try {
-        const res = await routePlatformOrgs.GET();
-        status = res.status;
-      } catch {
-        // withApi re-throws unknown 5xx errors so Next.js sees them; in a
-        // real request Next.js maps that to a 500. The safe outcome is
-        // "never a 2xx", which a thrown error trivially satisfies.
-        status = 500;
-      }
-      spy.mockRestore();
-      void bg;
-      expect(status).toBeGreaterThanOrEqual(500);
-    },
-  );
+  it('P3.8: break-glass read audit-write failure fails closed (SEC-003 fixed)', async () => {
+    // Spec §7.2 rule 6: reads MUST be audited during a break-glass
+    // session. lib/platform/api.ts now surrounds the audit write with a
+    // try/catch that logs at error level and throws — withApi maps that
+    // throw to a 500 and re-throws so Next.js surfaces the failure.
+    //
+    // Reproduction: mock the audit insert to throw → hit /platform/orgs
+    // as SUPER in break-glass mode → the call must either throw or
+    // return a 5xx (never a 200).
+    const bg = await unsafePrismaAdmin.breakGlassSession.create({
+      data: {
+        actorUserId: H.superUserId,
+        reason: 'audit-suppress',
+        ticketId: 'SEC-P3.8',
+        expiresAt: new Date(Date.now() + 60 * 60_000),
+      },
+    });
+    __clearAuthContextCache();
+    const spy = vi
+      .spyOn(unsafePrismaAdmin.auditLog, 'create')
+      .mockRejectedValueOnce(new Error('simulated audit failure'));
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    let status = 0;
+    try {
+      const res = await routePlatformOrgs.GET();
+      status = res.status;
+    } catch {
+      // withApi re-throws unknown 5xx errors so Next.js sees them; in a
+      // real request Next.js maps that to a 500. The safe outcome is
+      // "never a 2xx", which a thrown error trivially satisfies.
+      status = 500;
+    }
+    spy.mockRestore();
+    void bg;
+    expect(status).toBeGreaterThanOrEqual(500);
+  });
 
   it('P3.9: an impersonating org.delete attempt writes an audit row of the DENIED attempt', async () => {
     // Not strictly a security finding — an observability check. Callers
@@ -618,9 +647,7 @@ describe('SEC § audit-log append-only invariant', () => {
 
   it('P4.3: DELETE via prismaApp fails', async () => {
     await expect(
-      withOrg(H.grandOrgId, (tx) =>
-        tx.auditLog.deleteMany({ where: { id: auditRowId } }),
-      ),
+      withOrg(H.grandOrgId, (tx) => tx.auditLog.deleteMany({ where: { id: auditRowId } })),
     ).rejects.toThrow(/append-only|permission denied/i);
   });
 
@@ -631,13 +658,15 @@ describe('SEC § audit-log append-only invariant', () => {
   });
 
   it('P4.5: TRUNCATE audit_log fails via BEFORE TRUNCATE trigger', async () => {
-    await expect(
-      unsafePrismaAdmin.$executeRawUnsafe('TRUNCATE TABLE "audit_log"'),
-    ).rejects.toThrow(/append-only|permission denied/i);
+    await expect(unsafePrismaAdmin.$executeRawUnsafe('TRUNCATE TABLE "audit_log"')).rejects.toThrow(
+      /append-only|permission denied/i,
+    );
   });
 
   it('P4.6: information_schema — bookpitch_app has NO UPDATE or DELETE grants on audit_log', async () => {
-    const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ privilege_type: string; table_name: string }>>(
+    const rows = await unsafePrismaAdmin.$queryRawUnsafe<
+      Array<{ privilege_type: string; table_name: string }>
+    >(
       `SELECT privilege_type, table_name
          FROM information_schema.role_table_grants
         WHERE grantee='bookpitch_app'
@@ -706,16 +735,23 @@ describe('SEC § auth + session integrity', () => {
   it('P5.3: session-version bump on role change forces re-auth within SV_TTL_MS', async () => {
     // Covered by admin-guardrails.test.ts "updateMemberRole bumps target's
     // sessionVersion". Canary here.
-    const before = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: H.moonId }, select: { sessionVersion: true },
-    })).sessionVersion;
+    const before = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { id: H.moonId },
+        select: { sessionVersion: true },
+      })
+    ).sessionVersion;
     // Simulate role-change bump. (Direct manipulation OK for this canary.)
     await unsafePrismaAdmin.appUser.update({
-      where: { id: H.moonId }, data: { sessionVersion: { increment: 1 } },
+      where: { id: H.moonId },
+      data: { sessionVersion: { increment: 1 } },
     });
-    const after = (await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { id: H.moonId }, select: { sessionVersion: true },
-    })).sessionVersion;
+    const after = (
+      await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+        where: { id: H.moonId },
+        select: { sessionVersion: true },
+      })
+    ).sessionVersion;
     expect(after).toBe(before + 1);
   });
 });
@@ -783,7 +819,8 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     );
     expect(res.status).toBe(403);
     const orgAfter = await unsafePrismaAdmin.organization.findUniqueOrThrow({
-      where: { id: H.grandOrgId }, select: { name: true },
+      where: { id: H.grandOrgId },
+      select: { name: true },
     });
     expect(orgAfter.name).not.toBe('Hijacked');
   });
@@ -812,7 +849,7 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
   });
 
   it('P6.7: SUPER_ADMIN PATCH toggles without fresh password reauth → 403', async () => {
-    await __clearPasswordReauthCache();  // no fresh reauth marker
+    await __clearPasswordReauthCache(); // no fresh reauth marker
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
     const res = await routePlatformOrgToggles.PATCH(
       reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
@@ -827,7 +864,13 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
   it('P6.8: SUPER_ADMIN with fresh password can PATCH toggles (positive control)', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
     // Simulate the reauth step by verifying the password.
-    await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+    await verifyPasswordFresh(
+      H.superUserId,
+      process.env.DEV_USER_PASSWORD ?? 'devpass123',
+      SUPER_PLATFORM_SESSION,
+      'platform.org.configure',
+      { orgId: H.grandOrgId },
+    );
     const res = await routePlatformOrgToggles.PATCH(
       reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
         frontdeskDiscountCeiling: 42,
@@ -836,7 +879,13 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     );
     expect(res.status).toBe(200);
     // Reset the value back to a safe default so we don't poison later probes.
-    await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+    await verifyPasswordFresh(
+      H.superUserId,
+      process.env.DEV_USER_PASSWORD ?? 'devpass123',
+      SUPER_PLATFORM_SESSION,
+      'platform.org.configure',
+      { orgId: H.grandOrgId },
+    );
     await routePlatformOrgToggles.PATCH(
       reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
         frontdeskDiscountCeiling: 0,
@@ -848,7 +897,13 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
   // ---- Input validation on the new mutations -------------------------------
   it('P6.9: negative frontdeskDiscountCeiling is rejected (input validation)', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-    await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+    await verifyPasswordFresh(
+      H.superUserId,
+      process.env.DEV_USER_PASSWORD ?? 'devpass123',
+      SUPER_PLATFORM_SESSION,
+      'platform.org.configure',
+      { orgId: H.grandOrgId },
+    );
     const res = await routePlatformOrgToggles.PATCH(
       reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
         frontdeskDiscountCeiling: -1,
@@ -860,10 +915,16 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
 
   it('P6.10: non-boolean toggle value is ignored → empty patch → 400 "no editable fields"', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-    await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
+    await verifyPasswordFresh(
+      H.superUserId,
+      process.env.DEV_USER_PASSWORD ?? 'devpass123',
+      SUPER_PLATFORM_SESSION,
+      'platform.org.configure',
+      { orgId: H.grandOrgId },
+    );
     const res = await routePlatformOrgToggles.PATCH(
       reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
-        providerClinicalNotesOthers: 1,  // truthy but not boolean — must be dropped
+        providerClinicalNotesOthers: 1, // truthy but not boolean — must be dropped
       }),
       { params: Promise.resolve({ id: H.grandOrgId }) },
     );
@@ -875,7 +936,8 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
     const res = await routePlatformRoles.POST(
       reqJson('http://x/api/platform/roles', 'POST', {
-        email: 'billing@bp.test', roleKey: 'SUPER_ADMIN',
+        email: 'billing@bp.test',
+        roleKey: 'SUPER_ADMIN',
       }),
     );
     expect(res.status).toBe(403);
@@ -894,7 +956,8 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     // rbac-fixtures.ts::seedRbacFixtures does findFirstOrThrow by literal
     // name, and if we leave it renamed the next test-run's beforeAll dies.
     const orig = await unsafePrismaAdmin.organization.findUniqueOrThrow({
-      where: { id: H.grandOrgId }, select: { name: true },
+      where: { id: H.grandOrgId },
+      select: { name: true },
     });
     const before = await unsafePrismaAdmin.auditLog.count({
       where: { organizationId: H.grandOrgId, action: 'org.edit' },
@@ -915,47 +978,57 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     } finally {
       // Always restore, even if the probe fails.
       await unsafePrismaAdmin.organization.update({
-        where: { id: H.grandOrgId }, data: { name: orig.name },
+        where: { id: H.grandOrgId },
+        data: { name: orig.name },
       });
     }
   });
 
   // ---- SEC-004 regression guard: toggles mutation writes an audit row -----
-  it(
-    'P6.13: updateOrgToggles writes an audit row (SEC-004 fixed 2026-08-03)',
-    async () => {
-      authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
-      await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
-      const before = await unsafePrismaAdmin.auditLog.count({
-        where: {
-          organizationId: H.grandOrgId,
-          action: { in: ['org.toggles.update', 'org.config.update', 'platform.config.manage'] },
-        },
-      });
-      const res = await routePlatformOrgToggles.PATCH(
-        reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
-          frontdeskDiscountCeiling: 7,
-        }),
-        { params: Promise.resolve({ id: H.grandOrgId }) },
-      );
-      expect(res.status).toBe(200);
-      const after = await unsafePrismaAdmin.auditLog.count({
-        where: {
-          organizationId: H.grandOrgId,
-          action: { in: ['org.toggles.update', 'org.config.update', 'platform.config.manage'] },
-        },
-      });
-      // reset
-      await verifyPasswordFresh(H.superUserId, process.env.DEV_USER_PASSWORD ?? 'devpass123');
-      await routePlatformOrgToggles.PATCH(
-        reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
-          frontdeskDiscountCeiling: 0,
-        }),
-        { params: Promise.resolve({ id: H.grandOrgId }) },
-      );
-      expect(after).toBeGreaterThan(before);
-    },
-  );
+  it('P6.13: updateOrgToggles writes an audit row (SEC-004 fixed 2026-08-03)', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    await verifyPasswordFresh(
+      H.superUserId,
+      process.env.DEV_USER_PASSWORD ?? 'devpass123',
+      SUPER_PLATFORM_SESSION,
+      'platform.org.configure',
+      { orgId: H.grandOrgId },
+    );
+    const before = await unsafePrismaAdmin.auditLog.count({
+      where: {
+        organizationId: H.grandOrgId,
+        action: { in: ['org.toggles.update', 'org.config.update', 'platform.config.manage'] },
+      },
+    });
+    const res = await routePlatformOrgToggles.PATCH(
+      reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+        frontdeskDiscountCeiling: 7,
+      }),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+    expect(res.status).toBe(200);
+    const after = await unsafePrismaAdmin.auditLog.count({
+      where: {
+        organizationId: H.grandOrgId,
+        action: { in: ['org.toggles.update', 'org.config.update', 'platform.config.manage'] },
+      },
+    });
+    // reset
+    await verifyPasswordFresh(
+      H.superUserId,
+      process.env.DEV_USER_PASSWORD ?? 'devpass123',
+      SUPER_PLATFORM_SESSION,
+      'platform.org.configure',
+      { orgId: H.grandOrgId },
+    );
+    await routePlatformOrgToggles.PATCH(
+      reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {
+        frontdeskDiscountCeiling: 0,
+      }),
+      { params: Promise.resolve({ id: H.grandOrgId }) },
+    );
+    expect(after).toBeGreaterThan(before);
+  });
 
   // ---- SEC-006 regression guard: last-SUPER_ADMIN protection ---------------
   it('P6.15: cannot demote the last SUPER_ADMIN (SEC-006 fixed 2026-08-03)', async () => {
@@ -966,9 +1039,9 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
     // non-SUPER — this is a service-layer test).
     const actorCtx = await buildAuthContext(H.superUserId, null);
     if (!actorCtx) throw new Error('failed to build super-admin ctx');
-    await expect(
-      assignPlatformRole(actorCtx, 'superadmin@bp.test', null),
-    ).rejects.toThrow(/at least one active SUPER_ADMIN/);
+    await expect(assignPlatformRole(actorCtx, 'superadmin@bp.test', null)).rejects.toThrow(
+      /at least one active SUPER_ADMIN/,
+    );
     await expect(
       assignPlatformRole(actorCtx, 'superadmin@bp.test', 'PLATFORM_ADMIN'),
     ).rejects.toThrow(/at least one active SUPER_ADMIN/);
@@ -981,18 +1054,15 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
   });
 
   // ---- SEC-005 regression guard: platform.config.manage in RESTRICTED_DURING_IMPERSONATION
-  it(
-    'P6.14: platform.config.manage in RESTRICTED_DURING_IMPERSONATION (SEC-005 fixed 2026-08-03)',
-    () => {
-      // The impersonation restriction set exists specifically to prevent
-      // an impersonating actor from flipping PII / clinical-visibility
-      // toggles that would then let them re-read clinical data.
-      // updateOrgToggles governs `providerClinicalNotesOthers` (spec §6.2)
-      // — flipping it during impersonation is exactly the class of
-      // two-step exfiltration §7.1 rule 5 exists to block.
-      expect(RESTRICTED_DURING_IMPERSONATION.has(perm('platform.config.manage'))).toBe(true);
-    },
-  );
+  it('P6.14: platform.config.manage in RESTRICTED_DURING_IMPERSONATION (SEC-005 fixed 2026-08-03)', () => {
+    // The impersonation restriction set exists specifically to prevent
+    // an impersonating actor from flipping PII / clinical-visibility
+    // toggles that would then let them re-read clinical data.
+    // updateOrgToggles governs `providerClinicalNotesOthers` (spec §6.2)
+    // — flipping it during impersonation is exactly the class of
+    // two-step exfiltration §7.1 rule 5 exists to block.
+    expect(RESTRICTED_DURING_IMPERSONATION.has(perm('platform.config.manage'))).toBe(true);
+  });
 });
 
 // =============================================================================
@@ -1009,7 +1079,8 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
   // owner (owner@bookpitch.dev) as the linked user.
   async function makeStaffLinkedToUser(orgId: string, userId: string): Promise<string> {
     const loc = await unsafePrismaAdmin.location.findFirstOrThrow({
-      where: { organizationId: orgId }, select: { id: true },
+      where: { organizationId: orgId },
+      select: { id: true },
     });
     const staff = await unsafePrismaAdmin.staff.create({
       data: {
@@ -1031,17 +1102,21 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
     const appt = await unsafePrismaAdmin.appointment.create({
       data: {
         organizationId: H.grandOrgId,
-        locationId: (await unsafePrismaAdmin.location.findFirstOrThrow({
-          where: { organizationId: H.grandOrgId }, select: { id: true },
-        })).id,
+        locationId: (
+          await unsafePrismaAdmin.location.findFirstOrThrow({
+            where: { organizationId: H.grandOrgId },
+            select: { id: true },
+          })
+        ).id,
         customerId: H.grandCustomerId,
         staffId,
         serviceId: null,
         serviceName: 'sec-007 probe',
         price: 0,
         startsAt: new Date(now.getTime() + 3600_000),
-        endsAt:   new Date(now.getTime() + 3600_000 + 1800_000),
-        status: 'pending', paymentStatus: 'unpaid',
+        endsAt: new Date(now.getTime() + 3600_000 + 1800_000),
+        status: 'pending',
+        paymentStatus: 'unpaid',
       },
       select: { id: true },
     });
@@ -1060,9 +1135,10 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
     // target to probe. Iso may or may not have staff seeded (base seed
     // creates staff only in Grand); create one for the probe.
     const isoLoc = await unsafePrismaAdmin.location.findFirst({
-      where: { organizationId: H.isoOrgId }, select: { id: true },
+      where: { organizationId: H.isoOrgId },
+      select: { id: true },
     });
-    if (!isoLoc) return;   // isolation org has no location — probe not applicable
+    if (!isoLoc) return; // isolation org has no location — probe not applicable
     const isoStaff = await unsafePrismaAdmin.staff.create({
       data: {
         organizationId: H.isoOrgId,
@@ -1084,8 +1160,9 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
         serviceName: 'sec-007 cross-tenant probe',
         price: 0,
         startsAt: new Date(now.getTime() + 3600_000),
-        endsAt:   new Date(now.getTime() + 3600_000 + 1800_000),
-        status: 'pending', paymentStatus: 'unpaid',
+        endsAt: new Date(now.getTime() + 3600_000 + 1800_000),
+        status: 'pending',
+        paymentStatus: 'unpaid',
       },
       select: { id: true },
     });
@@ -1125,7 +1202,8 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
     // Seed a staff row linked to a user, and an appointment on them.
     const staffId = await makeStaffLinkedToUser(H.grandOrgId, H.grandOwnerId);
     const loc = await unsafePrismaAdmin.location.findFirstOrThrow({
-      where: { organizationId: H.grandOrgId }, select: { id: true },
+      where: { organizationId: H.grandOrgId },
+      select: { id: true },
     });
     const now = new Date();
     const appt = await unsafePrismaAdmin.appointment.create({
@@ -1137,8 +1215,9 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
         serviceName: 'sec-007 nested probe',
         price: 0,
         startsAt: new Date(now.getTime() + 7200_000),
-        endsAt:   new Date(now.getTime() + 7200_000 + 1800_000),
-        status: 'pending', paymentStatus: 'unpaid',
+        endsAt: new Date(now.getTime() + 7200_000 + 1800_000),
+        status: 'pending',
+        paymentStatus: 'unpaid',
       },
       select: { id: true },
     });
@@ -1224,19 +1303,22 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
     // id but zero rows for a cross-org id.
     const grandStaffId = await makeStaffLinkedToUser(H.grandOrgId, H.grandOwnerId);
     const isoLoc = await unsafePrismaAdmin.location.findFirst({
-      where: { organizationId: H.isoOrgId }, select: { id: true },
+      where: { organizationId: H.isoOrgId },
+      select: { id: true },
     });
     const isoStaffId = isoLoc
-      ? (await unsafePrismaAdmin.staff.create({
-          data: {
-            organizationId: H.isoOrgId,
-            locationId: isoLoc.id,
-            userId: H.isoOwnerId,
-            name: 'SEC-007 iso probe staff',
-            roleTitle: 'probe',
-          },
-          select: { id: true },
-        })).id
+      ? (
+          await unsafePrismaAdmin.staff.create({
+            data: {
+              organizationId: H.isoOrgId,
+              locationId: isoLoc.id,
+              userId: H.isoOwnerId,
+              name: 'SEC-007 iso probe staff',
+              roleTitle: 'probe',
+            },
+            select: { id: true },
+          })
+        ).id
       : null;
 
     try {
@@ -1320,16 +1402,21 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
   // Membership helper: give the target user a specific org+role in Grand.
   async function memberIdForRole(userEmail: string, roleKey: string): Promise<string> {
     const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
-      where: { email: userEmail }, select: { id: true },
+      where: { email: userEmail },
+      select: { id: true },
     });
     const role = await unsafePrismaAdmin.role.findFirstOrThrow({
-      where: { key: roleKey, organizationId: null }, select: { id: true },
+      where: { key: roleKey, organizationId: null },
+      select: { id: true },
     });
     const m = await unsafePrismaAdmin.membership.upsert({
       where: { organizationId_userId: { organizationId: H.grandOrgId, userId: user.id } },
       create: {
-        organizationId: H.grandOrgId, userId: user.id,
-        role: 'practitioner', roleId: role.id, status: 'active',
+        organizationId: H.grandOrgId,
+        userId: user.id,
+        role: 'practitioner',
+        roleId: role.id,
+        status: 'active',
       },
       update: { roleId: role.id, status: 'active', role: 'practitioner' },
       select: { id: true, userId: true },
@@ -1347,8 +1434,12 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
     const passwordHash = await (await import('@node-rs/argon2')).hash('probe-pw');
     const fdUser = await unsafePrismaAdmin.appUser.create({
       data: {
-        authProvider: 'credentials', authSubject: fdEmail, email: fdEmail,
-        fullName: 'SEC-008 FD probe', passwordHash, status: 'active',
+        authProvider: 'credentials',
+        authSubject: fdEmail,
+        email: fdEmail,
+        fullName: 'SEC-008 FD probe',
+        passwordHash,
+        status: 'active',
       },
       select: { id: true, email: true },
     });
@@ -1362,7 +1453,8 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
       __clearAuthContextCache();
       authMock.mockResolvedValue({
         user: {
-          id: fdUser.id, email: fdUser.email,
+          id: fdUser.id,
+          email: fdUser.email,
           activeOrganizationId: H.grandOrgId,
           membershipId: fdMemId,
           platformRoleId: null,
@@ -1372,7 +1464,13 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
         params: Promise.resolve({ id: customerId }),
       });
       expect(off.status).toBe(200);
-      const offBody = await json<{ customer: { clinicalNotes: string | null; allergies: string | null; treatmentHistory: unknown[] } }>(off);
+      const offBody = await json<{
+        customer: {
+          clinicalNotes: string | null;
+          allergies: string | null;
+          treatmentHistory: unknown[];
+        };
+      }>(off);
       expect(offBody.customer.clinicalNotes).toBeNull();
       expect(offBody.customer.allergies).toBeNull();
       expect(offBody.customer.treatmentHistory).toEqual([]);
@@ -1384,7 +1482,13 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
       const on = await routeCustomerItem.GET(req('http://x'), {
         params: Promise.resolve({ id: customerId }),
       });
-      const onBody = await json<{ customer: { clinicalNotes: string | null; allergies: string | null; treatmentHistory: unknown[] } }>(on);
+      const onBody = await json<{
+        customer: {
+          clinicalNotes: string | null;
+          allergies: string | null;
+          treatmentHistory: unknown[];
+        };
+      }>(on);
       expect(onBody.customer.clinicalNotes).toBe('probe-history-note');
       expect(onBody.customer.allergies).toBe('probe-penicillin');
       expect(onBody.customer.treatmentHistory.length).toBeGreaterThan(0);
@@ -1394,19 +1498,22 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
       await unsafePrismaAdmin.membership.delete({ where: { id: fdMemId } });
       // Soft-mask on cleanup — audit_log FK is ON DELETE NO ACTION so a
       // hard-delete of a user with any audit row fails.
-      await unsafePrismaAdmin.appUser.update({
-        where: { id: fdUser.id },
-        data: {
-          status: 'deleted', passwordHash: null,
-          email: `deleted-sec008-fd-${fdUser.id}@bookpitch.invalid`,
-          // auth_subject also — (auth_provider, auth_subject) is UNIQUE,
-          // otherwise the next test-run collides on the fresh upsert.
-          authSubject: `deleted-sec008-fd-${fdUser.id}`,
-          sessionVersion: { increment: 1 },
-        },
-      }).catch(async () => {
-        await unsafePrismaAdmin.appUser.delete({ where: { id: fdUser.id } }).catch(() => {});
-      });
+      await unsafePrismaAdmin.appUser
+        .update({
+          where: { id: fdUser.id },
+          data: {
+            status: 'deleted',
+            passwordHash: null,
+            email: `deleted-sec008-fd-${fdUser.id}@bookpitch.invalid`,
+            // auth_subject also — (auth_provider, auth_subject) is UNIQUE,
+            // otherwise the next test-run collides on the fresh upsert.
+            authSubject: `deleted-sec008-fd-${fdUser.id}`,
+            sessionVersion: { increment: 1 },
+          },
+        })
+        .catch(async () => {
+          await unsafePrismaAdmin.appUser.delete({ where: { id: fdUser.id } }).catch(() => {});
+        });
       await reset();
     }
   });
@@ -1435,7 +1542,8 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
       __clearAuthContextCache();
       authMock.mockResolvedValue({
         user: {
-          id: provUser.id, email: provUser.email,
+          id: provUser.id,
+          email: provUser.email,
           activeOrganizationId: H.grandOrgId,
           membershipId: provMemId,
           platformRoleId: null,
@@ -1444,7 +1552,9 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
       const off = await routeCustomerItem.GET(req('http://x'), {
         params: Promise.resolve({ id: customerId }),
       });
-      const offBody = await json<{ customer: { clinicalNotes: string | null; allergies: string | null } }>(off);
+      const offBody = await json<{
+        customer: { clinicalNotes: string | null; allergies: string | null };
+      }>(off);
       expect(off.status).toBe(200);
       expect(offBody.customer.clinicalNotes).toBeNull();
       expect(offBody.customer.allergies).toBeNull();
@@ -1458,7 +1568,9 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
       const on = await routeCustomerItem.GET(req('http://x'), {
         params: Promise.resolve({ id: customerId }),
       });
-      const onBody = await json<{ customer: { clinicalNotes: string | null; allergies: string | null } }>(on);
+      const onBody = await json<{
+        customer: { clinicalNotes: string | null; allergies: string | null };
+      }>(on);
       expect(onBody.customer.clinicalNotes).toBe('probe-history-note');
       expect(onBody.customer.allergies).toBe('probe-penicillin');
     } finally {
@@ -1511,19 +1623,24 @@ describe('SEC § SEC-008 regression — dead org toggles now change API response
     __clearOrgTogglesCache();
     try {
       // Above ceiling — throws.
-      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'FRONT_DESK', 101))
-        .rejects.toBeInstanceOf(InvalidInputError);
+      await expect(
+        assertDiscountWithinCeiling(H.splitOrgId, 'FRONT_DESK', 101),
+      ).rejects.toBeInstanceOf(InvalidInputError);
       // At ceiling — passes (ceiling is an inclusive max: > not >=).
-      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'FRONT_DESK', 100))
-        .resolves.toBeUndefined();
+      await expect(
+        assertDiscountWithinCeiling(H.splitOrgId, 'FRONT_DESK', 100),
+      ).resolves.toBeUndefined();
       // Below ceiling — passes.
-      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'FRONT_DESK', 50))
-        .resolves.toBeUndefined();
+      await expect(
+        assertDiscountWithinCeiling(H.splitOrgId, 'FRONT_DESK', 50),
+      ).resolves.toBeUndefined();
       // Non-FRONT_DESK bypasses the ceiling entirely.
-      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'ORG_OWNER', 9999))
-        .resolves.toBeUndefined();
-      await expect(assertDiscountWithinCeiling(H.splitOrgId, 'PROVIDER', 9999))
-        .resolves.toBeUndefined();
+      await expect(
+        assertDiscountWithinCeiling(H.splitOrgId, 'ORG_OWNER', 9999),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertDiscountWithinCeiling(H.splitOrgId, 'PROVIDER', 9999),
+      ).resolves.toBeUndefined();
     } finally {
       await updateOrgToggles(H.splitOrgId, { frontdeskDiscountCeiling: 0 });
       __clearOrgTogglesCache();
@@ -1554,7 +1671,8 @@ describe('SEC § SEC-009 — changeOrganizationOwner must atomically promote mem
       select: { id: true, role: true, roleId: true },
     });
     const origOrg = await unsafePrismaAdmin.organization.findUniqueOrThrow({
-      where: { id: H.splitOrgId }, select: { ownerUserId: true },
+      where: { id: H.splitOrgId },
+      select: { ownerUserId: true },
     });
 
     try {

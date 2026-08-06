@@ -26,7 +26,12 @@ import { draftAppointment, type DraftAppointmentResult } from '@/lib/assistant/d
 
 export async function bookAppointmentAction(input: AppointmentCreateInput) {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'booking.create', { organizationId: ctx.activeOrganizationId! }, 'appointments');
+  requirePermission(
+    ctx,
+    'booking.create',
+    { organizationId: ctx.activeOrganizationId! },
+    'appointments',
+  );
   const session = ctxToSession(ctx);
   const parsed = parseCreateInput(input);
   const startsAt = new Date(parsed.startsAt);
@@ -165,6 +170,11 @@ export async function draftAppointmentAction(
   prompt: string,
 ): Promise<DraftAppointmentResult> {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'assistant');
+  requirePermission(
+    ctx,
+    'client.read:contact',
+    { organizationId: ctx.activeOrganizationId! },
+    'assistant',
+  );
   return draftAppointment(ctxToSession(ctx), locationId, prompt);
 }

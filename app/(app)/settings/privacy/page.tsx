@@ -14,7 +14,12 @@ export const dynamic = 'force-dynamic';
 //   demand (endpoints already exist under /api/customers/[id]/*).
 export default async function PrivacyPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'org.settings.update:org', { organizationId: ctx.activeOrganizationId! }, 'settings');
+  requirePermission(
+    ctx,
+    'org.settings.update:org',
+    { organizationId: ctx.activeOrganizationId! },
+    'settings',
+  );
   const session = ctxToSession(ctx);
   const dsrRows = await withOrg(session.organizationId, (tx) => recentDsrActivity(tx, {}));
   const customers = await withOrg(session.organizationId, (tx) =>
@@ -29,8 +34,8 @@ export default async function PrivacyPage() {
       <div>
         <h1 className="text-lg font-extrabold tracking-tight text-slate-900">Privacy</h1>
         <p className="mt-1 text-xs text-slate-500">
-          Handle Data Subject Requests (export + delete). Every action here is
-          audit-logged automatically. GDPR deadline: {dsrDeadlineDays()} days.
+          Handle Data Subject Requests (export + delete). Every action here is audit-logged
+          automatically. GDPR deadline: {dsrDeadlineDays()} days.
         </p>
       </div>
       <PrivacyView rows={dsrRows} customers={customers} />

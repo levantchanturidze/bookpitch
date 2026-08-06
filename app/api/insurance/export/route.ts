@@ -17,7 +17,12 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   return withApiRaw(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'report.export', { organizationId: ctx.activeOrganizationId! }, 'insurance');
+    requirePermission(
+      ctx,
+      'report.export',
+      { organizationId: ctx.activeOrganizationId! },
+      'insurance',
+    );
     const session = ctxToSession(ctx);
     const url = new URL(req.url);
     const fromStr = url.searchParams.get('from') ?? '';

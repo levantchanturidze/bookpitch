@@ -194,8 +194,8 @@ async function main() {
   try {
     await unsafePrismaAdmin.auditLog.create({
       data: {
-        organizationId: null,   // platform-scoped event
-        actorUserId: null,      // no signed-in caller — bootstrap
+        organizationId: null, // platform-scoped event
+        actorUserId: null, // no signed-in caller — bootstrap
         action,
         entity: 'staff',
         entityId: userId,

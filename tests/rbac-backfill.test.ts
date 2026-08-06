@@ -26,7 +26,10 @@ const BACKFILL_SQL = readFileSync(
 const scratchOrgIds: string[] = [];
 const scratchUserIds: string[] = [];
 
-async function scratchOrg(name: string, extras?: Partial<{ vertical: string; ownerUserId: string }>) {
+async function scratchOrg(
+  name: string,
+  extras?: Partial<{ vertical: string; ownerUserId: string }>,
+) {
   // status='archived' exempts scratch orgs from the "must have owner" invariant
   // check below — they're test fixtures, not real orgs, and cleaned up in
   // afterAll. Real behavior is exercised by the trigger tests, which don't
@@ -57,7 +60,9 @@ async function scratchUser(email: string) {
 
 afterAll(async () => {
   // Delete memberships first (they hold user + org FKs).
-  await unsafePrismaAdmin.membership.deleteMany({ where: { organizationId: { in: scratchOrgIds } } });
+  await unsafePrismaAdmin.membership.deleteMany({
+    where: { organizationId: { in: scratchOrgIds } },
+  });
   // Locations cascade to branches via BEFORE-DELETE trigger + FK.
   await unsafePrismaAdmin.location.deleteMany({ where: { organizationId: { in: scratchOrgIds } } });
   // Orgs cascade to branches and any leftover memberships.
@@ -73,11 +78,13 @@ afterAll(async () => {
 // -----------------------------------------------------------------------------
 describe('sync trigger: memberships fill role_id / joined_at / is_bookable', () => {
   let orgId: string;
-  beforeAll(async () => { orgId = (await scratchOrg('memberships-sync-org')).id; });
+  beforeAll(async () => {
+    orgId = (await scratchOrg('memberships-sync-org')).id;
+  });
 
   it.each([
-    ['owner',        'ORG_OWNER',  true],
-    ['practitioner', 'PROVIDER',   true],
+    ['owner', 'ORG_OWNER', true],
+    ['practitioner', 'PROVIDER', true],
     ['receptionist', 'FRONT_DESK', false],
   ] as const)('%s → %s (is_bookable=%s)', async (roleEnum, expectedKey, expectedBookable) => {
     const user = await scratchUser(`memb-${roleEnum}-${Date.now()}@ex.com`);
@@ -87,9 +94,14 @@ describe('sync trigger: memberships fill role_id / joined_at / is_bookable', () 
       `INSERT INTO memberships (organization_id, user_id, role, role_id, joined_at, is_bookable)
        VALUES ('${orgId}', '${user.id}', '${roleEnum}', NULL, NULL, FALSE)`,
     );
-    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{
-      role: string; role_key: string | null; is_bookable: boolean; joined_at: Date | null;
-    }>>(
+    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<
+      Array<{
+        role: string;
+        role_key: string | null;
+        is_bookable: boolean;
+        joined_at: Date | null;
+      }>
+    >(
       `SELECT m.role, r.key AS role_key, m.is_bookable, m.joined_at
          FROM memberships m LEFT JOIN roles r ON r.id = m.role_id
         WHERE m.user_id = '${user.id}' AND m.organization_id = '${orgId}'`,
@@ -105,13 +117,17 @@ describe('sync trigger: memberships fill role_id / joined_at / is_bookable', () 
 // -----------------------------------------------------------------------------
 describe('sync trigger: locations → branches mirror', () => {
   let orgId: string;
-  beforeAll(async () => { orgId = (await scratchOrg('loc-sync-org')).id; });
+  beforeAll(async () => {
+    orgId = (await scratchOrg('loc-sync-org')).id;
+  });
 
   it('INSERT: creates a branches row with matching name/timezone/legacy_location_id', async () => {
     const loc = await unsafePrismaAdmin.location.create({
       data: { organizationId: orgId, type: 'clinic', name: 'Loc A', timezone: 'Europe/Berlin' },
     });
-    const branch = await unsafePrismaAdmin.branch.findFirst({ where: { legacyLocationId: loc.id } });
+    const branch = await unsafePrismaAdmin.branch.findFirst({
+      where: { legacyLocationId: loc.id },
+    });
     expect(branch).toBeTruthy();
     expect(branch!.name).toBe('Loc A');
     expect(branch!.timezone).toBe('Europe/Berlin');
@@ -131,7 +147,9 @@ describe('sync trigger: locations → branches mirror', () => {
       where: { id: loc.id },
       data: { name: 'Loc B Renamed', timezone: 'Europe/Paris' },
     });
-    const branch = await unsafePrismaAdmin.branch.findFirstOrThrow({ where: { legacyLocationId: loc.id } });
+    const branch = await unsafePrismaAdmin.branch.findFirstOrThrow({
+      where: { legacyLocationId: loc.id },
+    });
     expect(branch.name).toBe('Loc B Renamed');
     expect(branch.timezone).toBe('Europe/Paris');
   });
@@ -140,9 +158,11 @@ describe('sync trigger: locations → branches mirror', () => {
     const loc = await unsafePrismaAdmin.location.create({
       data: { organizationId: orgId, type: 'clinic', name: 'Loc C' },
     });
-    const branchId = (await unsafePrismaAdmin.branch.findFirstOrThrow({
-      where: { legacyLocationId: loc.id },
-    })).id;
+    const branchId = (
+      await unsafePrismaAdmin.branch.findFirstOrThrow({
+        where: { legacyLocationId: loc.id },
+      })
+    ).id;
     await unsafePrismaAdmin.location.delete({ where: { id: loc.id } });
     const orphan = await unsafePrismaAdmin.branch.findUnique({ where: { id: branchId } });
     expect(orphan).toBeNull();
@@ -159,10 +179,9 @@ describe('backfill migration.sql is idempotent', () => {
     const before = await snapshot();
     // Split the migration into statements naively (Prisma migrations use ;\n
     // as the boundary; our SQL doesn't nest inside function bodies).
-    const statements = BACKFILL_SQL
-      .split(/;\s*\n/)
-      .map(s => s.trim())
-      .filter(s => s.length > 0 && !s.startsWith('--'));
+    const statements = BACKFILL_SQL.split(/;\s*\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && !s.startsWith('--'));
     for (const stmt of statements) {
       await unsafePrismaAdmin.$executeRawUnsafe(stmt);
     }
@@ -171,11 +190,19 @@ describe('backfill migration.sql is idempotent', () => {
   });
 
   async function snapshot() {
-    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{
-      orgs: bigint; orgs_vertical: bigint; orgs_owner: bigint;
-      locations: bigint; branches: bigint;
-      memberships: bigint; role_id_set: bigint; joined_at_set: bigint; bookable_true: bigint;
-    }>>(
+    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<
+      Array<{
+        orgs: bigint;
+        orgs_vertical: bigint;
+        orgs_owner: bigint;
+        locations: bigint;
+        branches: bigint;
+        memberships: bigint;
+        role_id_set: bigint;
+        joined_at_set: bigint;
+        bookable_true: bigint;
+      }>
+    >(
       `SELECT
          (SELECT count(*) FROM organizations)                                    AS orgs,
          (SELECT count(*) FROM organizations WHERE vertical IS NOT NULL)         AS orgs_vertical,
@@ -198,21 +225,33 @@ describe('backfill migration.sql is idempotent', () => {
 // -----------------------------------------------------------------------------
 describe('backfill verify invariants (current DB state)', () => {
   const zeroExpectations: Array<[string, string]> = [
-    ['A. active users without membership (non-platform)',
+    [
+      'A. active users without membership (non-platform)',
       `SELECT count(*)::int AS n FROM app_users u
         WHERE u.status='active' AND u.platform_role_id IS NULL
-          AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id=u.id AND m.status='active')`],
-    ['B. non-archived orgs without owner_user_id',
-      `SELECT count(*)::int AS n FROM organizations WHERE status<>'archived' AND owner_user_id IS NULL`],
-    ['D. locations without a matching branch',
-      `SELECT ((SELECT count(*) FROM locations) - (SELECT count(*) FROM branches WHERE legacy_location_id IS NOT NULL))::int AS n`],
-    ['E. memberships with role set but role_id NULL',
-      `SELECT count(*)::int AS n FROM memberships WHERE role IS NOT NULL AND role_id IS NULL`],
-    ['I. is_bookable=true on a role that isn\'t owner/practitioner',
-      `SELECT count(*)::int AS n FROM memberships WHERE is_bookable=TRUE AND role NOT IN ('owner','practitioner')`],
-    ['J. orphan branches (legacy_location_id → deleted loc)',
+          AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id=u.id AND m.status='active')`,
+    ],
+    [
+      'B. non-archived orgs without owner_user_id',
+      `SELECT count(*)::int AS n FROM organizations WHERE status<>'archived' AND owner_user_id IS NULL`,
+    ],
+    [
+      'D. locations without a matching branch',
+      `SELECT ((SELECT count(*) FROM locations) - (SELECT count(*) FROM branches WHERE legacy_location_id IS NOT NULL))::int AS n`,
+    ],
+    [
+      'E. memberships with role set but role_id NULL',
+      `SELECT count(*)::int AS n FROM memberships WHERE role IS NOT NULL AND role_id IS NULL`,
+    ],
+    [
+      "I. is_bookable=true on a role that isn't owner/practitioner",
+      `SELECT count(*)::int AS n FROM memberships WHERE is_bookable=TRUE AND role NOT IN ('owner','practitioner')`,
+    ],
+    [
+      'J. orphan branches (legacy_location_id → deleted loc)',
       `SELECT count(*)::int AS n FROM branches b WHERE b.legacy_location_id IS NOT NULL
-         AND NOT EXISTS (SELECT 1 FROM locations l WHERE l.id=b.legacy_location_id)`],
+         AND NOT EXISTS (SELECT 1 FROM locations l WHERE l.id=b.legacy_location_id)`,
+    ],
   ];
 
   it.each(zeroExpectations)('%s → 0', async (_label, sql) => {

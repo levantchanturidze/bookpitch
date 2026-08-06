@@ -124,9 +124,7 @@ export async function acceptInvitation(
 
   // Read the invitation without a session (there IS no session — the user
   // may not exist yet). Bypasses RLS via withoutRls.
-  const invite = await withoutRls((tx) =>
-    tx.invitation.findUnique({ where: { tokenHash } }),
-  );
+  const invite = await withoutRls((tx) => tx.invitation.findUnique({ where: { tokenHash } }));
   if (!invite) throw new InvalidInputError('invalid or expired invitation');
   if (invite.status !== 'pending') {
     throw new InvalidInputError('invitation is no longer pending');
@@ -199,10 +197,7 @@ export async function acceptInvitation(
   });
 }
 
-export async function revokeInvitation(
-  session: ActiveSession,
-  id: string,
-): Promise<void> {
+export async function revokeInvitation(session: ActiveSession, id: string): Promise<void> {
   // Authorization enforced by caller via requirePermission(ctx, 'staff.invite').
   await withOrg(session.organizationId, (tx) =>
     tx.invitation.update({

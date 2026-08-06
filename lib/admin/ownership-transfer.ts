@@ -96,7 +96,8 @@ export async function nominateTransfer(
     // tenants — the nominee's app_user isn't guaranteed to be reachable
     // from the org-scoped tx handle).
     const nominee = await unsafePrismaAdmin.appUser.findUnique({
-      where: { id: toUserId }, select: { email: true },
+      where: { id: toUserId },
+      select: { email: true },
     });
     if (nominee?.email) {
       try {
@@ -105,8 +106,8 @@ export async function nominateTransfer(
           nominee.email,
           '[Bookpitch] You have been nominated as organization owner',
           `The current owner of your Bookpitch organization has nominated you as the new owner.\n\n` +
-          `Accept or decline in Settings → Ownership.\n` +
-          `The nomination expires on ${result.expiresAt.toISOString()}.`,
+            `Accept or decline in Settings → Ownership.\n` +
+            `The nomination expires on ${result.expiresAt.toISOString()}.`,
         );
       } catch (err) {
         log.warn('platform.ownership_transfer.email_failed', { err: sanitizeErrorMessage(err) });
@@ -115,10 +116,13 @@ export async function nominateTransfer(
     // Bump nominee sessionVersion so their AuthContext rebuilds and any
     // "pending transfers" UI badge appears within 5s.
     await unsafePrismaAdmin.appUser.update({
-      where: { id: toUserId }, data: { sessionVersion: { increment: 1 } },
+      where: { id: toUserId },
+      data: { sessionVersion: { increment: 1 } },
     });
     log.info('platform.ownership_transfer.nominated', {
-      transferId: result.id, fromUserId: session.userId, toUserId,
+      transferId: result.id,
+      fromUserId: session.userId,
+      toUserId,
       organizationId: session.organizationId,
     });
     return result;
@@ -146,16 +150,19 @@ export async function acceptTransfer(
   if (transfer.expiresAt < new Date()) {
     // Lazy expiry — mark and reject.
     await unsafePrismaAdmin.ownershipTransfer.update({
-      where: { id: transferId }, data: { status: 'expired', decidedAt: new Date() },
+      where: { id: transferId },
+      data: { status: 'expired', decidedAt: new Date() },
     });
     throw new InvalidInputError('transfer has expired');
   }
 
   const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
-    where: { key: 'ORG_OWNER', organizationId: null }, select: { id: true },
+    where: { key: 'ORG_OWNER', organizationId: null },
+    select: { id: true },
   });
   const orgAdminRole = await unsafePrismaAdmin.role.findFirstOrThrow({
-    where: { key: 'ORG_ADMIN', organizationId: null }, select: { id: true },
+    where: { key: 'ORG_ADMIN', organizationId: null },
+    select: { id: true },
   });
 
   // Single transaction for the swap. Uses unsafePrismaAdmin because we need to
@@ -250,7 +257,9 @@ export async function acceptTransfer(
   });
 
   log.info('platform.ownership_transfer.accepted', {
-    transferId, fromUserId: transfer.fromUserId, toUserId: transfer.toUserId,
+    transferId,
+    fromUserId: transfer.fromUserId,
+    toUserId: transfer.toUserId,
     organizationId: transfer.organizationId,
   });
   return { ok: true };

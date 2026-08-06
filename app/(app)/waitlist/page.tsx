@@ -38,9 +38,8 @@ export default async function WaitlistPage() {
       <div>
         <h1 className="text-lg font-extrabold tracking-tight text-slate-900">Waitlist</h1>
         <p className="mt-1 text-xs text-slate-500">
-          When an appointment cancels, matching entries here get a notification.
-          Waitlist customers are not messaged directly — you follow up via your
-          usual channel.
+          When an appointment cancels, matching entries here get a notification. Waitlist customers
+          are not messaged directly — you follow up via your usual channel.
         </p>
       </div>
       <WaitlistView

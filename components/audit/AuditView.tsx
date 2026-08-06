@@ -157,7 +157,7 @@ export default function AuditView({ rows, initial }: Props) {
             <tbody className="divide-y divide-slate-100">
               {rows.map((r) => (
                 <tr key={r.id}>
-                  <td className="px-6 py-2 font-mono text-[11px] text-slate-500 whitespace-nowrap">
+                  <td className="px-6 py-2 font-mono text-[11px] whitespace-nowrap text-slate-500">
                     {r.at.slice(0, 19).replace('T', ' ')}
                   </td>
                   <td className="px-2 py-2 text-[11px] text-slate-700">

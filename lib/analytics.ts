@@ -73,11 +73,7 @@ function pctDelta(current: number, previous: number): number | null {
 // Sub-queries (each pass tx so they compose inside computeMetrics)
 // -----------------------------------------------------------------------------
 
-async function dailyRevenueOn(
-  tx: TxClient,
-  locationId: string,
-  dayStart: Date,
-): Promise<number> {
+async function dailyRevenueOn(tx: TxClient, locationId: string, dayStart: Date): Promise<number> {
   const dayEnd = addDays(dayStart, 1);
   const rows = await tx.appointment.findMany({
     where: {
@@ -141,10 +137,7 @@ async function occupancyOn(
     return sum;
   }, 0);
 
-  const bookedMinutes = appts.reduce(
-    (sum, a) => sum + minutesBetween(a.startsAt, a.endsAt),
-    0,
-  );
+  const bookedMinutes = appts.reduce((sum, a) => sum + minutesBetween(a.startsAt, a.endsAt), 0);
 
   const percent = availableMinutes === 0 ? null : (bookedMinutes / availableMinutes) * 100;
   return { bookedMinutes, availableMinutes, percent };
@@ -257,25 +250,17 @@ export async function computeMetrics(
     const today = utcStartOfDay(refDate);
     const sevenAgo = addDays(today, -7);
 
-    const [
-      revenueToday,
-      revenuePrev,
-      bookingsToday,
-      bookingsPrev,
-      occ,
-      avg,
-      trend,
-      perStaff,
-    ] = await Promise.all([
-      dailyRevenueOn(tx, locationId, today),
-      dailyRevenueOn(tx, locationId, sevenAgo),
-      dailyBookingCountOn(tx, locationId, today),
-      dailyBookingCountOn(tx, locationId, sevenAgo),
-      occupancyOn(tx, locationId, today),
-      averageTicket(tx, locationId, 30, refDate),
-      revenueTrend(tx, locationId, 7, refDate),
-      bookingsPerStaff(tx, locationId, 7, refDate),
-    ]);
+    const [revenueToday, revenuePrev, bookingsToday, bookingsPrev, occ, avg, trend, perStaff] =
+      await Promise.all([
+        dailyRevenueOn(tx, locationId, today),
+        dailyRevenueOn(tx, locationId, sevenAgo),
+        dailyBookingCountOn(tx, locationId, today),
+        dailyBookingCountOn(tx, locationId, sevenAgo),
+        occupancyOn(tx, locationId, today),
+        averageTicket(tx, locationId, 30, refDate),
+        revenueTrend(tx, locationId, 7, refDate),
+        bookingsPerStaff(tx, locationId, 7, refDate),
+      ]);
 
     return {
       refDate: utcDayKey(today),
@@ -344,10 +329,7 @@ export async function dailyRoster(
       }, 0);
 
       const mine = appts.filter((a) => a.staffId === s.id);
-      const bookedMinutes = mine.reduce(
-        (sum, a) => sum + minutesBetween(a.startsAt, a.endsAt),
-        0,
-      );
+      const bookedMinutes = mine.reduce((sum, a) => sum + minutesBetween(a.startsAt, a.endsAt), 0);
 
       const first = s.availability[0];
       const last = s.availability[s.availability.length - 1];

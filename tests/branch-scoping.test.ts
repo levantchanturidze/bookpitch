@@ -21,7 +21,9 @@ import type { NextRequest } from 'next/server';
 function req(url: string): NextRequest {
   return new Request(url) as unknown as NextRequest;
 }
-async function json<T>(res: Response): Promise<T> { return (await res.json()) as T; }
+async function json<T>(res: Response): Promise<T> {
+  return (await res.json()) as T;
+}
 
 // -----------------------------------------------------------------------------
 // Phase 6: branch scoping tightens aggregate list queries. BRANCH_MANAGER
@@ -39,16 +41,21 @@ describe('branch scoping — list endpoints filter for BRANCH_MANAGER', () => {
 
   beforeAll(async () => {
     await seedRbacFixtures();
-    splitOrgId = (await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Split Practice' }, select: { id: true },
-    })).id;
+    splitOrgId = (
+      await unsafePrismaAdmin.organization.findFirstOrThrow({
+        where: { name: 'Split Practice' },
+        select: { id: true },
+      })
+    ).id;
     const mgr = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { email: 'splitmgr@bp.test' },
     });
     mgrUserId = mgr.id;
-    mgrMembershipId = (await unsafePrismaAdmin.membership.findFirstOrThrow({
-      where: { userId: mgr.id, organizationId: splitOrgId },
-    })).id;
+    mgrMembershipId = (
+      await unsafePrismaAdmin.membership.findFirstOrThrow({
+        where: { userId: mgr.id, organizationId: splitOrgId },
+      })
+    ).id;
     // The seeded location for Split Practice — 'Split Downtown Loc'.
     const loc = await unsafePrismaAdmin.location.findFirstOrThrow({
       where: { organizationId: splitOrgId },
@@ -98,9 +105,11 @@ describe('branch scoping — list endpoints filter for BRANCH_MANAGER', () => {
     authMock.mockResolvedValue(await mockJwt(mgrUserId, splitOrgId));
     const from = new Date(Date.UTC(2020, 0, 1)).toISOString();
     const to = new Date(Date.UTC(2100, 0, 1)).toISOString();
-    const res = await listAppts.GET(req(
-      `http://x/api/appointments?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-    ));
+    const res = await listAppts.GET(
+      req(
+        `http://x/api/appointments?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      ),
+    );
     expect(res.status).toBe(200);
     const body = await json<{ appointments: Array<{ locationId: string }> }>(res);
     // Every returned row must live in the manager's scope. The seed has
@@ -118,9 +127,11 @@ describe('branch scoping — list endpoints filter for BRANCH_MANAGER', () => {
     authMock.mockResolvedValue(await mockJwt(mgrUserId, splitOrgId));
     const from = new Date(Date.UTC(2020, 0, 1)).toISOString();
     const to = new Date(Date.UTC(2100, 0, 1)).toISOString();
-    const res = await listAppts.GET(req(
-      `http://x/api/appointments?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&locationId=${foreign}`,
-    ));
+    const res = await listAppts.GET(
+      req(
+        `http://x/api/appointments?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&locationId=${foreign}`,
+      ),
+    );
     expect(res.status).toBe(400);
   });
 

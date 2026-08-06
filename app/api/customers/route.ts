@@ -9,7 +9,12 @@ import { buildCreateData, parseCreateInput, toCustomerDto } from '@/lib/customer
 export async function GET() {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.read:contact', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.read:contact',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const customers = await withOrg(session.organizationId, async (tx) => {
       const rows = await tx.customer.findMany({ orderBy: { createdAt: 'desc' } });
@@ -24,7 +29,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.create', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.create',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const session = ctxToSession(ctx);
     const input = parseCreateInput(await req.json().catch(() => null));
 

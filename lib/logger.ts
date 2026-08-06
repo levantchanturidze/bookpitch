@@ -106,17 +106,33 @@ export const log = {
 
 const PHI_KEY_NAMES: ReadonlySet<string> = new Set([
   // Contact
-  'email', 'phone',
+  'email',
+  'phone',
   // Legal / demographic
-  'dob', 'address',
+  'dob',
+  'address',
   // Client identifiers — patterns we actually pass around
-  'customerName', 'patientName', 'clientName', 'fullName',
-  'customer_name', 'patient_name', 'client_name', 'full_name',
+  'customerName',
+  'patientName',
+  'clientName',
+  'fullName',
+  'customer_name',
+  'patient_name',
+  'client_name',
+  'full_name',
   // Sensitive-category fields (Georgia 2024 data protection law)
-  'allergies', 'clinicalNotes', 'clinical_notes',
+  'allergies',
+  'clinicalNotes',
+  'clinical_notes',
   // Auth secrets — never in a log line
-  'password', 'passwordHash', 'password_hash', 'token', 'refreshToken',
-  'accessToken', 'apiKey', 'authSecret',
+  'password',
+  'passwordHash',
+  'password_hash',
+  'token',
+  'refreshToken',
+  'accessToken',
+  'apiKey',
+  'authSecret',
 ]);
 
 export function scrubPhi<T>(value: T): T {

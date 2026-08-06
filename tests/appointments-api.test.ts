@@ -110,9 +110,9 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
   it('creates an appointment with snapshotted service name + price', async () => {
     const res = await book(iso(5, 10));
     expect(res.status).toBe(200);
-    const body = await jsonBody<{ appointment: { id: string; serviceName: string; price: number } }>(
-      res,
-    );
+    const body = await jsonBody<{
+      appointment: { id: string; serviceName: string; price: number };
+    }>(res);
     createdIds.push(body.appointment.id);
     expect(body.appointment.serviceName).toBeTruthy();
     expect(body.appointment.price).toBeGreaterThan(0);
@@ -194,9 +194,9 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
 
     const res = await book(iso(9, 10), { serviceId: throwaway.id });
     expect(res.status).toBe(200);
-    const body = await jsonBody<{ appointment: { id: string; serviceName: string; price: number } }>(
-      res,
-    );
+    const body = await jsonBody<{
+      appointment: { id: string; serviceName: string; price: number };
+    }>(res);
     createdIds.push(body.appointment.id);
     expect(body.appointment.serviceName).toBe('One-off Trial');
     expect(body.appointment.price).toBe(42);
@@ -215,9 +215,12 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
     // Phase 4: mockJwt requires a REAL (userId, orgId) pair — a JWT that
     // claims a foreign org for a user who isn't a member of it can't be
     // minted. Use the isolation org's own owner as the caller.
-    const isoOwner = await withoutRls(tx => tx.appUser.findUniqueOrThrow({
-      where: { email: 'isolation@bookpitch.dev' }, select: { id: true },
-    }));
+    const isoOwner = await withoutRls((tx) =>
+      tx.appUser.findUniqueOrThrow({
+        where: { email: 'isolation@bookpitch.dev' },
+        select: { id: true },
+      }),
+    );
     authMock.mockResolvedValue(await mkSession(isolationOrgId, isoOwner.id));
     const res = await routeList.GET(
       req(

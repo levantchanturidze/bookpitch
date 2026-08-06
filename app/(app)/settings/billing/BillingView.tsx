@@ -30,14 +30,12 @@ export default function BillingView({
       return;
     }
     const { url } = (await res.json()) as { url: string };
-    window.location.href = url;
+    window.location.assign(url);
   }
 
   return (
     <div className="space-y-4">
-      {error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-      )}
+      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {plans.map((p) => {
           const isCurrent = p.id === currentPlanId;
@@ -57,15 +55,12 @@ export default function BillingView({
               <ul className="mt-4 space-y-1 text-xs">
                 <li>{p.entitlements.maxStaff} staff seats</li>
                 <li>{p.entitlements.maxMonthlyAssistantCalls} assistant calls / month</li>
-                <li>
-                  SMS reminders:{' '}
-                  {p.entitlements.smsRemindersEnabled ? 'yes' : 'no'}
-                </li>
+                <li>SMS reminders: {p.entitlements.smsRemindersEnabled ? 'yes' : 'no'}</li>
                 <li>Analytics: {p.entitlements.analyticsEnabled ? 'yes' : 'no'}</li>
               </ul>
               <div className="mt-4">
                 {isCurrent ? (
-                  <span className="inline-block rounded-md bg-white/10 px-2 py-1 text-[10px] uppercase tracking-widest">
+                  <span className="inline-block rounded-md bg-white/10 px-2 py-1 text-[10px] tracking-widest uppercase">
                     Current · {planStatus}
                   </span>
                 ) : p.id === 'free' ? (

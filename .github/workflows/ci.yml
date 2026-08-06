@@ -7,26 +7,51 @@ on:
     branches: [main]
 
 # Least privilege: read source, write check results only.
+# NOTE: do not add `pull_request_target` — that grants write access to
+# untrusted code from forks and is a common secret-exfiltration vector.
 permissions:
   contents: read
   checks: write
 
+# Cancel in-progress runs on the same ref to save minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   quality:
-    name: Lint, type-check, and test
+    name: Lint, type-check, test, and build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bookpitch_ci
+          POSTGRES_PASSWORD: ci_password_not_a_secret
+          POSTGRES_DB: bookpitch_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
-      # Unit and security tests mock DB access — a real connection is not
-      # required. Prisma schema validation and `prisma format --check` need
-      # a provider string but never open a socket.
-      DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
-      DATABASE_URL_APP_NOBYPASSRLS: "postgresql://ci:ci@localhost:5432/ci"
-      # Keep build from crashing on missing env vars during type-check.
-      AUTH_SECRET: "ci-test-secret-32-chars-minimum!!"
-      FIELD_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
-      NEXTAUTH_URL: "http://localhost:3000"
-      APP_URL: "http://localhost:3000"
-      RBAC_ENFORCE_MODULES: "*"
+      # App client (NOBYPASSRLS) — uses same superuser in CI for simplicity.
+      DATABASE_URL: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
+      DATABASE_URL_APP_NOBYPASSRLS: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
+      # Superuser client — must connect as the same user that owns the schema.
+      # In production this is a separate role. In CI the postgres superuser is fine.
+      DATABASE_URL_SUPERUSER_SESSION: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
+      # Auth / encryption secrets — test-only values, never real credentials.
+      AUTH_SECRET: 'ci-test-secret-32-chars-minimum!!'
+      FIELD_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+      NEXTAUTH_URL: 'http://localhost:3000'
+      APP_URL: 'http://localhost:3000'
+      RBAC_ENFORCE_MODULES: '*'
       NODE_ENV: test
 
     steps:
@@ -52,13 +77,23 @@ jobs:
       - name: Validate Prisma schema
         run: npx prisma validate
 
-      - name: Check migration consistency
-        # Ensures every migration file is included in the schema.
-        # Does not connect to a DB — just checks the local file state.
-        run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$DATABASE_URL" --exit-code || echo "Schema differs from migrations (expected on feature branches)"
-
       - name: Generate Prisma client
         run: npx prisma generate
+
+      - name: Apply migrations
+        # Sets up the full schema in the CI PostgreSQL service so tests can
+        # connect. Uses the superuser URL so the migration role grants land.
+        run: npx prisma migrate deploy
+
+      - name: Verify schema matches migrations
+        # Fails if there are pending schema changes not captured in a migration.
+        # --shadow-database-url is required for diff; the CI DB is safe to use.
+        run: |
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "$DATABASE_URL_SUPERUSER_SESSION" \
+            --exit-code
 
       - name: Run unit + security tests
         run: npm run test

@@ -17,21 +17,23 @@ const { unsafePrismaAdmin } = await import('@/lib/db');
 // return zero PII from each one. This is the plan's PII-discipline
 // probe — it fails loud if we ever add a platform endpoint that leaks
 // customer data without going through impersonation.
-const listRoute       = await import('@/app/api/platform/orgs/route');
-const detailRoute     = await import('@/app/api/platform/orgs/[id]/route');
-const suspendRoute    = await import('@/app/api/platform/orgs/[id]/suspend/route');
+const listRoute = await import('@/app/api/platform/orgs/route');
+const detailRoute = await import('@/app/api/platform/orgs/[id]/route');
+const suspendRoute = await import('@/app/api/platform/orgs/[id]/suspend/route');
 const softDeleteRoute = await import('@/app/api/platform/orgs/[id]/soft-delete/route');
-const ownerRoute      = await import('@/app/api/platform/orgs/[id]/owner/route');
-const resetRoute      = await import('@/app/api/platform/orgs/[id]/reset-password-link/route');
-const impRoute        = await import('@/app/api/platform/impersonate/route');
-const bgRoute         = await import('@/app/api/platform/break-glass/route');
-const auditRoute      = await import('@/app/api/platform/audit/route');
+const ownerRoute = await import('@/app/api/platform/orgs/[id]/owner/route');
+const resetRoute = await import('@/app/api/platform/orgs/[id]/reset-password-link/route');
+const impRoute = await import('@/app/api/platform/impersonate/route');
+const bgRoute = await import('@/app/api/platform/break-glass/route');
+const auditRoute = await import('@/app/api/platform/audit/route');
 
 import type { NextRequest } from 'next/server';
 function req(url: string, init?: RequestInit): NextRequest {
   return new Request(url, init) as unknown as NextRequest;
 }
-async function json<T = unknown>(res: Response): Promise<T> { return (await res.json()) as T; }
+async function json<T = unknown>(res: Response): Promise<T> {
+  return (await res.json()) as T;
+}
 
 const PII_KEY_PATTERN = /email|phone|name|allergies|clinical/i;
 
@@ -47,7 +49,7 @@ function containsPii(value: unknown, keyChain: string = ''): boolean {
     return false;
   }
   if (Array.isArray(value)) {
-    return value.some(v => containsPii(v, keyChain));
+    return value.some((v) => containsPii(v, keyChain));
   }
   if (value && typeof value === 'object') {
     return Object.entries(value).some(([k, v]) => containsPii(v, k));
@@ -61,7 +63,8 @@ describe('SUPPORT_AGENT PII discipline probe (spec §4.1 + §6.1)', () => {
   beforeAll(async () => {
     await seedRbacFixtures();
     const org = await unsafePrismaAdmin.organization.findFirstOrThrow({
-      where: { name: 'Split Practice' }, select: { id: true },
+      where: { name: 'Split Practice' },
+      select: { id: true },
     });
     orgId = org.id;
   });
@@ -109,26 +112,35 @@ describe('SUPPORT_AGENT PII discipline probe (spec §4.1 + §6.1)', () => {
 
   it('cannot start impersonation (spec §4.1 — "request only, not start")', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('support@bp.test'));
-    const res = await impRoute.POST(req('http://x', {
-      method: 'POST',
-      body: JSON.stringify({
-        organizationId: orgId, targetUserId: 'x',
-        reason: 'nope', ticketId: 'T-1',
+    const res = await impRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({
+          organizationId: orgId,
+          targetUserId: 'x',
+          reason: 'nope',
+          ticketId: 'T-1',
+        }),
       }),
-    }));
+    );
     expect(res.status).toBe(403);
   });
 
   it('cannot start break-glass', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('support@bp.test'));
-    const res = await bgRoute.POST(req('http://x', {
-      method: 'POST',
-      body: JSON.stringify({
-        // All required fields present so input validation passes and we reach
-        // the real role check (SUPER_ADMIN-only) that spec §7.2 mandates.
-        password: 'devpass123', totpCode: '000000', reason: 'not allowed here', ticketId: 'BG-x',
+    const res = await bgRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({
+          // All required fields present so input validation passes and we reach
+          // the real role check (SUPER_ADMIN-only) that spec §7.2 mandates.
+          password: 'devpass123',
+          totpCode: '000000',
+          reason: 'not allowed here',
+          ticketId: 'BG-x',
+        }),
       }),
-    }));
+    );
     expect(res.status).toBe(403);
   });
 

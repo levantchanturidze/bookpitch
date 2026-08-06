@@ -28,13 +28,12 @@ export default function AppError({
         <div>
           <h3 className="text-base font-extrabold text-slate-800">Operational Access Lock</h3>
           <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-slate-500">
-            Your credential role is restricted from this module for compliance
-            reasons. Contact the operations owner if you need elevated access.
+            Your credential role is restricted from this module for compliance reasons. Contact the
+            operations owner if you need elevated access.
           </p>
         </div>
         <div className="max-w-md rounded-xl border border-slate-100 bg-slate-50 p-3.5 font-mono text-[10px] text-slate-500">
-          Role-based access control (RBAC) blocks this route. Switch to a
-          different login to view.
+          Role-based access control (RBAC) blocks this route. Switch to a different login to view.
         </div>
       </div>
     );

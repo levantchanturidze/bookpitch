@@ -28,7 +28,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     requirePermission(ctx, 'platform.org.suspend', undefined, 'platform');
     const { id } = await params;
     const body = (await req.json().catch(() => null)) as {
-      name?: unknown; vertical?: unknown; allowSupportImpersonation?: unknown;
+      name?: unknown;
+      vertical?: unknown;
+      allowSupportImpersonation?: unknown;
     } | null;
     if (!body) throw new InvalidInputError('invalid body');
     const patch: Parameters<typeof editOrganization>[2] = {};
@@ -38,8 +40,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
     if (typeof body.allowSupportImpersonation === 'boolean') {
       patch.allowSupportImpersonation = body.allowSupportImpersonation;
-      // Any change to support-access policy needs a fresh password.
-      await requireFreshPassword(ctx.userId);
+      // Any change to support-access policy needs a session/purpose-bound fresh password.
+      await requireFreshPassword(ctx.userId, ctx.authSessionId, 'platform.org.configure', {
+        orgId: id,
+      });
     }
     return { org: await editOrganization(ctx, id, patch) };
   });

@@ -194,9 +194,7 @@ describe('GDPR + audit-query', () => {
 
   it('anonymize redacts PII in place and writes an audit_log delete row', async () => {
     await anonymizeCustomer(session, customerA, 'gdpr');
-    const after = await withoutRls((tx) =>
-      tx.customer.findUnique({ where: { id: customerA } }),
-    );
+    const after = await withoutRls((tx) => tx.customer.findUnique({ where: { id: customerA } }));
     expect(after?.name.startsWith('Redacted Customer #')).toBe(true);
     expect(after?.email).toBeNull();
     expect(after?.phone).toBeNull();

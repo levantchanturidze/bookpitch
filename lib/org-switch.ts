@@ -41,15 +41,15 @@ export async function listUserMemberships(userId: string): Promise<MembershipSum
       where: { userId, status: 'active' },
       include: {
         organization: { select: { name: true } },
-        roleRef:      { select: { key: true } },
+        roleRef: { select: { key: true } },
       },
       orderBy: { createdAt: 'asc' },
     });
     return rows.map((r) => ({
-      organizationId:   r.organizationId,
+      organizationId: r.organizationId,
       organizationName: r.organization.name,
-      roleKey:          r.roleRef?.key ?? null,
-      legacyRole:       r.role,
+      roleKey: r.roleRef?.key ?? null,
+      legacyRole: r.role,
     }));
   });
 }

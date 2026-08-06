@@ -1,10 +1,5 @@
 import { createPublicKey, createVerify } from 'node:crypto';
-import type {
-  InitiateInput,
-  InitiateResult,
-  PaymentGateway,
-  WebhookResult,
-} from '../gateway';
+import type { InitiateInput, InitiateResult, PaymentGateway, WebhookResult } from '../gateway';
 import { GatewayVerificationError } from '../gateway';
 
 // -----------------------------------------------------------------------------
@@ -94,7 +89,9 @@ export class BogGateway implements PaymentGateway {
     try {
       key = createPublicKey(pubKeyPem);
     } catch (err) {
-      throw new GatewayVerificationError(`invalid BOG_WEBHOOK_PUBLIC_KEY: ${(err as Error).message}`);
+      throw new GatewayVerificationError(
+        `invalid BOG_WEBHOOK_PUBLIC_KEY: ${(err as Error).message}`,
+      );
     }
     const verifier = createVerify('RSA-SHA256').update(rawBody);
     const ok = verifier.verify(key, Buffer.from(sig, 'base64'));

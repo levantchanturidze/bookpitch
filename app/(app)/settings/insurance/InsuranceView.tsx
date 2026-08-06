@@ -59,11 +59,7 @@ export default function InsuranceView({ insurers }: { insurers: string[] }) {
         </label>
         <label className="block">
           <span className="mb-1 block text-[11px] font-semibold text-slate-500">Insurer</span>
-          <select
-            value={insurer}
-            onChange={(e) => setInsurer(e.target.value)}
-            className={inputCls}
-          >
+          <select value={insurer} onChange={(e) => setInsurer(e.target.value)} className={inputCls}>
             <option value="">All insurers</option>
             {insurers.map((i) => (
               <option key={i} value={i}>
@@ -89,9 +85,10 @@ export default function InsuranceView({ insurers }: { insurers: string[] }) {
       )}
       {insurers.length === 0 && (
         <p className="mt-3 text-xs text-slate-500">
-          No insurers on file yet. Add <code className="rounded bg-slate-100 px-1">insurer_name</code>{' '}
-          + <code className="rounded bg-slate-100 px-1">insurance_policy_number</code> to any
-          customer record.
+          No insurers on file yet. Add{' '}
+          <code className="rounded bg-slate-100 px-1">insurer_name</code> +{' '}
+          <code className="rounded bg-slate-100 px-1">insurance_policy_number</code> to any customer
+          record.
         </p>
       )}
     </div>

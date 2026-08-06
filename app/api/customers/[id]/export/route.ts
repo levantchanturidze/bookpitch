@@ -11,7 +11,12 @@ import { exportCustomerData } from '@/lib/gdpr';
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withApiRaw(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'client.export', { organizationId: ctx.activeOrganizationId! }, 'customers');
+    requirePermission(
+      ctx,
+      'client.export',
+      { organizationId: ctx.activeOrganizationId! },
+      'customers',
+    );
     const { id } = await params;
     const data = await exportCustomerData(ctxToSession(ctx), id);
     return new NextResponse(JSON.stringify(data, null, 2), {

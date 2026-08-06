@@ -16,8 +16,20 @@ type Org = {
   stripeSubscriptionId: string | null;
   currentPeriodEnd: string | null;
   owner: { id: string; email: string; fullName: string | null } | null;
-  counts: { memberships: number; locations: number; branches: number; customers: number; appointments: number };
-  members: Array<{ id: string; userId: string; email: string; fullName: string | null; roleKey: string }>;
+  counts: {
+    memberships: number;
+    locations: number;
+    branches: number;
+    customers: number;
+    appointments: number;
+  };
+  members: Array<{
+    id: string;
+    userId: string;
+    email: string;
+    fullName: string | null;
+    roleKey: string;
+  }>;
 };
 
 type Capabilities = {
@@ -54,7 +66,9 @@ async function freshAuth(): Promise<boolean> {
 }
 
 export default function OrgDetail({
-  org, capabilities, toggles,
+  org,
+  capabilities,
+  toggles,
 }: {
   org: Org;
   capabilities: Capabilities;
@@ -77,7 +91,9 @@ export default function OrgDetail({
         });
         if (!res.ok) throw new Error(await res.text());
         router.refresh();
-      } catch (err) { setError((err as Error).message); }
+      } catch (err) {
+        setError((err as Error).message);
+      }
     });
   };
 
@@ -87,7 +103,9 @@ export default function OrgDetail({
         const res = await fetch(`/api/platform/orgs/${org.id}/reactivate`, { method: 'POST' });
         if (!res.ok) throw new Error(await res.text());
         router.refresh();
-      } catch (err) { setError((err as Error).message); }
+      } catch (err) {
+        setError((err as Error).message);
+      }
     });
   };
 
@@ -105,7 +123,9 @@ export default function OrgDetail({
         });
         if (!res.ok) throw new Error(await res.text());
         router.refresh();
-      } catch (err) { setError((err as Error).message); }
+      } catch (err) {
+        setError((err as Error).message);
+      }
     });
   };
 
@@ -121,13 +141,17 @@ export default function OrgDetail({
         });
         if (!res.ok) throw new Error(await res.text());
         alert(`Reset link sent to ${email} (silent success if not a member).`);
-      } catch (err) { setError((err as Error).message); }
+      } catch (err) {
+        setError((err as Error).message);
+      }
     });
   };
 
   const impersonate = (targetUserId: string, targetEmail: string) => {
     if (!org.allowSupportImpersonation) {
-      alert('This org has disabled support impersonation. Enable it in the org settings first (or use break-glass).');
+      alert(
+        'This org has disabled support impersonation. Enable it in the org settings first (or use break-glass).',
+      );
       return;
     }
     const reason = window.prompt(`Reason for impersonating ${targetEmail} (min 5 chars):`);
@@ -147,9 +171,13 @@ export default function OrgDetail({
           }),
         });
         if (!res.ok) throw new Error(await res.text());
-        alert('Impersonation started. You may now navigate into the org — the target will see a banner.');
+        alert(
+          'Impersonation started. You may now navigate into the org — the target will see a banner.',
+        );
         router.refresh();
-      } catch (err) { setError((err as Error).message); }
+      } catch (err) {
+        setError((err as Error).message);
+      }
     });
   };
 
@@ -161,7 +189,8 @@ export default function OrgDetail({
         </Link>
         <h2 className="mt-1 text-lg font-bold">{org.name}</h2>
         <p className="mt-1 font-mono text-xs text-slate-500">
-          {org.id} · {org.vertical ?? 'no vertical'} · {org.status} · plan {org.plan} ({org.planStatus})
+          {org.id} · {org.vertical ?? 'no vertical'} · {org.status} · plan {org.plan} (
+          {org.planStatus})
         </p>
       </div>
 
@@ -179,7 +208,7 @@ export default function OrgDetail({
       </div>
 
       <section>
-        <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Actions</h3>
+        <h3 className="mb-2 text-xs font-bold tracking-wider text-slate-500 uppercase">Actions</h3>
         <div className="flex flex-wrap gap-2">
           {capabilities.canSuspend && org.status === 'active' && (
             <Btn label="Suspend org" onClick={suspend} pending={pending} />
@@ -188,7 +217,12 @@ export default function OrgDetail({
             <Btn label="Reactivate org" onClick={reactivate} pending={pending} kind="ok" />
           )}
           {capabilities.canDelete && org.status !== 'archived' && (
-            <Btn label="Archive (soft-delete)" onClick={softDelete} pending={pending} kind="danger" />
+            <Btn
+              label="Archive (soft-delete)"
+              onClick={softDelete}
+              pending={pending}
+              kind="danger"
+            />
           )}
           {capabilities.canResetPassword && (
             <Btn label="Send password-reset link" onClick={sendResetLink} pending={pending} />
@@ -197,9 +231,9 @@ export default function OrgDetail({
       </section>
 
       <section>
-        <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+        <h3 className="mb-2 text-xs font-bold tracking-wider text-slate-500 uppercase">
           Billing
-          <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-normal normal-case text-slate-400">
+          <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-normal text-slate-400 normal-case">
             read-only — managed in Stripe
           </span>
         </h3>
@@ -208,16 +242,21 @@ export default function OrgDetail({
 
       {capabilities.canEdit && (
         <section>
-          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Edit</h3>
-          <EditOrgForm org={org} onSaved={() => router.refresh()} onError={setError} freshAuth={freshAuth} />
+          <h3 className="mb-2 text-xs font-bold tracking-wider text-slate-500 uppercase">Edit</h3>
+          <EditOrgForm
+            org={org}
+            onSaved={() => router.refresh()}
+            onError={setError}
+            freshAuth={freshAuth}
+          />
         </section>
       )}
 
       <section>
-        <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+        <h3 className="mb-2 text-xs font-bold tracking-wider text-slate-500 uppercase">
           Feature toggles
           {!capabilities.canEditToggles && (
-            <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-normal normal-case text-slate-400">
+            <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-normal text-slate-400 normal-case">
               view only — SUPER_ADMIN can edit
             </span>
           )}
@@ -232,12 +271,11 @@ export default function OrgDetail({
         />
       </section>
 
-
       <section>
-        <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Members</h3>
+        <h3 className="mb-2 text-xs font-bold tracking-wider text-slate-500 uppercase">Members</h3>
         <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
           <table className="w-full text-left text-xs">
-            <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+            <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
               <tr>
                 <th className="px-4 py-2">Email</th>
                 <th className="px-2 py-2">Role</th>
@@ -274,7 +312,7 @@ export default function OrgDetail({
 function Stat({ label, value }: { label: string; value: number }) {
   return (
     <div>
-      <p className="font-mono text-[10px] uppercase tracking-widest text-slate-500">{label}</p>
+      <p className="font-mono text-[10px] tracking-widest text-slate-500 uppercase">{label}</p>
       <p className="mt-1 font-mono text-lg font-bold">{value}</p>
     </div>
   );
@@ -294,16 +332,19 @@ function BillingPanel({ org }: { org: Org }) {
     ? Math.floor((periodEnd.getTime() - Date.now()) / (24 * 3600_000))
     : null;
   const renewalTone =
-    daysToRenewal === null   ? 'text-slate-500' :
-    daysToRenewal < 0        ? 'text-red-300'   :
-    daysToRenewal <= 7       ? 'text-amber-300'
-                             : 'text-slate-300';
+    daysToRenewal === null
+      ? 'text-slate-500'
+      : daysToRenewal < 0
+        ? 'text-red-300'
+        : daysToRenewal <= 7
+          ? 'text-amber-300'
+          : 'text-slate-300';
   const statusTone: Record<string, string> = {
-    active:   'text-emerald-300',
+    active: 'text-emerald-300',
     trialing: 'text-sky-300',
     past_due: 'text-amber-300',
     canceled: 'text-red-300',
-    unpaid:   'text-red-300',
+    unpaid: 'text-red-300',
   };
   return (
     <div className="grid grid-cols-1 gap-3 rounded-lg border border-slate-800 bg-slate-900 p-4 md:grid-cols-2">
@@ -326,7 +367,9 @@ function BillingPanel({ org }: { org: Org }) {
                 ({daysToRenewal! < 0 ? `${-daysToRenewal!}d overdue` : `${daysToRenewal}d`})
               </span>
             </span>
-          ) : <span className="font-mono text-slate-500">—</span>
+          ) : (
+            <span className="font-mono text-slate-500">—</span>
+          )
         }
       />
       <BillingRow
@@ -341,7 +384,9 @@ function BillingPanel({ org }: { org: Org }) {
             >
               {org.stripeCustomerId} ↗
             </a>
-          ) : <span className="font-mono text-slate-500">not linked</span>
+          ) : (
+            <span className="font-mono text-slate-500">not linked</span>
+          )
         }
       />
       <BillingRow
@@ -356,7 +401,9 @@ function BillingPanel({ org }: { org: Org }) {
             >
               {org.stripeSubscriptionId} ↗
             </a>
-          ) : <span className="font-mono text-slate-500">not linked</span>
+          ) : (
+            <span className="font-mono text-slate-500">not linked</span>
+          )
         }
       />
     </div>
@@ -366,7 +413,7 @@ function BillingPanel({ org }: { org: Org }) {
 function BillingRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div>
-      <p className="font-mono text-[10px] uppercase tracking-widest text-slate-500">{label}</p>
+      <p className="font-mono text-[10px] tracking-widest text-slate-500 uppercase">{label}</p>
       <div className="mt-1 text-xs">{value}</div>
     </div>
   );
@@ -377,7 +424,12 @@ function BillingRow({ label, value }: { label: string; value: React.ReactNode })
 // per the API); others see values only. Numeric field (discount ceiling)
 // is separate from the three booleans.
 function OrgTogglesPanel({
-  orgId, initial, canEdit, onSaved, onError, freshAuth,
+  orgId,
+  initial,
+  canEdit,
+  onSaved,
+  onError,
+  freshAuth,
 }: {
   orgId: string;
   initial: Toggles;
@@ -390,7 +442,8 @@ function OrgTogglesPanel({
   const [pending, setPending] = useState(false);
 
   const patch = async (delta: Partial<Toggles>) => {
-    onError(null); setPending(true);
+    onError(null);
+    setPending(true);
     try {
       if (canEdit) {
         const ok = await freshAuth();
@@ -405,24 +458,32 @@ function OrgTogglesPanel({
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error ?? `HTTP ${res.status}`);
       }
-      const body = await res.json() as { toggles: Toggles };
+      const body = (await res.json()) as { toggles: Toggles };
       setT(body.toggles);
       onSaved();
     } catch (e) {
       onError((e as Error).message);
-    } finally { setPending(false); }
+    } finally {
+      setPending(false);
+    }
   };
 
   const rows: Array<{ key: keyof Toggles; label: string; hint: string }> = [
-    { key: 'providerFinancialReports',
+    {
+      key: 'providerFinancialReports',
       label: 'Provider — org financial reports',
-      hint: 'When on, PROVIDER can view org-level financial reports (default OFF).' },
-    { key: 'providerClinicalNotesOthers',
+      hint: 'When on, PROVIDER can view org-level financial reports (default OFF).',
+    },
+    {
+      key: 'providerClinicalNotesOthers',
       label: "Provider — others' clinical notes",
-      hint: "When on, PROVIDER can read other clinicians' notes (default OFF)." },
-    { key: 'frontdeskClientFullHistory',
+      hint: "When on, PROVIDER can read other clinicians' notes (default OFF).",
+    },
+    {
+      key: 'frontdeskClientFullHistory',
       label: 'Front-desk — full client history',
-      hint: 'When on, FRONT_DESK sees full client history (default OFF — contact only).' },
+      hint: 'When on, FRONT_DESK sees full client history (default OFF — contact only).',
+    },
   ];
 
   return (
@@ -441,8 +502,9 @@ function OrgTogglesPanel({
                 disabled={pending}
                 onClick={() => patch({ [key]: !val })}
                 className={`rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-40 ${
-                  val ? 'border-emerald-600 text-emerald-200 hover:bg-emerald-950'
-                      : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                  val
+                    ? 'border-emerald-600 text-emerald-200 hover:bg-emerald-950'
+                    : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                 }`}
               >
                 {val ? 'ON' : 'OFF'}
@@ -478,20 +540,29 @@ function OrgTogglesPanel({
 }
 
 function FrontdeskCeilingEditor({
-  value, pending, onSave,
-}: { value: number; pending: boolean; onSave: (n: number) => void }) {
+  value,
+  pending,
+  onSave,
+}: {
+  value: number;
+  pending: boolean;
+  onSave: (n: number) => void;
+}) {
   const [n, setN] = useState(String(value));
   const dirty = String(value) !== n && Number.isFinite(Number(n)) && Number(n) >= 0;
   return (
     <div className="flex items-center gap-2">
       <input
-        type="number" min="0" step="1"
+        type="number"
+        min="0"
+        step="1"
         value={n}
         onChange={(e) => setN(e.target.value)}
         className="w-24 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100"
       />
       <button
-        type="button" disabled={pending || !dirty}
+        type="button"
+        disabled={pending || !dirty}
         onClick={() => onSave(Number(n))}
         className="rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-40"
       >
@@ -506,7 +577,10 @@ function FrontdeskCeilingEditor({
 //   • allowSupportImpersonation: separate toggle, requires reauth
 //     (destructive-tier — changing support-access policy)
 function EditOrgForm({
-  org, onSaved, onError, freshAuth,
+  org,
+  onSaved,
+  onError,
+  freshAuth,
 }: {
   org: Org;
   onSaved: () => void;
@@ -539,7 +613,9 @@ function EditOrgForm({
       onSaved();
     } catch (e) {
       onError((e as Error).message);
-    } finally { setPending(false); }
+    } finally {
+      setPending(false);
+    }
   };
 
   const toggleSupport = async () => {
@@ -561,14 +637,16 @@ function EditOrgForm({
       onSaved();
     } catch (e) {
       onError((e as Error).message);
-    } finally { setPending(false); }
+    } finally {
+      setPending(false);
+    }
   };
 
   return (
     <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <label className="block">
-          <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          <span className="mb-1 block text-[10px] font-bold tracking-wider text-slate-500 uppercase">
             Name
           </span>
           <input
@@ -578,7 +656,7 @@ function EditOrgForm({
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          <span className="mb-1 block text-[10px] font-bold tracking-wider text-slate-500 uppercase">
             Vertical
           </span>
           <select
@@ -609,8 +687,8 @@ function EditOrgForm({
         <div>
           <p className="text-xs font-semibold text-slate-200">Support impersonation</p>
           <p className="mt-0.5 text-[11px] text-slate-500">
-            When enabled, PLATFORM_ADMIN can impersonate an org member for support.
-            Some verticals (clinical) contractually require this to stay OFF.
+            When enabled, PLATFORM_ADMIN can impersonate an org member for support. Some verticals
+            (clinical) contractually require this to stay OFF.
           </p>
         </div>
         <button
@@ -631,12 +709,22 @@ function EditOrgForm({
 }
 
 function Btn({
-  label, onClick, pending, kind = 'default',
-}: { label: string; onClick: () => void; pending: boolean; kind?: 'default' | 'danger' | 'ok' }) {
+  label,
+  onClick,
+  pending,
+  kind = 'default',
+}: {
+  label: string;
+  onClick: () => void;
+  pending: boolean;
+  kind?: 'default' | 'danger' | 'ok';
+}) {
   const cls =
-    kind === 'danger' ? 'border-red-600 text-red-200 hover:bg-red-950' :
-    kind === 'ok'     ? 'border-emerald-600 text-emerald-200 hover:bg-emerald-950' :
-                        'border-slate-700 text-slate-200 hover:bg-slate-800';
+    kind === 'danger'
+      ? 'border-red-600 text-red-200 hover:bg-red-950'
+      : kind === 'ok'
+        ? 'border-emerald-600 text-emerald-200 hover:bg-emerald-950'
+        : 'border-slate-700 text-slate-200 hover:bg-slate-800';
   return (
     <button
       type="button"

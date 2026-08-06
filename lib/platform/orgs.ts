@@ -60,7 +60,10 @@ export async function getOrganization(id: string) {
       ownerUser: { select: { id: true, email: true, fullName: true } },
       _count: {
         select: {
-          memberships: true, locations: true, branches: true, customers: true,
+          memberships: true,
+          locations: true,
+          branches: true,
+          customers: true,
           appointments: true,
         },
       },
@@ -88,8 +91,8 @@ async function writePlatformAudit(
       organizationId,
       actorUserId: actor.userId,
       action,
-      entity: 'staff',      // audit entity vocabulary — "staff" is closest to
-                            // "org membership admin action". Distinguish by action.
+      entity: 'staff', // audit entity vocabulary — "staff" is closest to
+      // "org membership admin action". Distinguish by action.
       reason: `platform:${action}`,
       impersonationSessionId: actor.impersonation?.sessionId ?? null,
       breakGlassSessionId: actor.breakGlass?.sessionId ?? null,
@@ -125,7 +128,7 @@ export async function createOrganization(
   const name = input.name.trim();
   if (name.length < 2) throw new InvalidInputError('name must be at least 2 characters');
   const vertical = input.vertical ?? null;
-  if (vertical && !['clinic','salon','fitness','mixed'].includes(vertical)) {
+  if (vertical && !['clinic', 'salon', 'fitness', 'mixed'].includes(vertical)) {
     throw new InvalidInputError('vertical must be clinic|salon|fitness|mixed');
   }
   const locationType = input.locationType ?? 'clinic';
@@ -157,7 +160,11 @@ export async function createOrganization(
   });
 
   await writePlatformAudit(actor, orgId, 'org.create', {
-    name, vertical, locationName, locationType, viaOwnerEmail: ownerEmail ?? null,
+    name,
+    vertical,
+    locationName,
+    locationType,
+    viaOwnerEmail: ownerEmail ?? null,
   });
   log.info('platform.org.create', { orgId, actorUserId: actor.userId, name });
 
@@ -169,13 +176,15 @@ export async function createOrganization(
   let promotedExisting = false;
   if (ownerEmail) {
     const existingUser = await unsafePrismaAdmin.appUser.findUnique({
-      where: { email: ownerEmail }, select: { id: true },
+      where: { email: ownerEmail },
+      select: { id: true },
     });
     if (existingUser) {
       // Grant membership + owner pointer atomically. changeOrganizationOwner
       // assumes an existing membership, so do this write directly.
       const ownerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
-        where: { key: 'ORG_OWNER', organizationId: null }, select: { id: true },
+        where: { key: 'ORG_OWNER', organizationId: null },
+        select: { id: true },
       });
       await unsafePrismaAdmin.$transaction([
         unsafePrismaAdmin.membership.create({
@@ -188,11 +197,14 @@ export async function createOrganization(
           },
         }),
         unsafePrismaAdmin.organization.update({
-          where: { id: orgId }, data: { ownerUserId: existingUser.id },
+          where: { id: orgId },
+          data: { ownerUserId: existingUser.id },
         }),
       ]);
       await writePlatformAudit(actor, orgId, 'org.owner.change', {
-        newOwnerUserId: existingUser.id, promotedExisting: true, viaCreate: true,
+        newOwnerUserId: existingUser.id,
+        promotedExisting: true,
+        viaCreate: true,
       });
       promotedExisting = true;
     } else {
@@ -201,7 +213,9 @@ export async function createOrganization(
         { email: ownerEmail, role: 'owner' as UserRole },
       );
       await writePlatformAudit(actor, orgId, 'org.owner.invite', {
-        email: ownerEmail, invitationId: inv.id, viaCreate: true,
+        email: ownerEmail,
+        invitationId: inv.id,
+        viaCreate: true,
       });
       invitationUrl = inv.url;
     }
@@ -235,7 +249,12 @@ export async function editOrganization(
     vertical?: 'clinic' | 'salon' | 'fitness' | 'mixed' | null;
     allowSupportImpersonation?: boolean;
   },
-): Promise<{ id: string; name: string; vertical: string | null; allowSupportImpersonation: boolean }> {
+): Promise<{
+  id: string;
+  name: string;
+  vertical: string | null;
+  allowSupportImpersonation: boolean;
+}> {
   const data: {
     name?: string;
     vertical?: string | null;
@@ -247,7 +266,10 @@ export async function editOrganization(
     data.name = trimmed;
   }
   if (patch.vertical !== undefined) {
-    if (patch.vertical !== null && !['clinic','salon','fitness','mixed'].includes(patch.vertical)) {
+    if (
+      patch.vertical !== null &&
+      !['clinic', 'salon', 'fitness', 'mixed'].includes(patch.vertical)
+    ) {
       throw new InvalidInputError('vertical must be clinic|salon|fitness|mixed or null');
     }
     data.vertical = patch.vertical;
@@ -268,7 +290,9 @@ export async function editOrganization(
     fields: Object.keys(data).join(','),
   });
   log.info('platform.org.edit', {
-    orgId, actorUserId: actor.userId, fields: Object.keys(data),
+    orgId,
+    actorUserId: actor.userId,
+    fields: Object.keys(data),
   });
   return org;
 }
@@ -333,11 +357,7 @@ export async function softDeleteOrganization(actor: AuthContext, orgId: string, 
  * existing self-service password-reset flow — spec §9 rule 4 forbids
  * admins from setting passwords directly, so the link is the only path.
  */
-export async function sendPasswordResetLink(
-  actor: AuthContext,
-  orgId: string,
-  email: string,
-) {
+export async function sendPasswordResetLink(actor: AuthContext, orgId: string, email: string) {
   // Verify the user is actually a member of the target org — prevents
   // "type any email, get a reset link" abuse from platform side.
   const user = await unsafePrismaAdmin.appUser.findUnique({
@@ -390,7 +410,8 @@ export async function changeOrganizationOwner(
     // membership roleId says another, so can() still returns the old role.
     const membershipId = existingUser.memberships[0].id;
     const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
-      where: { key: 'ORG_OWNER', organizationId: null }, select: { id: true },
+      where: { key: 'ORG_OWNER', organizationId: null },
+      select: { id: true },
     });
     await unsafePrismaAdmin.$transaction([
       unsafePrismaAdmin.membership.update({
@@ -409,7 +430,8 @@ export async function changeOrganizationOwner(
       }),
     ]);
     await writePlatformAudit(actor, orgId, 'org.owner.change', {
-      newOwnerUserId: existingUser.id, promotedExisting: true,
+      newOwnerUserId: existingUser.id,
+      promotedExisting: true,
     });
     return { ok: true, invited: false };
   }
@@ -422,7 +444,8 @@ export async function changeOrganizationOwner(
     { email, role: 'owner' as UserRole },
   );
   await writePlatformAudit(actor, orgId, 'org.owner.invite', {
-    email, invitationId: inv.id,
+    email,
+    invitationId: inv.id,
   });
   return { ok: true, invited: true, invitationUrl: inv.url };
 }

@@ -187,9 +187,7 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
         </div>
 
         {error && (
-          <div className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
-            {error}
-          </div>
+          <div className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
         )}
 
         <div className="flex-1 space-y-2 overflow-y-auto pr-1">
@@ -287,7 +285,9 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
               exit={{ scale: 0.95, opacity: 0 }}
               className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-6 shadow-lg"
             >
-              <h3 className="text-base font-bold text-slate-800">Delete {labelSingular} Profile?</h3>
+              <h3 className="text-base font-bold text-slate-800">
+                Delete {labelSingular} Profile?
+              </h3>
               <p className="mt-2 text-xs text-slate-500">
                 This action is permanent. Profiles with existing appointments cannot be deleted
                 until soft-delete lands (P3.3).
@@ -364,7 +364,9 @@ function PatientDetail({
             <button
               onClick={onEdit}
               className={`rounded-lg px-3 py-1.5 text-[11px] font-bold text-white ${
-                accent === 'teal' ? 'bg-teal-600 hover:bg-teal-700' : 'bg-pink-600 hover:bg-pink-700'
+                accent === 'teal'
+                  ? 'bg-teal-600 hover:bg-teal-700'
+                  : 'bg-pink-600 hover:bg-pink-700'
               }`}
             >
               Edit
@@ -415,9 +417,7 @@ function PatientDetail({
               {isClinic ? 'Contraindications & Allergies' : 'Sensitivities / Warnings'}
             </span>
             <p
-              className={`text-xs font-semibold ${
-                hasAllergy ? 'text-rose-800' : 'text-slate-600'
-              }`}
+              className={`text-xs font-semibold ${hasAllergy ? 'text-rose-800' : 'text-slate-600'}`}
             >
               {active.allergies ?? 'None recorded'}
             </p>
@@ -496,13 +496,7 @@ function PatientDetail({
 // -----------------------------------------------------------------------------
 // GDPR panel (owner-only) — export PII as JSON, or anonymize the record.
 // -----------------------------------------------------------------------------
-function GdprPanel({
-  customerId,
-  customerName,
-}: {
-  customerId: string;
-  customerName: string;
-}) {
+function GdprPanel({ customerId, customerName }: { customerId: string; customerName: string }) {
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -566,9 +560,7 @@ function GdprPanel({
         </button>
       </div>
       {error && (
-        <p className="mt-2 rounded-lg bg-rose-50 px-2 py-1.5 text-[11px] text-rose-700">
-          {error}
-        </p>
+        <p className="mt-2 rounded-lg bg-rose-50 px-2 py-1.5 text-[11px] text-rose-700">{error}</p>
       )}
       <AnimatePresence>
         {confirming && (
@@ -582,8 +574,8 @@ function GdprPanel({
               <h3 className="text-base font-bold text-slate-800">Anonymize {customerName}?</h3>
               <p className="mt-2 text-xs text-slate-500">
                 This redacts name, contact fields, allergies, and clinical notes. Appointment and
-                payment history stays intact. The action is logged in the audit trail and cannot
-                be undone.
+                payment history stays intact. The action is logged in the audit trail and cannot be
+                undone.
               </p>
               <div className="mt-5 flex items-center justify-end gap-2">
                 <button
@@ -662,8 +654,12 @@ function PatientFormModal({
       >
         <div className="mb-4 flex items-center justify-between">
           <h3 className="flex items-center gap-1.5 text-base font-bold text-slate-800">
-            <UserPlus className={`h-5 w-5 ${accent === 'teal' ? 'text-teal-600' : 'text-pink-600'}`} />
-            {mode === 'create' ? `Create ${labelSingular} Profile` : `Edit ${labelSingular} Profile`}
+            <UserPlus
+              className={`h-5 w-5 ${accent === 'teal' ? 'text-teal-600' : 'text-pink-600'}`}
+            />
+            {mode === 'create'
+              ? `Create ${labelSingular} Profile`
+              : `Edit ${labelSingular} Profile`}
           </h3>
           <button
             onClick={onCancel}

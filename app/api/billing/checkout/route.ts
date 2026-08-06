@@ -11,7 +11,12 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: NextRequest) {
   return withApi(async () => {
     const ctx = await requireAuthContext();
-    requirePermission(ctx, 'org.billing.manage', { organizationId: ctx.activeOrganizationId! }, 'billing');
+    requirePermission(
+      ctx,
+      'org.billing.manage',
+      { organizationId: ctx.activeOrganizationId! },
+      'billing',
+    );
     const body = (await req.json().catch(() => null)) as { plan?: unknown } | null;
     const plan = body?.plan as PlanId | undefined;
     if (!plan) throw new InvalidInputError('plan is required');

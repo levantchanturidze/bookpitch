@@ -5,9 +5,11 @@ import OrgDetail from '@/components/platform/OrgDetail';
 
 export const dynamic = 'force-dynamic';
 
-export default async function PlatformOrgDetailPage(
-  { params }: { params: Promise<{ id: string }> },
-) {
+export default async function PlatformOrgDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const ctx = await requireAuthContext();
   requirePermission(ctx, 'platform.analytics.read', undefined, 'platform');
   const { id } = await params;
@@ -50,7 +52,7 @@ export default async function PlatformOrgDetailPage(
           ? { id: org.ownerUser.id, email: org.ownerUser.email, fullName: org.ownerUser.fullName }
           : null,
         counts: org._count,
-        members: org.memberships.map(m => ({
+        members: org.memberships.map((m) => ({
           id: m.id,
           userId: m.user.id,
           email: m.user.email,

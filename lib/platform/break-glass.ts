@@ -18,7 +18,7 @@
 import { unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError, ConflictError, ForbiddenError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
-import { verifyPasswordFresh } from './password-reauth';
+import { verifyPasswordDirect } from './password-reauth';
 import { verifyTotp } from './mfa';
 import { getEmailProvider } from '@/lib/messaging';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
@@ -54,7 +54,10 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
   }
 
   // Spec §7.2 rule 3: re-authenticate at the moment of use (password + TOTP).
-  await verifyPasswordFresh(input.actor.userId, input.password, { throwOnBadPassword: true });
+  // Break-glass submits password + TOTP + reason + ticketId in one request
+  // (no two-step grant pattern), so we verify the password directly without
+  // creating a pre-issued reauth grant.
+  await verifyPasswordDirect(input.actor.userId, input.password, { throwOnBadPassword: true });
   await verifyTotp(input.actor.userId, input.totpCode);
 
   // One active session at a time.
@@ -68,7 +71,8 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
   // typos; the session becomes queryable regardless).
   if (input.targetOrganizationId) {
     const org = await unsafePrismaAdmin.organization.findUnique({
-      where: { id: input.targetOrganizationId }, select: { id: true },
+      where: { id: input.targetOrganizationId },
+      select: { id: true },
     });
     if (!org) throw new InvalidInputError('target organization not found');
   }
@@ -118,19 +122,20 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
       alertTo,
       '[Bookpitch] Break-glass session activated',
       `A SUPER_ADMIN break-glass session was activated.\n\n` +
-      `Actor: ${input.actor.email}\n` +
-      `Ticket: ${ticketId}\n` +
-      `Reason: ${reason}\n` +
-      `Target org: ${input.targetOrganizationId ?? '(platform-wide)'}\n` +
-      `Expires: ${expiresAt.toISOString()}\n\n` +
-      `If this wasn't you, reset your password immediately.`,
+        `Actor: ${input.actor.email}\n` +
+        `Ticket: ${ticketId}\n` +
+        `Reason: ${reason}\n` +
+        `Target org: ${input.targetOrganizationId ?? '(platform-wide)'}\n` +
+        `Expires: ${expiresAt.toISOString()}\n\n` +
+        `If this wasn't you, reset your password immediately.`,
     );
   } catch (err) {
     log.warn('platform.break_glass.alert_failed', { err: sanitizeErrorMessage(err) });
   }
 
   log.info('platform.break_glass.start', {
-    sessionId: session.id, actorUserId: input.actor.userId,
+    sessionId: session.id,
+    actorUserId: input.actor.userId,
     targetOrganizationId: input.targetOrganizationId ?? null,
   });
 

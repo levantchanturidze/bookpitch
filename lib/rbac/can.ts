@@ -57,8 +57,10 @@ export function can(
   // 2a. Suspended / archived orgs deny everything org-plane. Break-glass
   //     overrides so SUPER_ADMIN can inspect a suspended org (fraud triage,
   //     deletion prep).
-  if ((ctx.organizationStatus === 'suspended' || ctx.organizationStatus === 'archived') &&
-      !bgReaches) {
+  if (
+    (ctx.organizationStatus === 'suspended' || ctx.organizationStatus === 'archived') &&
+    !bgReaches
+  ) {
     return false;
   }
 
@@ -167,10 +169,7 @@ export function can(
  * responses actually differ when a toggle is flipped, not just that a
  * requirePermission would deny).
  */
-function toggleGrantsPermission(
-  ctx: AuthContext,
-  p: PermissionKey,
-): boolean {
+function toggleGrantsPermission(ctx: AuthContext, p: PermissionKey): boolean {
   const role = ctx.roleKey;
   const t = ctx.orgToggles;
 
@@ -200,6 +199,7 @@ function toggleGrantsPermission(
  */
 function isBreakGlassReadableKey(p: string): boolean {
   if (p.startsWith('clinical_note.read')) return true;
-  if (p === 'client.read:basic' || p === 'client.read:contact' || p === 'client.read:full') return true;
+  if (p === 'client.read:basic' || p === 'client.read:contact' || p === 'client.read:full')
+    return true;
   return false;
 }

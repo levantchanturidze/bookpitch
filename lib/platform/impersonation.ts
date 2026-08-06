@@ -51,7 +51,13 @@ export async function startImpersonation(input: StartImpersonationInput) {
   // break-glass — spec §6.1 row "override").
   const org = await unsafePrismaAdmin.organization.findUnique({
     where: { id: input.organizationId },
-    select: { id: true, name: true, allowSupportImpersonation: true, ownerUserId: true, ownerUser: { select: { email: true } } },
+    select: {
+      id: true,
+      name: true,
+      allowSupportImpersonation: true,
+      ownerUserId: true,
+      ownerUser: { select: { email: true } },
+    },
   });
   if (!org) throw new InvalidInputError('organization not found');
   if (!org.allowSupportImpersonation && !input.actor.isBreakGlass) {
@@ -131,8 +137,8 @@ export async function startImpersonation(input: StartImpersonationInput) {
         org.ownerUser.email,
         'Bookpitch support is inside your organization',
         `A support agent started an impersonation session on your organization "${org.name}".\n\n` +
-        `Reason: ${reason}\nTicket: ${ticketId}\nExpires: ${expiresAt.toISOString()}\n\n` +
-        `If this looks wrong, revoke it from the org settings > audit page or contact security@bookpitch.dev.`,
+          `Reason: ${reason}\nTicket: ${ticketId}\nExpires: ${expiresAt.toISOString()}\n\n` +
+          `If this looks wrong, revoke it from the org settings > audit page or contact security@bookpitch.dev.`,
       );
     } catch (err) {
       log.warn('platform.impersonation.email_failed', { err: sanitizeErrorMessage(err) });

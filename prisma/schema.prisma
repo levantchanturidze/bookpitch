@@ -80,54 +80,55 @@ enum MessageState {
 // =============================================================================
 
 model Organization {
-  id                       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name                     String
-  reminderLeadHours        Int      @default(24) @map("reminder_lead_hours") @db.SmallInt
-  customerRetentionYears   Int      @default(7) @map("customer_retention_years") @db.SmallInt
+  id                     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                   String
+  reminderLeadHours      Int    @default(24) @map("reminder_lead_hours") @db.SmallInt
+  customerRetentionYears Int    @default(7) @map("customer_retention_years") @db.SmallInt
 
   // SaaS subscription — see billing migration + lib/billing/*.
-  plan                     String    @default("free")
-  planStatus               String    @default("active") @map("plan_status")
-  stripeCustomerId         String?   @unique(map: "idx_org_stripe_customer") @map("stripe_customer_id")
-  stripeSubscriptionId     String?   @unique(map: "idx_org_stripe_subscription") @map("stripe_subscription_id")
-  currentPeriodEnd         DateTime? @map("current_period_end") @db.Timestamptz(6)
+  plan                 String    @default("free")
+  planStatus           String    @default("active") @map("plan_status")
+  stripeCustomerId     String?   @unique(map: "idx_org_stripe_customer") @map("stripe_customer_id")
+  stripeSubscriptionId String?   @unique(map: "idx_org_stripe_subscription") @map("stripe_subscription_id")
+  currentPeriodEnd     DateTime? @map("current_period_end") @db.Timestamptz(6)
 
   // Feature flags — see lib/features.ts. JSONB so new flags land in
   // code, not migrations. Absent key = disabled.
-  features                 Json      @default("{}") @db.JsonB
+  features Json @default("{}") @db.JsonB
 
   // ---- Spec §3 additions (RBAC Phase 1). Backfill in Phase 2.
-  vertical                    String?  // clinic|salon|fitness|mixed — CHECK in migration
-  legalName                   String?  @map("legal_name")
-  brandName                   String?  @map("brand_name")
-  status                      String   @default("active") // trial|active|suspended|archived
-  ownerUserId                 String?  @map("owner_user_id") @db.Uuid
-  allowSupportImpersonation   Boolean  @default(false) @map("allow_support_impersonation")
+  vertical                  String? // clinic|salon|fitness|mixed — CHECK in migration
+  legalName                 String? @map("legal_name")
+  brandName                 String? @map("brand_name")
+  status                    String  @default("active") // trial|active|suspended|archived
+  ownerUserId               String? @map("owner_user_id") @db.Uuid
+  allowSupportImpersonation Boolean @default(false) @map("allow_support_impersonation")
 
-  createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  locations         Location[]
-  branches          Branch[]
-  memberships       Membership[]
-  staff             Staff[]
-  services          Service[]
-  customers         Customer[]
-  appointments      Appointment[]
-  payments          Payment[]
-  messageTemplates  MessageTemplate[]
-  messageLog        MessageLog[]
-  notifications     Notification[]
-  auditLog          AuditLog[]
-  assistantUsage    AssistantUsage[]
-  rateLimits        RateLimit[]
-  invitations       Invitation[]
-  waitlist          Waitlist[]
-  customRoles       Role[]
-  ownerUser         AppUser? @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  locations             Location[]
+  branches              Branch[]
+  memberships           Membership[]
+  staff                 Staff[]
+  services              Service[]
+  customers             Customer[]
+  appointments          Appointment[]
+  payments              Payment[]
+  messageTemplates      MessageTemplate[]
+  messageLog            MessageLog[]
+  notifications         Notification[]
+  auditLog              AuditLog[]
+  assistantUsage        AssistantUsage[]
+  rateLimits            RateLimit[]
+  invitations           Invitation[]
+  waitlist              Waitlist[]
+  customRoles           Role[]
+  ownerUser             AppUser?               @relation("OrganizationOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   impersonationSessions ImpersonationSession[]
   breakGlassSessions    BreakGlassSession[]
   ownershipTransfers    OwnershipTransfer[]
+  reauthGrants          PlatformReauthGrant[]  @relation("OrgReauthGrants")
 
   @@index([status], map: "idx_org_status")
   @@index([ownerUserId], map: "idx_org_owner_user_id")
@@ -163,53 +164,54 @@ model Location {
 // =============================================================================
 
 model AppUser {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  authProvider  String    @map("auth_provider")
-  authSubject   String    @map("auth_subject")
-  email         String    @unique @db.Citext
-  fullName      String?   @map("full_name")
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  authProvider   String    @map("auth_provider")
+  authSubject    String    @map("auth_subject")
+  email          String    @unique @db.Citext
+  fullName       String?   @map("full_name")
   // Auth.js Prisma adapter surface: name / emailVerified / image.
   // `name` mirrors fullName; the adapter writes it directly on user upsert.
-  name          String?
-  emailVerified DateTime? @map("email_verified") @db.Timestamptz(6)
-  image         String?
+  name           String?
+  emailVerified  DateTime? @map("email_verified") @db.Timestamptz(6)
+  image          String?
   // Set only when authProvider = 'credentials'; null for future SSO users.
-  passwordHash  String?   @map("password_hash")
+  passwordHash   String?   @map("password_hash")
   // Bumped on password reset / admin revocation. JWTs carrying an older
   // value are rejected by the session() callback in auth.ts.
-  sessionVersion Int      @default(1) @map("session_version")
+  sessionVersion Int       @default(1) @map("session_version")
 
   // ---- Spec §3 additions (RBAC Phase 1).
-  status         String    @default("active") // active|locked|deleted (CHECK in migration)
-  locale         String?
-  mfaEnabled         Boolean   @default(false) @map("mfa_enabled")
+  status            String    @default("active") // active|locked|deleted (CHECK in migration)
+  locale            String?
+  mfaEnabled        Boolean   @default(false) @map("mfa_enabled")
   // AES-GCM encrypted TOTP secret (same scheme as allergies/clinicalNotes).
   // NULL = MFA not enrolled; non-null = TOTP required for break-glass.
-  mfaTotp            String?   @map("mfa_totp")
+  mfaTotp           String?   @map("mfa_totp")
   // Unix epoch of the last successfully consumed TOTP 30s window, for replay protection.
-  mfaLastTotpWindow  BigInt?   @map("mfa_last_totp_window")
-  lastLoginAt        DateTime? @map("last_login_at") @db.Timestamptz(6)
+  mfaLastTotpWindow BigInt?   @map("mfa_last_totp_window")
+  lastLoginAt       DateTime? @map("last_login_at") @db.Timestamptz(6)
   // Platform-plane role (SUPER_ADMIN, PLATFORM_ADMIN, …). NULL for
   // org-plane-only users — that is, everyone today.
-  platformRoleId String?   @map("platform_role_id") @db.Uuid
+  platformRoleId    String?   @map("platform_role_id") @db.Uuid
 
-  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  memberships           Membership[]
-  staffProfiles         Staff[]
-  appointments          Appointment[]
-  auditLog              AuditLog[]     @relation("AuditActor")
-  auditLogOnBehalfOf    AuditLog[]     @relation("AuditOnBehalfOf")
-  pushSubscriptions     PushSubscription[]
-  platformRole          Role?          @relation("UserPlatformRole", fields: [platformRoleId], references: [id], onDelete: SetNull)
-  ownedOrganizations    Organization[] @relation("OrganizationOwner")
-  invitationsSent       Membership[]   @relation("MembershipInviter")
+  memberships                  Membership[]
+  staffProfiles                Staff[]
+  appointments                 Appointment[]
+  auditLog                     AuditLog[]             @relation("AuditActor")
+  auditLogOnBehalfOf           AuditLog[]             @relation("AuditOnBehalfOf")
+  pushSubscriptions            PushSubscription[]
+  platformRole                 Role?                  @relation("UserPlatformRole", fields: [platformRoleId], references: [id], onDelete: SetNull)
+  ownedOrganizations           Organization[]         @relation("OrganizationOwner")
+  invitationsSent              Membership[]           @relation("MembershipInviter")
   impersonationSessionsStarted ImpersonationSession[] @relation("ImpersonationActor")
   impersonationSessionsTarget  ImpersonationSession[] @relation("ImpersonationTarget")
   breakGlassSessions           BreakGlassSession[]
   ownershipTransfersInitiated  OwnershipTransfer[]    @relation("OwnershipTransferFrom")
   ownershipTransfersReceived   OwnershipTransfer[]    @relation("OwnershipTransferTo")
-  platformReauthGrant          PlatformReauthGrant?
+  platformReauthGrants         PlatformReauthGrant[]
+  recoveryCode                 AppUserRecoveryCode[]
 
   @@unique([authProvider, authSubject])
   @@index([status], map: "idx_app_users_status")
@@ -254,16 +256,16 @@ model Membership {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   // ---- Spec §3 additions (RBAC Phase 1). role_id backfilled in Phase 2.
-  roleId            String?   @map("role_id") @db.Uuid
-  status            String    @default("active") // invited|active|suspended|removed
-  isBookable        Boolean   @default(false) @map("is_bookable")
-  invitedByUserId   String?   @map("invited_by_user_id") @db.Uuid
-  joinedAt          DateTime? @map("joined_at") @db.Timestamptz(6)
+  roleId          String?   @map("role_id") @db.Uuid
+  status          String    @default("active") // invited|active|suspended|removed
+  isBookable      Boolean   @default(false) @map("is_bookable")
+  invitedByUserId String?   @map("invited_by_user_id") @db.Uuid
+  joinedAt        DateTime? @map("joined_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         AppUser      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  roleRef      Role?        @relation("MembershipRole", fields: [roleId], references: [id], onDelete: Restrict)
-  invitedBy    AppUser?     @relation("MembershipInviter", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         AppUser            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleRef      Role?              @relation("MembershipRole", fields: [roleId], references: [id], onDelete: Restrict)
+  invitedBy    AppUser?           @relation("MembershipInviter", fields: [invitedByUserId], references: [id], onDelete: SetNull)
   branches     MembershipBranch[]
 
   // Existing invariant (one enum-role per user per org). Kept until Contract.
@@ -348,26 +350,26 @@ model Service {
 // =============================================================================
 
 model Customer {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  name           String
-  email          String?   @db.Citext
-  phone          String?
-  dob            DateTime? @db.Date
-  gender         String?
-  avatarUrl      String?   @map("avatar_url")
-  joinedDate     DateTime  @default(dbgenerated("CURRENT_DATE")) @map("joined_date") @db.Date
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId        String    @map("organization_id") @db.Uuid
+  name                  String
+  email                 String?   @db.Citext
+  phone                 String?
+  dob                   DateTime? @db.Date
+  gender                String?
+  avatarUrl             String?   @map("avatar_url")
+  joinedDate            DateTime  @default(dbgenerated("CURRENT_DATE")) @map("joined_date") @db.Date
   // Sensitive (health) fields — encryption + audit added in P1.4
-  allergies      String?
-  clinicalNotes  String?   @map("clinical_notes")
-  consentAt      DateTime? @map("consent_at") @db.Timestamptz(6)
-  consentVersion String?   @map("consent_version")
+  allergies             String?
+  clinicalNotes         String?   @map("clinical_notes")
+  consentAt             DateTime? @map("consent_at") @db.Timestamptz(6)
+  consentVersion        String?   @map("consent_version")
   // Insurance carrier + policy number for claim exports. Nullable —
   // patients without insurance leave both empty.
-  insurerName            String? @map("insurer_name")
-  insurancePolicyNumber  String? @map("insurance_policy_number")
-  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  insurerName           String?   @map("insurer_name")
+  insurancePolicyNumber String?   @map("insurance_policy_number")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   treatmentHistory TreatmentHistory[]
@@ -396,26 +398,26 @@ model TreatmentHistory {
 // =============================================================================
 
 model Appointment {
-  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String            @map("organization_id") @db.Uuid
-  locationId     String            @map("location_id") @db.Uuid
-  customerId     String            @map("customer_id") @db.Uuid
-  staffId        String            @map("staff_id") @db.Uuid
-  serviceId      String?           @map("service_id") @db.Uuid
-  startsAt       DateTime          @map("starts_at") @db.Timestamptz(6)
-  endsAt         DateTime          @map("ends_at") @db.Timestamptz(6)
-  serviceName    String            @map("service_name")
-  price          Decimal           @db.Decimal(10, 2)
-  status         AppointmentStatus @default(pending)
-  paymentStatus  PaymentStatus     @default(unpaid) @map("payment_status")
-  notes          String?
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String            @map("organization_id") @db.Uuid
+  locationId       String            @map("location_id") @db.Uuid
+  customerId       String            @map("customer_id") @db.Uuid
+  staffId          String            @map("staff_id") @db.Uuid
+  serviceId        String?           @map("service_id") @db.Uuid
+  startsAt         DateTime          @map("starts_at") @db.Timestamptz(6)
+  endsAt           DateTime          @map("ends_at") @db.Timestamptz(6)
+  serviceName      String            @map("service_name")
+  price            Decimal           @db.Decimal(10, 2)
+  status           AppointmentStatus @default(pending)
+  paymentStatus    PaymentStatus     @default(unpaid) @map("payment_status")
+  notes            String?
   // Insurance / claim export support — see lib/insurance.ts.
   // Both nullable: not every visit is billable to an insurer.
-  icd10Code        String? @map("icd10_code")
-  icd10Description String? @map("icd10_description")
-  createdBy      String?           @map("created_by") @db.Uuid
-  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  icd10Code        String?           @map("icd10_code")
+  icd10Description String?           @map("icd10_description")
+  createdBy        String?           @map("created_by") @db.Uuid
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   location     Location     @relation(fields: [locationId], references: [id], onDelete: Cascade)
@@ -592,11 +594,11 @@ model AuditLog {
   meta           Json?
 
   // ---- Spec §7.1 additions (RBAC Phase 1). Populated by Phase 5.
-  onBehalfOfUserId       String?  @map("on_behalf_of_user_id") @db.Uuid
-  userAgent              String?  @map("user_agent")
+  onBehalfOfUserId       String? @map("on_behalf_of_user_id") @db.Uuid
+  userAgent              String? @map("user_agent")
   reason                 String?
-  impersonationSessionId String?  @map("impersonation_session_id") @db.Uuid
-  breakGlassSessionId    String?  @map("break_glass_session_id") @db.Uuid
+  impersonationSessionId String? @map("impersonation_session_id") @db.Uuid
+  breakGlassSessionId    String? @map("break_glass_session_id") @db.Uuid
 
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
   actor        AppUser?      @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
@@ -626,7 +628,7 @@ model Role {
   id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   key            String
   displayName    String   @map("display_name")
-  plane          String   // platform | organization | consumer (CHECK in migration)
+  plane          String // platform | organization | consumer (CHECK in migration)
   rank           Int
   // NULL = system template. When set, this is a custom role owned by an
   // organization (Phase 6 feature). Two partial unique indexes in the
@@ -637,14 +639,14 @@ model Role {
   isSystem       Boolean  @default(false) @map("is_system")
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  organization       Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  permissions        RolePermission[]
-  memberships        Membership[]     @relation("MembershipRole")
-  platformRoleUsers  AppUser[]        @relation("UserPlatformRole")
+  organization      Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions       RolePermission[]
+  memberships       Membership[]     @relation("MembershipRole")
+  platformRoleUsers AppUser[]        @relation("UserPlatformRole")
   // Phase 3 lattice edges. `canManage` = roles this role can manage;
   // `managedBy` = roles that can manage this one. See lib/rbac/rank.ts.
-  canManage          RoleCanManage[]  @relation("RoleCanManage_Parent")
-  managedBy          RoleCanManage[]  @relation("RoleCanManage_Child")
+  canManage         RoleCanManage[]  @relation("RoleCanManage_Parent")
+  managedBy         RoleCanManage[]  @relation("RoleCanManage_Child")
 
   @@index([plane], map: "idx_roles_plane")
   @@map("roles")
@@ -656,11 +658,11 @@ model Role {
 // with the rank check.
 model RoleCanManage {
   parentRoleId String   @map("parent_role_id") @db.Uuid
-  childRoleId  String   @map("child_role_id")  @db.Uuid
+  childRoleId  String   @map("child_role_id") @db.Uuid
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   parent Role @relation("RoleCanManage_Parent", fields: [parentRoleId], references: [id], onDelete: Cascade)
-  child  Role @relation("RoleCanManage_Child",  fields: [childRoleId],  references: [id], onDelete: Cascade)
+  child  Role @relation("RoleCanManage_Child", fields: [childRoleId], references: [id], onDelete: Cascade)
 
   @@id([parentRoleId, childRoleId])
   @@index([parentRoleId], map: "idx_role_can_manage_parent")
@@ -671,11 +673,11 @@ model Permission {
   key         String   @id
   resource    String
   action      String
-  scope       String?  // own|branch|org|platform|limited|unlimited|any|basic|contact|full
+  scope       String? // own|branch|org|platform|limited|unlimited|any|basic|contact|full
   description String?
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  roles       RolePermission[]
+  roles RolePermission[]
 
   @@index([resource], map: "idx_permissions_resource")
   @@map("permissions")
@@ -697,21 +699,21 @@ model RolePermission {
 // Branch = future replacement for Location (Phase 2 backfills 1:1).
 // EXPAND: coexists with Location until Contract, months later.
 model Branch {
-  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId    String   @map("organization_id") @db.Uuid
-  name              String
-  address           String?
-  timezone          String   @default("Asia/Tbilisi")
-  status            String   @default("active") // active|inactive (CHECK)
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  name             String
+  address          String?
+  timezone         String   @default("Asia/Tbilisi")
+  status           String   @default("active") // active|inactive (CHECK)
   // Back-pointer to the Location this branch was migrated from. Set
   // during Phase 2; NULL for branches created after Contract.
-  legacyLocationId  String?  @unique(map: "branches_legacy_location_id_unique") @map("legacy_location_id") @db.Uuid
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  legacyLocationId String?  @unique(map: "branches_legacy_location_id_unique") @map("legacy_location_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  organization  Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  legacyLocation Location?         @relation("BranchLegacyLocation", fields: [legacyLocationId], references: [id], onDelete: SetNull)
-  memberships   MembershipBranch[]
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  legacyLocation Location?          @relation("BranchLegacyLocation", fields: [legacyLocationId], references: [id], onDelete: SetNull)
+  memberships    MembershipBranch[]
 
   @@index([organizationId], map: "idx_branches_org")
   @@map("branches")
@@ -739,23 +741,23 @@ model MembershipBranch {
 // account the actor is inside. Populated into ctx.impersonation by
 // lib/rbac/context.ts on every request.
 model ImpersonationSession {
-  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  actorUserId       String   @map("actor_user_id") @db.Uuid
-  onBehalfOfUserId  String   @map("on_behalf_of_user_id") @db.Uuid
-  organizationId    String   @map("organization_id") @db.Uuid
-  reason            String
-  ticketId          String   @map("ticket_id")
-  startedAt         DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
-  expiresAt         DateTime @map("expires_at") @db.Timestamptz(6)
-  endedAt           DateTime? @map("ended_at") @db.Timestamptz(6)
-  endedReason       String?  @map("ended_reason")
-  ip                String?  @db.Inet
-  userAgent         String?  @map("user_agent")
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId      String    @map("actor_user_id") @db.Uuid
+  onBehalfOfUserId String    @map("on_behalf_of_user_id") @db.Uuid
+  organizationId   String    @map("organization_id") @db.Uuid
+  reason           String
+  ticketId         String    @map("ticket_id")
+  startedAt        DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(6)
+  endedAt          DateTime? @map("ended_at") @db.Timestamptz(6)
+  endedReason      String?   @map("ended_reason")
+  ip               String?   @db.Inet
+  userAgent        String?   @map("user_agent")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  actor         AppUser      @relation("ImpersonationActor", fields: [actorUserId], references: [id], onDelete: NoAction)
-  onBehalfOf    AppUser      @relation("ImpersonationTarget", fields: [onBehalfOfUserId], references: [id], onDelete: NoAction)
-  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: NoAction)
+  actor        AppUser      @relation("ImpersonationActor", fields: [actorUserId], references: [id], onDelete: NoAction)
+  onBehalfOf   AppUser      @relation("ImpersonationTarget", fields: [onBehalfOfUserId], references: [id], onDelete: NoAction)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: NoAction)
 
   // idx_impersonation_sessions_actor_active is a partial index
   // (WHERE ended_at IS NULL) declared in the migration; Prisma can't
@@ -768,18 +770,18 @@ model ImpersonationSession {
 // required to start; every read during the window is audited with
 // break_glass_session_id.
 model BreakGlassSession {
-  id                     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  actorUserId            String   @map("actor_user_id") @db.Uuid
-  targetOrganizationId   String?  @map("target_organization_id") @db.Uuid
-  reason                 String
-  ticketId               String   @map("ticket_id")
-  startedAt              DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
-  expiresAt              DateTime @map("expires_at") @db.Timestamptz(6)
-  endedAt                DateTime? @map("ended_at") @db.Timestamptz(6)
-  endedReason            String?  @map("ended_reason")
-  ip                     String?  @db.Inet
-  userAgent              String?  @map("user_agent")
-  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId          String    @map("actor_user_id") @db.Uuid
+  targetOrganizationId String?   @map("target_organization_id") @db.Uuid
+  reason               String
+  ticketId             String    @map("ticket_id")
+  startedAt            DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  expiresAt            DateTime  @map("expires_at") @db.Timestamptz(6)
+  endedAt              DateTime? @map("ended_at") @db.Timestamptz(6)
+  endedReason          String?   @map("ended_reason")
+  ip                   String?   @db.Inet
+  userAgent            String?   @map("user_agent")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   actor        AppUser       @relation(fields: [actorUserId], references: [id], onDelete: NoAction)
   organization Organization? @relation(fields: [targetOrganizationId], references: [id], onDelete: NoAction)
@@ -792,19 +794,19 @@ model BreakGlassSession {
 // migration). Rows persist post-decision as history — same "sessions
 // outlive actors" argument as ImpersonationSession.
 model OwnershipTransfer {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId  String   @map("organization_id") @db.Uuid
-  fromUserId      String   @map("from_user_id") @db.Uuid
-  toUserId        String   @map("to_user_id") @db.Uuid
-  status          String   @default("pending")
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  expiresAt       DateTime @map("expires_at") @db.Timestamptz(6)
-  decidedAt       DateTime? @map("decided_at") @db.Timestamptz(6)
-  decidedReason   String?  @map("decided_reason")
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  fromUserId     String    @map("from_user_id") @db.Uuid
+  toUserId       String    @map("to_user_id") @db.Uuid
+  status         String    @default("pending")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(6)
+  decidedAt      DateTime? @map("decided_at") @db.Timestamptz(6)
+  decidedReason  String?   @map("decided_reason")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   fromUser     AppUser      @relation("OwnershipTransferFrom", fields: [fromUserId], references: [id], onDelete: NoAction)
-  toUser       AppUser      @relation("OwnershipTransferTo",   fields: [toUserId],   references: [id], onDelete: NoAction)
+  toUser       AppUser      @relation("OwnershipTransferTo", fields: [toUserId], references: [id], onDelete: NoAction)
 
   @@map("ownership_transfers")
 }
@@ -823,15 +825,74 @@ model PlatformRateLimit {
   @@map("platform_rate_limit")
 }
 
-// Distributed freshness marker for password re-verification. Set by
-// POST /api/platform/reauth; consumed by requireFreshPassword on
-// destructive platform routes. One row per user (upsert on re-verify).
+// Session/purpose/org-bound, single-use reauthentication grant.
+// Created by verifyPasswordFresh; atomically consumed by requireFreshPassword.
+// One unconsumed grant per (userId, authSessionId, purpose) enforced by
+// the partial unique index idx_reauth_grant_active (WHERE consumed_at IS NULL).
+// Consumed grants are retained for audit history; housekeeping sweeps
+// expired/consumed rows after 24 hours.
 model PlatformReauthGrant {
-  userId    String   @id @map("user_id") @db.Uuid
-  grantedAt DateTime @default(now()) @map("granted_at") @db.Timestamptz(6)
-  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  // Stable JWT claim identifying the specific login session that verified the
+  // password. Ensures session A cannot consume a grant created by session B.
+  authSessionId  String    @map("auth_session_id")
+  // Allowlisted action this grant authorises. See lib/platform/reauth-purpose.ts.
+  purpose        String    @map("purpose")
+  // Target organization for org-scoped operations (suspend, delete). Null for
+  // platform-wide operations (MFA enroll/confirm, break-glass start).
+  orgId          String?   @map("org_id") @db.Uuid
+  grantedAt      DateTime  @default(now()) @map("granted_at") @db.Timestamptz(6)
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(6)
+  sessionVersion Int       @default(0) @map("session_version")
+  // Set atomically by requireFreshPassword. Non-null = already consumed.
+  consumedAt     DateTime? @map("consumed_at") @db.Timestamptz(6)
+
+  user AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization? @relation("OrgReauthGrants", fields: [orgId], references: [id], onDelete: Cascade)
+
+  // Partial unique index is declared in the migration (Prisma cannot express
+  // WHERE consumed_at IS NULL). Here we index all three for the lookup.
+  @@index([userId, authSessionId, purpose], map: "idx_reauth_grant_active")
+  @@index([expiresAt], map: "idx_reauth_grant_expires")
+  @@map("platform_reauth_grant")
+}
+
+// Pending self-service registration. Created by POST /api/onboard;
+// activated (converted to real org + user) by GET /api/onboard/verify?token=.
+// Rows expire after 24 hours. Housekeeping sweep removes expired rows.
+model PendingRegistration {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String   @unique @db.Citext
+  passwordHash String   @map("password_hash")
+  fullName     String   @map("full_name")
+  orgName      String   @map("org_name")
+  locationName String   @default("Main location") @map("location_name")
+  locationType String   @default("clinic") @map("location_type")
+  // SHA-256 hash of the random 32-byte verification token. The raw token is
+  // sent by email and never stored. Hash is sufficient because the token is
+  // uniformly random (brute-force infeasible).
+  tokenHash    String   @map("token_hash")
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([tokenHash], map: "idx_pending_reg_token")
+  @@index([expiresAt], map: "idx_pending_reg_expires")
+  @@map("pending_registrations")
+}
+
+// Single-use backup codes for TOTP recovery. Generated in batches of 8;
+// stored as SHA-256 hashes (codes are random, so SHA-256 is sufficient).
+// Consumption atomically marks used_at; rate-limited via platform_rate_limit.
+model AppUserRecoveryCode {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@map("platform_reauth_grant")
+  @@index([userId], map: "idx_recovery_codes_user_unused")
+  @@map("app_user_recovery_codes")
 }

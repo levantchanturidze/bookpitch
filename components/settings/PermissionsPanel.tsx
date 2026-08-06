@@ -25,7 +25,7 @@ const ROWS: Array<{
   {
     key: 'providerClinicalNotesOthers',
     label: "Providers can read other clinicians' notes",
-    spec: "Default OFF (privacy default). When enabled, providers pass can(ctx, clinical_note.read:any).",
+    spec: 'Default OFF (privacy default). When enabled, providers pass can(ctx, clinical_note.read:any).',
     kind: 'bool',
   },
   {
@@ -49,7 +49,8 @@ export default function PermissionsPanel({ initial }: { initial: Toggles }) {
   const [pending, startTransition] = useTransition();
 
   const save = () => {
-    setError(null); setSaved(false);
+    setError(null);
+    setSaved(false);
     startTransition(async () => {
       try {
         const res = await fetch('/api/admin/toggles', {
@@ -70,16 +71,13 @@ export default function PermissionsPanel({ initial }: { initial: Toggles }) {
       <div>
         <h3 className="text-sm font-bold text-slate-800">Permissions</h3>
         <p className="mt-1 max-w-2xl text-xs text-slate-500">
-          Per-organization policy toggles. These change what specific roles
-          can retrieve from the API — not just what the UI hides. Enable
-          with care; some flags have compliance implications (medical
-          record access, discount discretion).
+          Per-organization policy toggles. These change what specific roles can retrieve from the
+          API — not just what the UI hides. Enable with care; some flags have compliance
+          implications (medical record access, discount discretion).
         </p>
       </div>
 
-      {error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-      )}
+      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
       {saved && (
         <p className="flex items-center gap-1 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
           <Check className="h-3 w-3" /> Saved. Changes take effect within 30 seconds.
@@ -105,7 +103,9 @@ export default function PermissionsPanel({ initial }: { initial: Toggles }) {
                       checked={state[row.key] as boolean}
                       onChange={(e) => setState({ ...state, [row.key]: e.target.checked })}
                     />
-                    <span className={state[row.key] ? 'font-bold text-emerald-700' : 'text-slate-500'}>
+                    <span
+                      className={state[row.key] ? 'font-bold text-emerald-700' : 'text-slate-500'}
+                    >
                       {state[row.key] ? 'ENABLED' : 'DISABLED'}
                     </span>
                   </label>

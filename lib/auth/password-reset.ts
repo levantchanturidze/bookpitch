@@ -93,7 +93,9 @@ export async function consumeReset(input: ConsumeResetInput): Promise<{ userId: 
   if (!row) throw new InvalidInputError('invalid or expired token');
   if (row.expires.getTime() < Date.now()) {
     // Best-effort cleanup; don't leak the reason.
-    await unsafePrismaAdmin.verificationToken.delete({ where: { token: tokenHash } }).catch(() => {});
+    await unsafePrismaAdmin.verificationToken
+      .delete({ where: { token: tokenHash } })
+      .catch(() => {});
     throw new InvalidInputError('invalid or expired token');
   }
 

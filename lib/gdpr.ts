@@ -225,7 +225,11 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
         // Not already redacted (name would start with the sentinel).
         name: { not: { startsWith: 'Redacted Customer #' } },
       },
-      select: { id: true, name: true, appointments: { where: { startsAt: { gte: cutoff } }, select: { id: true }, take: 1 } },
+      select: {
+        id: true,
+        name: true,
+        appointments: { where: { startsAt: { gte: cutoff } }, select: { id: true }, take: 1 },
+      },
     });
 
     const stale = candidates.filter((c) => c.appointments.length === 0);

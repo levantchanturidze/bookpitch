@@ -36,7 +36,15 @@ describe('service worker script', () => {
   it('precaches every top-level route the app shell needs', () => {
     // These have to be inside SHELL_URLS or navigating to them while offline
     // is a 503.
-    for (const url of ['/scheduler', '/patients', '/reminders', '/billing', '/analytics', '/signin', '/offline']) {
+    for (const url of [
+      '/scheduler',
+      '/patients',
+      '/reminders',
+      '/billing',
+      '/analytics',
+      '/signin',
+      '/offline',
+    ]) {
       expect(sw).toContain(`'${url}'`);
     }
   });

@@ -89,15 +89,13 @@ function build(connectionString: string | undefined, label: string): PrismaClien
 // New names first, legacy names as fallback so operators can migrate at
 // their own pace. SEC-007: the new names document the DB role's privilege
 // in the variable name itself; the legacy names hid it.
-const APP_URL =
-  process.env.DATABASE_URL_APP_NOBYPASSRLS ?? process.env.DATABASE_URL;
+const APP_URL = process.env.DATABASE_URL_APP_NOBYPASSRLS ?? process.env.DATABASE_URL;
 const SUPERUSER_URL =
   process.env.DATABASE_URL_SUPERUSER_TXPOOL ??
   process.env.DATABASE_URL_SUPERUSER_SESSION ??
   process.env.ADMIN_RUNTIME_DATABASE_URL ??
   process.env.ADMIN_DATABASE_URL;
-const REPLICA_URL =
-  process.env.DATABASE_URL_APP_REPLICA ?? process.env.DATABASE_REPLICA_URL;
+const REPLICA_URL = process.env.DATABASE_URL_APP_REPLICA ?? process.env.DATABASE_REPLICA_URL;
 // SEC-007 narrow-role URL. When set, powers the login/auth-context hot path
 // via a role with BYPASSRLS but SELECT grants ONLY on the auth-graph tables
 // (app_users, memberships, organizations, roles, role_permissions,
@@ -114,8 +112,7 @@ const REPLICA_URL =
 //     unsafePrismaAdmin in that case — a silent fallback would be a
 //     privilege escalation triggered by a typo. Failures propagate.
 const _LOGIN_URL_RAW = process.env.DATABASE_URL_LOGIN;
-const LOGIN_URL =
-  _LOGIN_URL_RAW && _LOGIN_URL_RAW.trim().length > 0 ? _LOGIN_URL_RAW : undefined;
+const LOGIN_URL = _LOGIN_URL_RAW && _LOGIN_URL_RAW.trim().length > 0 ? _LOGIN_URL_RAW : undefined;
 
 // Report by the new name so misconfiguration diagnostics point at the
 // canonical env var. If a caller ONLY set a legacy name, the message
@@ -124,15 +121,12 @@ export const prismaApp: PrismaClient =
   globalForPrisma.prismaApp ?? build(APP_URL, 'DATABASE_URL_APP_NOBYPASSRLS');
 
 export const unsafePrismaAdmin: PrismaClient =
-  globalForPrisma.unsafePrismaAdmin ??
-  build(SUPERUSER_URL, 'DATABASE_URL_SUPERUSER_TXPOOL');
+  globalForPrisma.unsafePrismaAdmin ?? build(SUPERUSER_URL, 'DATABASE_URL_SUPERUSER_TXPOOL');
 
 // SEC-007 narrow-role client. See LOGIN_URL fallback rules above.
 export const prismaLogin: PrismaClient =
   globalForPrisma.prismaLogin ??
-  (LOGIN_URL
-    ? build(LOGIN_URL, 'DATABASE_URL_LOGIN')
-    : unsafePrismaAdmin);
+  (LOGIN_URL ? build(LOGIN_URL, 'DATABASE_URL_LOGIN') : unsafePrismaAdmin);
 
 // Boot-time visibility. Ops needs to be able to grep Vercel logs and
 // know which role is powering the auth path right now — otherwise a
@@ -140,13 +134,15 @@ export const prismaLogin: PrismaClient =
 // superuser client. Only emit once per module init.
 if (!globalForPrisma.prismaLogin) {
   // eslint-disable-next-line no-console
-  console.log(JSON.stringify({
-    ts: new Date().toISOString(),
-    level: 'info',
-    msg: 'db.prismaLogin.init',
-    activeVar: LOGIN_URL ? 'DATABASE_URL_LOGIN' : 'unsafePrismaAdmin (fallback)',
-    narrowRoleActive: Boolean(LOGIN_URL),
-  }));
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level: 'info',
+      msg: 'db.prismaLogin.init',
+      activeVar: LOGIN_URL ? 'DATABASE_URL_LOGIN' : 'unsafePrismaAdmin (fallback)',
+      narrowRoleActive: Boolean(LOGIN_URL),
+    }),
+  );
 }
 
 // Read replica — falls back to prismaApp when the replica URL is unset so
@@ -156,9 +152,7 @@ if (!globalForPrisma.prismaLogin) {
 // that just happened on primary may not yet be visible via the replica.
 export const prismaReplica: PrismaClient =
   globalForPrisma.prismaReplica ??
-  (REPLICA_URL
-    ? build(REPLICA_URL, 'DATABASE_URL_APP_REPLICA')
-    : prismaApp);
+  (REPLICA_URL ? build(REPLICA_URL, 'DATABASE_URL_APP_REPLICA') : prismaApp);
 
 if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prismaApp = prismaApp;

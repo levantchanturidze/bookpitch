@@ -27,10 +27,7 @@ describe('MockAssistant', () => {
   const assistant = new MockAssistant();
 
   it('resolves "book Sarah Jenkins with Rachel Kross tomorrow at 3pm"', async () => {
-    const res = await assistant.draft(
-      'book Sarah Jenkins with Rachel Kross tomorrow at 3pm',
-      CTX,
-    );
+    const res = await assistant.draft('book Sarah Jenkins with Rachel Kross tomorrow at 3pm', CTX);
     expect(res.status).toBe('draft');
     if (res.status !== 'draft') return;
     expect(res.customerId).toBe('cust-1');
@@ -39,10 +36,7 @@ describe('MockAssistant', () => {
   });
 
   it('resolves "book Michael Chen with Dr. Vance next Monday morning"', async () => {
-    const res = await assistant.draft(
-      'book michael chen with dr. vance next monday morning',
-      CTX,
-    );
+    const res = await assistant.draft('book michael chen with dr. vance next monday morning', CTX);
     expect(res.status).toBe('draft');
     if (res.status !== 'draft') return;
     expect(res.customerId).toBe('cust-2');
@@ -54,10 +48,7 @@ describe('MockAssistant', () => {
 
   it('resolves "book Sarah Jenkins with Vance in 2 days at 15:30"', async () => {
     // Full-name customer + last-name-only staff.
-    const res = await assistant.draft(
-      'book sarah jenkins with vance in 2 days at 15:30',
-      CTX,
-    );
+    const res = await assistant.draft('book sarah jenkins with vance in 2 days at 15:30', CTX);
     expect(res.status).toBe('draft');
     if (res.status !== 'draft') return;
     expect(res.startsAt).toBe('2027-05-07T15:30:00.000Z');
@@ -76,10 +67,7 @@ describe('MockAssistant', () => {
   });
 
   it('defaults to the first service with a warning when none named', async () => {
-    const res = await assistant.draft(
-      'book Sarah Jenkins with Rachel Kross tomorrow at 10am',
-      CTX,
-    );
+    const res = await assistant.draft('book Sarah Jenkins with Rachel Kross tomorrow at 10am', CTX);
     expect(res.status).toBe('draft');
     if (res.status !== 'draft') return;
     expect(res.serviceId).toBe('svc-1');

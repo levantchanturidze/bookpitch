@@ -27,7 +27,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     );
     const ownerUserId = staff?.userId ?? null;
     requirePermission(
-      ctx, 'staff.schedule.manage',
+      ctx,
+      'staff.schedule.manage',
       { organizationId: ctx.activeOrganizationId!, ownerUserId: ownerUserId ?? undefined },
       'admin',
     );

@@ -21,9 +21,13 @@ describe('RLS coverage across every tenant table', () => {
     // Introspection: find every table with an organization_id column, then
     // check the RLS + FORCE bits on pg_class. A table that's in the list
     // but has relrowsecurity=false is a leak waiting to happen.
-    const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{
-      table_name: string; relrowsecurity: boolean; relforcerowsecurity: boolean;
-    }>>(
+    const rows = await unsafePrismaAdmin.$queryRawUnsafe<
+      Array<{
+        table_name: string;
+        relrowsecurity: boolean;
+        relforcerowsecurity: boolean;
+      }>
+    >(
       `SELECT c.relname AS table_name, c.relrowsecurity, c.relforcerowsecurity
          FROM pg_class c
          JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -48,14 +52,19 @@ describe('RLS coverage across every tenant table', () => {
     //     with unsafePrismaAdmin; not exposed to org-plane callers.
     // Any other table missing RLS is a defect.
     const EXEMPT_REFERENCE = new Set([
-      'roles', 'permissions', 'role_permissions',
-      'impersonation_sessions', 'break_glass_sessions',
+      'roles',
+      'permissions',
+      'role_permissions',
+      'impersonation_sessions',
+      'break_glass_sessions',
     ]);
-    const missing = rows.filter(r =>
-      !/^audit_log_\d{4}_\d{2}$/.test(r.table_name)
-      && r.table_name !== 'audit_log_default'
-      && !EXEMPT_REFERENCE.has(r.table_name)
-      && (!r.relrowsecurity || !r.relforcerowsecurity));
+    const missing = rows.filter(
+      (r) =>
+        !/^audit_log_\d{4}_\d{2}$/.test(r.table_name) &&
+        r.table_name !== 'audit_log_default' &&
+        !EXEMPT_REFERENCE.has(r.table_name) &&
+        (!r.relrowsecurity || !r.relforcerowsecurity),
+    );
     expect(missing).toEqual([]);
   });
 });
@@ -66,21 +75,23 @@ describe('cross-tenant INSERT is rejected by WITH CHECK', () => {
   let locA: string;
 
   beforeAll(async () => {
-    const orgs = await withoutRls(tx =>
-      tx.organization.findMany({ orderBy: { createdAt: 'asc' } }));
+    const orgs = await withoutRls((tx) =>
+      tx.organization.findMany({ orderBy: { createdAt: 'asc' } }),
+    );
     orgA = orgs[0].id;
-    orgB = orgs.find(o => o.name === 'Isolation Corp')!.id;
-    const loc = await withoutRls(tx =>
-      tx.location.findFirst({ where: { organizationId: orgA } }));
+    orgB = orgs.find((o) => o.name === 'Isolation Corp')!.id;
+    const loc = await withoutRls((tx) =>
+      tx.location.findFirst({ where: { organizationId: orgA } }),
+    );
     locA = loc!.id;
   });
 
   it('services: withOrg(A) writing organizationId=B is rejected', async () => {
     await expect(
-      withOrg(orgA, tx =>
+      withOrg(orgA, (tx) =>
         tx.service.create({
           data: {
-            organizationId: orgB,          // sneaky
+            organizationId: orgB, // sneaky
             locationId: locA,
             name: 'sneaky svc',
             price: 1,
@@ -93,10 +104,10 @@ describe('cross-tenant INSERT is rejected by WITH CHECK', () => {
 
   it('staff: withOrg(A) writing organizationId=B is rejected', async () => {
     await expect(
-      withOrg(orgA, tx =>
+      withOrg(orgA, (tx) =>
         tx.staff.create({
           data: {
-            organizationId: orgB,          // sneaky
+            organizationId: orgB, // sneaky
             locationId: locA,
             name: 'sneaky staff',
             roleTitle: 'test',
@@ -121,7 +132,7 @@ describe('bypass attempts', () => {
   it('raw query with an explicit WHERE organization_id still returns zero rows', async () => {
     // Even asking for a specific org id explicitly doesn't help — the RLS
     // policy is applied ON TOP OF the WHERE clause.
-    const orgs = await withoutRls(tx => tx.organization.findMany({ take: 1 }));
+    const orgs = await withoutRls((tx) => tx.organization.findMany({ take: 1 }));
     const rows = await prismaApp.$queryRawUnsafe<Array<{ id: string }>>(
       `SELECT id FROM customers WHERE organization_id = '${orgs[0].id}' LIMIT 10`,
     );
