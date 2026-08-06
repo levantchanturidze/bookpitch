@@ -182,8 +182,13 @@ model AppUser {
   // ---- Spec §3 additions (RBAC Phase 1).
   status         String    @default("active") // active|locked|deleted (CHECK in migration)
   locale         String?
-  mfaEnabled     Boolean   @default(false) @map("mfa_enabled")
-  lastLoginAt    DateTime? @map("last_login_at") @db.Timestamptz(6)
+  mfaEnabled         Boolean   @default(false) @map("mfa_enabled")
+  // AES-GCM encrypted TOTP secret (same scheme as allergies/clinicalNotes).
+  // NULL = MFA not enrolled; non-null = TOTP required for break-glass.
+  mfaTotp            String?   @map("mfa_totp")
+  // Unix epoch of the last successfully consumed TOTP 30s window, for replay protection.
+  mfaLastTotpWindow  BigInt?   @map("mfa_last_totp_window")
+  lastLoginAt        DateTime? @map("last_login_at") @db.Timestamptz(6)
   // Platform-plane role (SUPER_ADMIN, PLATFORM_ADMIN, …). NULL for
   // org-plane-only users — that is, everyone today.
   platformRoleId String?   @map("platform_role_id") @db.Uuid
@@ -204,6 +209,7 @@ model AppUser {
   breakGlassSessions           BreakGlassSession[]
   ownershipTransfersInitiated  OwnershipTransfer[]    @relation("OwnershipTransferFrom")
   ownershipTransfersReceived   OwnershipTransfer[]    @relation("OwnershipTransferTo")
+  platformReauthGrant          PlatformReauthGrant?
 
   @@unique([authProvider, authSubject])
   @@index([status], map: "idx_app_users_status")
@@ -801,4 +807,31 @@ model OwnershipTransfer {
   toUser       AppUser      @relation("OwnershipTransferTo",   fields: [toUserId],   references: [id], onDelete: NoAction)
 
   @@map("ownership_transfers")
+}
+
+// Global (non-tenant) rate-limit buckets for platform-plane operations:
+// onboard abuse protection (bucket = "onboard:ip:<ip>") and platform
+// reauth brute-force protection (bucket = "reauth:<userId>").
+// Rows older than the window are swept by the housekeeping cron.
+model PlatformRateLimit {
+  bucket      String   @map("bucket")
+  windowStart DateTime @map("window_start") @db.Timestamptz(6)
+  count       Int      @default(0)
+
+  @@id([bucket, windowStart])
+  @@index([windowStart], map: "idx_platform_rate_limit_window")
+  @@map("platform_rate_limit")
+}
+
+// Distributed freshness marker for password re-verification. Set by
+// POST /api/platform/reauth; consumed by requireFreshPassword on
+// destructive platform routes. One row per user (upsert on re-verify).
+model PlatformReauthGrant {
+  userId    String   @id @map("user_id") @db.Uuid
+  grantedAt DateTime @default(now()) @map("granted_at") @db.Timestamptz(6)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("platform_reauth_grant")
 }

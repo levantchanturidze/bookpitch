@@ -23,7 +23,7 @@ import { unsafePrismaAdmin, withOrg } from '@/lib/db';
 import { InvalidInputError, ConflictError, NotFoundError, type ActiveSession } from '@/lib/auth';
 import { notifyEvent } from '@/lib/notifications';
 import { getEmailProvider } from '@/lib/messaging';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 const TRANSFER_TTL_MS = 7 * 24 * 60 * 60 * 1000; // spec §4.2 — sensible default
 
@@ -87,7 +87,7 @@ export async function nominateTransfer(
         body: `Accept or decline in Settings → Ownership. Expires ${expiresAt.toISOString()}.`,
       });
     } catch (err) {
-      log.warn('platform.ownership_transfer.notify_failed', { err: (err as Error).message });
+      log.warn('platform.ownership_transfer.notify_failed', { err: sanitizeErrorMessage(err) });
     }
 
     return { id: row.id, expiresAt };
@@ -109,7 +109,7 @@ export async function nominateTransfer(
           `The nomination expires on ${result.expiresAt.toISOString()}.`,
         );
       } catch (err) {
-        log.warn('platform.ownership_transfer.email_failed', { err: (err as Error).message });
+        log.warn('platform.ownership_transfer.email_failed', { err: sanitizeErrorMessage(err) });
       }
     }
     // Bump nominee sessionVersion so their AuthContext rebuilds and any

@@ -26,7 +26,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withPlatformApi('org.toggles.set', async (ctx) => {
     requirePermission(ctx, 'platform.config.manage', undefined, 'platform');
-    requireFreshPassword(ctx.userId);
+    await requireFreshPassword(ctx.userId);
     const { id } = await params;
     const body = (await req.json().catch(() => null)) as {
       providerFinancialReports?: unknown;

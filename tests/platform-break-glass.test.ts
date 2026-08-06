@@ -17,6 +17,10 @@ const bgRoute        = await import('@/app/api/platform/break-glass/route');
 const bgEndRoute     = await import('@/app/api/platform/break-glass/end/route');
 const orgsListRoute  = await import('@/app/api/platform/orgs/route');
 const { requireAuthContext, can } = await import('@/lib/rbac');
+// MFA helpers for seeding TOTP state + generating codes in tests
+const { generateSecret, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
+const { generate: totpGenerate } = await import('@otplib/totp');
+const { encryptField } = await import('@/lib/crypto');
 
 import type { NextRequest } from 'next/server';
 function req(url: string, init?: RequestInit): NextRequest {
@@ -24,10 +28,21 @@ function req(url: string, init?: RequestInit): NextRequest {
 }
 async function json<T = unknown>(res: Response): Promise<T> { return (await res.json()) as T; }
 
+// TOTP plugin set shared with lib/platform/mfa.ts
+const TOTP_OPTS = {
+  crypto: new NobleCryptoPlugin(),
+  base32: new ScureBase32Plugin(),
+};
+
+async function freshTotpCode(secret: string): Promise<string> {
+  return totpGenerate({ ...TOTP_OPTS, secret });
+}
+
 describe('/api/platform/break-glass', () => {
   let orgId: string;
   let superUserId: string;
   let platformAdminId: string;
+  let totpSecret: string;
 
   beforeAll(async () => {
     await seedRbacFixtures();
@@ -43,23 +58,40 @@ describe('/api/platform/break-glass', () => {
       where: { email: 'platform-admin@bp.test' }, select: { id: true },
     });
     platformAdminId = pa.id;
+
+    // Seed MFA enrollment for the SUPER_ADMIN test user so break-glass
+    // tests can provide a valid totpCode. We write directly to the DB
+    // (bypassing the enrollment API) so we control the plaintext secret.
+    totpSecret = generateSecret();
+    const encryptedSecret = encryptField(totpSecret);
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaTotp: encryptedSecret, mfaEnabled: true, mfaLastTotpWindow: null },
+    });
   });
 
   beforeEach(async () => {
     authMock.mockReset();
     __clearAuthContextCache();
-    __clearPasswordReauthCache();
+    await __clearPasswordReauthCache();
     await unsafePrismaAdmin.breakGlassSession.deleteMany({
       where: { actorUserId: { in: [superUserId, platformAdminId] } },
     });
+    // Reset last-used TOTP window so fresh codes always pass replay check.
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaLastTotpWindow: null },
+    });
   });
 
-  it('SUPER_ADMIN starts with correct password', async () => {
+  it('SUPER_ADMIN starts with correct password + TOTP', async () => {
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
     const res = await bgRoute.POST(req('http://x', {
       method: 'POST',
       body: JSON.stringify({
-        password: 'devpass123', reason: 'triage-check', ticketId: 'BG-1',
+        password: 'devpass123',
+        totpCode: await freshTotpCode(totpSecret),
+        reason: 'triage-check', ticketId: 'BG-1',
       }),
     }));
     expect(res.status).toBe(200);
@@ -74,7 +106,22 @@ describe('/api/platform/break-glass', () => {
     const res = await bgRoute.POST(req('http://x', {
       method: 'POST',
       body: JSON.stringify({
-        password: 'wrong', reason: 'wrong-pw-check', ticketId: 'BG-2',
+        password: 'wrong',
+        totpCode: await freshTotpCode(totpSecret),
+        reason: 'wrong-pw-check', ticketId: 'BG-2',
+      }),
+    }));
+    expect(res.status).toBe(400);
+  });
+
+  it('invalid TOTP code → 400', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    const res = await bgRoute.POST(req('http://x', {
+      method: 'POST',
+      body: JSON.stringify({
+        password: 'devpass123',
+        totpCode: '000000',
+        reason: 'bad-totp', ticketId: 'BG-2b',
       }),
     }));
     expect(res.status).toBe(400);
@@ -85,7 +132,8 @@ describe('/api/platform/break-glass', () => {
     const res = await bgRoute.POST(req('http://x', {
       method: 'POST',
       body: JSON.stringify({
-        password: 'devpass123', reason: 'not-allowed', ticketId: 'BG-3',
+        password: 'devpass123', totpCode: '000000',
+        reason: 'not-allowed', ticketId: 'BG-3',
       }),
     }));
     expect(res.status).toBe(403);

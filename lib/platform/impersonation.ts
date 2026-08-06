@@ -27,7 +27,7 @@ import { InvalidInputError, ConflictError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
 import { notifyEvent } from '@/lib/notifications';
 import { getEmailProvider } from '@/lib/messaging';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 export const IMPERSONATION_TTL_MS = 60 * 60 * 1000; // 60 minutes — spec §7.1
 
@@ -121,7 +121,7 @@ export async function startImpersonation(input: StartImpersonationInput) {
         body: `A support agent (${input.actor.email}) started an impersonation session at ${session.startedAt.toISOString()}. Reason: ${reason} (ticket ${ticketId}). Session ends ${expiresAt.toISOString()}.`,
       });
     } catch (err) {
-      log.warn('platform.impersonation.notify_failed', { err: (err as Error).message });
+      log.warn('platform.impersonation.notify_failed', { err: sanitizeErrorMessage(err) });
     }
   }
   if (org.ownerUser?.email) {
@@ -135,7 +135,7 @@ export async function startImpersonation(input: StartImpersonationInput) {
         `If this looks wrong, revoke it from the org settings > audit page or contact security@bookpitch.dev.`,
       );
     } catch (err) {
-      log.warn('platform.impersonation.email_failed', { err: (err as Error).message });
+      log.warn('platform.impersonation.email_failed', { err: sanitizeErrorMessage(err) });
     }
   }
 

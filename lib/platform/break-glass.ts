@@ -19,14 +19,16 @@ import { unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError, ConflictError, ForbiddenError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
 import { verifyPasswordFresh } from './password-reauth';
+import { verifyTotp } from './mfa';
 import { getEmailProvider } from '@/lib/messaging';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 export const BREAK_GLASS_TTL_MS = 60 * 60 * 1000; // 60 minutes — spec §7.2 rule 4
 
 export type StartBreakGlassInput = {
   actor: AuthContext;
   password: string;
+  totpCode: string;
   reason: string;
   ticketId: string;
   targetOrganizationId?: string | null;
@@ -51,8 +53,9 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
     throw new ForbiddenError('break-glass is SUPER_ADMIN only');
   }
 
-  // Spec §7.2 rule 3: re-authenticate at the moment of use.
+  // Spec §7.2 rule 3: re-authenticate at the moment of use (password + TOTP).
   await verifyPasswordFresh(input.actor.userId, input.password, { throwOnBadPassword: true });
+  await verifyTotp(input.actor.userId, input.totpCode);
 
   // One active session at a time.
   const existing = await unsafePrismaAdmin.breakGlassSession.findFirst({
@@ -123,7 +126,7 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
       `If this wasn't you, reset your password immediately.`,
     );
   } catch (err) {
-    log.warn('platform.break_glass.alert_failed', { err: (err as Error).message });
+    log.warn('platform.break_glass.alert_failed', { err: sanitizeErrorMessage(err) });
   }
 
   log.info('platform.break_glass.start', {

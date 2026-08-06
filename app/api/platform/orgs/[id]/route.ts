@@ -39,7 +39,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (typeof body.allowSupportImpersonation === 'boolean') {
       patch.allowSupportImpersonation = body.allowSupportImpersonation;
       // Any change to support-access policy needs a fresh password.
-      requireFreshPassword(ctx.userId);
+      await requireFreshPassword(ctx.userId);
     }
     return { org: await editOrganization(ctx, id, patch) };
   });

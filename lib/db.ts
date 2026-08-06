@@ -95,8 +95,7 @@ const SUPERUSER_URL =
   process.env.DATABASE_URL_SUPERUSER_TXPOOL ??
   process.env.DATABASE_URL_SUPERUSER_SESSION ??
   process.env.ADMIN_RUNTIME_DATABASE_URL ??
-  process.env.ADMIN_DATABASE_URL ??
-  APP_URL;
+  process.env.ADMIN_DATABASE_URL;
 const REPLICA_URL =
   process.env.DATABASE_URL_APP_REPLICA ?? process.env.DATABASE_REPLICA_URL;
 // SEC-007 narrow-role URL. When set, powers the login/auth-context hot path

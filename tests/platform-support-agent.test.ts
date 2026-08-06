@@ -124,9 +124,9 @@ describe('SUPPORT_AGENT PII discipline probe (spec §4.1 + §6.1)', () => {
     const res = await bgRoute.POST(req('http://x', {
       method: 'POST',
       body: JSON.stringify({
-        // Reason ≥5 chars so it passes input validation and we reach the
-        // real role check (SUPER_ADMIN-only) that spec §7.2 mandates.
-        password: 'devpass123', reason: 'not allowed here', ticketId: 'BG-x',
+        // All required fields present so input validation passes and we reach
+        // the real role check (SUPER_ADMIN-only) that spec §7.2 mandates.
+        password: 'devpass123', totpCode: '000000', reason: 'not allowed here', ticketId: 'BG-x',
       }),
     }));
     expect(res.status).toBe(403);

@@ -12,7 +12,7 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withPlatformApi('org.soft_delete', async (ctx) => {
     requirePermission(ctx, 'platform.org.delete', undefined, 'platform');
-    requireFreshPassword(ctx.userId);
+    await requireFreshPassword(ctx.userId);
     const { id } = await params;
     const body = (await req.json().catch(() => ({}))) as { reason?: unknown };
     const reason = typeof body.reason === 'string' ? body.reason : '';

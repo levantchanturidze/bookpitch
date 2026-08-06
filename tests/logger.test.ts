@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { scrubPhi, sentryBeforeSend, withRequestContext, log } from '@/lib/logger';
+import { scrubPhi, sentryBeforeSend, withRequestContext, log, sanitizeErrorMessage } from '@/lib/logger';
 
 // -----------------------------------------------------------------------------
 // scrubPhi behavior — narrow, exact-key match (SEC-007 followup).
@@ -219,5 +219,57 @@ describe('sentryBeforeSend', () => {
     expect(out.tags.requestId).toBe('req-1');
     expect(out.tags.env).toBe('prod');
     expect(out.extra.email).toBe('[redacted]');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// sanitizeErrorMessage — F4 regression tests (value-level PII in err.message).
+//
+// Strips patterns that routinely appear in third-party error strings before
+// the message reaches a log call. Each test below corresponds to a specific
+// incident vector:
+//   - PostgreSQL DETAIL clauses expose the email/phone value that caused a
+//     unique-constraint violation ("Key (email)=(user@host) already exists").
+//   - SMS providers (SMS Office, Twilio) echo the destination number in
+//     delivery-failure messages.
+//   - Email providers (Postmark, Resend) echo the To address.
+//   - pg/Prisma connection errors expose the DATABASE_URL credential string.
+// -----------------------------------------------------------------------------
+describe('sanitizeErrorMessage — F4 PII-in-error-message scrubbing', () => {
+  it('strips PostgreSQL DETAIL clause', () => {
+    const msg = sanitizeErrorMessage(
+      new Error('duplicate key value violates unique constraint "app_users_email_key"\nDETAIL: Key (email)=(patient@example.com) already exists.'),
+    );
+    expect(msg).not.toContain('patient@example.com');
+    expect(msg).toContain('DETAIL: [redacted]');
+  });
+
+  it('strips E.164 phone numbers', () => {
+    const msg = sanitizeErrorMessage(new Error('SMS failed: could not deliver to +995551234567'));
+    expect(msg).not.toContain('+995551234567');
+    expect(msg).toContain('[phone]');
+  });
+
+  it('strips email addresses from error messages', () => {
+    const msg = sanitizeErrorMessage(new Error('Postmark error: recipient admin@clinic.ge bounced'));
+    expect(msg).not.toContain('admin@clinic.ge');
+    expect(msg).toContain('[email]');
+  });
+
+  it('strips connection strings', () => {
+    const msg = sanitizeErrorMessage(new Error('connect ECONNREFUSED postgresql://bookpitch_app:s3cr3t@db.host/main'));
+    expect(msg).not.toContain('s3cr3t');
+    expect(msg).toContain('postgresql://[connection-string]');
+  });
+
+  it('handles non-Error values', () => {
+    expect(sanitizeErrorMessage('raw string with user@host.com')).toContain('[email]');
+    expect(sanitizeErrorMessage(42)).toBe('42');
+    expect(sanitizeErrorMessage(null)).toBe('null');
+  });
+
+  it('complement: benign messages pass through unchanged', () => {
+    const raw = 'connection timeout after 5000ms';
+    expect(sanitizeErrorMessage(new Error(raw))).toBe(raw);
   });
 });

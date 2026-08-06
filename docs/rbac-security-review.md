@@ -60,6 +60,80 @@ regression tests. Each finding maps to a probe in
 | [SEC-008](#sec-008) | High | Silent non-enforcement | Three org toggles (`providerFinancialReports`, `providerClinicalNotesOthers`, `frontdeskClientFullHistory`) editable + audit-logged + read by nothing. Toggle appears to grant elevated visibility; no code path enforces the grant. Same class as the 20 seeded permissions with no callsite (orphan-perm sweep) | **Fixed** 2026-08-05 |
 | [SEC-009](#sec-009) | High | Ownership transfer | `changeOrganizationOwner` updated the org pointer but not the target's membership role. Audit log recorded success; new owner's `can()` still evaluated against old role. Owner-only actions (billing, ownership transfer) denied to the new owner until next full role sync | **Fixed** 2026-08-06 |
 
+## Round 4 findings (2026-08-06 adversarial pass)
+
+| ID | Severity | Surface | Title | Status |
+|---|---|---|---|---|
+| F1 | High | Distributed state | `requireFreshPassword` used an in-memory Map for reauth grants — grants invisible across Vercel instances; a different cold instance always denied the destructive action | **Fixed** 2026-08-06 |
+| F2 | High | Break-glass MFA | Break-glass re-auth required only password (no TOTP) despite spec §7.2 rule 3 | **Fixed** 2026-08-06 |
+| F3 | Medium | Onboard abuse | `/api/onboard` had no rate limiting, no body-size guard, no CAPTCHA gate, and exposed discriminating error messages (email enumeration) | **Fixed** 2026-08-06 |
+| F4 | Medium | PII in logs | Raw `err.message` from pg/Stripe/SMS providers logged without sanitisation — DETAIL clauses expose email values that triggered unique-constraint violations | **Fixed** 2026-08-06 |
+| F5 | Low | Superuser URL | `DATABASE_URL_SUPERUSER` fallback chain ended at `APP_URL`, a public HTTP address. In the env-var-misconfiguration case `unsafePrismaAdmin` would have tried to open the Next.js frontend as a Postgres endpoint | **Fixed** 2026-08-06 |
+| F6 | Medium | CI gap | No CI workflow existed — lint, tsc, test, guard checks, orphan-perm check ran only on developer machines | **Fixed** 2026-08-06 |
+| F7 | Info | Permission drift | `payment.discount:limited` and `payment.discount:unlimited` seeded but no route enforces them (no discount UX exists yet). Tagged `notYetImplemented: 'payment_discount'` per SEC-008 process | **Documented** 2026-08-06 |
+
+Seven findings. **No new critical findings.** The platform plane now satisfies spec §7.2 rule 3 (password + TOTP for break-glass). Distributed reauth state and log-PII are both closed.
+
+### F1 — Distributed reauth state
+
+**Root cause:** `requireFreshPassword` / `verifyPasswordFresh` stored grants in a module-level `Map`. Every Vercel cold-start got an empty map; the route handler that performed the reauth and the route handler that consumed the grant were frequently on different instances.
+
+**Fix:** Replaced the in-memory map with a `platform_reauth_grant` table (primary key = `user_id`, expiry column). An L1 in-process cache is kept as an optimisation for the same-instance fast path but is never the _only_ check. The `platform_rate_limit` table (already added for SEC-007) provides the attempt counter.
+
+**Migration:** `prisma/migrations/20260806000000_platform_security/migration.sql` — `platform_reauth_grant`, `platform_rate_limit`.
+
+**Tests:** `tests/platform-password-reauth.test.ts` — all 6 tests, including freshness expiry with a negative `maxAgeMs` window.
+
+### F2 — Break-glass MFA gap
+
+**Root cause:** `startBreakGlass` called `verifyPasswordFresh` but had a `TODO` comment for the TOTP step. `mfaEnabled=true` was written to the seed user but never checked.
+
+**Fix:**
+- `lib/platform/mfa.ts` — new module: `generateTotpEnrollment`, `confirmTotpEnrollment`, `verifyTotp`. Secrets stored AES-256-GCM encrypted (same `FIELD_ENCRYPTION_KEY` as clinical notes). Replay protection via `mfa_last_totp_window` (BigInt, updated atomically on each successful verify).
+- `lib/platform/break-glass.ts` — added `await verifyTotp(input.actor.userId, input.totpCode)` after password step.
+- `app/api/platform/break-glass/route.ts` — `totpCode` now a required body field.
+- `app/api/platform/mfa/enroll/route.ts`, `confirm/route.ts` — new enrollment API endpoints.
+
+**Migration:** `mfa_totp TEXT`, `mfa_last_totp_window BIGINT` columns on `app_users`.
+
+**Tests:** `tests/platform-mfa.test.ts` — enrollment (SUPER_ADMIN can enroll, others 403), confirmation (correct code enables MFA, wrong code rejected), `verifyTotp` (valid, reuse, invalid, not-enrolled), break-glass without MFA → 400. `tests/platform-break-glass.test.ts` — all break-glass tests updated to include `totpCode`.
+
+### F3 — Onboard endpoint abuse protection
+
+**Root cause:** `/api/onboard` was a public endpoint with no rate limiting, no body-size cap, and no CAPTCHA. `InvalidInputError` messages including `'email already registered'` were forwarded to the response, enabling email enumeration.
+
+**Fix:**
+- 16 KB body-size guard (reads `content-length` before JSON parsing).
+- IP-keyed rate limit: 5 signups per IP per hour via `consumeGlobalBucket`.
+- Optional Cloudflare Turnstile CAPTCHA (active when `TURNSTILE_SECRET_KEY` is set; skipped in dev/test).
+- All `InvalidInputError` responses now return the generic `{ error: 'invalid request' }` body.
+
+**Tests:** `tests/onboard-security.test.ts` — oversized payload, duplicate-email (generic 400), invalid email (generic 400), rate limit exhaustion, cross-IP isolation, CAPTCHA skip in dev mode, valid-payload 201.
+
+**Bonus fix:** `onboardOrg` (the service function) did not set `owner_user_id` on the created org, violating invariant 5. Fixed in `lib/onboarding.ts` — `owner_user_id` is now set atomically inside the creation transaction.
+
+### F4 — PII in error log messages
+
+**Root cause:** Ten call sites passed `(err as Error).message` directly to `log.error`. Third-party drivers (pg, Postmark, SMS Office, Stripe) embed the triggering value in failure messages (`DETAIL: Key (email)=(…) already exists.`). `scrubPhi` only strips known structured key names; it does not scan string values.
+
+**Fix:** `sanitizeErrorMessage(err)` in `lib/logger.ts` strips PostgreSQL DETAIL clauses, E.164 phone numbers, email addresses, and connection strings from the raw `err.message`. Every affected `log.error` / `log.warn` call site updated to use it.
+
+**Tests:** `tests/logger.test.ts` — six `sanitizeErrorMessage` tests covering each pattern (DETAIL clause, phone, email, connection string, non-Error value, benign passthrough).
+
+### F5 — Superuser URL fallback to APP_URL
+
+**Root cause:** `SUPERUSER_URL` in `lib/db.ts` fell back to `process.env.APP_URL` if all four superuser DB env vars were absent. `APP_URL` is the public Next.js hostname. Connecting to it as a Postgres endpoint would time out, but the env-var misconfiguration case now silently produces a broken admin client instead of failing loudly at startup.
+
+**Fix:** Removed `APP_URL` from the fallback chain. `SUPERUSER_URL` is now `undefined` when no superuser env var is set, which causes Prisma to throw at the first use rather than swallowing the misconfiguration.
+
+### F6 — No CI workflow
+
+**Fix:** `.github/workflows/ci.yml` — runs on `push`/`pull_request` targeting `main`. Steps: format check, lint, `tsc --noEmit`, `prisma validate`, `prisma migrate diff` (no pending migrations), `prisma generate`, `npm test` (all 418 tests), `check-guards`, `check-orphan-perms`, `next build`.
+
+### F7 — Permission drift (documented, not a runtime bug)
+
+`payment.discount:limited` and `payment.discount:unlimited` are seeded in `prisma/rbac-seed.ts` but no route enforces them — there is no discount UX yet. Tagged `notYetImplemented: 'payment_discount'` per the SEC-008 process. CI `check-orphan-perms` will catch any addition without a corresponding enforcement callsite.
+
 Three real findings across 37 probes. **No critical findings.** The
 Phase 1 append-only invariant holds, RLS holds, cross-tenant data is
 not leaked in the body, privilege escalation paths are all closed. The

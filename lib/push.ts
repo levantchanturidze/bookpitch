@@ -1,6 +1,6 @@
 import webpush from 'web-push';
 import { withoutRls } from '@/lib/db';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 // -----------------------------------------------------------------------------
 // Web Push subscriptions + sender.
@@ -105,7 +105,7 @@ export async function pushToUser(
         if (status === 404 || status === 410) {
           dead.push(s.endpoint);
         } else {
-          log.warn('push.send_failed', { status, error: (err as Error).message });
+          log.warn('push.send_failed', { status, error: sanitizeErrorMessage(err) });
         }
       }
     }),

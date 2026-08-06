@@ -4,7 +4,7 @@ import type { UserRole } from '@prisma/client';
 import { withOrg, withoutRls } from '@/lib/db';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { buildAuthContext, canManageRoleAssignment } from '@/lib/rbac';
 
 // Legacy enum → Phase 3 role key. Kept here (small mapping duplicated
@@ -97,7 +97,7 @@ export async function createInvitation(
       `You've been invited to join a Bookpitch workspace as ${role}.\n\nAccept within 72 hours:\n\n${url}`,
     );
   } catch (err) {
-    log.warn('invitation.email_failed', { error: (err as Error).message });
+    log.warn('invitation.email_failed', { error: sanitizeErrorMessage(err) });
   }
   return { id: inv.id, url };
 }

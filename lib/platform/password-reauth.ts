@@ -8,63 +8,90 @@
 //
 // API:
 //   • verifyPasswordFresh(userId, password) — argon2 compare + rate limit +
-//     mark the userId "fresh" for `MAX_AGE_MS`. Returns true on success,
-//     false on wrong password. Rate-limited via a per-user token bucket
-//     (in-memory) — 5 attempts / rolling minute.
-//   • requireFreshPassword(userId) — throws ForbiddenError if the user
-//     hasn't verified within the freshness window. Called by guards on
-//     org-suspend, org-soft-delete, break-glass activation.
+//     writes a PlatformReauthGrant row (expires MAX_AGE_MS from now).
+//     Rate-limited via the platform_rate_limit table — 5 attempts per
+//     rolling minute, globally consistent across Vercel instances.
+//   • requireFreshPassword(userId) — throws ForbiddenError if no valid
+//     grant row exists for the user. Called by guards on org-suspend,
+//     org-soft-delete, break-glass activation, and toggle mutations.
 //
-// TODO(Phase 5 v2): when TOTP infrastructure lands (otplib + secret
-// column on app_users), extend verifyPasswordFresh with an optional
-// `totpCode: string` parameter and require it when mfa_enabled=true.
-// The freshness marker stays; only the verification step gains a second
-// factor. Contract stays backwards compatible.
+// Both operations are backed by Postgres so Vercel serverless instances
+// share state. An in-memory L1 cache in requireFreshPassword avoids the
+// round-trip on the common case (same instance that just did the reauth).
 // -----------------------------------------------------------------------------
 
 import { verify } from '@node-rs/argon2';
 import { unsafePrismaAdmin } from '@/lib/db';
 import { ForbiddenError, InvalidInputError } from '@/lib/auth';
 
-const MAX_AGE_MS = 60_000;               // spec §7.2 rule 3 — verified at moment of use
-const RATE_MAX = 5;                      // 5 attempts
-const RATE_WINDOW_MS = 60_000;           // per rolling minute
+const MAX_AGE_MS = 60_000;
+const RATE_MAX = 5;
+const RATE_WINDOW_MS = 60_000;
 
-type FreshEntry = { at: number };
-const freshness = new Map<string, FreshEntry>();
+// L1 in-memory cache — short-circuits the DB read when the grant was
+// issued on this instance within the freshness window. Evicted on window
+// expiry. Not a correctness requirement: requireFreshPassword always
+// falls back to the DB if the cache says "unknown".
+const l1Cache = new Map<string, { expiresAt: number }>();
 
-type Attempt = { at: number; count: number };
-const rateBucket = new Map<string, Attempt>();
+function l1Set(userId: string, expiresAt: number): void {
+  l1Cache.set(userId, { expiresAt });
+}
 
-function consumeAttempt(userId: string): void {
-  const now = Date.now();
-  const hit = rateBucket.get(userId);
-  if (!hit || now - hit.at > RATE_WINDOW_MS) {
-    rateBucket.set(userId, { at: now, count: 1 });
-    return;
+function l1Check(userId: string): boolean {
+  const hit = l1Cache.get(userId);
+  if (!hit) return false;
+  if (Date.now() >= hit.expiresAt) {
+    l1Cache.delete(userId);
+    return false;
   }
-  hit.count += 1;
-  if (hit.count > RATE_MAX) {
-    // The rate-limit window is a bit longer than a normal user would need
-    // between two prompts; hitting it means someone is bruteforcing.
+  return true;
+}
+
+/**
+ * Atomically increment the attempt counter for `userId` in the
+ * platform_rate_limit table. Throws InvalidInputError if the count
+ * exceeds RATE_MAX within the current window.
+ *
+ * Uses a fixed 60s window (truncated to the minute). The window_start
+ * epoch-truncation is done by the app rather than a DB function so the
+ * table structure stays simple.
+ */
+async function consumeAttemptDb(userId: string): Promise<void> {
+  const now = Date.now();
+  const windowMs = Math.floor(now / RATE_WINDOW_MS) * RATE_WINDOW_MS;
+  const windowStart = new Date(windowMs);
+  const bucket = `reauth:${userId}`;
+
+  // Upsert: increment count; read back the final value atomically.
+  const row = await unsafePrismaAdmin.$queryRaw<Array<{ count: number }>>`
+    INSERT INTO platform_rate_limit (bucket, window_start, count)
+    VALUES (${bucket}, ${windowStart}, 1)
+    ON CONFLICT (bucket, window_start) DO UPDATE
+      SET count = platform_rate_limit.count + 1
+    RETURNING count
+  `;
+  const count = row[0]?.count ?? 0;
+  if (count > RATE_MAX) {
     throw new InvalidInputError('too many password attempts, wait a minute');
   }
 }
 
 /**
- * Verify the caller's password. On success, marks the userId as
- * "password-verified" for MAX_AGE_MS. Rate-limited at 5 attempts per
- * rolling minute per userId. `throwOnBadPassword` = true makes wrong
- * passwords surface as InvalidInputError (400) rather than a silent
- * false — used by endpoints that expect the caller to have entered a
- * password already (e.g. break-glass activation).
+ * Verify the caller's password. On success, writes a PlatformReauthGrant
+ * row (or replaces an existing one) and sets the L1 cache. Rate-limited
+ * at RATE_MAX attempts per rolling minute via platform_rate_limit table.
+ *
+ * `throwOnBadPassword` = true surfaces wrong passwords as
+ * InvalidInputError (400) rather than returning false — used by endpoints
+ * where the caller already filled in the password field (e.g. break-glass).
  */
 export async function verifyPasswordFresh(
   userId: string,
   password: string,
   opts: { throwOnBadPassword?: boolean } = {},
 ): Promise<boolean> {
-  consumeAttempt(userId);
+  await consumeAttemptDb(userId);
 
   const row = await unsafePrismaAdmin.appUser.findUnique({
     where: { id: userId },
@@ -81,27 +108,57 @@ export async function verifyPasswordFresh(
     return false;
   }
 
-  freshness.set(userId, { at: Date.now() });
+  const expiresAt = new Date(Date.now() + MAX_AGE_MS);
+  await unsafePrismaAdmin.platformReauthGrant.upsert({
+    where: { userId },
+    create: { userId, expiresAt },
+    update: { grantedAt: new Date(), expiresAt },
+  });
+  l1Set(userId, expiresAt.getTime());
   return true;
 }
 
 /**
- * Throws ForbiddenError if `userId` hasn't verified their password
- * within MAX_AGE_MS. Called at the top of destructive route handlers
- * (spec §9 rule 9). The client is expected to have prompted the caller
- * to enter their password and posted to `POST /api/platform/reauth`
- * within the last minute.
+ * Throws ForbiddenError if `userId` does not have a valid (non-expired)
+ * PlatformReauthGrant. Checks L1 first; falls back to Postgres.
+ *
+ * Called at the top of destructive route handlers (spec §9 rule 9). The
+ * client is expected to have POST /api/platform/reauth within the last
+ * minute.
  */
-export function requireFreshPassword(userId: string, maxAgeMs = MAX_AGE_MS): void {
-  const hit = freshness.get(userId);
-  const now = Date.now();
-  if (!hit || now - hit.at > maxAgeMs) {
+export async function requireFreshPassword(
+  userId: string,
+  maxAgeMs = MAX_AGE_MS,
+): Promise<void> {
+  // L1 fast path — only when caller uses the default window. A tighter
+  // maxAgeMs (e.g. -1 in tests) must go to the DB so the age check runs.
+  if (maxAgeMs >= MAX_AGE_MS && l1Check(userId)) return;
+
+  // DB fallback — visible across all instances.
+  const grant = await unsafePrismaAdmin.platformReauthGrant.findUnique({
+    where: { userId },
+    select: { expiresAt: true },
+  });
+  if (!grant || grant.expiresAt.getTime() < Date.now()) {
     throw new ForbiddenError('password re-verification required');
   }
+  // Respect a tighter maxAgeMs window (e.g. in tests).
+  const grantAge = Date.now() - (grant.expiresAt.getTime() - MAX_AGE_MS);
+  if (grantAge > maxAgeMs) {
+    throw new ForbiddenError('password re-verification required');
+  }
+  // Populate L1 so subsequent calls on this instance are cache hits.
+  l1Set(userId, grant.expiresAt.getTime());
 }
 
-/** Test-only helper — flush the freshness cache between tests. */
-export function __clearPasswordReauthCache(): void {
-  freshness.clear();
-  rateBucket.clear();
+/**
+ * Test-only helper — flush the L1 cache AND the DB rate-limit / grant
+ * rows so consecutive tests don't share state across the DB.
+ */
+export async function __clearPasswordReauthCache(): Promise<void> {
+  l1Cache.clear();
+  await unsafePrismaAdmin.platformRateLimit.deleteMany({
+    where: { bucket: { startsWith: 'reauth:' } },
+  }).catch(() => {});
+  await unsafePrismaAdmin.platformReauthGrant.deleteMany({}).catch(() => {});
 }

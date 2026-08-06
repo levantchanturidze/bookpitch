@@ -31,7 +31,7 @@ function walk(dir: string, out: string[] = []): string[] {
 
 function scanSeed(): Array<{ key: string; notYetImplemented: string | null }> {
   const src = readFileSync(path.join(ROOT, 'prisma', 'rbac-seed.ts'), 'utf-8');
-  const re = /\{\s*key:\s*'([a-z_]+\.[a-z_.:]+)'[^}]*?\}/gs;
+  const re = /\{\s*key:\s*'([a-z_]+\.[a-z_.:]+)'[\s\S]*?\}/g;
   const out: Array<{ key: string; notYetImplemented: string | null }> = [];
   for (const m of src.matchAll(re)) {
     const block = m[0];

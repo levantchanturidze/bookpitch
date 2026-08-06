@@ -1,6 +1,6 @@
 import { withoutRls } from '@/lib/db';
 import { getEmailProvider } from '@/lib/messaging';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 // -----------------------------------------------------------------------------
 // Weekly audit digest. For each org, counts customer surface reads +
@@ -119,7 +119,7 @@ export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }
     } catch (err) {
       log.warn('audit_digest.email_failed', {
         organizationId: d.organizationId,
-        error: (err as Error).message,
+        error: sanitizeErrorMessage(err),
       });
     }
   }

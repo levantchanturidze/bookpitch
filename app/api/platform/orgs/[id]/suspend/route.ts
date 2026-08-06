@@ -12,7 +12,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   return withPlatformApi('org.suspend', async (ctx) => {
     requirePermission(ctx, 'platform.org.suspend', undefined, 'platform');
     // Spec §9 rule 9: destructive actions require password re-entry.
-    requireFreshPassword(ctx.userId);
+    await requireFreshPassword(ctx.userId);
     const { id } = await params;
     const body = (await req.json().catch(() => ({}))) as { reason?: unknown };
     const reason = typeof body.reason === 'string' ? body.reason : '';

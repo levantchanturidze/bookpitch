@@ -74,6 +74,11 @@ export async function onboardOrg(input: OnboardInput): Promise<OnboardResult> {
     await tx.membership.create({
       data: { organizationId: org.id, userId: user.id, role: 'owner' },
     });
+    // Invariant 5: org must always have an ownerUserId pointing to its ORG_OWNER.
+    await tx.organization.update({
+      where: { id: org.id },
+      data: { ownerUserId: user.id },
+    });
     log.info('onboard.ok', { organizationId: org.id, userId: user.id });
     return { userId: user.id, organizationId: org.id, locationId: location.id };
   });

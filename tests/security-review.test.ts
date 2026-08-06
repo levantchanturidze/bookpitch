@@ -742,7 +742,7 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
   }
 
   beforeEach(async () => {
-    __clearPasswordReauthCache();
+    await __clearPasswordReauthCache();
     __clearOrgTogglesCache();
   });
 
@@ -812,7 +812,7 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
   });
 
   it('P6.7: SUPER_ADMIN PATCH toggles without fresh password reauth → 403', async () => {
-    __clearPasswordReauthCache();  // no fresh reauth marker
+    await __clearPasswordReauthCache();  // no fresh reauth marker
     authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
     const res = await routePlatformOrgToggles.PATCH(
       reqJson(`http://x/api/platform/orgs/${H.grandOrgId}/toggles`, 'PATCH', {

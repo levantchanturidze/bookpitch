@@ -136,6 +136,35 @@ export function scrubPhi<T>(value: T): T {
   return value;
 }
 
+// -----------------------------------------------------------------------------
+// Error-message sanitizer.
+//
+// Strips PII patterns that frequently appear in third-party error messages
+// (Postmark, SMS Office, Stripe, pg driver) before the message is passed to
+// a log call. Complements scrubPhi (which covers structured keys) for the
+// "value-level PII inside a string" case documented in docs/rbac-status.md.
+//
+// Patterns stripped:
+//   • PostgreSQL DETAIL clauses — "DETAIL: Key (email) = (bob@…) already exists"
+//   • E.164 phone numbers — "+995551234567"
+//   • Email addresses — "user@example.com"
+//   • Connection strings — "postgresql://user:pass@host/db"
+// -----------------------------------------------------------------------------
+
+/**
+ * Return a log-safe version of `err.message`. Use this instead of
+ * `(err as Error).message` anywhere you are passing an error from a
+ * third-party provider (email, SMS, Stripe, pg driver) to a log call.
+ */
+export function sanitizeErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw
+    .replace(/DETAIL:\s+[^\n]+/gi, 'DETAIL: [redacted]')
+    .replace(/\+\d{7,15}/g, '[phone]')
+    .replace(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g, '[email]')
+    .replace(/postgres(?:ql)?:\/\/[^\s"'<>]+/gi, 'postgresql://[connection-string]');
+}
+
 // Signature matches Sentry's beforeSend hook so plugging in Sentry is one line.
 export function sentryBeforeSend(event: unknown): unknown {
   const ctx = storage.getStore();
