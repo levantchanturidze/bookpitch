@@ -57,6 +57,9 @@ jobs:
         run: npm ci
 
       - name: Show pending migrations
+        # prisma migrate status exits 1 when migrations are pending — that is the
+        # normal case here. continue-on-error so the Apply step still runs.
+        continue-on-error: true
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: npx prisma migrate status
