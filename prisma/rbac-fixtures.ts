@@ -86,6 +86,12 @@ async function upsertBranch(orgId: string, name: string): Promise<{ id: string }
  * models this correctly: single row per (org, user), with an extra
  * `roles` reference for the PROVIDER hat when we want to test it.
  */
+const ENUM_TO_KEY: Record<UserRole, string> = {
+  [UserRole.owner]: 'ORG_OWNER',
+  [UserRole.practitioner]: 'PROVIDER',
+  [UserRole.receptionist]: 'FRONT_DESK',
+};
+
 async function upsertMembership(
   userId: string,
   orgId: string,
@@ -95,8 +101,12 @@ async function upsertMembership(
     where: { organizationId_userId: { organizationId: orgId, userId } },
   });
   if (existing) return { id: existing.id };
+  const roleRow = await unsafePrismaAdmin.role.findFirstOrThrow({
+    where: { key: ENUM_TO_KEY[legacyRole], organizationId: null },
+    select: { id: true },
+  });
   return unsafePrismaAdmin.membership.create({
-    data: { organizationId: orgId, userId, role: legacyRole },
+    data: { organizationId: orgId, userId, role: legacyRole, roleId: roleRow.id },
     select: { id: true },
   });
 }

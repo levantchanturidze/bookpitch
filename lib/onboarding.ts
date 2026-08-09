@@ -185,8 +185,12 @@ export async function onboardOrg(input: OnboardInputDirect): Promise<OnboardResu
         emailVerified: new Date(), // direct path — treated as verified
       },
     });
+    const ownerRole = await tx.role.findFirstOrThrow({
+      where: { key: 'ORG_OWNER', organizationId: null },
+      select: { id: true },
+    });
     await tx.membership.create({
-      data: { organizationId: org.id, userId: user.id, role: 'owner' },
+      data: { organizationId: org.id, userId: user.id, role: 'owner', roleId: ownerRole.id },
     });
     await tx.organization.update({
       where: { id: org.id },
@@ -282,8 +286,12 @@ export async function activatePendingRegistration(rawTokenHex: string): Promise<
         emailVerified: new Date(), // email is verified by the token flow
       },
     });
+    const ownerRole = await tx.role.findFirstOrThrow({
+      where: { key: 'ORG_OWNER', organizationId: null },
+      select: { id: true },
+    });
     await tx.membership.create({
-      data: { organizationId: org.id, userId: user.id, role: 'owner' },
+      data: { organizationId: org.id, userId: user.id, role: 'owner', roleId: ownerRole.id },
     });
     // Invariant: org always has an ownerUserId set in the same transaction.
     await tx.organization.update({

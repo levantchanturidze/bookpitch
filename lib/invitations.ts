@@ -165,13 +165,27 @@ export async function acceptInvitation(
       userId = user.id;
     }
 
+    // Look up the RBAC Role row so the membership carries roleId.
+    // buildOrgContext returns null when roleId is null — new members
+    // could not sign in without this.
+    const roleKey = ENUM_TO_KEY[invite.role];
+    const roleRow = await tx.role.findFirstOrThrow({
+      where: { key: roleKey, organizationId: null },
+      select: { id: true },
+    });
+
     // Idempotent — if they already have a membership in this org (e.g.
     // re-accept from a second tab), just return.
     await tx.membership.upsert({
       where: {
         organizationId_userId: { organizationId: invite.organizationId, userId },
       },
-      create: { organizationId: invite.organizationId, userId, role: invite.role },
+      create: {
+        organizationId: invite.organizationId,
+        userId,
+        role: invite.role,
+        roleId: roleRow.id,
+      },
       update: {},
     });
     // Owner invitations wire the org pointer so spec §9 rule 1 is satisfied
