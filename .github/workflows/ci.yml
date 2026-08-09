@@ -92,6 +92,18 @@ jobs:
         # fixtures). The seed guard allows localhost URLs, so this is safe.
         run: npm run db:seed
 
+      - name: Set bookpitch_app password for RLS tests
+        # Migrations create bookpitch_app (NOSUPERUSER NOBYPASSRLS) but leave
+        # it with no password. Set one so tests can connect as the non-bypass
+        # role — required for RLS assertions to actually fire.
+        run: |
+          psql -h localhost -U bookpitch_ci -d bookpitch_ci \
+            -c "ALTER ROLE bookpitch_app WITH PASSWORD 'ci_app_password_not_a_secret'"
+          echo "DATABASE_URL_APP_NOBYPASSRLS=postgresql://bookpitch_app:ci_app_password_not_a_secret@localhost:5432/bookpitch_ci" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=postgresql://bookpitch_app:ci_app_password_not_a_secret@localhost:5432/bookpitch_ci" >> "$GITHUB_ENV"
+        env:
+          PGPASSWORD: ci_password_not_a_secret
+
       - name: Create shadow database for migrate diff
         run: createdb -h localhost -U bookpitch_ci bookpitch_ci_shadow
         env:
