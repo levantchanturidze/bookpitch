@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { activatePendingRegistration } from '@/lib/onboarding';
 import { InvalidInputError } from '@/lib/auth';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
-import { consumeGlobalBucket } from '@/lib/platform/rate-limit';
+import { consumeGlobalBucket, hashForBucket } from '@/lib/platform/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,10 +42,12 @@ export async function GET(req: NextRequest) {
   };
 
   try {
-    // Rate limit before touching the token.
-    await consumeGlobalBucket(`verify:ip:${ip}`, VERIFY_LIMIT, VERIFY_WINDOW_MS);
+    // Rate limit before touching the token. Hash the IP so PII is not stored
+    // in plaintext in platform_rate_limit.
+    const ipHash = hashForBucket('verify-ip', ip);
+    await consumeGlobalBucket(`verify:ip:${ipHash}`, VERIFY_LIMIT, VERIFY_WINDOW_MS);
 
-    const token = req.nextUrl.searchParams.get('token') ?? '';
+    const token = new URL(req.url).searchParams.get('token') ?? '';
 
     await activatePendingRegistration(token);
 

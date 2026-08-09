@@ -40,7 +40,16 @@ type TurnstileResponse = {
  */
 async function verifyTurnstile(token: string | null, ip: string | null): Promise<boolean> {
   const secret = process.env.TURNSTILE_SECRET_KEY;
-  if (!secret) return true; // not configured — skip in dev/test
+  if (!secret) {
+    // No key configured. In production this is a misconfiguration — fail closed
+    // so the endpoint can't be abused without bot protection.
+    // In dev/test, allow without challenge.
+    if (process.env.NODE_ENV === 'production') {
+      log.error('onboard.turnstile_secret_missing', {});
+      return false;
+    }
+    return true;
+  }
 
   if (!token) return false;
 

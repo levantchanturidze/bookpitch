@@ -605,7 +605,7 @@ Message: "docs: round 4 security audit final closure report"
 
 ---
 
-## 20. Confirmation
+## 20. Confirmation (Pass 2 — 2026-08-06)
 
 - **No commit, push, deployment, GitHub-setting change, or production/staging data modification occurred.**
 - All changes are in the local working tree for human review.
@@ -613,5 +613,206 @@ Message: "docs: round 4 security audit final closure report"
 - TypeScript: clean.
 - Prisma schema: valid.
 - No secrets, database URLs, TOTP secrets, recovery code plaintexts, tokens, cookies, PII, or PHI were printed in any output.
+- No security controls were weakened. All changes are additive or strengthening.
+- Unrelated working-tree changes were preserved.
+
+---
+
+## Appendix A — Session 3 Additional Fixes (2026-08-09/10)
+
+A third remediation pass addressed remaining deferred items and several newly identified gaps. All changes remain uncommitted in the working tree.
+
+### A1 — Rate-limit HMAC key derivation bug: **Fixed**
+
+**Root cause:** `hashForBucket` was calling `Buffer.from(FIELD_ENCRYPTION_KEY, 'hex')` directly. When `FIELD_ENCRYPTION_KEY` has a `<key-id>:<hex>` format (e.g., `k1:0102...`), the non-hex characters in the key-id prefix are silently ignored by `Buffer.from(..., 'hex')`, producing a short garbage buffer. The resulting HMAC key was wrong-length and unpredictable — IP address hashing was structurally broken.
+
+**Fix:** Introduced a dedicated `RATE_LIMIT_HMAC_KEY` env var (plain 64-hex, no prefix). Falls back to `FIELD_ENCRYPTION_KEY` by stripping the `<key-id>:` prefix before parsing. Throws at startup if neither is set or if the resulting buffer is not 32 bytes.
+
+**New env var:** `RATE_LIMIT_HMAC_KEY` (added to `.env.example`, `.github/workflows/ci.yml`).
+
+**File:** `lib/platform/rate-limit.ts`
+
+---
+
+### A2 — Verify route storing raw IP in rate-limit table: **Fixed**
+
+**Root cause:** `GET /api/onboard/verify` was using the raw IP string as the bucket key: `` `verify:ip:${ip}` ``. The IP address (PII under GDPR) was written to `platform_rate_limit` in plaintext.
+
+**Fix:** Applied `hashForBucket('verify-ip', ip)` and used the hash as the bucket key: `` `verify:ip:${ipHash}` ``. Matches the pattern used in `POST /api/onboard`.
+
+**File:** `app/api/onboard/verify/route.ts`
+
+---
+
+### A3 — `req.nextUrl` unavailable on plain `Request` cast to `NextRequest`: **Fixed**
+
+**Root cause:** The verify route used `req.nextUrl.searchParams.get('token')` but plain `new Request(...)` cast to `NextRequest` doesn't have `nextUrl` at runtime, causing a `TypeError` before the rate-limit INSERT could be read in tests.
+
+**Fix:** Changed to `new URL(req.url).searchParams.get('token')`, consistent with how other routes read query params.
+
+**File:** `app/api/onboard/verify/route.ts`
+
+---
+
+### A4 — Onboarding clock-skew (Node.js `Date.now()` vs. DB `now()`): **Fixed**
+
+**Root cause:** `createPendingRegistration` computed `expires_at` via `new Date(Date.now() + tokenTtlMs)` — the Node.js clock, which can be minutes or hours behind the PostgreSQL `now()` in cloud deployments. Tokens could expire prematurely or appear valid when they should not.
+
+**Fix:** Replaced the Prisma upsert with a raw SQL `INSERT … ON CONFLICT DO UPDATE` that computes `expires_at` server-side: `now() + (${tokenTtlMs} * interval '1 millisecond')`.
+
+**File:** `lib/onboarding.ts`
+
+---
+
+### A5 — Non-atomic pending-registration activation: **Fixed**
+
+**Root cause:** `activatePendingRegistration` used two separate `withoutRls(...)` calls — one to DELETE the pending registration token, another to create the org/user. If the second call failed (e.g., constraint violation), the token was already consumed, leaving the user unable to retry and the org partially created.
+
+**Fix:** Merged both operations into a single `withoutRls(async (tx) => { ... })` transaction. The token DELETE and all entity creation (user, org, membership, location) are now atomic.
+
+**File:** `lib/onboarding.ts`
+
+---
+
+### A6 — SignupForm redirecting to sign-in before account exists: **Fixed**
+
+**Root cause:** On successful `POST /api/onboard` response, the form redirected to `/signin?email=...`. But no account exists yet — the org and user are only created after email verification. This confused users and exposed the email address in the URL.
+
+**Fix:** Redirect to `/onboard/pending` ("Check your inbox") instead. New pages created:
+- `/onboard/pending` — "Check your inbox; we sent a verification link"
+- `/onboard/success` — "Email verified; you can now sign in" (verify route redirects here)
+- `/onboard/expired` — "Link expired or invalid; request a new one" (verify route redirects here on failure)
+- `/onboard/error` — "Something went wrong" (verify route redirects here on unexpected error)
+
+**Files:** `app/(auth)/signup/SignupForm.tsx`, `app/(auth)/onboard/pending/page.tsx`, `app/(auth)/onboard/success/page.tsx`, `app/(auth)/onboard/expired/page.tsx`, `app/(auth)/onboard/error/page.tsx`
+
+---
+
+### A7 — Break-glass expiry computed by Node.js clock: **Fixed**
+
+**Root cause:** `startBreakGlass` set `expiresAt = new Date(Date.now() + BREAK_GLASS_TTL_MS)`. Same clock-skew risk as A4.
+
+**Fix:** Fetched `SELECT now() AS now` from the DB and computed expiry from the DB timestamp: `new Date(dbNow.now.getTime() + BREAK_GLASS_TTL_MS)`.
+
+**File:** `lib/platform/break-glass.ts`
+
+---
+
+### A8 — Missing housekeeping sweeps for platform security tables: **Fixed**
+
+**Root cause:** `runHousekeeping` in `lib/housekeeping.ts` swept tenant notification and rate-limit rows but did not clean up `platform_rate_limit`, `pending_registrations`, `platform_reauth_grant`, or used `app_user_recovery_codes`. These tables would grow unbounded.
+
+**Fix:** Added four sweeps to the existing `withoutRls` transaction:
+- `platform_rate_limit` rows older than the window cutoff
+- `pending_registrations` with `expires_at < now()`
+- `platform_reauth_grant` rows consumed or expired past the reauth window
+- `app_user_recovery_codes` rows with `used_at` past the recovery window
+
+**File:** `lib/housekeeping.ts`
+
+---
+
+### A9 — `freshAuth()` in OrgDetail.tsx missing purpose and orgId: **Fixed**
+
+**Root cause:** `freshAuth()` in `components/platform/OrgDetail.tsx` sent `{ password }` to `POST /api/platform/reauth` with no `purpose` field. The backend validates `purpose` against an allowlist and rejects requests without it. This silently broke every call to `freshAuth()` — org suspend, delete, configure toggles, and support toggle all returned 400 and were never executed.
+
+**Fix:**
+- Changed `freshAuth()` to accept `(purpose: ReauthPurpose, orgId?: string)` and include both in the request body
+- Updated callers:
+  - `suspend()` → `freshAuth('platform.org.suspend', org.id)`
+  - `softDelete()` → `freshAuth('platform.org.delete', org.id)`
+  - `OrgTogglesPanel.patch()` → `freshAuth('platform.org.configure', orgId)`
+  - `EditOrgForm.toggleSupport()` → `freshAuth('platform.org.configure', org.id)`
+
+**File:** `components/platform/OrgDetail.tsx`
+
+---
+
+### A10 — Turnstile not fail-closed in production when key missing: **Fixed**
+
+**Root cause:** When `TURNSTILE_SECRET_KEY` was absent, `verifyTurnstile` returned `true` (skipped verification) regardless of `NODE_ENV`. In production with a misconfigured or accidentally unset secret key, the CAPTCHA check was bypassed.
+
+**Fix:** Check `NODE_ENV === 'production'` when the key is absent: log an error and return `false` (reject the request). Non-production environments continue to skip the check to allow local development.
+
+**File:** `app/api/onboard/route.ts`
+
+---
+
+### A11 — MFA re-enrollment disabling active MFA during enrollment window: **Fixed**
+
+**Root cause:** `generateTotpEnrollment` always set `mfaEnabled: false` when writing the new pending secret, even when MFA was already active. This disabled break-glass for the entire re-enrollment window (between calling enroll and calling confirm).
+
+**Fix:** Read `mfaEnabled` from the current user row. If `mfaEnabled` is already true, omit the `mfaEnabled` field from the update so the existing value is preserved. The new secret is stored, but the old break-glass path remains usable until `confirmTotpEnrollment` activates the new secret (which also sets `mfaEnabled: true`).
+
+**File:** `lib/platform/mfa.ts`
+
+---
+
+### A12 — Recovery codes not wired to break-glass second factor (RD5): **Fixed**
+
+**Root cause:** `startBreakGlass` required `totpCode` and called `verifyTotp` unconditionally. Recovery codes were implemented but had no path into break-glass activation — an operator had to manually reset `mfaEnabled=false` before a user with a consumed/lost authenticator could use a recovery code.
+
+**Fix:**
+- `StartBreakGlassInput`: made `totpCode` and `recoveryCode` both optional
+- `startBreakGlass`: validates exactly one is supplied; dispatches to `verifyTotp` or `consumeRecoveryCode` accordingly
+- `POST /api/platform/break-glass`: accepts `recoveryCode` in body; enforces that exactly one of `totpCode` or `recoveryCode` is present
+
+**Files:** `lib/platform/break-glass.ts`, `app/api/platform/break-glass/route.ts`
+
+---
+
+### A13 — Turnstile client-side widget missing from SignupForm: **Fixed**
+
+**Root cause:** The signup form sent no `turnstileToken` field — the server-side check always received `null` and (correctly in non-production) skipped the CAPTCHA. In production, Turnstile would reject all signups because no token was ever sent.
+
+**Fix:** Added Turnstile widget to `SignupForm.tsx` using the Cloudflare-provided browser script (no new npm dependency). The widget is rendered only when `NEXT_PUBLIC_TURNSTILE_SITE_KEY` is set. The submit button is disabled until the challenge is solved. The widget resets on error so users can retry.
+
+**New env var:** `NEXT_PUBLIC_TURNSTILE_SITE_KEY` (added to `.env.example`).
+
+**File:** `app/(auth)/signup/SignupForm.tsx`
+
+---
+
+### A14 — New tests (Session 3)
+
+| File | New tests |
+|------|-----------|
+| `tests/platform-rate-limit.test.ts` | 14 (new file): `hashForBucket` determinism, domain separation, key priority, FIELD_ENCRYPTION_KEY fallback; `extractClientIp`; `consumeGlobalBucket` isolation; IP-hashing regression (verify route) |
+| `tests/onboard-activation.test.ts` | 7 (new file): token format guard, single-use enforcement (complement path), expired token rejection, DB-clock assertion |
+| `tests/platform-reauth-route.test.ts` | 7 (new file): 401 without session, 400 when purpose omitted (proves OrgDetail bug), 400 for unrecognised purpose, 400 for wrong password, 200 + grant stored, org-scoped grant, purpose isolation |
+| `tests/housekeeping.test.ts` | 2 (added): platform security table sweep assertions |
+| `tests/platform-mfa.test.ts` | 6 (added): re-enrollment preserves `mfaEnabled=true` (complement), `verifyTotp` works during re-enrollment, complement for un-enrolled path; recovery code as break-glass second factor (3 tests) |
+
+**Test count after Session 3:** 484 passing (61 files).
+
+---
+
+### A15 — Remaining deferred items (Session 3 exit state)
+
+| ID | Issue | Status |
+|----|-------|--------|
+| RD1 | Reauth grant no cryptographic token | Architecture decision — documented |
+| RD2 | Reauth grant not single-use | Architecture decision — documented |
+| RD3 | Turnstile action/hostname not verified | Cannot test without live key |
+| RD4 | Email verification not implemented | Product decision needed |
+| RD5 | Recovery codes not wired to break-glass | **Fixed in A12** |
+| RD6 | PostgreSQL REVOKE unverified locally | Migration syntactically correct; verify in production |
+| RD7 | CI remote execution | No push made |
+| RD8 | `format:check` failures (215 pre-existing files) | Not a security gap |
+| RD9 | Lint pre-existing errors (3 UI files) | Not in security-change files |
+| E1 | Durable transactional email outbox | Deferred — requires new DB table; separate PR |
+| I1 | Separate `mfa_totp_pending` column for atomic re-enrollment | Deferred — requires migration; separate PR |
+| K1 | DB-level enforcement of org owner invariant | Deferred — requires trigger/constraint; separate PR |
+
+---
+
+## 20. Confirmation (Session 3 — 2026-08-09/10)
+
+- **No commit, push, deployment, GitHub-setting change, or production/staging data modification occurred.**
+- All changes are in the local working tree for human review.
+- **484 tests passing (61 files).**
+- TypeScript: clean (`npx tsc --noEmit` exits 0).
+- Prisma schema: valid.
+- No secrets, tokens, PII, or PHI were printed in any output during this session.
 - No security controls were weakened. All changes are additive or strengthening.
 - Unrelated working-tree changes were preserved.

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { createHash, randomBytes } from 'node:crypto';
 
 vi.mock('@/auth', () => ({
   auth: vi.fn(),
@@ -8,7 +9,7 @@ vi.mock('@/auth', () => ({
 }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
-const { withoutRls } = await import('@/lib/db');
+const { withoutRls, unsafePrismaAdmin } = await import('@/lib/db');
 const { runHousekeeping } = await import('@/lib/housekeeping');
 
 describe('runHousekeeping', () => {
@@ -100,5 +101,100 @@ describe('runHousekeeping', () => {
     expect(freshTok).toBeTruthy();
     expect(freshRead).toBeTruthy();
     expect(staleUnread).toBeTruthy();
+  });
+});
+
+// ── Platform security table housekeeping ──────────────────────────────────────
+
+describe('runHousekeeping — platform security tables', () => {
+  const testBucket = `hk-plrl-${Date.now()}`;
+  const pendingEmail = `hk-pending-${Date.now()}@ex.dev`;
+  let testUserId: string;
+
+  beforeAll(async () => {
+    const stale = new Date('2020-01-01T00:00:00Z');
+
+    // Create a real user to own the reauth grants and recovery codes.
+    const user = await withoutRls((tx) =>
+      tx.appUser.create({
+        data: {
+          authProvider: 'credentials',
+          authSubject: `hk-user-${Date.now()}@ex.dev`,
+          email: `hk-user-${Date.now()}@ex.dev`,
+          fullName: 'HK Test',
+          name: 'HK Test',
+          passwordHash: 'x',
+        },
+      }),
+    );
+    testUserId = user.id;
+
+    await withoutRls(async (tx) => {
+      // Stale platform_rate_limit row.
+      await tx.platformRateLimit.create({
+        data: { bucket: testBucket, windowStart: stale, count: 1 },
+      });
+
+      // Expired pending_registration.
+      const tokenHash = createHash('sha256').update(randomBytes(16)).digest('hex');
+      await tx.$executeRaw`
+        INSERT INTO pending_registrations
+          (email, password_hash, full_name, org_name, location_name, location_type, token_hash, expires_at)
+        VALUES
+          (${pendingEmail}, 'x', 'H', 'H', 'H', 'clinic', ${tokenHash}, ${stale})
+      `;
+
+      // Stale consumed reauth grant (consumed_at in 2020).
+      await tx.$executeRaw`
+        INSERT INTO platform_reauth_grant
+          (user_id, auth_session_id, purpose, expires_at, session_version, consumed_at)
+        VALUES
+          (${testUserId}::uuid, 'sess-stale', 'platform.mfa.enroll',
+           ${stale}, 0, ${stale})
+      `;
+
+      // Stale used recovery code.
+      const codeHash = createHash('sha256').update('dummy').digest('hex');
+      await tx.appUserRecoveryCode.create({
+        data: { userId: testUserId, codeHash, usedAt: stale },
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await withoutRls(async (tx) => {
+      await tx.platformRateLimit.deleteMany({ where: { bucket: testBucket } }).catch(() => {});
+      await tx.pendingRegistration.deleteMany({ where: { email: pendingEmail } }).catch(() => {});
+      await tx.platformReauthGrant.deleteMany({ where: { userId: testUserId } }).catch(() => {});
+      await tx.appUserRecoveryCode.deleteMany({ where: { userId: testUserId } }).catch(() => {});
+      await tx.appUser.delete({ where: { id: testUserId } }).catch(() => {});
+    });
+  });
+
+  it('sweeps expired platform_rate_limit, pending_registrations, reauth_grants, and used recovery codes', async () => {
+    const result = await runHousekeeping();
+
+    expect(result.platformRateLimit).toBeGreaterThanOrEqual(1);
+    expect(result.pendingRegistrations).toBeGreaterThanOrEqual(1);
+    expect(result.reauthGrants).toBeGreaterThanOrEqual(1);
+    expect(result.usedRecoveryCodes).toBeGreaterThanOrEqual(1);
+
+    // Verify rows are actually gone.
+    const plRl = await unsafePrismaAdmin.platformRateLimit.findFirst({
+      where: { bucket: testBucket },
+    });
+    const pending = await unsafePrismaAdmin.pendingRegistration.findFirst({
+      where: { email: pendingEmail },
+    });
+    expect(plRl).toBeNull();
+    expect(pending).toBeNull();
+  });
+
+  it('returns numeric fields for all categories', async () => {
+    const result = await runHousekeeping();
+    expect(typeof result.platformRateLimit).toBe('number');
+    expect(typeof result.pendingRegistrations).toBe('number');
+    expect(typeof result.reauthGrants).toBe('number');
+    expect(typeof result.usedRecoveryCodes).toBe('number');
   });
 });

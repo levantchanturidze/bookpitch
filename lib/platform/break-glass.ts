@@ -19,7 +19,7 @@ import { unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError, ConflictError, ForbiddenError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
 import { verifyPasswordDirect } from './password-reauth';
-import { verifyTotp } from './mfa';
+import { verifyTotp, consumeRecoveryCode } from './mfa';
 import { getEmailProvider } from '@/lib/messaging';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
 
@@ -28,7 +28,10 @@ export const BREAK_GLASS_TTL_MS = 60 * 60 * 1000; // 60 minutes — spec §7.2 r
 export type StartBreakGlassInput = {
   actor: AuthContext;
   password: string;
-  totpCode: string;
+  /** TOTP code from the authenticator app. Exactly one of totpCode / recoveryCode is required. */
+  totpCode?: string;
+  /** Single-use backup recovery code. Alternative to totpCode when the app is unavailable. */
+  recoveryCode?: string;
   reason: string;
   ticketId: string;
   targetOrganizationId?: string | null;
@@ -53,12 +56,22 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
     throw new ForbiddenError('break-glass is SUPER_ADMIN only');
   }
 
-  // Spec §7.2 rule 3: re-authenticate at the moment of use (password + TOTP).
-  // Break-glass submits password + TOTP + reason + ticketId in one request
-  // (no two-step grant pattern), so we verify the password directly without
-  // creating a pre-issued reauth grant.
+  // Spec §7.2 rule 3: re-authenticate at the moment of use (password + 2FA).
+  // 2FA may be a TOTP code from the authenticator app or a single-use recovery
+  // code — exactly one must be supplied.
+  if (!input.totpCode && !input.recoveryCode) {
+    throw new InvalidInputError('totpCode or recoveryCode is required');
+  }
+  if (input.totpCode && input.recoveryCode) {
+    throw new InvalidInputError('supply only one of totpCode or recoveryCode, not both');
+  }
+
   await verifyPasswordDirect(input.actor.userId, input.password, { throwOnBadPassword: true });
-  await verifyTotp(input.actor.userId, input.totpCode);
+  if (input.totpCode) {
+    await verifyTotp(input.actor.userId, input.totpCode);
+  } else {
+    await consumeRecoveryCode(input.actor.userId, input.recoveryCode!);
+  }
 
   // One active session at a time.
   const existing = await unsafePrismaAdmin.breakGlassSession.findFirst({
@@ -77,7 +90,10 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
     if (!org) throw new InvalidInputError('target organization not found');
   }
 
-  const expiresAt = new Date(Date.now() + BREAK_GLASS_TTL_MS);
+  // expiresAt from DB clock to prevent clock-skew pre-expiry (same pattern
+  // as platform_reauth_grant). The TTL is server-owned — not user-supplied.
+  const [dbNow] = await unsafePrismaAdmin.$queryRaw<[{ now: Date }]>`SELECT now() AS now`;
+  const expiresAt = new Date(dbNow.now.getTime() + BREAK_GLASS_TTL_MS);
   const session = await unsafePrismaAdmin.breakGlassSession.create({
     data: {
       actorUserId: input.actor.userId,

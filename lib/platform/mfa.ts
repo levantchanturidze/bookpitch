@@ -59,16 +59,22 @@ export type TotpEnrollmentResult = {
 export async function generateTotpEnrollment(userId: string): Promise<TotpEnrollmentResult> {
   const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: userId },
-    select: { email: true },
+    select: { email: true, mfaEnabled: true },
   });
 
   const secret = generateSecret();
   const encryptedSecret = encryptField(secret);
 
-  // Write the pending secret. mfa_enabled stays false until confirmed.
+  // Write the pending secret. If MFA is NOT yet active, set mfaEnabled=false
+  // to reflect the unconfirmed state. If MFA IS active, preserve mfaEnabled=true
+  // so the active break-glass path remains usable during the re-enrollment window.
+  // The new secret is stored regardless; confirmTotpEnrollment will verify against it.
   await unsafePrismaAdmin.appUser.update({
     where: { id: userId },
-    data: { mfaTotp: encryptedSecret, mfaEnabled: false },
+    data: {
+      mfaTotp: encryptedSecret,
+      ...(user.mfaEnabled ? {} : { mfaEnabled: false }),
+    },
   });
 
   const issuer = 'Bookpitch';

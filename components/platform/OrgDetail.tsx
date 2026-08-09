@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import type { ReauthPurpose } from '@/lib/platform/reauth-purpose';
 
 type Org = {
   id: string;
@@ -50,16 +51,23 @@ type Toggles = {
 };
 
 /**
- * Prompt for password + POST /api/platform/reauth. Returns true on
- * success, throws otherwise (bubble up to the caller's catch).
+ * Prompt for password + POST /api/platform/reauth with the specific
+ * purpose and optional orgId that the backend will bind the grant to.
+ * Returns true on success, throws otherwise (bubble up to the caller's catch).
+ *
+ * Every destructive action requires its own purpose-bound grant:
+ *   suspend      → 'platform.org.suspend'   + orgId
+ *   delete       → 'platform.org.delete'    + orgId
+ *   toggles/cfg  → 'platform.org.configure' + orgId
+ *   mfa.enroll   → 'platform.mfa.enroll'
  */
-async function freshAuth(): Promise<boolean> {
+async function freshAuth(purpose: ReauthPurpose, orgId?: string): Promise<boolean> {
   const password = window.prompt('Confirm your password to continue:');
   if (!password) return false;
   const res = await fetch('/api/platform/reauth', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, purpose, ...(orgId ? { orgId } : {}) }),
   });
   if (!res.ok) throw new Error('password verification failed');
   return true;
@@ -83,7 +91,7 @@ export default function OrgDetail({
     if (!reason || reason.length < 5) return;
     startTransition(async () => {
       try {
-        if (!(await freshAuth())) return;
+        if (!(await freshAuth('platform.org.suspend', org.id))) return;
         const res = await fetch(`/api/platform/orgs/${org.id}/suspend`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -115,7 +123,7 @@ export default function OrgDetail({
     if (!window.confirm(`Archive ${org.name}? Members lose access immediately.`)) return;
     startTransition(async () => {
       try {
-        if (!(await freshAuth())) return;
+        if (!(await freshAuth('platform.org.delete', org.id))) return;
         const res = await fetch(`/api/platform/orgs/${org.id}/soft-delete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -436,7 +444,7 @@ function OrgTogglesPanel({
   canEdit: boolean;
   onSaved: () => void;
   onError: (msg: string | null) => void;
-  freshAuth: () => Promise<boolean>;
+  freshAuth: (purpose: ReauthPurpose, orgId?: string) => Promise<boolean>;
 }) {
   const [t, setT] = useState(initial);
   const [pending, setPending] = useState(false);
@@ -446,7 +454,7 @@ function OrgTogglesPanel({
     setPending(true);
     try {
       if (canEdit) {
-        const ok = await freshAuth();
+        const ok = await freshAuth('platform.org.configure', orgId);
         if (!ok) return;
       }
       const res = await fetch(`/api/platform/orgs/${orgId}/toggles`, {
@@ -585,7 +593,7 @@ function EditOrgForm({
   org: Org;
   onSaved: () => void;
   onError: (err: string | null) => void;
-  freshAuth: () => Promise<boolean>;
+  freshAuth: (purpose: ReauthPurpose, orgId?: string) => Promise<boolean>;
 }) {
   const [name, setName] = useState(org.name);
   const [vertical, setVertical] = useState<string>(org.vertical ?? '');
@@ -622,7 +630,7 @@ function EditOrgForm({
     onError(null);
     setPending(true);
     try {
-      const ok = await freshAuth();
+      const ok = await freshAuth('platform.org.configure', org.id);
       if (!ok) return;
       const res = await fetch(`/api/platform/orgs/${org.id}`, {
         method: 'PATCH',

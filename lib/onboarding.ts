@@ -95,24 +95,28 @@ export async function createPendingRegistration(input: OnboardInput): Promise<vo
   const passwordHash = await hash(input.password);
   const rawToken = randomBytes(32);
   const tokenHash = hashToken(rawToken);
-  const expiresAt = new Date(Date.now() + tokenTtlMs);
 
   // Upsert: replace any existing pending row for this email (resend semantics).
+  // expires_at is computed by the DB (now() + interval) so clock skew between
+  // the application server and the database cannot cause tokens to arrive
+  // pre-expired. tokenTtlMs is a small integer we own — not user-supplied.
   await withoutRls(async (tx) => {
-    await tx.pendingRegistration.upsert({
-      where: { email },
-      create: {
-        email,
-        passwordHash,
-        fullName,
-        orgName,
-        locationName,
-        locationType,
-        tokenHash,
-        expiresAt,
-      },
-      update: { passwordHash, fullName, orgName, locationName, locationType, tokenHash, expiresAt },
-    });
+    await tx.$executeRaw`
+      INSERT INTO pending_registrations
+        (email, password_hash, full_name, org_name, location_name, location_type, token_hash, expires_at)
+      VALUES
+        (${email}, ${passwordHash}, ${fullName}, ${orgName},
+         ${locationName}, ${locationType}, ${tokenHash},
+         now() + (${tokenTtlMs} * interval '1 millisecond'))
+      ON CONFLICT (email) DO UPDATE SET
+        password_hash  = EXCLUDED.password_hash,
+        full_name      = EXCLUDED.full_name,
+        org_name       = EXCLUDED.org_name,
+        location_name  = EXCLUDED.location_name,
+        location_type  = EXCLUDED.location_type,
+        token_hash     = EXCLUDED.token_hash,
+        expires_at     = now() + (${tokenTtlMs} * interval '1 millisecond')
+    `;
   });
 
   // Send verification email. Never log or include the raw token in structured
@@ -211,44 +215,41 @@ export async function activatePendingRegistration(rawTokenHex: string): Promise<
 
   const tokenHash = hashToken(Buffer.from(rawTokenHex, 'hex'));
 
-  // Atomically delete the pending row. If it doesn't exist or is expired,
-  // $queryRaw returns zero rows and we throw a generic error.
-  const rows = await withoutRls(
-    (tx) =>
-      tx.$queryRaw<
-        Array<{
-          email: string;
-          password_hash: string;
-          full_name: string;
-          org_name: string;
-          location_name: string;
-          location_type: string;
-        }>
-      >`
+  // Single transaction: DELETE the pending row AND create org/user/membership.
+  // Keeping both operations in one transaction means that if entity creation
+  // fails, the DELETE is rolled back and the token remains usable on retry.
+  // Previously these were two separate withoutRls calls — a failure between
+  // them would consume the token without creating the account.
+  return withoutRls(async (tx) => {
+    const rows = await tx.$queryRaw<
+      Array<{
+        email: string;
+        password_hash: string;
+        full_name: string;
+        org_name: string;
+        location_name: string;
+        location_type: string;
+      }>
+    >`
       DELETE FROM pending_registrations
       WHERE token_hash = ${tokenHash}
         AND expires_at > now()
       RETURNING
         email, password_hash, full_name, org_name, location_name, location_type
-    `,
-  );
+    `;
 
-  if (rows.length === 0) {
-    throw new InvalidInputError('verification link is invalid or has expired');
-  }
+    if (rows.length === 0) {
+      throw new InvalidInputError('verification link is invalid or has expired');
+    }
 
-  const pending = rows[0];
-  const email = pending.email;
-  const fullName = pending.full_name;
-  const orgName = pending.org_name;
-  const locationName = pending.location_name;
-  const locationType = pending.location_type as 'clinic' | 'salon';
-  const passwordHash = pending.password_hash;
+    const pending = rows[0];
+    const email = pending.email;
+    const fullName = pending.full_name;
+    const orgName = pending.org_name;
+    const locationName = pending.location_name;
+    const locationType = pending.location_type as 'clinic' | 'salon';
+    const passwordHash = pending.password_hash;
 
-  // Check whether an account was created while the token was in flight
-  // (e.g. a duplicate activation race). Use a unique constraint violation
-  // to catch this safely.
-  return withoutRls(async (tx) => {
     // Guard: don't create a duplicate app_user if a concurrent activation ran first.
     const existingUser = await tx.appUser.findUnique({ where: { email }, select: { id: true } });
     if (existingUser) {
