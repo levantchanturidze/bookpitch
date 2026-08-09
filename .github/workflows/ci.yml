@@ -87,6 +87,11 @@ jobs:
         # connect. Uses the superuser URL so the migration role grants land.
         run: npx prisma migrate deploy
 
+      - name: Seed CI database
+        # Tests depend on seed data (Grand Medical org, Isolation Corp, RBAC
+        # fixtures). The seed guard allows localhost URLs, so this is safe.
+        run: npm run db:seed
+
       - name: Create shadow database for migrate diff
         run: createdb -h localhost -U bookpitch_ci bookpitch_ci_shadow
         env:
