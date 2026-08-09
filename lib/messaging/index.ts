@@ -22,6 +22,7 @@ import { MockSmsProvider } from './sms/mock';
 import { SmsOfficeProvider } from './sms/smsoffice';
 import { MockEmailProvider } from './email/mock';
 import { PostmarkEmailProvider } from './email/postmark';
+import { ResendEmailProvider } from './email/resend';
 
 export function getSmsProvider(): SmsProvider {
   const name = (process.env.SMS_PROVIDER ?? 'mock').toLowerCase();
@@ -42,6 +43,8 @@ export function getEmailProvider(): EmailProvider {
       return new MockEmailProvider();
     case 'postmark':
       return new PostmarkEmailProvider();
+    case 'resend':
+      return new ResendEmailProvider();
     default:
       throw new Error(`Unknown EMAIL_PROVIDER: ${name}`);
   }
