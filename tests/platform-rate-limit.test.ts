@@ -4,9 +4,8 @@ vi.mock('@/auth', () => ({ auth: vi.fn(), handlers: {}, signIn: vi.fn(), signOut
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
 const { unsafePrismaAdmin, withoutRls } = await import('@/lib/db');
-const { hashForBucket, consumeGlobalBucket, extractClientIp } = await import(
-  '@/lib/platform/rate-limit'
-);
+const { hashForBucket, consumeGlobalBucket, extractClientIp } =
+  await import('@/lib/platform/rate-limit');
 const { InvalidInputError } = await import('@/lib/auth');
 const verifyRoute = await import('@/app/api/onboard/verify/route');
 

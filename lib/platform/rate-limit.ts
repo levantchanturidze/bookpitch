@@ -93,11 +93,7 @@ function getRateLimitHmacKey(): Buffer {
  * deployment's proxy trust policy.
  */
 export function extractClientIp(headers: { get(name: string): string | null }): string | null {
-  return (
-    headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-    headers.get('x-real-ip') ??
-    null
-  );
+  return headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? headers.get('x-real-ip') ?? null;
 }
 
 /**

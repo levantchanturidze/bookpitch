@@ -182,8 +182,14 @@ async function main() {
 
     console.log('→ Seeding dev users + memberships…');
     const [orgOwnerRole, frontDeskRole] = await Promise.all([
-      tx.role.findFirstOrThrow({ where: { key: 'ORG_OWNER', organizationId: null }, select: { id: true } }),
-      tx.role.findFirstOrThrow({ where: { key: 'FRONT_DESK', organizationId: null }, select: { id: true } }),
+      tx.role.findFirstOrThrow({
+        where: { key: 'ORG_OWNER', organizationId: null },
+        select: { id: true },
+      }),
+      tx.role.findFirstOrThrow({
+        where: { key: 'FRONT_DESK', organizationId: null },
+        select: { id: true },
+      }),
     ]);
     const owner = await tx.appUser.create({
       data: {
@@ -206,7 +212,12 @@ async function main() {
     await tx.membership.createMany({
       data: [
         { organizationId: org.id, userId: owner.id, role: UserRole.owner, roleId: orgOwnerRole.id },
-        { organizationId: org.id, userId: reception.id, role: UserRole.receptionist, roleId: frontDeskRole.id },
+        {
+          organizationId: org.id,
+          userId: reception.id,
+          role: UserRole.receptionist,
+          roleId: frontDeskRole.id,
+        },
       ],
     });
     await tx.organization.update({
@@ -330,7 +341,12 @@ async function main() {
       select: { id: true },
     });
     await tx.membership.create({
-      data: { organizationId: iso.id, userId: isoOwner.id, role: UserRole.owner, roleId: isoOwnerRole.id },
+      data: {
+        organizationId: iso.id,
+        userId: isoOwner.id,
+        role: UserRole.owner,
+        roleId: isoOwnerRole.id,
+      },
     });
     await tx.organization.update({
       where: { id: iso.id },

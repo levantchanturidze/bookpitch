@@ -14,9 +14,9 @@ describe('activatePendingRegistration — token format guard', () => {
   it.each([
     '',
     'short',
-    'z'.repeat(64),       // non-hex chars
-    '0'.repeat(63),       // 63 chars (not 64)
-    '0'.repeat(65),       // 65 chars (not 64)
+    'z'.repeat(64), // non-hex chars
+    '0'.repeat(63), // 63 chars (not 64)
+    '0'.repeat(65), // 65 chars (not 64)
   ])('rejects malformed token %j', async (token) => {
     await expect(activatePendingRegistration(token)).rejects.toBeInstanceOf(InvalidInputError);
   });
@@ -89,7 +89,9 @@ describe('activatePendingRegistration — single-use token enforcement', () => {
     // The token was consumed by the first activation. A second call must fail
     // with the same error as an invalid/expired token — no leaking of which
     // condition caused the rejection.
-    await expect(activatePendingRegistration(rawTokenHex)).rejects.toBeInstanceOf(InvalidInputError);
+    await expect(activatePendingRegistration(rawTokenHex)).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
   });
 });
 
@@ -121,7 +123,9 @@ describe('activatePendingRegistration — expired token rejection', () => {
   });
 
   it('rejects the expired token without consuming any row', async () => {
-    await expect(activatePendingRegistration(rawTokenHex)).rejects.toBeInstanceOf(InvalidInputError);
+    await expect(activatePendingRegistration(rawTokenHex)).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
     // The row must still exist (DELETE WHERE expires_at > now() skipped it).
     const row = await unsafePrismaAdmin.pendingRegistration.findUnique({ where: { email } });
     expect(row).toBeTruthy();
