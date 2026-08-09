@@ -54,6 +54,7 @@ jobs:
       NEXTAUTH_URL: 'http://localhost:3000'
       APP_URL: 'http://localhost:3000'
       RBAC_ENFORCE_MODULES: '*'
+      PAYMENT_MOCK_SECRET: 'ci-mock-payment-secret-not-real'
       NODE_ENV: test
 
     steps:
