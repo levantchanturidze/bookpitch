@@ -46,6 +46,7 @@ jobs:
       # Superuser client — must connect as the same user that owns the schema.
       # In production this is a separate role. In CI the postgres superuser is fine.
       DATABASE_URL_SUPERUSER_SESSION: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
+      SHADOW_DATABASE_URL: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci_shadow'
       # Auth / encryption secrets — test-only values, never real credentials.
       AUTH_SECRET: 'ci-test-secret-32-chars-minimum!!'
       FIELD_ENCRYPTION_KEY: 'ci0:0000000000000000000000000000000000000000000000000000000000000000'
@@ -86,14 +87,19 @@ jobs:
         # connect. Uses the superuser URL so the migration role grants land.
         run: npx prisma migrate deploy
 
+      - name: Create shadow database for migrate diff
+        run: createdb -h localhost -U bookpitch_ci bookpitch_ci_shadow
+        env:
+          PGPASSWORD: ci_password_not_a_secret
+
       - name: Verify schema matches migrations
         # Fails if there are pending schema changes not captured in a migration.
-        # --shadow-database-url is required for diff; the CI DB is safe to use.
+        # --from-migrations applies migrations to the shadow DB; --to-schema
+        # uses the Prisma schema datamodel. SHADOW_DATABASE_URL is set in env.
         run: |
           npx prisma migrate diff \
             --from-migrations prisma/migrations \
-            --to-schema-datamodel prisma/schema.prisma \
-            --shadow-database-url "$DATABASE_URL_SUPERUSER_SESSION" \
+            --to-schema prisma/schema.prisma \
             --exit-code
 
       - name: Run unit + security tests
