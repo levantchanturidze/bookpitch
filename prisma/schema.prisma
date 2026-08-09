@@ -492,6 +492,7 @@ model MessageLog {
   appointment  Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
 
   // NOTE: partial index `WHERE state = 'queued'` added via raw SQL in migration.
+  @@index([appointmentId, channel, state], map: "idx_message_log_appt_channel_state")
   @@map("message_log")
 }
 
@@ -506,7 +507,7 @@ model Notification {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  // NOTE: idx_notifications_org (organization_id, created_at DESC) added via raw SQL.
+  @@index([organizationId, createdAt], map: "idx_notifications_org")
   @@map("notifications")
 }
 
@@ -600,9 +601,11 @@ model AuditLog {
   impersonationSessionId String? @map("impersonation_session_id") @db.Uuid
   breakGlassSessionId    String? @map("break_glass_session_id") @db.Uuid
 
-  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  actor        AppUser?      @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
-  onBehalfOf   AppUser?      @relation("AuditOnBehalfOf", fields: [onBehalfOfUserId], references: [id], onDelete: SetNull)
+  // ON DELETE NO ACTION — migration 20260727180000_audit_log_fk_hardening
+  // intentionally prevents deleting orgs/users with audit history.
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: NoAction)
+  actor        AppUser?      @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: NoAction)
+  onBehalfOf   AppUser?      @relation("AuditOnBehalfOf", fields: [onBehalfOfUserId], references: [id], onDelete: NoAction)
 
   // Composite PK — Postgres declarative partitioning requires the
   // partition key (`at`) to be included in every unique constraint.
@@ -851,9 +854,9 @@ model PlatformReauthGrant {
   user AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
   org  Organization? @relation("OrgReauthGrants", fields: [orgId], references: [id], onDelete: Cascade)
 
-  // Partial unique index is declared in the migration (Prisma cannot express
-  // WHERE consumed_at IS NULL). Here we index all three for the lookup.
-  @@index([userId, authSessionId, purpose], map: "idx_reauth_grant_active")
+  // idx_reauth_grant_active: UNIQUE PARTIAL (WHERE consumed_at IS NULL) declared
+  // in migration 20260806000003. Prisma cannot express partial/conditional indexes
+  // so it is omitted here to avoid perpetual schema drift in migrate diff.
   @@index([expiresAt], map: "idx_reauth_grant_expires")
   @@map("platform_reauth_grant")
 }
