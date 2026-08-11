@@ -30,6 +30,7 @@ export type LocationInput = {
   name: string;
   timezone?: string;
   taxRate?: number;
+  publicSlug?: string | null;
 };
 
 function parseLocationInput(body: unknown): LocationInput {
@@ -40,11 +41,20 @@ function parseLocationInput(body: unknown): LocationInput {
   }
   const name = typeof b.name === 'string' ? b.name.trim() : '';
   if (!name) throw new InvalidInputError('name is required');
+  let publicSlug: string | null | undefined;
+  if ('publicSlug' in b) {
+    const raw = typeof b.publicSlug === 'string' ? b.publicSlug.trim().toLowerCase() : '';
+    if (raw && !/^[a-z0-9-]+$/.test(raw)) {
+      throw new InvalidInputError('publicSlug must be lowercase letters, digits, and hyphens only');
+    }
+    publicSlug = raw || null;
+  }
   return {
     type: b.type as LocationType,
     name,
     timezone: typeof b.timezone === 'string' && b.timezone.trim() ? b.timezone.trim() : undefined,
     taxRate: typeof b.taxRate === 'number' ? b.taxRate : undefined,
+    publicSlug,
   };
 }
 
@@ -69,6 +79,7 @@ export async function createLocation(session: ActiveSession, body: unknown) {
         name: input.name,
         timezone: input.timezone,
         taxRate: input.taxRate,
+        ...(input.publicSlug !== undefined ? { publicSlug: input.publicSlug } : {}),
       },
     });
     await writeAudit(tx, session, 'create', 'staff', null, { location: row.id, name: row.name });
@@ -86,6 +97,7 @@ export async function updateLocation(session: ActiveSession, id: string, body: u
         name: input.name,
         timezone: input.timezone,
         taxRate: input.taxRate,
+        ...(input.publicSlug !== undefined ? { publicSlug: input.publicSlug } : {}),
       },
     });
     await writeAudit(tx, session, 'update', 'staff', null, { location: id });
