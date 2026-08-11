@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ShieldCheck } from 'lucide-react';
+import { Download, ShieldCheck } from 'lucide-react';
 import type { AuditRow } from '@/lib/audit-query';
 
 const ACTIONS = ['', 'list', 'read', 'create', 'update', 'delete', 'history_add'];
@@ -41,6 +41,14 @@ export default function AuditView({ rows, initial }: Props) {
   const set = <K extends keyof typeof filters>(k: K, v: (typeof filters)[K]) =>
     setFilters((prev) => ({ ...prev, [k]: v }));
 
+  const exportUrl = () => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(filters)) {
+      if (v) params.set(k, v);
+    }
+    return `/api/audit/export?${params.toString()}`;
+  };
+
   return (
     <div className="space-y-6">
       <header className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-6">
@@ -53,6 +61,14 @@ export default function AuditView({ rows, initial }: Props) {
             Every read + write of health data is recorded here. Newest first, capped at 200.
           </p>
         </div>
+        <a
+          href={exportUrl()}
+          download
+          className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Export CSV
+        </a>
       </header>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4">
