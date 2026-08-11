@@ -11,6 +11,7 @@ export type LocationRow = {
   name: string;
   timezone: string;
   taxRate: number;
+  publicSlug: string | null;
   counts: { staff: number; appointments: number; services: number };
 };
 
@@ -20,7 +21,7 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const save = (id: string | null, input: Omit<LocationRow, 'id' | 'counts'>) => {
+  const save = (id: string | null, input: Omit<LocationRow, 'id' | 'counts' | 'publicSlug'> & { publicSlug: string | null }) => {
     setError(null);
     startTransition(async () => {
       try {
@@ -65,6 +66,7 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
               <th className="px-2 py-2 font-medium">Type</th>
               <th className="px-2 py-2 font-medium">Timezone</th>
               <th className="px-2 py-2 font-medium">Staff · Appts · Services</th>
+              <th className="px-2 py-2 font-medium">Booking URL</th>
               <th className="px-6 py-2 text-right font-medium">Actions</th>
             </tr>
           </thead>
@@ -76,6 +78,20 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
                 <td className="px-2 py-2 font-mono text-[11px] text-slate-500">{l.timezone}</td>
                 <td className="px-2 py-2 font-mono text-[11px] text-slate-500">
                   {l.counts.staff} · {l.counts.appointments} · {l.counts.services}
+                </td>
+                <td className="px-2 py-2 font-mono text-[11px]">
+                  {l.publicSlug ? (
+                    <a
+                      href={`/book/${l.publicSlug}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-indigo-600 hover:underline"
+                    >
+                      /book/{l.publicSlug}
+                    </a>
+                  ) : (
+                    <span className="text-slate-300">—</span>
+                  )}
                 </td>
                 <td className="px-6 py-2 text-right">
                   <button
@@ -112,7 +128,7 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
             setEditing(null);
             setError(null);
           }}
-          onSubmit={(values) => save(editing?.id ?? null, values)}
+          onSubmit={(values) => save(editing?.id ?? null, { ...values, publicSlug: values.publicSlug })}
         />
       )}
     </section>
@@ -128,18 +144,19 @@ function LocationForm({
   initial?: LocationRow;
   isPending: boolean;
   onCancel: () => void;
-  onSubmit: (v: { type: LocationType; name: string; timezone: string; taxRate: number }) => void;
+  onSubmit: (v: { type: LocationType; name: string; timezone: string; taxRate: number; publicSlug: string | null }) => void;
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [type, setType] = useState<LocationType>(initial?.type ?? 'clinic');
   const [timezone, setTimezone] = useState(initial?.timezone ?? 'Asia/Tbilisi');
   const [taxRate, setTaxRate] = useState(String(initial?.taxRate ?? 0));
+  const [publicSlug, setPublicSlug] = useState(initial?.publicSlug ?? '');
 
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit({ name, type, timezone, taxRate: Number(taxRate) });
+        onSubmit({ name, type, timezone, taxRate: Number(taxRate), publicSlug: publicSlug.trim() || null });
       }}
       className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-5"
     >
@@ -183,7 +200,19 @@ function LocationForm({
           className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 font-mono text-xs font-normal text-slate-800"
         />
       </label>
-      <div className="flex items-end justify-end gap-2 md:col-span-5">
+      <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase md:col-span-2">
+        Public booking slug
+        <input
+          value={publicSlug}
+          onChange={(e) => setPublicSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+          placeholder="e.g. tbilisi-clinic"
+          className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 font-mono text-xs font-normal text-slate-800"
+        />
+        <span className="mt-0.5 block font-normal normal-case text-slate-400">
+          Leave blank to hide from public booking page.
+        </span>
+      </label>
+      <div className="flex items-end justify-end gap-2 md:col-span-3">
         <button
           type="button"
           onClick={onCancel}

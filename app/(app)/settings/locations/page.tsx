@@ -20,6 +20,7 @@ export default async function SettingsLocationsPage() {
     name: l.name,
     timezone: l.timezone,
     taxRate: Number(l.taxRate),
+    publicSlug: l.publicSlug ?? null,
     counts: {
       staff: l._count.staff,
       appointments: l._count.appointments,
