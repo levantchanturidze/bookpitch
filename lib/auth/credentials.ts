@@ -1,6 +1,5 @@
 import { verify } from '@node-rs/argon2';
 import { withoutRls } from '@/lib/db';
-import { log } from '@/lib/logger';
 
 // -----------------------------------------------------------------------------
 // F-05: extracted credential-check logic so an integration test can hit the
@@ -76,35 +75,18 @@ export async function validateCredentials(
     });
   });
 
-  if (!user) {
-    log.warn('auth.credentials.fail', { reason: 'user_not_found' });
-    return null;
-  }
-  if (!user.passwordHash) {
-    log.warn('auth.credentials.fail', {
-      reason: 'no_password_hash',
-      platformRoleId: user.platformRoleId,
-      status: user.status,
-    });
-    return null;
-  }
-  if (user.status !== 'active') {
-    log.warn('auth.credentials.fail', { reason: 'not_active', status: user.status });
-    return null;
-  }
+  if (!user?.passwordHash) return null;
+  // status != active → block. Covers deleted / locked / suspended users.
+  // (spec §9.11 "delete user with audit history" pattern uses
+  // status='deleted'; F-01 cleanup applied it.)
+  if (user.status !== 'active') return null;
 
   const hasMembership = user.memberships.length > 0;
   const isPlatformUser = user.platformRoleId != null;
-  if (!hasMembership && !isPlatformUser) {
-    log.warn('auth.credentials.fail', { reason: 'no_membership_no_platform_role' });
-    return null;
-  }
+  if (!hasMembership && !isPlatformUser) return null;
 
   const ok = await verify(user.passwordHash, password);
-  if (!ok) {
-    log.warn('auth.credentials.fail', { reason: 'wrong_password' });
-    return null;
-  }
+  if (!ok) return null;
 
   const membership = hasMembership ? user.memberships[0] : null;
 

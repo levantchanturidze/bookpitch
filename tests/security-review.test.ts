@@ -1033,24 +1033,29 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
   // ---- SEC-006 regression guard: last-SUPER_ADMIN protection ---------------
   it('P6.15: cannot demote the last SUPER_ADMIN (SEC-006 fixed 2026-08-03)', async () => {
     const { assignPlatformRole } = await import('@/lib/platform/roles');
-    // The fixture has exactly one SUPER_ADMIN: superadmin@bp.test. Trying to
-    // revoke or demote them must throw. Rebuild the actor ctx as SUPER so we
-    // reach the guard (route-level `platform.role.assign` already blocks
-    // non-SUPER — this is a service-layer test).
+    // Migration 000007 creates levaaani@gmail.com as a second SUPER_ADMIN in
+    // all environments (dev/CI/prod). Reduce to exactly one first so the
+    // "last SUPER_ADMIN" guard fires correctly for superadmin@bp.test.
+    await assignPlatformRole(
+      (await buildAuthContext(H.superUserId, null))!,
+      'levaaani@gmail.com',
+      'PLATFORM_ADMIN',
+    );
     const actorCtx = await buildAuthContext(H.superUserId, null);
     if (!actorCtx) throw new Error('failed to build super-admin ctx');
+    // Now superadmin@bp.test is the only SUPER_ADMIN — demoting them must throw.
     await expect(assignPlatformRole(actorCtx, 'superadmin@bp.test', null)).rejects.toThrow(
       /at least one active SUPER_ADMIN/,
     );
     await expect(
       assignPlatformRole(actorCtx, 'superadmin@bp.test', 'PLATFORM_ADMIN'),
     ).rejects.toThrow(/at least one active SUPER_ADMIN/);
-    // Positive control: granting SUPER_ADMIN to another user is fine (has to
-    // be a no-op restore since seed doesn't grant that user SUPER by default —
-    // we grant + immediately revoke to leave state unchanged).
+    // Positive control: granting SUPER_ADMIN to another user is fine.
     await assignPlatformRole(actorCtx, 'platform-admin@bp.test', 'SUPER_ADMIN');
     // Now the count is 2, so we can revoke the freshly-granted one safely.
     await assignPlatformRole(actorCtx, 'platform-admin@bp.test', 'PLATFORM_ADMIN');
+    // Restore levaaani so repeated runs of this test leave the DB in a clean state.
+    await assignPlatformRole(actorCtx, 'levaaani@gmail.com', 'SUPER_ADMIN');
   });
 
   // ---- SEC-005 regression guard: platform.config.manage in RESTRICTED_DURING_IMPERSONATION
