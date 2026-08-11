@@ -1,6 +1,8 @@
 import { ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { listInsurers } from '@/lib/insurance';
+import { withOrg } from '@/lib/db';
+import { toCustomerDto } from '@/lib/customers';
 import InsuranceView from './InsuranceView';
 
 export const metadata = { title: 'Insurance · Bookpitch' };
@@ -14,7 +16,20 @@ export default async function InsurancePage() {
     { organizationId: ctx.activeOrganizationId! },
     'insurance',
   );
-  const insurers = await listInsurers(ctxToSession(ctx));
+  const session = ctxToSession(ctx);
+  const [insurers, customers] = await Promise.all([
+    listInsurers(session),
+    withOrg(session.organizationId, (tx) =>
+      tx.customer.findMany({ orderBy: { name: 'asc' } }).then((rows) =>
+        rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          insurerName: r.insurerName ?? null,
+          insurancePolicyNumber: r.insurancePolicyNumber ?? null,
+        })),
+      ),
+    ),
+  ]);
   return (
     <div className="space-y-6">
       <div>
@@ -26,7 +41,7 @@ export default async function InsurancePage() {
           CSV matches the standard 11-column shape Georgian insurers accept.
         </p>
       </div>
-      <InsuranceView insurers={insurers} />
+      <InsuranceView insurers={insurers} customers={customers} />
     </div>
   );
 }

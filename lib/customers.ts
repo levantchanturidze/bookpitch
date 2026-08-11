@@ -26,6 +26,8 @@ export type CustomerDto = {
   gender: string | null;
   avatarUrl: string | null;
   joinedDate: string;
+  insurerName: string | null;
+  insurancePolicyNumber: string | null;
   // Decrypted when the caller has client.read:full. Redacted to null
   // otherwise (SEC-008). `undefined` never appears — the field is
   // ALWAYS present in the response shape, so the client cannot infer
@@ -81,6 +83,8 @@ export function toCustomerDto(row: Customer, v: CustomerVisibility): CustomerDto
     gender: row.gender,
     avatarUrl: row.avatarUrl,
     joinedDate: row.joinedDate.toISOString().slice(0, 10),
+    insurerName: row.insurerName ?? null,
+    insurancePolicyNumber: row.insurancePolicyNumber ?? null,
     // SEC-008 gate. Contact-only tier sees null for both.
     allergies: full ? decryptField(row.allergies) : null,
     clinicalNotes: full ? decryptField(row.clinicalNotes) : null,
@@ -132,6 +136,8 @@ export type CustomerCreateInput = {
 
 export type CustomerUpdateInput = Partial<Omit<CustomerCreateInput, 'consent'>> & {
   consent?: boolean; // if true, refreshes consent_at + consent_version
+  insurerName?: string | null;
+  insurancePolicyNumber?: string | null;
 };
 
 function optionalString(v: unknown, field: string): string | null | undefined {
@@ -189,6 +195,8 @@ export function parseUpdateInput(body: unknown): CustomerUpdateInput {
   setIfDefined('allergies', optionalString(b.allergies, 'allergies'));
   setIfDefined('clinicalNotes', optionalString(b.clinicalNotes, 'clinicalNotes'));
   if (b.consent === true) out.consent = true;
+  setIfDefined('insurerName', optionalString(b.insurerName, 'insurerName'));
+  setIfDefined('insurancePolicyNumber', optionalString(b.insurancePolicyNumber, 'insurancePolicyNumber'));
   return out;
 }
 
@@ -230,6 +238,8 @@ export function buildUpdateData(input: CustomerUpdateInput): {
   if (input.avatarUrl !== undefined) set('avatarUrl', input.avatarUrl);
   if (input.allergies !== undefined) set('allergies', encryptField(input.allergies));
   if (input.clinicalNotes !== undefined) set('clinicalNotes', encryptField(input.clinicalNotes));
+  if (input.insurerName !== undefined) set('insurerName', input.insurerName);
+  if (input.insurancePolicyNumber !== undefined) set('insurancePolicyNumber', input.insurancePolicyNumber);
   if (input.consent === true) {
     set('consentAt', new Date());
     set('consentVersion', CONSENT_VERSION);

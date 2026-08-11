@@ -1,9 +1,23 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useTransition } from 'react';
 import { Download } from 'lucide-react';
 
-export default function InsuranceView({ insurers }: { insurers: string[] }) {
+type CustomerBasic = {
+  id: string;
+  name: string;
+  insurerName: string | null;
+  insurancePolicyNumber: string | null;
+};
+
+export default function InsuranceView({
+  insurers,
+  customers,
+}: {
+  insurers: string[];
+  customers: CustomerBasic[];
+}) {
+  const [customerList, setCustomerList] = useState(customers);
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = new Date();
   monthStart.setUTCDate(1);
@@ -37,6 +51,7 @@ export default function InsuranceView({ insurers }: { insurers: string[] }) {
   }
 
   return (
+    <>
     <div className="rounded-2xl border border-slate-200 bg-white p-5">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
         <label className="block">
@@ -83,14 +98,117 @@ export default function InsuranceView({ insurers }: { insurers: string[] }) {
       {error && (
         <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
       )}
-      {insurers.length === 0 && (
-        <p className="mt-3 text-xs text-slate-500">
-          No insurers on file yet. Add{' '}
-          <code className="rounded bg-slate-100 px-1">insurer_name</code> +{' '}
-          <code className="rounded bg-slate-100 px-1">insurance_policy_number</code> to any customer
-          record.
-        </p>
-      )}
+    </div>
+
+    <AddInsurerForm
+      customers={customerList}
+      onSaved={(updated) =>
+        setCustomerList((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
+      }
+    />
+    </>
+  );
+}
+
+function AddInsurerForm({
+  customers,
+  onSaved,
+}: {
+  customers: CustomerBasic[];
+  onSaved: (c: CustomerBasic) => void;
+}) {
+  const [customerId, setCustomerId] = useState('');
+  const [insurerName, setInsurerName] = useState('');
+  const [policyNumber, setPolicyNumber] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const [isPending, startTransition] = useTransition();
+
+  const selected = customers.find((c) => c.id === customerId) ?? null;
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customerId) return;
+    setError(null);
+    setSuccess(false);
+    startTransition(async () => {
+      const res = await fetch(`/api/customers/${customerId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          insurerName: insurerName || null,
+          insurancePolicyNumber: policyNumber || null,
+        }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(body?.error ?? 'Failed to save insurance info');
+        return;
+      }
+      onSaved({ id: customerId, name: selected?.name ?? '', insurerName: insurerName || null, insurancePolicyNumber: policyNumber || null });
+      setSuccess(true);
+    });
+  };
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5">
+      <h2 className="mb-3 text-sm font-bold text-slate-800">Assign insurance to a patient</h2>
+      <form onSubmit={submit} className="grid grid-cols-1 gap-3 md:grid-cols-4">
+        <label className="block md:col-span-2">
+          <span className="mb-1 block text-[11px] font-semibold text-slate-500">Patient</span>
+          <select
+            value={customerId}
+            onChange={(e) => {
+              const c = customers.find((x) => x.id === e.target.value);
+              setCustomerId(e.target.value);
+              setInsurerName(c?.insurerName ?? '');
+              setPolicyNumber(c?.insurancePolicyNumber ?? '');
+              setSuccess(false);
+            }}
+            required
+            className={inputCls}
+          >
+            <option value="">— select patient —</option>
+            {customers.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+                {c.insurerName ? ` (${c.insurerName})` : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[11px] font-semibold text-slate-500">Insurer</span>
+          <input
+            value={insurerName}
+            onChange={(e) => setInsurerName(e.target.value)}
+            placeholder="e.g. GPI"
+            className={inputCls}
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[11px] font-semibold text-slate-500">Policy №</span>
+          <input
+            value={policyNumber}
+            onChange={(e) => setPolicyNumber(e.target.value)}
+            placeholder="e.g. GPI-001234"
+            className={inputCls}
+          />
+        </label>
+        <div className="flex items-end md:col-span-4">
+          <button
+            type="submit"
+            disabled={isPending || !customerId}
+            className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-40"
+          >
+            {isPending ? 'Saving…' : 'Save'}
+          </button>
+          {success && (
+            <p className="ml-3 text-xs text-emerald-700">Insurance info updated.</p>
+          )}
+          {error && <p className="ml-3 text-xs text-rose-700">{error}</p>}
+        </div>
+      </form>
     </div>
   );
 }
