@@ -321,6 +321,27 @@ export async function revokeTransfer(
   return { ok: true };
 }
 
+/** Nominator's outbox — pending transfers initiated by `userId`. */
+export async function pendingTransfersFromNominator(userId: string) {
+  const rows = await unsafePrismaAdmin.ownershipTransfer.findMany({
+    where: { fromUserId: userId, status: 'pending', expiresAt: { gt: new Date() } },
+    include: {
+      organization: { select: { name: true } },
+      toUser: { select: { email: true, fullName: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    organizationId: r.organizationId,
+    organizationName: r.organization.name,
+    toEmail: r.toUser.email,
+    toName: r.toUser.fullName,
+    createdAt: r.createdAt.toISOString(),
+    expiresAt: r.expiresAt.toISOString(),
+  }));
+}
+
 /** Nominee's inbox — pending transfers addressed to `userId`. */
 export async function pendingTransfersForNominee(userId: string) {
   const rows = await unsafePrismaAdmin.ownershipTransfer.findMany({

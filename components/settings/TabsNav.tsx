@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   FileText,
   KeyRound,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 const TABS = [
@@ -22,6 +23,7 @@ const TABS = [
   { href: '/settings/billing', label: 'Billing', icon: CreditCard },
   { href: '/settings/privacy', label: 'Privacy', icon: ShieldCheck },
   { href: '/settings/insurance', label: 'Insurance', icon: FileText },
+  { href: '/settings/ownership', label: 'Ownership', icon: ArrowLeftRight },
 ];
 
 export default function TabsNav() {
