@@ -24,6 +24,7 @@ const CONSENT_VERSION = '1.0';
 export type PublicLocation = {
   organizationId: string;
   organizationName: string;
+  currency: string;
   locationId: string;
   locationName: string;
   locationType: 'clinic' | 'salon';
@@ -36,7 +37,7 @@ export async function getPublicLocation(slug: string): Promise<PublicLocation | 
     tx.location.findUnique({
       where: { publicSlug: slug },
       include: {
-        organization: { select: { name: true, id: true } },
+        organization: { select: { name: true, id: true, currency: true } },
         staff: {
           select: { id: true, name: true, roleTitle: true },
           orderBy: { name: 'asc' },
@@ -53,6 +54,7 @@ export async function getPublicLocation(slug: string): Promise<PublicLocation | 
   return {
     organizationId: row.organizationId,
     organizationName: row.organization.name,
+    currency: row.organization.currency,
     locationId: row.id,
     locationName: row.name,
     locationType: row.type as 'clinic' | 'salon',

@@ -96,6 +96,10 @@ model Organization {
   // code, not migrations. Absent key = disabled.
   features Json @default("{}") @db.JsonB
 
+  // ISO 4217 currency code for all payments in this org. Default GEL; change
+  // when multi-currency support lands.
+  currency String @default("GEL") @db.VarChar(3) @map("currency")
+
   // ---- Spec §3 additions (RBAC Phase 1). Backfill in Phase 2.
   vertical                  String? // clinic|salon|fitness|mixed — CHECK in migration
   legalName                 String? @map("legal_name")

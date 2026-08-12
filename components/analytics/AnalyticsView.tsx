@@ -17,9 +17,10 @@ import type { Metrics, RosterRow } from '@/lib/analytics';
 type Props = {
   metrics: Metrics;
   roster: RosterRow[];
+  currency: string;
 };
 
-export default function AnalyticsView({ metrics, roster }: Props) {
+export default function AnalyticsView({ metrics, roster, currency }: Props) {
   const accent =
     metrics.location.type === 'clinic' ? '#0d9488' /* teal-600 */ : '#db2777'; /* pink-600 */
 
@@ -42,9 +43,9 @@ export default function AnalyticsView({ metrics, roster }: Props) {
         <KpiCard
           label="Today’s revenue"
           value={formatMoney(metrics.revenue.current)}
-          suffix="GEL"
+          suffix={currency}
           delta={metrics.revenue.deltaPct}
-          previous={formatMoney(metrics.revenue.previous) + ' GEL'}
+          previous={`${formatMoney(metrics.revenue.previous)} ${currency}`}
           icon={DollarSign}
         />
         <KpiCard
@@ -69,7 +70,7 @@ export default function AnalyticsView({ metrics, roster }: Props) {
         <KpiCard
           label="Avg ticket · 30d"
           value={formatMoney(metrics.averageTicket.amount)}
-          suffix={`GEL · n=${metrics.averageTicket.sampleSize}`}
+          suffix={`${currency} · n=${metrics.averageTicket.sampleSize}`}
           icon={Users}
         />
       </div>

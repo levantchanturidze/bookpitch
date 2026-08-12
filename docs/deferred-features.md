@@ -12,7 +12,6 @@ intentional MVP deferral points. Remove a row when the feature ships.
 |-------|-------|-----------|-------------------|
 | `taxRate` | `Location` | `createLocation` / `updateLocation` | Payment calculation — tax is always excluded from `price`. When billing adds tax support, read this field in `lib/payments/service.ts` and `lib/billing/service.ts`. |
 | `locale` | `AppUser` | (schema default) | No route or display path reads it. When locale switching ships, wire it through `AuthContext` and use in `lib/i18n.ts`. |
-| `currency` | `Payment` | Hardcoded `'GEL'` at payment creation | Multi-currency support. Until then, `Payment.currency` is always `'GEL'`. |
 
 ---
 
