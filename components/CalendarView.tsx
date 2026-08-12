@@ -96,6 +96,7 @@ export default function CalendarView({
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
 
+    // eslint-disable-next-line no-restricted-syntax -- calendar-grid cursor, not a UTC moment; browser-local weekday is correct
     const startOffset = firstDay.getDay(); // Sunday-based
     const totalDays = lastDay.getDate();
 
@@ -200,7 +201,7 @@ export default function CalendarView({
               <ChevronLeft className="h-4 w-4" />
             </button>
             <span className="min-w-[100px] px-3 py-1 text-center text-xs font-semibold text-slate-700">
-              {currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+              {new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(currentDate)}
             </span>
             <button
               onClick={nextMonth}
@@ -381,11 +382,11 @@ export default function CalendarView({
             <div>
               <h3 className="text-sm font-bold text-slate-800">
                 Bookings for{' '}
-                {new Date(selectedDateStr).toLocaleDateString('en-US', {
+                {new Intl.DateTimeFormat('en-US', {
                   day: 'numeric',
                   month: 'short',
                   weekday: 'short',
-                })}
+                }).format(new Date(selectedDateStr))}
               </h3>
               <p className="text-[10px] text-slate-400">
                 Total: {filteredAppointments.length} bookings

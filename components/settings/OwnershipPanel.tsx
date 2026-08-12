@@ -110,7 +110,7 @@ export default function OwnershipPanel({
                   <span className="font-mono">{t.fromName ?? t.fromEmail}</span>
                 </p>
                 <p className="font-mono text-[10px] text-amber-700">
-                  Expires {new Date(t.expiresAt).toLocaleDateString()}
+                  Expires {new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(t.expiresAt))}
                 </p>
               </div>
               <div className="flex shrink-0 gap-2">
@@ -150,7 +150,7 @@ export default function OwnershipPanel({
                   Nominated <span className="font-mono">{t.toName ?? t.toEmail}</span>
                 </p>
                 <p className="font-mono text-[10px] text-slate-500">
-                  Expires {new Date(t.expiresAt).toLocaleDateString()}
+                  Expires {new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(t.expiresAt))}
                 </p>
               </div>
               <button

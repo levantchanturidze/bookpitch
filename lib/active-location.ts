@@ -9,6 +9,7 @@ export type ActiveLocation = {
   id: string;
   name: string;
   type: LocationType;
+  timezone: string;
 };
 
 /**
@@ -25,7 +26,7 @@ export async function loadLocationsForOrg(orgId: string): Promise<{
   const locations = await withOrg(orgId, (tx) =>
     tx.location.findMany({
       orderBy: [{ type: 'asc' }, { createdAt: 'asc' }],
-      select: { id: true, name: true, type: true },
+      select: { id: true, name: true, type: true, timezone: true },
     }),
   );
 

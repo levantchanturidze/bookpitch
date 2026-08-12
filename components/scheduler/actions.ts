@@ -21,6 +21,7 @@ import {
   type AppointmentDto,
 } from '@/lib/appointments';
 import { draftAppointment, type DraftAppointmentResult } from '@/lib/assistant/draft';
+import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 
 // -----------------------------------------------------------------------------
 // Return-value types for expected errors.
@@ -92,12 +93,17 @@ export async function bookAppointmentAction(
         },
       });
       await writeAudit(tx, session, 'create', 'appointment', row.id);
+      const loc = await tx.location.findUnique({
+        where: { id: parsed.locationId },
+        select: { timezone: true },
+      });
+      const tz = loc?.timezone ?? 'UTC';
       await notifyEvent(tx, session.organizationId, {
         type: 'booking',
         title: 'New appointment booked',
-        body: `${row.customer.name} · ${row.serviceName} with ${row.staff.name} on ${row.startsAt.toISOString().slice(0, 10)} at ${row.startsAt.toISOString().slice(11, 16)}`,
+        body: `${row.customer.name} · ${row.serviceName} with ${row.staff.name} on ${toLocalDate(row.startsAt, tz)} at ${toLocalTimeHHMM(row.startsAt, tz)}`,
       });
-      return toAppointmentDto(row);
+      return toAppointmentDto(row, tz);
     });
     revalidatePath('/scheduler');
     return { ok: true, appointment };
@@ -185,7 +191,11 @@ export async function updateAppointmentAction(
           body: `${row.customer.name} · ${row.serviceName} with ${row.staff.name}`,
         });
       }
-      return toAppointmentDto(row);
+      const loc = await tx.location.findUnique({
+        where: { id: existing.locationId },
+        select: { timezone: true },
+      });
+      return toAppointmentDto(row, loc?.timezone ?? 'UTC');
     });
     if (appointment) revalidatePath('/scheduler');
     return { ok: true, appointment };
@@ -199,13 +209,14 @@ export async function updateAppointmentAction(
 }
 
 // -----------------------------------------------------------------------------
-// Read-only slot availability — returns open 30-minute HH:MM UTC strings for
-// the booking form slot picker. Uses booking.read permission (same as the
-// GET /api/appointments endpoint). Not a mutation; no revalidatePath needed.
+// Read-only slot availability — returns open HH:MM strings IN THE LOCATION'S
+// LOCAL TIMEZONE for the booking form slot picker. The date parameter is also
+// a local YYYY-MM-DD in that timezone. Uses booking.read permission (same as
+// GET /api/appointments). Not a mutation; no revalidatePath needed.
 // -----------------------------------------------------------------------------
 export async function fetchAvailableSlotsAction(
   staffId: string,
-  date: string, // YYYY-MM-DD
+  date: string,        // YYYY-MM-DD in the location's local timezone
   durationMinutes: number,
 ): Promise<string[]> {
   const ctx = await requireAuthContext();
@@ -216,9 +227,15 @@ export async function fetchAvailableSlotsAction(
     'appointments',
   );
   const session = ctxToSession(ctx);
-  return withOrg(session.organizationId, (tx) =>
-    getAvailableSlots(tx, staffId, date, durationMinutes),
-  );
+  return withOrg(session.organizationId, async (tx) => {
+    // Load the staff member's location timezone so slots are in local time.
+    const staffRec = await tx.staff.findUnique({
+      where: { id: staffId },
+      select: { location: { select: { timezone: true } } },
+    });
+    const tz = staffRec?.location.timezone ?? 'UTC';
+    return getAvailableSlots(tx, staffId, date, durationMinutes, tz);
+  });
 }
 
 // -----------------------------------------------------------------------------

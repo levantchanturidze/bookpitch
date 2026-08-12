@@ -3,6 +3,7 @@ import { withOrg } from '@/lib/db';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { notifyEvent } from '@/lib/notifications';
 import { log } from '@/lib/logger';
+import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
@@ -146,11 +147,17 @@ export async function notifyWaitlistForCancelled(
     data: { status: 'notified', notifiedAt: new Date() },
   });
 
+  const loc = await tx.location.findUnique({
+    where: { id: cancelled.locationId },
+    select: { timezone: true },
+  });
+  const tz = loc?.timezone ?? 'UTC';
+
   // Single rolled-up notification — one bell for staff, not N bells.
   await notifyEvent(tx, cancelledOrgId, {
     type: 'waitlist',
     title: `Slot opened — ${rows.length} waitlist match${rows.length === 1 ? '' : 'es'}`,
-    body: `${cancelled.startsAt.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
+    body: `${toLocalDate(cancelled.startsAt, tz)} ${toLocalTimeHHMM(cancelled.startsAt, tz)}`,
   });
 
   log.info('waitlist.notified', {

@@ -5,6 +5,7 @@ import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
 import { getEmailProvider, getSmsProvider } from './index';
 import { RateLimit } from '@/lib/rate-limit';
+import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 import {
   DEFAULT_EMAIL_SUBJECT,
   DEFAULT_EMAIL_TEMPLATE,
@@ -36,10 +37,10 @@ async function alreadyReminded(
   return !!existing;
 }
 
-function toDateTimeParts(startsAt: Date): { date: string; time: string } {
+function toDateTimeParts(startsAt: Date, timezone: string): { date: string; time: string } {
   return {
-    date: startsAt.toISOString().slice(0, 10),
-    time: startsAt.toISOString().slice(11, 16),
+    date: toLocalDate(startsAt, timezone),
+    time: toLocalTimeHHMM(startsAt, timezone),
   };
 }
 
@@ -58,6 +59,7 @@ export async function sendForAppointment(
       include: {
         customer: { select: { name: true, email: true, phone: true } },
         staff: { select: { name: true } },
+        location: { select: { timezone: true } },
       },
     });
     if (!appt) return { channel, outcome: 'failed', error: 'appointment_not_found' };
@@ -72,7 +74,7 @@ export async function sendForAppointment(
     const rawBody =
       template?.body ?? (channel === 'sms' ? DEFAULT_SMS_TEMPLATE : DEFAULT_EMAIL_TEMPLATE);
 
-    const { date, time } = toDateTimeParts(appt.startsAt);
+    const { date, time } = toDateTimeParts(appt.startsAt, appt.location.timezone);
     const vars: TemplateVars = {
       PatientName: appt.customer.name,
       StaffName: appt.staff.name,

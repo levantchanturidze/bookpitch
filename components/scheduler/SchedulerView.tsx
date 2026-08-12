@@ -21,12 +21,13 @@ import {
   fetchAvailableSlotsAction,
   updateAppointmentAction,
 } from './actions';
+import { localToUtc, toLocalDate } from '@/lib/tz';
 import AssistantModal from './AssistantModal';
 
 // -----------------------------------------------------------------------------
 // Types passed by the server component.
 // -----------------------------------------------------------------------------
-export type ScheduleLocation = { id: string; type: 'clinic' | 'salon'; name: string };
+export type ScheduleLocation = { id: string; type: 'clinic' | 'salon'; name: string; timezone: string };
 export type ScheduleStaff = {
   id: string;
   name: string;
@@ -58,11 +59,8 @@ const STATUS_BADGES: Record<AppointmentStatus, string> = {
   cancelled: 'bg-rose-100 text-rose-800 border-rose-200',
 };
 
-function isoDayInUtc(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-function todayIsoUtc(): string {
-  return isoDayInUtc(new Date());
+function localTodayStr(tz: string): string {
+  return toLocalDate(new Date(), tz);
 }
 
 // -----------------------------------------------------------------------------
@@ -72,7 +70,8 @@ export default function SchedulerView(props: Props) {
   const { location, staff, services, customers, appointments, monthAnchorIso } = props;
   const isClinic = location.type === 'clinic';
   const accent = isClinic ? 'teal' : 'pink';
-  const today = todayIsoUtc();
+  const tz = location.timezone;
+  const today = localTodayStr(tz);
 
   const [selectedDate, setSelectedDate] = useState<string>(today);
   const [anchor, setAnchor] = useState<Date>(new Date(monthAnchorIso));
@@ -113,7 +112,7 @@ export default function SchedulerView(props: Props) {
         customerId: input.customerId,
         staffId: input.staffId,
         serviceId: input.serviceId,
-        startsAt: new Date(`${input.date}T${input.time}:00Z`).toISOString(),
+        startsAt: localToUtc(input.date, input.time, tz).toISOString(),
         notes: input.notes || null,
       });
       if (!result.ok) {
@@ -389,7 +388,7 @@ function MonthNav({ anchor, onChange }: { anchor: Date; onChange: (d: Date) => v
         <ChevronLeft className="h-4 w-4" />
       </button>
       <span className="min-w-[100px] px-3 py-1 text-center text-xs font-semibold text-slate-700">
-        {anchor.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })}
+        {new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(anchor)}
       </span>
       <button
         onClick={() =>
@@ -837,7 +836,7 @@ function BookingModal({
                 className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700"
               />
             </Field>
-            <Field label="Available Time (UTC)">
+            <Field label="Available Time">
               {slotsLoading ? (
                 <div className="flex h-[34px] items-center rounded-lg border border-slate-200 bg-slate-50 px-2 font-mono text-xs text-slate-400">
                   Loading…
@@ -990,12 +989,12 @@ function StatusButton({
 }
 
 function formatFriendly(iso: string): string {
-  return new Date(iso + 'T00:00Z').toLocaleDateString('en-US', {
+  return new Intl.DateTimeFormat('en-US', {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
     timeZone: 'UTC',
-  });
+  }).format(new Date(iso + 'T00:00Z'));
 }
 
 function formatEndTime(hhmm: string, durationMinutes: number): string {

@@ -23,8 +23,10 @@ export default async function SchedulerPage() {
   const { active } = await loadLocationsForOrg(session.organizationId);
 
   const now = new Date();
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 1)); // give the next month a peek
+  // Widen by one day on each side so local days near UTC midnight are captured
+  // regardless of the location timezone (max offset ±14h).
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) - 86400_000);
+  const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 2));
 
   const { staff, services, customers, appointments } = await withOrg(
     session.organizationId,
@@ -70,14 +72,14 @@ export default async function SchedulerPage() {
         staff,
         services: services.map((s) => ({ ...s, price: Number(s.price) })),
         customers,
-        appointments: rows.map(toAppointmentDto),
+        appointments: rows.map((r) => toAppointmentDto(r, active.timezone ?? 'UTC')),
       };
     },
   );
 
   return (
     <SchedulerView
-      location={{ id: active.id, name: active.name, type: active.type }}
+      location={{ id: active.id, name: active.name, type: active.type, timezone: active.timezone ?? 'UTC' }}
       staff={staff}
       services={services}
       customers={customers}

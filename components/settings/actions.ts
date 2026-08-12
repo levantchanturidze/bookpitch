@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache';
 import type { UserRole } from '@prisma/client';
 import { ConflictError, InvalidInputError, ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { withOrg } from '@/lib/db';
+import { localHHMMToUtcHHMM } from '@/lib/tz';
 import {
   type AvailabilityWindow,
   createLocation,
@@ -95,7 +97,21 @@ export async function deleteStaffAction(id: string): Promise<DeleteResult> {
 }
 export async function setAvailabilityAction(id: string, windows: AvailabilityWindow[]) {
   const session = await ctxFor('staff.schedule.manage', 'admin');
-  await setAvailability(session, id, windows);
+  // Load the staff member's location timezone so we can convert the
+  // local times the editor submitted back to UTC for storage.
+  const staffRec = await withOrg(session.organizationId, (tx) =>
+    tx.staff.findUnique({
+      where: { id },
+      select: { location: { select: { timezone: true } } },
+    }),
+  );
+  const tz = staffRec?.location.timezone ?? 'UTC';
+  const utcWindows: AvailabilityWindow[] = windows.map((w) => ({
+    weekday: w.weekday,
+    startTime: localHHMMToUtcHHMM(w.startTime, tz),
+    endTime: localHHMMToUtcHHMM(w.endTime, tz),
+  }));
+  await setAvailability(session, id, utcWindows);
   REVALIDATE_ALL();
 }
 

@@ -10,7 +10,7 @@ import {
   updateStaffAction,
 } from './actions';
 
-export type LocationRef = { id: string; name: string; type: 'clinic' | 'salon' };
+export type LocationRef = { id: string; name: string; type: 'clinic' | 'salon'; timezone: string };
 
 export type StaffRow = {
   id: string;
@@ -325,8 +325,8 @@ function AvailabilityEditor({ staff, onClose }: { staff: StaffRow; onClose: () =
       <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-lg">
         <h3 className="mb-1 text-base font-bold text-slate-800">Availability · {staff.name}</h3>
         <p className="mb-4 text-xs text-slate-500">
-          Times are UTC. Leave both fields blank for a day off. Split shifts aren&apos;t supported
-          in this MVP editor — one window per day.
+          Times are in the location&apos;s local timezone. Leave both fields blank for a day off.
+          Split shifts aren&apos;t supported in this MVP editor — one window per day.
         </p>
         <div className="space-y-2">
           {WEEKDAYS.map((day, i) => (

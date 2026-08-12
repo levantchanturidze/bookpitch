@@ -68,11 +68,11 @@ export default function RemindersSystem({
 
   const handleSimulateDispatch = (app: Appointment) => {
     const text = renderPreview(activeTab === 'sms' ? smsTemplate : emailTemplate, app);
-    const timeStr = new Date().toLocaleTimeString('en-US', {
+    const timeStr = new Intl.DateTimeFormat('en-US', {
       hour: 'numeric',
       minute: '2-digit',
       second: '2-digit',
-    });
+    }).format(new Date());
 
     setDispatchLogs((prev) => [
       {

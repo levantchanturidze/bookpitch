@@ -9,6 +9,7 @@ import type {
 } from '@prisma/client';
 import { InvalidInputError, SlotTakenError } from '@/lib/auth';
 import { isValidIcd10 } from '@/lib/icd10';
+import { localDayRange, localDateWeekday, toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 export { SlotTakenError };
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
@@ -36,11 +37,21 @@ export type AppointmentDto = {
   staff: { id: string; name: string; roleTitle: string; calendarColor: string | null };
 };
 
+/**
+ * Convert a raw Appointment DB row to the display DTO.
+ *
+ * `timezone` should be the IANA timezone of the appointment's location.
+ * When omitted the fields default to UTC strings so callers that cannot
+ * easily supply the timezone (API routes, legacy code) stay correct in the
+ * sense that they're consistent — they're just UTC-labelled, not local.
+ * All scheduler / booking paths supply the timezone explicitly.
+ */
 export function toAppointmentDto(
   row: Appointment & {
     customer: Pick<Customer, 'id' | 'name' | 'phone' | 'avatarUrl'>;
     staff: Pick<Staff, 'id' | 'name' | 'roleTitle' | 'calendarColor'>;
   },
+  timezone = 'UTC',
 ): AppointmentDto {
   const durationMs = row.endsAt.getTime() - row.startsAt.getTime();
   return {
@@ -51,8 +62,8 @@ export function toAppointmentDto(
     serviceId: row.serviceId,
     startsAt: row.startsAt.toISOString(),
     endsAt: row.endsAt.toISOString(),
-    date: row.startsAt.toISOString().slice(0, 10),
-    time: row.startsAt.toISOString().slice(11, 16),
+    date: toLocalDate(row.startsAt, timezone),
+    time: toLocalTimeHHMM(row.startsAt, timezone),
     durationMinutes: Math.round(durationMs / 60_000),
     serviceName: row.serviceName,
     price: Number(row.price),
@@ -242,11 +253,18 @@ export function isExclusionViolation(err: unknown): boolean {
 // -----------------------------------------------------------------------------
 // Available-slot computation — UX pre-filter for the booking form.
 //
-// Returns HH:MM UTC strings for open 30-minute slots on `date` for a given
-// staff member. Availability windows constrain the range when configured;
-// 07:00–21:00 UTC is the fallback when no windows exist (same fail-open logic
-// as assertWithinAvailability). Slots that overlap with existing non-cancelled
-// appointments are excluded.
+// Returns HH:MM strings in the location's LOCAL timezone for open slots on
+// `date` (also a local YYYY-MM-DD in the same timezone). Step derives from
+// durationMinutes: min(durationMinutes, 30) so a 15-min service offers every
+// 15 minutes rather than every 30.
+//
+// Availability windows constrain the range when configured; 07:00–21:00 LOCAL
+// is the fallback when no windows exist (fail-open, same as assertWithinAvailability).
+//
+// Slots that overlap with existing non-cancelled appointments are excluded.
+// Day boundaries use the local calendar day of the location's timezone so a
+// clinic in UTC−5 doesn't miss late-afternoon appointments that fall in the
+// next UTC date.
 //
 // This is UX filtering only — the GiST exclusion constraint remains the
 // authoritative double-booking guard for race conditions.
@@ -254,42 +272,54 @@ export function isExclusionViolation(err: unknown): boolean {
 export async function getAvailableSlots(
   tx: TxClient,
   staffId: string,
-  date: string, // YYYY-MM-DD UTC
+  date: string,       // YYYY-MM-DD in the location's local timezone
   durationMinutes: number,
+  timezone = 'UTC',   // IANA timezone of the location
 ): Promise<string[]> {
-  const dateObj = new Date(date + 'T00:00:00Z');
-  const weekday = dateObj.getUTCDay();
-  const dayStart = dateObj.getTime();
-  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+  const weekday = localDateWeekday(date, timezone);
+  const { start: dayStart, end: dayEnd } = localDayRange(date, timezone);
 
   const windows = await tx.staffAvailability.findMany({
     where: { staffId, weekday },
     select: { startTime: true, endTime: true },
   });
+
+  // Availability windows are stored as UTC time-of-day values (1970-01-01T<HH:MM>Z).
+  // Convert to local minutes for comparison with local slot start times.
   const ranges =
     windows.length === 0
-      ? [{ startMin: 7 * 60, endMin: 21 * 60 }] // default working day
-      : windows.map((w) => ({
-          startMin: w.startTime.getUTCHours() * 60 + w.startTime.getUTCMinutes(),
-          endMin: w.endTime.getUTCHours() * 60 + w.endTime.getUTCMinutes(),
-        }));
+      ? [{ startMin: 7 * 60, endMin: 21 * 60 }] // default working day (local)
+      : windows.map((w) => {
+          const localStart = utcTimeValueToLocalMin(w.startTime, timezone);
+          const localEnd = utcTimeValueToLocalMin(w.endTime, timezone);
+          return { startMin: localStart, endMin: localEnd };
+        });
 
   const booked = await tx.appointment.findMany({
     where: {
       staffId,
       status: { not: 'cancelled' },
-      startsAt: { gte: new Date(dayStart), lt: new Date(dayEnd) },
+      startsAt: { gte: dayStart, lt: dayEnd },
     },
     select: { startsAt: true, endsAt: true },
   });
-  const bookedIntervals = booked.map((a) => ({
-    startMin: a.startsAt.getUTCHours() * 60 + a.startsAt.getUTCMinutes(),
-    endMin: a.endsAt.getUTCHours() * 60 + a.endsAt.getUTCMinutes(),
-  }));
+
+  // Convert booked appointment times to local minutes for overlap comparison.
+  const bookedIntervals = booked.map((a) => {
+    const startLocal = toLocalTimeHHMM(a.startsAt, timezone).split(':').map(Number);
+    const endLocal = toLocalTimeHHMM(a.endsAt, timezone).split(':').map(Number);
+    return {
+      startMin: startLocal[0] * 60 + startLocal[1],
+      endMin: endLocal[0] * 60 + endLocal[1],
+    };
+  });
+
+  // Step derives from service duration so sub-30-min services don't lose slots.
+  const step = Math.min(durationMinutes, 30);
 
   const slots: string[] = [];
   for (const range of ranges) {
-    for (let t = range.startMin; t + durationMinutes <= range.endMin; t += 30) {
+    for (let t = range.startMin; t + durationMinutes <= range.endMin; t += step) {
       const slotEnd = t + durationMinutes;
       const taken = bookedIntervals.some((b) => t < b.endMin && slotEnd > b.startMin);
       if (!taken) {
@@ -300,4 +330,21 @@ export async function getAvailableSlots(
     }
   }
   return slots;
+}
+
+/** Internal: convert a Prisma Time DB value to local minutes-since-midnight. */
+function utcTimeValueToLocalMin(utcTime: Date, tz: string): number {
+  const localHHMM = toLocalTimeHHMM(
+    // Rebase to today to avoid 1970 historical DST data
+    (() => {
+      const today = new Date();
+      return new Date(
+        Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(),
+          utcTime.getUTCHours(), utcTime.getUTCMinutes(), 0),
+      );
+    })(),
+    tz,
+  );
+  const [h, m] = localHHMM.split(':').map(Number);
+  return h * 60 + m;
 }

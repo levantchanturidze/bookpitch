@@ -2,6 +2,7 @@ import { ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { listLocations, listStaff } from '@/lib/admin';
 import StaffPanel, { type LocationRef, type StaffRow } from '@/components/settings/StaffPanel';
+import { utcTimeValueToLocalHHMM } from '@/lib/tz';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,26 +15,28 @@ export default async function SettingsStaffPage() {
     id: l.id,
     name: l.name,
     type: l.type,
+    timezone: l.timezone,
   }));
-  const staff: StaffRow[] = staffRows.map((s) => ({
-    id: s.id,
-    locationId: s.locationId,
-    locationName: locations.find((l) => l.id === s.locationId)?.name ?? '?',
-    name: s.name,
-    roleTitle: s.roleTitle,
-    specialty: s.specialty,
-    email: s.email,
-    phone: s.phone,
-    calendarColor: s.calendarColor,
-    availability: s.availability.map((a) => ({
-      weekday: a.weekday,
-      startTime: `${String(a.startTime.getUTCHours()).padStart(2, '0')}:${String(
-        a.startTime.getUTCMinutes(),
-      ).padStart(2, '0')}`,
-      endTime: `${String(a.endTime.getUTCHours()).padStart(2, '0')}:${String(
-        a.endTime.getUTCMinutes(),
-      ).padStart(2, '0')}`,
-    })),
-  }));
+  const staff: StaffRow[] = staffRows.map((s) => {
+    const locTz = locations.find((l) => l.id === s.locationId)?.timezone ?? 'UTC';
+    return {
+      id: s.id,
+      locationId: s.locationId,
+      locationName: locations.find((l) => l.id === s.locationId)?.name ?? '?',
+      name: s.name,
+      roleTitle: s.roleTitle,
+      specialty: s.specialty,
+      email: s.email,
+      phone: s.phone,
+      calendarColor: s.calendarColor,
+      // Times are converted to the location's local timezone for display.
+      // setAvailabilityAction converts them back to UTC before storage.
+      availability: s.availability.map((a) => ({
+        weekday: a.weekday,
+        startTime: utcTimeValueToLocalHHMM(a.startTime, locTz),
+        endTime: utcTimeValueToLocalHHMM(a.endTime, locTz),
+      })),
+    };
+  });
   return <StaffPanel staff={staff} locations={locations} />;
 }

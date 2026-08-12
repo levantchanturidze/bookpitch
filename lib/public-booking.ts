@@ -3,6 +3,7 @@ import { notifyEvent } from '@/lib/notifications';
 import { consumeRateLimit } from '@/lib/rate-limit';
 import { InvalidInputError } from '@/lib/auth';
 import { log } from '@/lib/logger';
+import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 
 // -----------------------------------------------------------------------------
 // Public booking widget. No session: the customer is anonymous. All entry
@@ -181,7 +182,7 @@ export async function submitPublicBooking(input: PublicBookInput): Promise<Publi
     await notifyEvent(tx, location.organizationId, {
       type: 'booking',
       title: 'New public booking',
-      body: `${service.name} · ${startsAt.toISOString().slice(0, 16).replace('T', ' ')} UTC`,
+      body: `${service.name} · ${toLocalDate(startsAt, location.timezone)} ${toLocalTimeHHMM(startsAt, location.timezone)}`,
     });
     return appointment;
   });

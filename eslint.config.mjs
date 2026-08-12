@@ -86,6 +86,45 @@ const RESTRICT_UNSAFE_DB = {
   ],
 };
 
+// TZ-001: ban Date methods that use process-local timezone instead of
+// the org's IANA timezone. All display paths must go through lib/tz.ts.
+// lib/tz.ts itself uses Intl.DateTimeFormat and is the sole exemption.
+const RESTRICT_TZ_DISPLAY = {
+  'no-restricted-syntax': [
+    'error',
+    {
+      selector:
+        "CallExpression[callee.type='MemberExpression'][callee.property.name='getHours']",
+      message:
+        "TZ-001: .getHours() reads process-local time. Use toLocalTimeHHMM(utc, tz) from '@/lib/tz'.",
+    },
+    {
+      selector:
+        "CallExpression[callee.type='MemberExpression'][callee.property.name='getMinutes']",
+      message:
+        "TZ-001: .getMinutes() reads process-local time. Use toLocalTimeHHMM(utc, tz) from '@/lib/tz'.",
+    },
+    {
+      selector:
+        "CallExpression[callee.type='MemberExpression'][callee.property.name='getDay']",
+      message:
+        "TZ-001: .getDay() reads process-local weekday. Use localDateWeekday(dateStr, tz) from '@/lib/tz'.",
+    },
+    {
+      selector:
+        "CallExpression[callee.type='MemberExpression'][callee.property.name='toLocaleDateString']",
+      message:
+        "TZ-001: .toLocaleDateString() ignores org timezone. Use toLocalDate(utc, tz) from '@/lib/tz'.",
+    },
+    {
+      selector:
+        "CallExpression[callee.type='MemberExpression'][callee.property.name='toLocaleTimeString']",
+      message:
+        "TZ-001: .toLocaleTimeString() ignores org timezone. Use toLocalTimeHHMM(utc, tz) from '@/lib/tz'.",
+    },
+  ],
+};
+
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
@@ -123,6 +162,17 @@ const eslintConfig = defineConfig([
   {
     files: UNSAFE_DB_ALLOWLIST,
     rules: { 'no-restricted-imports': 'off' },
+  },
+  // TZ-001: enforce timezone-aware formatting in all source files.
+  {
+    files: ['app/**/*.{ts,tsx}', 'lib/**/*.{ts,tsx}', 'components/**/*.{ts,tsx}'],
+    rules: RESTRICT_TZ_DISPLAY,
+  },
+  // lib/tz.ts is the conversion boundary — it uses Intl.DateTimeFormat
+  // internally and is exempt. tests/** may use native Date methods for fixtures.
+  {
+    files: ['lib/tz.ts', 'tests/**'],
+    rules: { 'no-restricted-syntax': 'off' },
   },
 ]);
 
