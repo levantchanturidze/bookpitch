@@ -136,7 +136,7 @@ export async function applySubscriptionEvent(subscription: Stripe.Subscription):
 
 async function lookupOrgByCustomer(stripeCustomerId: string): Promise<string | undefined> {
   const org = await withoutRls((tx) =>
-    tx.organization.findFirst({
+    tx.organization.findUnique({
       where: { stripeCustomerId },
       select: { id: true },
     }),

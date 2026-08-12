@@ -239,7 +239,7 @@ export async function computeMetrics(
   refDate: Date = new Date(),
 ): Promise<Metrics> {
   return withOrgReplica(session.organizationId, async (tx) => {
-    const location = await tx.location.findFirst({
+    const location = await tx.location.findUnique({
       where: { id: locationId },
       select: { id: true, name: true, type: true },
     });

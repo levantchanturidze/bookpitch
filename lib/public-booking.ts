@@ -33,7 +33,7 @@ export type PublicLocation = {
 
 export async function getPublicLocation(slug: string): Promise<PublicLocation | null> {
   const row = await withoutRls((tx) =>
-    tx.location.findFirst({
+    tx.location.findUnique({
       where: { publicSlug: slug },
       include: {
         organization: { select: { name: true, id: true } },

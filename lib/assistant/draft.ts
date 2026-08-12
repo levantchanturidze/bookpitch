@@ -44,7 +44,7 @@ export async function draftAppointment(
   await consumeAssistantQuota(session.organizationId);
 
   const ctx: AssistantContext = await withOrg(session.organizationId, async (tx) => {
-    const location = await tx.location.findFirst({
+    const location = await tx.location.findUnique({
       where: { id: locationId },
       select: { id: true, name: true, type: true },
     });
