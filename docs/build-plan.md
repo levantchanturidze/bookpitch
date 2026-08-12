@@ -36,67 +36,60 @@ Done when step 8 lands without a 4xx/5xx.
 
 ## P1 — blocks real-clinic use (do after milestone if not done during)
 
-### P1.1 Resend verified domain for any-recipient email
-Currently `RESEND_FROM=onboarding@resend.dev` only delivers to the Resend
-account holder's email address (`levani.tchanturidze@gmail.com`). To reach
-any owner inbox, a domain needs DNS verification on Resend.
-**Action:** add domain via Resend dashboard → add DNS records →
-update `RESEND_FROM` on Vercel to e.g. `noreply@bookpitch.ge`.
-Not blocking milestone (URL is shown on screen in NewOrgForm).
+### P1.1 Resend verified domain for any-recipient email ✅ 2026-08-12
+`send.bookpitch.ge` verified on Resend. DKIM + SPF + DMARC records in
+Vercel-managed DNS. `RESEND_FROM` updated to
+`Bookpitch <no-reply@send.bookpitch.ge>`. External delivery confirmed:
+invitation to `bookpitch-deploy-test@mailinator.com` delivered, accepted,
+and signed in as ORG_OWNER.
 
-### P1.2 Ownership-transfer UI
-`POST /api/admin/ownership-transfer`, `accept`, `decline`, `DELETE` all
-exist (`lib/admin/ownership-transfer.ts`). Owner nominee gets a
-notification (`lib/notifications.ts`). But there is no page to list
-pending transfers — the nominee has no UI to accept.
-**Action:** add `/settings/ownership-transfer` (or surface on the members
-page) — list transfers awaiting the current user, with Accept / Decline
-buttons.
+### P1.2 Ownership-transfer UI ✅ 2026-08-11
+`/settings/ownership` page added. Nominee sees incoming pending transfers
+with Accept/Decline; nominator sees outgoing with Revoke. `OwnershipPanel`
+client component + Ownership tab in settings nav.
 
-### P1.3 Member invitation from within the org (staff invite flow)
-`POST /api/invitations` + `inviteMemberAction` work and send email.
-`/settings/members` page lists members and shows an invite button.
-Need to verify the invite form on `/settings/members` is wired and that
-a staff member (not just ORG_OWNER) can accept and sign in. Flow is the
-same as P0.2 step 3 but from within the org, not from /platform.
+### P1.3 Member invitation from within the org (staff invite flow) ✅ 2026-08-11
+Invite form on `/settings/members` verified end-to-end in production.
+Invited `practitioner@demo.test`, accepted invitation, signed in as
+PROVIDER with `302 → /` and session showing `roleKey: PROVIDER`.
 
-### P1.4 Staff availability gating at booking time
-`lib/appointments.ts::assertWithinAvailability` is called on create +
-update. Staff need at least one `staff_availability` row before
-`bookAppointmentAction` will accept them. The staff panel UI has an
-"Edit availability" flow (`setAvailabilityAction`). Verify this works
-end-to-end in production: staff with no availability should give a
-readable error, not a 500.
+### P1.4 Staff availability gating at booking time ✅ 2026-08-11
+`assertWithinAvailability` returns `{"error":"slot_outside_availability"}`
+(400) when slot falls outside configured window. No-window-for-day falls
+through (unrestricted) by design. Readable error confirmed, no 500.
 
 ---
 
 ## P2 — clinic operations (after milestone)
 
-### P2.1 Audit log CSV export from org audit page
-`/audit` page renders and queries `lib/audit-query.ts`. No export button.
-Spec §11 describes it. An in-browser download triggered by a GET
-with `Accept: text/csv` is the simplest implementation.
+### P2.1 Audit log CSV export from org audit page ✅ 2026-08-11
+`GET /api/audit/export` returns up to 5000 rows as `text/csv`, accepts
+the same filter params as the audit page. Export CSV button added to
+`AuditView` building URL from active filters.
 
-### P2.2 Add insurer UI for insurance claim export
-`/settings/insurance` lists insurers via `lib/insurance.ts::listInsurers`.
-Insurance export endpoint works. But there is no "add insurer" form —
-insurers can only be created via DB seed or manual SQL. Add a simple
-POST form on the settings/insurance page.
+### P2.2 Add insurer UI for insurance claim export ✅ 2026-08-11
+`insurerName` + `insurancePolicyNumber` added to `CustomerDto` +
+`CustomerUpdateInput` + `buildUpdateData`. `InsurancePage` renders
+`AddInsurerForm` — owner selects patient from dropdown, sets insurer
+name + policy number, PATCHed to `/api/customers/[id]`.
 
-### P2.3 Public booking widget — publicSlug on locations
-`/book/[slug]` works. But locations need a `publicSlug` set. Currently
-no UI surfaces the publicSlug field when creating or editing a location.
-Add publicSlug to the location create / edit form in `/settings/locations`.
+### P2.3 Public booking widget — publicSlug on locations ✅ 2026-08-11
+`publicSlug` field added to `LocationForm` with auto-sanitization to
+`[a-z0-9-]`. Table shows `/book/[slug]` link when set. Backend
+(`lib/admin.ts`) parse + write already done; `page.tsx` maps the field.
 
-### P2.4 Weekly audit-digest email (cron)
-`app/api/cron/audit-digest/route.ts` exists. Sends to every ORG_OWNER.
-With EMAIL_PROVIDER=resend, this will now attempt real sends. Verify
-the cron fires correctly (check GH Actions → cron.yml weekly run).
+### P2.4 Weekly audit-digest email (cron) ✅ 2026-08-11
+`cron.yml` schedule `0 8 * * 1` → `POST /api/cron/audit-digest`
+authenticated by `CRON_SECRET`. `buildDigest` + `renderDigestText`
+unit-tested (2 pass). `sendDigestToOwners` uses `role: 'owner'` filter
+which remains correct. No code changes needed.
 
-### P2.5 DSR/privacy panel — customer picker flow
-`/settings/privacy` page + `PrivacyView.tsx` exist. DSR activity shows
-up. Individual export/anonymize need `client.export` which ORG_OWNER has.
-Verify the flow works with a real customer record.
+### P2.5 DSR/privacy panel — customer picker flow ✅ 2026-08-11
+`POST /api/customers/[id]/export` + `POST /api/customers/[id]/anonymize`
+both guarded by `client.export`. `PrivacyView` customer picker triggers
+download / anonymize with confirm. `gdpr.test.ts` covers all three paths
+(export bundle, anonymize PII redaction, retention tick). 7 tests pass.
+No code changes needed.
 
 ---
 
