@@ -45,11 +45,8 @@ export default function ServicesPanel({
   const remove = (id: string) => {
     setError(null);
     startTransition(async () => {
-      try {
-        await deleteServiceAction(id);
-      } catch (err) {
-        setError((err as Error).message);
-      }
+      const result = await deleteServiceAction(id);
+      if (!result.ok) setError(result.error);
     });
   };
 

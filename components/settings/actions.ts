@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import type { UserRole } from '@prisma/client';
-import { ctxToSession } from '@/lib/auth';
+import { ConflictError, InvalidInputError, ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import {
   type AvailabilityWindow,
@@ -51,10 +51,20 @@ export async function updateLocationAction(id: string, input: unknown) {
   REVALIDATE_ALL();
   return result;
 }
-export async function deleteLocationAction(id: string) {
+export type DeleteResult = { ok: true } | { ok: false; error: string };
+
+export async function deleteLocationAction(id: string): Promise<DeleteResult> {
   const session = await ctxFor('org.branch.manage', 'admin');
-  await deleteLocation(session, id);
-  REVALIDATE_ALL();
+  try {
+    await deleteLocation(session, id);
+    REVALIDATE_ALL();
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof ConflictError || err instanceof InvalidInputError) {
+      return { ok: false, error: err.message };
+    }
+    throw err;
+  }
 }
 
 // -------------------- Staff --------------------------------------------------
@@ -70,10 +80,18 @@ export async function updateStaffAction(id: string, input: unknown) {
   REVALIDATE_ALL();
   return result;
 }
-export async function deleteStaffAction(id: string) {
+export async function deleteStaffAction(id: string): Promise<DeleteResult> {
   const session = await ctxFor('staff.deactivate', 'admin');
-  await deleteStaff(session, id);
-  REVALIDATE_ALL();
+  try {
+    await deleteStaff(session, id);
+    REVALIDATE_ALL();
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof ConflictError || err instanceof InvalidInputError) {
+      return { ok: false, error: err.message };
+    }
+    throw err;
+  }
 }
 export async function setAvailabilityAction(id: string, windows: AvailabilityWindow[]) {
   const session = await ctxFor('staff.schedule.manage', 'admin');
@@ -94,10 +112,18 @@ export async function updateServiceAction(id: string, input: unknown) {
   REVALIDATE_ALL();
   return result;
 }
-export async function deleteServiceAction(id: string) {
+export async function deleteServiceAction(id: string): Promise<DeleteResult> {
   const session = await ctxFor('service.manage', 'admin');
-  await deleteService(session, id);
-  REVALIDATE_ALL();
+  try {
+    await deleteService(session, id);
+    REVALIDATE_ALL();
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof ConflictError || err instanceof InvalidInputError) {
+      return { ok: false, error: err.message };
+    }
+    throw err;
+  }
 }
 
 // -------------------- Members ------------------------------------------------

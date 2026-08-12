@@ -38,11 +38,8 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
   const remove = (id: string) => {
     setError(null);
     startTransition(async () => {
-      try {
-        await deleteLocationAction(id);
-      } catch (err) {
-        setError((err as Error).message);
-      }
+      const result = await deleteLocationAction(id);
+      if (!result.ok) setError(result.error);
     });
   };
 

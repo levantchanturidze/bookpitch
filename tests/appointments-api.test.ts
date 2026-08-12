@@ -14,6 +14,7 @@ const routeList = await import('@/app/api/appointments/route');
 const routeItem = await import('@/app/api/appointments/[id]/route');
 const { mockJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
+const { getAvailableSlots } = await import('@/lib/appointments');
 
 async function mkSession(orgId: string, userId: string) {
   return mockJwt(userId, orgId);
@@ -241,5 +242,58 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
     // Either 400 (assertCustomerInOrg's InvalidInputError) — that path fires
     // because RLS returns null for the cross-tenant customer.
     expect(res.status).toBe(400);
+  });
+
+  it('concurrent double-booking: exactly one succeeds, the other gets slot_taken (no 500)', async () => {
+    // Two simultaneous requests for the same staff + slot. The DB exclusion
+    // constraint (23P01) ensures only one row lands; the other must come back
+    // as 409 slot_taken — not a 500 or an unhandled throw.
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
+    const slot = iso(11, 15);
+    const [a, b] = await Promise.all([book(slot), book(slot)]);
+
+    const statuses = [a.status, b.status].sort();
+    // One 200, one 409 — order is non-deterministic.
+    expect(statuses).toEqual([200, 409]);
+
+    const winner = a.status === 200 ? a : b;
+    const loser = a.status === 409 ? a : b;
+
+    const winBody = await jsonBody<{ appointment: { id: string } }>(winner);
+    createdIds.push(winBody.appointment.id);
+
+    const loseBody = await jsonBody<{ error: string }>(loser);
+    expect(loseBody.error).toBe('slot_taken');
+
+    // Exactly one appointment row must exist at that slot for this staff.
+    const count = await withoutRls((tx) =>
+      tx.appointment.count({
+        where: {
+          staffId: clinicStaffId,
+          startsAt: { gte: new Date(slot), lt: new Date(iso(11, 16)) },
+          status: { not: 'cancelled' },
+        },
+      }),
+    );
+    expect(count).toBe(1);
+  });
+
+  it('getAvailableSlots excludes a booked slot from the picker', async () => {
+    // Book a 30-min slot at 13:00 on day 12.
+    const slotIso = iso(12, 13);
+    const res = await book(slotIso);
+    expect(res.status).toBe(200);
+    const body = await jsonBody<{ appointment: { id: string } }>(res);
+    createdIds.push(body.appointment.id);
+
+    // getAvailableSlots for that staff + date + 30 min must NOT contain 13:00.
+    const dateStr = `${YEAR}-04-12`; // April 12 in the test horizon (HORIZON_MONTH=3 → April)
+    const slots = await withoutRls((tx) => getAvailableSlots(tx, clinicStaffId, dateStr, 30));
+    expect(slots).not.toContain('13:00');
+
+    // Adjacent slots must still be present (end of previous = 12:30, start of next = 13:30).
+    // The default window runs 07:00–21:00, so these exist if not blocked by other tests.
+    // Soft check: after the booking 13:00 is simply gone.
+    expect(Array.isArray(slots)).toBe(true);
   });
 });

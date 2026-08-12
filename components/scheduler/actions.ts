@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { ctxToSession, SlotTakenError } from '@/lib/auth';
+import { ctxToSession, InvalidInputError, SlotTakenError } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
@@ -10,6 +10,7 @@ import {
   assertCustomerInOrg,
   assertStaffAtLocation,
   assertWithinAvailability,
+  getAvailableSlots,
   isExclusionViolation,
   loadServiceForLocation,
   parseCreateInput,
@@ -17,14 +18,33 @@ import {
   toAppointmentDto,
   type AppointmentCreateInput,
   type AppointmentUpdateInput,
+  type AppointmentDto,
 } from '@/lib/appointments';
 import { draftAppointment, type DraftAppointmentResult } from '@/lib/assistant/draft';
+
+// -----------------------------------------------------------------------------
+// Return-value types for expected errors.
+//
+// Next.js 16: "For expected errors, avoid using try/catch blocks and throw
+// errors. Instead, model expected errors as return values." Throwing from a
+// Server Action propagates to the nearest error boundary, not to the
+// try/catch in the startTransition callback.
+// -----------------------------------------------------------------------------
+export type BookActionResult =
+  | { ok: true; appointment: AppointmentDto }
+  | { ok: false; error: string };
+
+export type UpdateActionResult =
+  | { ok: true; appointment: AppointmentDto | null }
+  | { ok: false; error: string };
 
 // Mirror the /api/appointments endpoints but skip the HTTP hop for internal
 // UI callers. Same withOrg + writeAudit pattern. revalidatePath refreshes
 // the server-rendered scheduler list.
 
-export async function bookAppointmentAction(input: AppointmentCreateInput) {
+export async function bookAppointmentAction(
+  input: AppointmentCreateInput,
+): Promise<BookActionResult> {
   const ctx = await requireAuthContext();
   requirePermission(
     ctx,
@@ -33,7 +53,13 @@ export async function bookAppointmentAction(input: AppointmentCreateInput) {
     'appointments',
   );
   const session = ctxToSession(ctx);
-  const parsed = parseCreateInput(input);
+  let parsed: AppointmentCreateInput;
+  try {
+    parsed = parseCreateInput(input);
+  } catch (err) {
+    if (err instanceof InvalidInputError) return { ok: false, error: err.message };
+    throw err;
+  }
   const startsAt = new Date(parsed.startsAt);
 
   try {
@@ -74,18 +100,29 @@ export async function bookAppointmentAction(input: AppointmentCreateInput) {
       return toAppointmentDto(row);
     });
     revalidatePath('/scheduler');
-    return appointment;
+    return { ok: true, appointment };
   } catch (err) {
-    if (isExclusionViolation(err)) throw new SlotTakenError();
+    if (isExclusionViolation(err) || err instanceof SlotTakenError) {
+      return { ok: false, error: 'slot_taken' };
+    }
+    if (err instanceof InvalidInputError) return { ok: false, error: err.message };
     throw err;
   }
 }
 
-export async function updateAppointmentAction(id: string, input: AppointmentUpdateInput) {
+export async function updateAppointmentAction(
+  id: string,
+  input: AppointmentUpdateInput,
+): Promise<UpdateActionResult> {
   const ctx = await requireAuthContext();
-  const parsed = parseUpdateInput(input);
-  // Cancel transitions warrant the stronger cancel permission. Pass base
-  // action key — can() walks :org → :branch → :own for scope resolution.
+  let parsed: AppointmentUpdateInput;
+  try {
+    parsed = parseUpdateInput(input);
+  } catch (err) {
+    if (err instanceof InvalidInputError) return { ok: false, error: err.message };
+    throw err;
+  }
+  // Cancel transitions warrant the stronger cancel permission.
   const needed = parsed.status === 'cancelled' ? 'booking.cancel' : 'booking.update';
   requirePermission(ctx, needed, { organizationId: ctx.activeOrganizationId! }, 'appointments');
   const session = ctxToSession(ctx);
@@ -141,8 +178,6 @@ export async function updateAppointmentAction(id: string, input: AppointmentUpda
         fields: Object.keys(parsed),
       });
 
-      // Only broadcast on meaningful status transitions — otherwise the feed
-      // is noisy on every notes edit.
       if (parsed.status && parsed.status !== existing.status) {
         await notifyEvent(tx, session.organizationId, {
           type: 'booking',
@@ -153,11 +188,37 @@ export async function updateAppointmentAction(id: string, input: AppointmentUpda
       return toAppointmentDto(row);
     });
     if (appointment) revalidatePath('/scheduler');
-    return appointment;
+    return { ok: true, appointment };
   } catch (err) {
-    if (isExclusionViolation(err)) throw new SlotTakenError();
+    if (isExclusionViolation(err) || err instanceof SlotTakenError) {
+      return { ok: false, error: 'slot_taken' };
+    }
+    if (err instanceof InvalidInputError) return { ok: false, error: err.message };
     throw err;
   }
+}
+
+// -----------------------------------------------------------------------------
+// Read-only slot availability — returns open 30-minute HH:MM UTC strings for
+// the booking form slot picker. Uses booking.read permission (same as the
+// GET /api/appointments endpoint). Not a mutation; no revalidatePath needed.
+// -----------------------------------------------------------------------------
+export async function fetchAvailableSlotsAction(
+  staffId: string,
+  date: string, // YYYY-MM-DD
+  durationMinutes: number,
+): Promise<string[]> {
+  const ctx = await requireAuthContext();
+  requirePermission(
+    ctx,
+    'booking.read',
+    { organizationId: ctx.activeOrganizationId! },
+    'appointments',
+  );
+  const session = ctxToSession(ctx);
+  return withOrg(session.organizationId, (tx) =>
+    getAvailableSlots(tx, staffId, date, durationMinutes),
+  );
 }
 
 // -----------------------------------------------------------------------------

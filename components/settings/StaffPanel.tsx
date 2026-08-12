@@ -60,11 +60,8 @@ export default function StaffPanel({
   const remove = (id: string) => {
     setError(null);
     startTransition(async () => {
-      try {
-        await deleteStaffAction(id);
-      } catch (err) {
-        setError((err as Error).message);
-      }
+      const result = await deleteStaffAction(id);
+      if (!result.ok) setError(result.error);
     });
   };
 

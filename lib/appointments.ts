@@ -229,9 +229,75 @@ export async function assertWithinAvailability(
 export function isExclusionViolation(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string }; message?: string } | null;
   if (!e) return false;
-  // Prisma surfaces the raw Postgres error inside .meta.code or in the message.
+  // Prisma wraps 23P01 in PrismaClientUnknownRequestError; the SQLSTATE and
+  // constraint name appear in the message string. Also check .meta.code in
+  // case a future Prisma version promotes it to PrismaClientKnownRequestError.
+  if (e.code === '23P01') return true;
   if (e.meta?.code === '23P01') return true;
   if (typeof e.message === 'string' && e.message.includes('no_staff_double_booking')) return true;
   if (typeof e.message === 'string' && e.message.includes('exclusion constraint')) return true;
   return false;
+}
+
+// -----------------------------------------------------------------------------
+// Available-slot computation — UX pre-filter for the booking form.
+//
+// Returns HH:MM UTC strings for open 30-minute slots on `date` for a given
+// staff member. Availability windows constrain the range when configured;
+// 07:00–21:00 UTC is the fallback when no windows exist (same fail-open logic
+// as assertWithinAvailability). Slots that overlap with existing non-cancelled
+// appointments are excluded.
+//
+// This is UX filtering only — the GiST exclusion constraint remains the
+// authoritative double-booking guard for race conditions.
+// -----------------------------------------------------------------------------
+export async function getAvailableSlots(
+  tx: TxClient,
+  staffId: string,
+  date: string, // YYYY-MM-DD UTC
+  durationMinutes: number,
+): Promise<string[]> {
+  const dateObj = new Date(date + 'T00:00:00Z');
+  const weekday = dateObj.getUTCDay();
+  const dayStart = dateObj.getTime();
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+
+  const windows = await tx.staffAvailability.findMany({
+    where: { staffId, weekday },
+    select: { startTime: true, endTime: true },
+  });
+  const ranges =
+    windows.length === 0
+      ? [{ startMin: 7 * 60, endMin: 21 * 60 }] // default working day
+      : windows.map((w) => ({
+          startMin: w.startTime.getUTCHours() * 60 + w.startTime.getUTCMinutes(),
+          endMin: w.endTime.getUTCHours() * 60 + w.endTime.getUTCMinutes(),
+        }));
+
+  const booked = await tx.appointment.findMany({
+    where: {
+      staffId,
+      status: { not: 'cancelled' },
+      startsAt: { gte: new Date(dayStart), lt: new Date(dayEnd) },
+    },
+    select: { startsAt: true, endsAt: true },
+  });
+  const bookedIntervals = booked.map((a) => ({
+    startMin: a.startsAt.getUTCHours() * 60 + a.startsAt.getUTCMinutes(),
+    endMin: a.endsAt.getUTCHours() * 60 + a.endsAt.getUTCMinutes(),
+  }));
+
+  const slots: string[] = [];
+  for (const range of ranges) {
+    for (let t = range.startMin; t + durationMinutes <= range.endMin; t += 30) {
+      const slotEnd = t + durationMinutes;
+      const taken = bookedIntervals.some((b) => t < b.endMin && slotEnd > b.startMin);
+      if (!taken) {
+        const h = Math.floor(t / 60);
+        const m = t % 60;
+        slots.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+      }
+    }
+  }
+  return slots;
 }

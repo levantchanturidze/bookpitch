@@ -40,6 +40,10 @@ const CATALOG: Record<Locale, Record<string, string>> = {
     'common.loading': 'იტვირთება…',
     'common.confirm': 'დადასტურება',
     'common.error': 'რაღაც არასწორად წავიდა.',
+    'booking.slot_taken': 'ეს დრო უკვე დაკავებულია. გთხოვთ, სხვა დრო აირჩიოთ.',
+    'booking.slot_just_taken': 'ეს სლოტი სწორედ ახლა დაიჯავშნა. სია განახლდა — გთხოვთ, სხვა დრო აირჩიოთ.',
+    'booking.no_slots': 'ამ თარიღზე თავისუფალი დრო არ არის.',
+    'booking.slots_loading': 'ხელმისაწვდომი დრო იტვირთება…',
   },
   en: {
     'app.name': 'Bookpitch',
@@ -63,6 +67,10 @@ const CATALOG: Record<Locale, Record<string, string>> = {
     'common.loading': 'Loading…',
     'common.confirm': 'Confirm',
     'common.error': 'Something went wrong.',
+    'booking.slot_taken': 'That time slot is already taken. Please choose another.',
+    'booking.slot_just_taken': 'That slot was just taken. The list has been refreshed — please choose another.',
+    'booking.no_slots': 'No available times on this date for this provider.',
+    'booking.slots_loading': 'Loading available times…',
   },
 };
 

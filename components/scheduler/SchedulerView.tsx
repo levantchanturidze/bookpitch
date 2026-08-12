@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useTransition } from 'react';
+import { useEffect, useMemo, useState, useTransition } from 'react';
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -16,7 +16,11 @@ import { motion, AnimatePresence } from 'motion/react';
 
 import type { AppointmentDto } from '@/lib/appointments';
 import type { AppointmentStatus, PaymentStatus } from '@prisma/client';
-import { bookAppointmentAction, updateAppointmentAction } from './actions';
+import {
+  bookAppointmentAction,
+  fetchAvailableSlotsAction,
+  updateAppointmentAction,
+} from './actions';
 import AssistantModal from './AssistantModal';
 
 // -----------------------------------------------------------------------------
@@ -104,25 +108,25 @@ export default function SchedulerView(props: Props) {
   const handleBook = (input: BookingInput) => {
     setError(null);
     startTransition(async () => {
-      try {
-        await bookAppointmentAction({
-          locationId: location.id,
-          customerId: input.customerId,
-          staffId: input.staffId,
-          serviceId: input.serviceId,
-          startsAt: new Date(`${input.date}T${input.time}:00Z`).toISOString(),
-          notes: input.notes || null,
-        });
-        setBookOpen(false);
-      } catch (err) {
-        const msg = (err as Error).message;
+      const result = await bookAppointmentAction({
+        locationId: location.id,
+        customerId: input.customerId,
+        staffId: input.staffId,
+        serviceId: input.serviceId,
+        startsAt: new Date(`${input.date}T${input.time}:00Z`).toISOString(),
+        notes: input.notes || null,
+      });
+      if (!result.ok) {
         setError(
-          msg === 'slot_taken'
-            ? 'That time slot is already taken by another appointment.'
-            : msg === 'slot_outside_availability'
+          result.error === 'slot_taken'
+            ? 'That time slot was just taken. The available times have been refreshed — please choose another.'
+            : result.error === 'slot_outside_availability'
               ? "That time is outside the staff member's availability."
-              : msg,
+              : result.error,
         );
+      } else {
+        setBookOpen(false);
+        setAssistantDraft(null);
       }
     });
   };
@@ -133,11 +137,15 @@ export default function SchedulerView(props: Props) {
   ) => {
     setError(null);
     startTransition(async () => {
-      try {
-        await updateAppointmentAction(id, patch);
+      const result = await updateAppointmentAction(id, patch);
+      if (!result.ok) {
+        setError(
+          result.error === 'slot_taken'
+            ? 'That time slot is no longer available.'
+            : result.error,
+        );
+      } else {
         setSelected(null);
-      } catch (err) {
-        setError((err as Error).message);
       }
     });
   };
@@ -316,21 +324,19 @@ export default function SchedulerView(props: Props) {
             onConfirm={(d) => {
               setAssistantOpen(false);
               startTransition(async () => {
-                try {
-                  await bookAppointmentAction({
-                    locationId: location.id,
-                    customerId: d.customerId,
-                    staffId: d.staffId,
-                    serviceId: d.serviceId,
-                    startsAt: d.startsAt,
-                    notes: d.notes,
-                  });
-                } catch (err) {
-                  const msg = (err as Error).message;
+                const result = await bookAppointmentAction({
+                  locationId: location.id,
+                  customerId: d.customerId,
+                  staffId: d.staffId,
+                  serviceId: d.serviceId,
+                  startsAt: d.startsAt,
+                  notes: d.notes,
+                });
+                if (!result.ok) {
                   setError(
-                    msg === 'slot_taken'
-                      ? 'That time slot is already taken by another appointment.'
-                      : msg,
+                    result.error === 'slot_taken'
+                      ? 'That time slot was just taken. Please book another.'
+                      : result.error,
                   );
                 }
               });
@@ -702,11 +708,55 @@ function BookingModal({
       staffId: '',
       serviceId: '',
       date,
-      time: '10:00',
+      time: '',
       notes: '',
     },
   );
+  // null = not yet loaded, [] = loaded but empty, string[] = available slots
+  const [slots, setSlots] = useState<string[] | null>(null);
+  const [slotsLoading, setSlotsLoading] = useState(false);
   const activeService = services.find((s) => s.id === values.serviceId);
+
+  // Load available slots whenever provider + service + date are all chosen.
+  useEffect(() => {
+    if (!values.staffId || !values.serviceId || !values.date) {
+      setSlots(null);
+      return;
+    }
+    const svc = services.find((s) => s.id === values.serviceId);
+    if (!svc) return;
+    setSlotsLoading(true);
+    setSlots(null);
+    let cancelled = false;
+    fetchAvailableSlotsAction(values.staffId, values.date, svc.durationMinutes)
+      .then((s) => {
+        if (cancelled) return;
+        setSlots(s);
+        // Keep the prefilled time if it's still available; otherwise pick the
+        // first open slot so the form is always in a submittable state.
+        if (s.length > 0) {
+          setValues((v) => ({ ...v, time: s.includes(v.time) ? v.time : s[0] }));
+        } else {
+          setValues((v) => ({ ...v, time: '' }));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSlots([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSlotsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [values.staffId, values.serviceId, values.date, services]);
+
+  const canSubmit =
+    !!values.customerId &&
+    !!values.staffId &&
+    !!values.serviceId &&
+    !!values.date &&
+    !!values.time;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
@@ -783,21 +833,43 @@ function BookingModal({
                 type="date"
                 required
                 value={values.date}
-                onChange={(e) => setValues({ ...values, date: e.target.value })}
+                onChange={(e) => setValues({ ...values, date: e.target.value, time: '' })}
                 className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700"
               />
             </Field>
-            <Field label="Start Time (UTC)">
-              <input
-                type="time"
-                required
-                value={values.time}
-                onChange={(e) => setValues({ ...values, time: e.target.value })}
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700"
-              />
+            <Field label="Available Time (UTC)">
+              {slotsLoading ? (
+                <div className="flex h-[34px] items-center rounded-lg border border-slate-200 bg-slate-50 px-2 font-mono text-xs text-slate-400">
+                  Loading…
+                </div>
+              ) : slots === null ? (
+                <div className="flex h-[34px] items-center rounded-lg border border-slate-100 bg-slate-50 px-2 text-xs text-slate-400">
+                  Choose staff, service &amp; date
+                </div>
+              ) : slots.length === 0 ? (
+                <div className="flex h-[34px] items-center rounded-lg border border-rose-100 bg-rose-50 px-2 text-xs text-rose-600">
+                  No available times
+                </div>
+              ) : (
+                <select
+                  required
+                  value={values.time}
+                  onChange={(e) => setValues({ ...values, time: e.target.value })}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-700"
+                >
+                  {slots.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                      {activeService
+                        ? ` – ${formatEndTime(s, activeService.durationMinutes)}`
+                        : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
             </Field>
           </div>
-          {activeService && (
+          {activeService && values.time && (
             <p className="rounded-lg bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
               Ends at{' '}
               <span className="font-mono text-slate-700">
@@ -829,7 +901,7 @@ function BookingModal({
             </button>
             <button
               type="submit"
-              disabled={isPending}
+              disabled={isPending || !canSubmit}
               className={`rounded-xl px-4 py-2 text-xs font-semibold text-white transition disabled:opacity-50 ${
                 accent === 'teal'
                   ? 'bg-teal-600 hover:bg-teal-700'
