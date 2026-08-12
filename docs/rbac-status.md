@@ -404,9 +404,6 @@ Full suite run clean after the domain cutover. No regressions.
 
 ### Open items after domain cutover
 
-- **Test org cleanup**: "Deploy Test Clinic" (org id `ab1b1126-d01d-4b0a-a7be-490e52ce5813`)
-  was created in production for the external delivery proof. Delete via
-  platform UI or `DELETE /api/platform/orgs/[id]` when no longer needed.
 - **DMARC policy**: currently `p=none` (monitor only). Tighten to `p=quarantine`
   after 2–4 weeks of delivery data confirm no legitimate mail is being
   misclassified. Check the `rua` inbox at levaaani@gmail.com for aggregate
