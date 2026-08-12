@@ -336,3 +336,87 @@ probe number that guards against regression.
   now refuse to proceed on an org with null `ownerUserId`.
 - **Fixture fix** — `prisma/seed.ts` sets `ownerUserId` on every org it
   creates; dev DB patched for Grand Medical and Isolation Corp.
+
+## Domain cutover and email delivery — 2026-08-11/12
+
+### bookpitch.ge is live
+
+Vercel-managed DNS. Nameservers: `ns1.vercel-dns.com` / `ns2.vercel-dns.com`.
+TLS provisioned automatically by Vercel (Let's Encrypt, CN=bookpitch.ge,
+expires 2026-11-09). `www.bookpitch.ge` → 308 permanent redirect to
+`https://bookpitch.ge/{path}` (path-preserving). `bookpitch1.vercel.app`
+remains active as a fallback — not removed.
+
+`AUTH_URL`, `APP_URL` updated in Vercel (Production + Preview) to
+`https://bookpitch.ge`. GitHub Actions secret `APP_URL` updated to match.
+
+### Transactional email — send.bookpitch.ge
+
+Resend domain `send.bookpitch.ge` verified. DNS records in Vercel-managed DNS:
+
+| Record | Name | Value |
+|---|---|---|
+| TXT (DKIM) | `resend._domainkey.send` | Resend DKIM public key |
+| MX (SPF bounce) | `send` | `feedback-smtp.us-east-1.amazonses.com` (priority 10) |
+| TXT (SPF) | `send` | `v=spf1 include:amazonses.com ~all` |
+| TXT (DMARC) | `_dmarc.send` | `v=DMARC1; p=none; rua=mailto:levaaani@gmail.com` |
+
+Sending address: **`Bookpitch <no-reply@send.bookpitch.ge>`**
+
+`RESEND_FROM` updated in Vercel to `Bookpitch <no-reply@send.bookpitch.ge>`.
+`RESEND_API_KEY` and `EMAIL_PROVIDER=resend` were already set.
+
+Root domain `bookpitch.ge` is NOT added to Resend — intentional. Transactional
+mail on a subdomain keeps the root domain's reputation separate.
+
+### External invitation delivery — first confirmed proof (2026-08-12)
+
+Prior to Resend domain verification, all outbound email only delivered to
+the account owner (`levaaani@gmail.com`). The first proof of external delivery:
+
+1. Created org "Deploy Test Clinic" via `POST /api/platform/orgs` with
+   `ownerEmail: bookpitch-deploy-test@mailinator.com`.
+2. Resend confirmed `status=delivered` to `bookpitch-deploy-test@mailinator.com`,
+   from `Bookpitch <no-reply@send.bookpitch.ge>`.
+3. Accepted invitation via `POST /api/invitations/accept` → HTTP 201, new user
+   created.
+4. Signed in as `bookpitch-deploy-test@mailinator.com` → HTTP 302 → `/`,
+   session shows `roleKey=ORG_OWNER`.
+
+Full invitation loop is proven end-to-end for the first time.
+
+### Sign-in verified on bookpitch.ge (2026-08-12)
+
+`POST https://bookpitch.ge/api/auth/callback/credentials` with production
+credentials → HTTP 302 → `https://bookpitch.ge/`, session cookie containing
+`platformRoleId` confirmed. Role-aware landing routes SUPER_ADMIN to
+`/platform` as expected.
+
+Note: the correct credentials endpoint is `/api/auth/callback/credentials`,
+NOT `/api/auth/signin/credentials`. The latter falls through to a redirect
+back to the sign-in page (Auth.js v5 beta.32 `signIn` action default case for
+credentials providers). This has tripped manual curl probes repeatedly —
+document it here so it doesn't happen again.
+
+### Test suite — 484/484 passing (2026-08-12)
+
+Full suite run clean after the domain cutover. No regressions.
+
+### Open items after domain cutover
+
+- **Test org cleanup**: "Deploy Test Clinic" (org id `ab1b1126-d01d-4b0a-a7be-490e52ce5813`)
+  was created in production for the external delivery proof. Delete via
+  platform UI or `DELETE /api/platform/orgs/[id]` when no longer needed.
+- **DMARC policy**: currently `p=none` (monitor only). Tighten to `p=quarantine`
+  after 2–4 weeks of delivery data confirm no legitimate mail is being
+  misclassified. Check the `rua` inbox at levaaani@gmail.com for aggregate
+  reports.
+- **Local dev DB password diverged**: A password-reset script ran against the
+  local dev DB (`.env.local` → local Postgres, not production Supabase). Local
+  dev `levaaani@gmail.com` now has password `VerifyDeploy2026!` and
+  `sessionVersion: 42`. Production still uses `Bookpitch2026!`. Update
+  `.env.local`-based scripts and seeds accordingly if they try to sign in
+  as levaaani@gmail.com locally.
+- **`prismaLogin` fallback removal**: still open from the prior round. Once
+  `DATABASE_URL_LOGIN` has been stable for a week, remove the `unsafePrismaAdmin`
+  fallback in `lib/db.ts`.
