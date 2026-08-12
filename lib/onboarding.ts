@@ -1,5 +1,6 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { hash } from '@node-rs/argon2';
+import { Prisma } from '@prisma/client';
 import { withoutRls } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
@@ -275,17 +276,30 @@ export async function activatePendingRegistration(rawTokenHex: string): Promise<
     const location = await tx.location.create({
       data: { organizationId: org.id, type: locationType, name: locationName },
     });
-    const user = await tx.appUser.create({
-      data: {
-        authProvider: 'credentials',
-        authSubject: email,
-        email,
-        fullName,
-        name: fullName,
-        passwordHash,
-        emailVerified: new Date(), // email is verified by the token flow
-      },
-    });
+
+    let user;
+    try {
+      user = await tx.appUser.create({
+        data: {
+          authProvider: 'credentials',
+          authSubject: email,
+          email,
+          fullName,
+          name: fullName,
+          passwordHash,
+          emailVerified: new Date(), // email is verified by the token flow
+        },
+      });
+    } catch (e) {
+      // P2002 on email unique: two concurrent activations raced. The other
+      // transaction won — treat as already-activated.
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        const existing = await tx.appUser.findUnique({ where: { email }, select: { id: true } });
+        if (existing) throw new InvalidInputError('account already activated');
+      }
+      throw e;
+    }
+
     const ownerRole = await tx.role.findFirstOrThrow({
       where: { key: 'ORG_OWNER', organizationId: null },
       select: { id: true },

@@ -4,6 +4,7 @@ import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { assertNotLastOwner, assertOrgOwnerSet } from '@/lib/admin/last-owner';
 import { canManageRoleAssignment, buildAuthContext } from '@/lib/rbac';
+import { mapPrismaError } from '@/lib/prisma-error';
 
 // -----------------------------------------------------------------------------
 // Admin service (owner-only). Every mutation is scoped via withOrg (RLS +
@@ -72,36 +73,44 @@ export async function listLocations(session: ActiveSession) {
 export async function createLocation(session: ActiveSession, body: unknown) {
   const input = parseLocationInput(body);
   return withOrg(session.organizationId, async (tx) => {
-    const row = await tx.location.create({
-      data: {
-        organizationId: session.organizationId,
-        type: input.type,
-        name: input.name,
-        timezone: input.timezone,
-        taxRate: input.taxRate,
-        ...(input.publicSlug !== undefined ? { publicSlug: input.publicSlug } : {}),
-      },
-    });
-    await writeAudit(tx, session, 'create', 'staff', null, { location: row.id, name: row.name });
-    return row;
+    try {
+      const row = await tx.location.create({
+        data: {
+          organizationId: session.organizationId,
+          type: input.type,
+          name: input.name,
+          timezone: input.timezone,
+          taxRate: input.taxRate,
+          ...(input.publicSlug !== undefined ? { publicSlug: input.publicSlug } : {}),
+        },
+      });
+      await writeAudit(tx, session, 'create', 'staff', null, { location: row.id, name: row.name });
+      return row;
+    } catch (e) {
+      mapPrismaError(e);
+    }
   });
 }
 
 export async function updateLocation(session: ActiveSession, id: string, body: unknown) {
   const input = parseLocationInput(body);
   return withOrg(session.organizationId, async (tx) => {
-    const row = await tx.location.update({
-      where: { id },
-      data: {
-        type: input.type,
-        name: input.name,
-        timezone: input.timezone,
-        taxRate: input.taxRate,
-        ...(input.publicSlug !== undefined ? { publicSlug: input.publicSlug } : {}),
-      },
-    });
-    await writeAudit(tx, session, 'update', 'staff', null, { location: id });
-    return row;
+    try {
+      const row = await tx.location.update({
+        where: { id },
+        data: {
+          type: input.type,
+          name: input.name,
+          timezone: input.timezone,
+          taxRate: input.taxRate,
+          ...(input.publicSlug !== undefined ? { publicSlug: input.publicSlug } : {}),
+        },
+      });
+      await writeAudit(tx, session, 'update', 'staff', null, { location: id });
+      return row;
+    } catch (e) {
+      mapPrismaError(e);
+    }
   });
 }
 

@@ -204,4 +204,32 @@ describe('admin CRUD × 4 surfaces', () => {
       name: 'InvalidInputError',
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // P2002 unique-constraint mapping (complement probes for Phase 2)
+  // ---------------------------------------------------------------------------
+  it('createLocation: duplicate publicSlug → ConflictError, not a raw Prisma error', async () => {
+    const slug = `slug-${Date.now()}`;
+    const first = await createLocation(ownerSession, { type: 'clinic', name: 'First', publicSlug: slug });
+    trackedLocationIds.push(first.id);
+
+    // Complement: same slug from the same org → ConflictError.
+    await expect(
+      createLocation(ownerSession, { type: 'salon', name: 'Second', publicSlug: slug }),
+    ).rejects.toMatchObject({ name: 'ConflictError', message: expect.stringContaining('slug') });
+  });
+
+  it('updateLocation: duplicate publicSlug → ConflictError, not a raw Prisma error', async () => {
+    const slugA = `sluga-${Date.now()}`;
+    const slugB = `slugb-${Date.now()}`;
+    const locA = await createLocation(ownerSession, { type: 'clinic', name: 'LocA', publicSlug: slugA });
+    const locB = await createLocation(ownerSession, { type: 'clinic', name: 'LocB', publicSlug: slugB });
+    trackedLocationIds.push(locA.id, locB.id);
+
+    // Complement: update locB to take locA's slug → ConflictError.
+    const { updateLocation } = await import('@/lib/admin');
+    await expect(
+      updateLocation(ownerSession, locB.id, { type: 'clinic', name: 'LocB', publicSlug: slugA }),
+    ).rejects.toMatchObject({ name: 'ConflictError', message: expect.stringContaining('slug') });
+  });
 });
