@@ -55,10 +55,17 @@ BEGIN
    WHERE user_id = ANY(affected_ids)
      AND consumed_at IS NULL;
 
-  -- Delete Auth.js database sessions for affected users (belt-and-suspenders;
-  -- session_version bump above handles JWT-based sessions).
-  DELETE FROM sessions
-   WHERE "userId"::uuid = ANY(affected_ids);
+  -- Delete Auth.js database sessions for affected users when the table exists.
+  -- session_version bump above is the primary JWT-based invalidation mechanism.
+  -- The sessions table only exists in database-session Auth.js deployments;
+  -- JWT-only deployments omit it. Guard with to_regclass() so clean installs
+  -- succeed regardless of Auth.js strategy. Dynamic EXECUTE is required because
+  -- PL/pgSQL validates table names at parse time, not at runtime — a static
+  -- DELETE FROM sessions would raise 42P01 on installs without the table.
+  IF to_regclass('public.sessions') IS NOT NULL THEN
+    EXECUTE 'DELETE FROM sessions WHERE "userId"::uuid = ANY($1)'
+      USING affected_ids;
+  END IF;
 
   RAISE NOTICE 'neutralize_bootstrap_credential: cleared % account(s)', array_length(affected_ids, 1);
 END $$;

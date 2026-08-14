@@ -1,7 +1,7 @@
 # Bookpitch Security Final Completion Ledger
 
-**Branch:** main  
-**HEAD:** 334bf68  
+**Branch:** agent/security-final-hardening-review  
+**HEAD:** 9849cb5 (review branch; base: main @ 334bf68)  
 **Ledger date:** 2026-08-14  
 **Reviewer:** Claude Sonnet 4.6  
 **Test count:** 69 files · 664 tests · 0 failures (3 consecutive stable runs)
@@ -300,9 +300,9 @@
 
 **Status:** `IMPLEMENTED AND PROVEN`
 
-- **Implementation:** `.github/workflows/ci.yml` — PostgreSQL 16 service container with health check, `prisma migrate deploy`, `prisma migrate diff --exit-code` (exits 2 on drift), `npm audit --audit-level=high`, `gitleaks detect --no-git`, `npx tsc --noEmit`, `npm run lint`, `npm test`, `npm run check:orphan-perms`.
-- **Positive test:** Workflow file validated structurally (no `|| true`, no `continue-on-error: true`, PostgreSQL service present, drift check present).
-- **Complement:** `prisma migrate diff --exit-code` returns non-zero if schema drifts from migrations; blocks CI.
+- **Implementation:** `.github/workflows/ci.yml` — PostgreSQL 16 service container with corrected `pg_isready -U bookpitch_ci -d bookpitch_ci` health check. Step ordering: shadow DB creation → `prisma migrate deploy` → `prisma migrate diff --from-migrations --to-schema --exit-code` (exit 2 = drift → CI fails; exit non-zero ≠ 2 = error → propagated). `npm audit --audit-level=high`; `gitleaks/gitleaks-action@v2` with `pull-requests: read, checks: write` job-level permissions (fixes 403 on PR diff). After seeding: `ALTER ROLE bookpitch_app WITH PASSWORD …`, `DATABASE_URL` and `DATABASE_URL_APP_NOBYPASSRLS` switched to the NOBYPASSRLS role so the test suite runs as the restricted role. Dedicated verification step checks `rolsuper=f, rolbypassrls=f` for `bookpitch_app` and `has_table_privilege('bookpitch_app','audit_log','UPDATE')=f`. `npm test`, `npm run test:guards`, `npm run check:orphan-perms`, `npm run build`.
+- **Positive test:** Workflow file validated structurally: no `|| true`, no `continue-on-error: true`, PostgreSQL service present, drift check present, role verification step present.
+- **Complement:** `prisma migrate diff --exit-code` returns non-zero if schema drifts from migrations; blocks CI. Role-attr check exits 1 if bookpitch_app gains BYPASSRLS or SUPERUSER.
 
 ---
 
@@ -359,15 +359,26 @@
 |---|---|
 | Turnstile action/hostname verification | Requires live `TURNSTILE_SECRET_KEY` against Cloudflare endpoint; local test mocks the verify call |
 | `bookpitch_login` REVOKE grant (SEC-007 migration) | Role does not exist in local dev DB; migration syntax verified, production activation pending operator |
-| CI remote execution | No push made; workflow locally validated with `actionlint` structural check |
+| CI remote execution | Workflow locally validated; push to origin/PR not yet merged |
+
+## Dangerous Scripts Removed (review branch)
+
+The following scripts were removed from the repository because they disabled the audit trigger, logged PII (org names, user IDs), or lacked production guards:
+
+| Script | Reason for removal |
+|---|---|
+| `scripts/cleanup-stale-admin-orgs.ts` | Disabled audit trigger; deleted org data without production guard; printed org names |
+| `scripts/cleanup-stale-admin-users.ts` | Disabled audit trigger; deleted users without production guard |
+| `scripts/cleanup-stale-digest-org.ts` | Disabled audit trigger; logged org names/IDs to stdout |
+| `scripts/find-orphan-orgs.ts` | Printed org names/IDs/user IDs; SQL injection vulnerability via string interpolation |
 
 ---
 
-## Migrations Applied (all additive, no destructive DDL)
+## Migrations Applied (all additive; `neutralize_bootstrap_credential` is a no-op on already-rotated production)
 
 | Migration | Purpose |
 |---|---|
-| `20260812000002_neutralize_bootstrap_credential` | Clears bootstrap credential hash |
+| `20260812000002_neutralize_bootstrap_credential` | Clears bootstrap credential hash; uses `to_regclass()` + dynamic EXECUTE for optional `sessions` table (fixes PL/pgSQL parse-time 42P01 on clean installs) |
 | `20260812000003_add_mfa_totp_pending` | `mfa_totp_pending`, `mfa_totp_pending_created_at` columns |
 | `20260812000004_add_mfa_pending_timestamp` | Adds timestamp to pending MFA |
 | `20260813000001_sync_owner_user_id` | Backfills `owner_user_id` from memberships |
