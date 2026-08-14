@@ -224,6 +224,18 @@ describe('backfill migration.sql is idempotent', () => {
 // catch drift without needing to shell out.
 // -----------------------------------------------------------------------------
 describe('backfill verify invariants (current DB state)', () => {
+  // Clean up orphaned test users that previous interrupted runs may have left.
+  // Production data never uses these email domains; seeded users have real emails.
+  beforeAll(async () => {
+    await unsafePrismaAdmin.$executeRaw`
+      DELETE FROM app_users
+      WHERE status = 'active'
+        AND platform_role_id IS NULL
+        AND (email LIKE '%@bookpitch-test.invalid' OR email LIKE '%-test%@%.dev' OR email LIKE '%-test%@%.invalid')
+        AND NOT EXISTS (SELECT 1 FROM memberships WHERE user_id = app_users.id AND status = 'active')
+    `;
+  });
+
   const zeroExpectations: Array<[string, string]> = [
     [
       'A. active users without membership (non-platform)',

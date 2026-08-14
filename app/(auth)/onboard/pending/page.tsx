@@ -1,4 +1,7 @@
-export const metadata = { title: 'Check your email · Bookpitch' };
+export const metadata = {
+  title: 'Check your email · Bookpitch',
+  robots: { index: false, follow: false },
+};
 
 export default function OnboardPendingPage() {
   return (

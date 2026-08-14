@@ -59,7 +59,16 @@ function getRateLimitHmacKey(): Buffer {
     return key;
   }
 
-  // Fallback: derive from the hex portion of FIELD_ENCRYPTION_KEY.
+  // In production, RATE_LIMIT_HMAC_KEY is required. Using FIELD_ENCRYPTION_KEY
+  // as a fallback couples key rotation for two unrelated purposes and is
+  // disallowed in production to enforce explicit configuration.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'RATE_LIMIT_HMAC_KEY must be set in production (set RATE_LIMIT_HMAC_KEY=<64-hex>)',
+    );
+  }
+
+  // Non-production fallback: derive from the hex portion of FIELD_ENCRYPTION_KEY.
   // Format is "<key-id>:<64-hex>" — take everything after the first colon.
   const fek = process.env.FIELD_ENCRYPTION_KEY;
   if (!fek) {
@@ -120,12 +129,18 @@ export async function consumeGlobalBucket(
   limit: number,
   windowMs: number,
 ): Promise<void> {
-  const now = Date.now();
-  const windowStart = new Date(Math.floor(now / windowMs) * windowMs);
-
+  // window_start is computed from PostgreSQL's now() so all app instances agree
+  // on the active window regardless of Node/server clock divergence. The
+  // expression truncates epoch-milliseconds to the nearest windowMs boundary.
   const row = await unsafePrismaAdmin.$queryRaw<Array<{ count: number }>>`
     INSERT INTO platform_rate_limit (bucket, window_start, count)
-    VALUES (${bucket}, ${windowStart}, 1)
+    VALUES (
+      ${bucket},
+      to_timestamp(
+        floor(extract(epoch from now()) * 1000 / ${windowMs}::bigint) * ${windowMs}::bigint / 1000.0
+      ),
+      1
+    )
     ON CONFLICT (bucket, window_start) DO UPDATE
       SET count = platform_rate_limit.count + 1
     RETURNING count

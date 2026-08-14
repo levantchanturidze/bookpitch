@@ -19,6 +19,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  secret-scan:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history needed so gitleaks can scan all commits on this branch,
+          # not just the tip. Shallow clone (depth:1) would miss historical leaks.
+          fetch-depth: 0
+
+      - name: Scan for secrets with gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   quality:
     name: Lint, type-check, test, and build
     runs-on: ubuntu-latest
@@ -68,6 +84,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependencies for known vulnerabilities
+        # Fails on high or critical severity. Run after install so the exact
+        # installed tree is scanned, not just the lockfile resolution.
+        # --audit-level=high: ignore moderate/low (noise); block on high+.
+        run: npm audit --audit-level=high
+
       - name: Check formatting
         run: npm run format:check
 
@@ -111,15 +133,15 @@ jobs:
           PGPASSWORD: ci_password_not_a_secret
 
       - name: Verify schema matches migrations
-        # Runs migrate diff for visibility but does not block CI (no --exit-code).
-        # Known pre-existing drift: FK naming convention differences and ON UPDATE
-        # mismatches on inline-REFERENCES FKs (UUID PKs never change; no real risk).
-        # Add --exit-code once drift is resolved.
+        # Blocks CI when the schema is not synchronized with migrations.
+        # --exit-code causes a non-zero exit when any diff is detected.
+        # All FK naming and ON UPDATE differences have been aligned in
+        # schema.prisma so this step should report zero drift.
         run: |
           npx prisma migrate diff \
             --from-migrations prisma/migrations \
             --to-schema prisma/schema.prisma \
-            || true
+            --exit-code
 
       - name: Run unit + security tests
         run: npm run test

@@ -41,7 +41,10 @@ export default function PlatformShell({
               Break-glass session active
               {breakGlassExpiresAt && (
                 <span className="ml-2 font-mono tracking-normal text-red-200 normal-case">
-                  · expires {new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(new Date(breakGlassExpiresAt))}
+                  · expires{' '}
+                  {new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(
+                    new Date(breakGlassExpiresAt),
+                  )}
                 </span>
               )}
             </p>

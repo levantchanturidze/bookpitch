@@ -201,7 +201,9 @@ export default function CalendarView({
               <ChevronLeft className="h-4 w-4" />
             </button>
             <span className="min-w-[100px] px-3 py-1 text-center text-xs font-semibold text-slate-700">
-              {new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(currentDate)}
+              {new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(
+                currentDate,
+              )}
             </span>
             <button
               onClick={nextMonth}

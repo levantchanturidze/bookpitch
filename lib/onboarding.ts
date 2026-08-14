@@ -1,10 +1,11 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { hash } from '@node-rs/argon2';
 import { Prisma } from '@prisma/client';
-import { withoutRls } from '@/lib/db';
+import { withoutRls, unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
+import { encryptField, decryptField } from '@/lib/crypto';
 
 // -----------------------------------------------------------------------------
 // Self-service org onboarding — two-phase: pending → activated.
@@ -53,6 +54,30 @@ function hashToken(raw: Buffer): string {
 }
 
 /**
+ * Returns the canonical application origin for building email verification URLs.
+ * In production (NODE_ENV=production), rejects HTTP and localhost to prevent
+ * token links pointing to an unencrypted or local origin.
+ */
+function resolveAppUrl(): string {
+  const raw = process.env.NEXTAUTH_URL ?? process.env.APP_URL ?? 'http://localhost:3000';
+  if (process.env.NODE_ENV === 'production') {
+    if (!raw.startsWith('https://')) {
+      throw new Error('APP_URL must use HTTPS in production');
+    }
+    try {
+      const u = new URL(raw);
+      if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1') {
+        throw new Error('APP_URL must not be localhost in production');
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith('APP_URL')) throw e;
+      throw new Error(`APP_URL is not a valid URL: ${raw}`);
+    }
+  }
+  return raw.replace(/\/$/, '');
+}
+
+/**
  * Validate input and create/replace a PendingRegistration. Sends a
  * verification email. Does NOT create the org or user yet.
  *
@@ -98,9 +123,20 @@ export async function createPendingRegistration(input: OnboardInput): Promise<vo
   const tokenHash = hashToken(rawToken);
 
   // Upsert: replace any existing pending row for this email (resend semantics).
+  // appUrl is validated by resolveAppUrl() — throws in production if HTTP or localhost.
   // expires_at is computed by the DB (now() + interval) so clock skew between
   // the application server and the database cannot cause tokens to arrive
   // pre-expired. tokenTtlMs is a small integer we own — not user-supplied.
+  //
+  // The outbox row is inserted in the SAME transaction as the pending
+  // registration row to ensure durable delivery intent. The body is
+  // AES-256-GCM encrypted so the plaintext token never rests in the DB.
+  const appUrl = resolveAppUrl();
+  const verifyUrl = `${appUrl}/api/onboard/verify?token=${rawToken.toString('hex')}`;
+  const emailBody = `Thanks for signing up!\n\nClick the link below to verify your email and activate your account.\nThis link expires in 24 hours.\n\n${verifyUrl}\n\nIf you didn't sign up, you can ignore this email.`;
+  const encryptedBody = encryptField(emailBody) ?? emailBody;
+  const idempotencyKey = `onboard_verify:${email}:${tokenHash.slice(0, 16)}`;
+
   await withoutRls(async (tx) => {
     await tx.$executeRaw`
       INSERT INTO pending_registrations
@@ -118,23 +154,27 @@ export async function createPendingRegistration(input: OnboardInput): Promise<vo
         token_hash     = EXCLUDED.token_hash,
         expires_at     = now() + (${tokenTtlMs} * interval '1 millisecond')
     `;
+    // Upsert outbox row via raw SQL — idempotency_key has a partial unique index
+    // (WHERE idempotency_key IS NOT NULL) so the ON CONFLICT clause must include
+    // the same predicate to match the index. Prisma's upsert can't use partial indexes.
+    // ON CONFLICT resets delivery state so the new encrypted body is sent, not the old one.
+    await tx.$executeRaw`
+      INSERT INTO email_outbox
+        (idempotency_key, to_address, subject, body, body_encrypted, purpose)
+      VALUES
+        (${idempotencyKey}, ${email}, 'Verify your Bookpitch account',
+         ${encryptedBody}, true, 'onboard.verify')
+      ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE SET
+        body             = EXCLUDED.body,
+        body_encrypted   = true,
+        status           = 'pending',
+        next_attempt_at  = now(),
+        attempts         = 0,
+        claim_owner      = NULL,
+        claim_expires_at = NULL,
+        claimed_at       = NULL
+    `;
   });
-
-  // Send verification email. Never log or include the raw token in structured
-  // log fields. The token appears only in the email body and the URL.
-  const appUrl = process.env.NEXTAUTH_URL ?? process.env.APP_URL ?? 'http://localhost:3000';
-  const verifyUrl = `${appUrl}/api/onboard/verify?token=${rawToken.toString('hex')}`;
-  try {
-    const provider = getEmailProvider();
-    await provider.send(
-      email,
-      'Verify your Bookpitch account',
-      `Thanks for signing up!\n\nClick the link below to verify your email and activate your account.\nThis link expires in 24 hours.\n\n${verifyUrl}\n\nIf you didn't sign up, you can ignore this email.`,
-    );
-  } catch (err) {
-    log.warn('onboard.verification_email_failed', { err: (err as Error).message });
-    // Don't throw — the pending row is written. The user can request a resend.
-  }
 
   log.info('onboard.pending_created', { orgName });
 }
@@ -316,4 +356,118 @@ export async function activatePendingRegistration(rawTokenHex: string): Promise<
     log.info('onboard.activated', { organizationId: org.id });
     return { userId: user.id, organizationId: org.id, locationId: location.id };
   });
+}
+
+// ── Resend verification email ─────────────────────────────────────────────────
+
+const RESEND_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const RESEND_COOLDOWN_MS = 5 * 60 * 1000; // minimum 5 min between resends
+
+/**
+ * Rotate the verification token for a pending registration and queue a new
+ * verification email via the outbox.
+ *
+ * Enumeration-safe: returns without error for unknown emails, already-activated
+ * accounts, and cooldown violations. The caller always sees the same 202.
+ *
+ * Cooldown is enforced at the DB level: the UPDATE only succeeds when the
+ * existing token's expires_at is far enough in the past to imply the cooldown
+ * has elapsed (expires_at < now() + (TTL - cooldown)).
+ *
+ * The raw token is never emitted in structured log fields. It appears only in
+ * the email body written to email_outbox.body (the encrypted transport channel).
+ */
+export async function resendPendingRegistration(email: string): Promise<void> {
+  // Fail silently if already an active user.
+  const existing = await withoutRls((tx) =>
+    tx.appUser.findUnique({ where: { email }, select: { id: true } }),
+  );
+  if (existing) return;
+
+  const rawToken = randomBytes(32);
+  const tokenHash = hashToken(rawToken);
+  const appUrl = resolveAppUrl();
+  const verifyUrl = `${appUrl}/api/onboard/verify?token=${rawToken.toString('hex')}`;
+
+  const ttlMs = RESEND_TOKEN_TTL_MS;
+  const cooldownMs = RESEND_COOLDOWN_MS;
+
+  // Atomically: rotate the token + write outbox intent.
+  // WHERE clause enforces cooldown: update only if the old token's expiry implies
+  // it was issued more than cooldownMs ago (expires_at < now() + TTL - cooldown).
+  type PendingRow = { email: string; full_name: string };
+  const rotated = await withoutRls(async (tx) => {
+    const rows = await tx.$queryRaw<PendingRow[]>`
+      UPDATE pending_registrations
+      SET token_hash = ${tokenHash},
+          expires_at = now() + (${ttlMs} * interval '1 millisecond')
+      WHERE email = ${email}
+        AND expires_at < now() + (${ttlMs - cooldownMs} * interval '1 millisecond')
+      RETURNING email, full_name
+    `;
+
+    if (rows.length === 0) return null; // not registered, cooldown, or already expired+rotated
+
+    const rawBody =
+      `Hi ${rows[0].full_name},\n\n` +
+      `You requested a new verification link.\n\n` +
+      `Click the link below to verify your email and activate your account.\n` +
+      `This link expires in 24 hours.\n\n` +
+      `${verifyUrl}\n\n` +
+      `If you didn't request this, you can ignore this email.`;
+    const encryptedOrRaw = encryptField(rawBody);
+    const bodyEncrypted = encryptedOrRaw !== null;
+    const encryptedBody = encryptedOrRaw ?? rawBody;
+    const idempotencyKey = `onboard_resend:${email}:${tokenHash.slice(0, 16)}`;
+    await tx.emailOutbox.create({
+      data: {
+        idempotencyKey,
+        toAddress: email,
+        subject: 'Verify your Bookpitch account',
+        body: encryptedBody,
+        bodyEncrypted,
+        purpose: 'onboard.verify',
+      },
+    });
+
+    return { idempotencyKey, encryptedBody, bodyEncrypted };
+  });
+
+  if (rotated === null) return; // enumeration-safe
+
+  // Immediate drain — best-effort, outside the DB transaction.
+  try {
+    type ClaimedRow = {
+      id: string;
+      to_address: string;
+      subject: string;
+      body: string;
+      body_encrypted: boolean;
+    };
+    const [claimed] = await unsafePrismaAdmin.$queryRaw<ClaimedRow[]>`
+      UPDATE email_outbox
+      SET status = 'processing',
+          claim_owner = 'onboard_resend_immediate',
+          claim_expires_at = now() + interval '120 seconds',
+          claimed_at = now()
+      WHERE idempotency_key = ${rotated.idempotencyKey} AND status = 'pending'
+      RETURNING id, to_address, subject, body, body_encrypted
+    `;
+    if (claimed) {
+      const body = claimed.body_encrypted
+        ? (decryptField(claimed.body) ?? claimed.body)
+        : claimed.body;
+      const provider = getEmailProvider();
+      await provider.send(claimed.to_address, claimed.subject, body);
+      await unsafePrismaAdmin.$executeRaw`
+        UPDATE email_outbox
+        SET status = 'sent', sent_at = now(), claim_owner = NULL
+        WHERE id = ${claimed.id}::uuid
+      `;
+    }
+  } catch (err) {
+    log.warn('onboard.resend.immediate_drain_failed', { err: sanitizeErrorMessage(err) });
+  }
+
+  log.info('onboard.resend.ok', {}); // deliberately empty — no email or token in log
 }

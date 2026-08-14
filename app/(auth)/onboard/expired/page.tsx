@@ -1,4 +1,7 @@
-export const metadata = { title: 'Link expired · Bookpitch' };
+export const metadata = {
+  title: 'Link expired · Bookpitch',
+  robots: { index: false, follow: false },
+};
 
 export default function OnboardExpiredPage() {
   return (

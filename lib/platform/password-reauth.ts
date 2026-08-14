@@ -57,14 +57,18 @@ const RATE_WINDOW_MS = 60_000;
  * count exceeds RATE_MAX within the current window.
  */
 async function consumeAttemptDb(userId: string): Promise<void> {
-  const now = Date.now();
-  const windowMs = Math.floor(now / RATE_WINDOW_MS) * RATE_WINDOW_MS;
-  const windowStart = new Date(windowMs);
   const bucket = `reauth:${userId}`;
-
+  // window_start derived from PostgreSQL now() so all instances agree on the
+  // active window regardless of Node/server clock divergence.
   const row = await unsafePrismaAdmin.$queryRaw<Array<{ count: number }>>`
     INSERT INTO platform_rate_limit (bucket, window_start, count)
-    VALUES (${bucket}, ${windowStart}, 1)
+    VALUES (
+      ${bucket},
+      to_timestamp(
+        floor(extract(epoch from now()) * 1000 / ${RATE_WINDOW_MS}::bigint) * ${RATE_WINDOW_MS}::bigint / 1000.0
+      ),
+      1
+    )
     ON CONFLICT (bucket, window_start) DO UPDATE
       SET count = platform_rate_limit.count + 1
     RETURNING count

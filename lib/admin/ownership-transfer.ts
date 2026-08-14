@@ -215,11 +215,20 @@ export async function acceptTransfer(
       data: { ownerUserId: transfer.toUserId },
     });
 
-    // Close the transfer.
-    await tx.ownershipTransfer.update({
-      where: { id: transferId },
-      data: { status: 'accepted', decidedAt: new Date() },
-    });
+    // Close the transfer — atomic conditional UPDATE ensures concurrent
+    // accepts cannot both commit. If another request raced us and already
+    // set status='accepted', this UPDATE matches 0 rows and we abort.
+    const claimed = await tx.$executeRaw`
+      UPDATE ownership_transfers
+      SET status = 'accepted', decided_at = now()
+      WHERE id = ${transferId}::uuid
+        AND status = 'pending'
+    `;
+    if (Number(claimed) === 0) {
+      throw new InvalidInputError(
+        'transfer is no longer pending — another request may have accepted it',
+      );
+    }
 
     // Bump both users' sessionVersions (spec §9 rule 10). Their JWTs
     // pick up the new roles within 5s and their AuthContext caches

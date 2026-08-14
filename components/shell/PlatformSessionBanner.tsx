@@ -23,7 +23,10 @@ export default function PlatformSessionBanner({
           <p className="text-xs font-bold tracking-wide uppercase">
             Break-glass session active — every read is audited
             <span className="ml-2 font-mono tracking-normal text-red-200 normal-case">
-              · expires {new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(new Date(breakGlass.expiresAt))}
+              · expires{' '}
+              {new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(
+                new Date(breakGlass.expiresAt),
+              )}
             </span>
           </p>
         </div>
@@ -38,7 +41,10 @@ export default function PlatformSessionBanner({
           <p className="text-xs font-bold tracking-wide uppercase">
             Impersonation session — you are viewing this org on behalf of another user
             <span className="ml-2 font-mono tracking-normal text-amber-200 normal-case">
-              · expires {new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(new Date(impersonation.expiresAt))}
+              · expires{' '}
+              {new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(
+                new Date(impersonation.expiresAt),
+              )}
             </span>
           </p>
         </div>

@@ -132,6 +132,79 @@ describe('activatePendingRegistration — expired token rejection', () => {
   });
 });
 
+// ── Concurrent double-verify race ────────────────────────────────────────────
+//
+// Two goroutine-equivalent concurrent activations for the same token race to
+// DELETE the pending row. PostgreSQL serialises the deletes — only one can
+// DELETE WHERE token_hash=X AND expires_at > now() and return a row.
+// The loser sees rows.length=0 and throws InvalidInputError.
+// This proves the single-transaction atomicity fix prevents double-activation.
+
+describe('activatePendingRegistration — concurrent double-verify (race)', () => {
+  const email = `activation-race-${Date.now()}@example.dev`;
+  let rawTokenHex: string;
+  let createdUserId: string | null = null;
+  let createdOrgId: string | null = null;
+
+  afterAll(async () => {
+    await withoutRls(async (tx) => {
+      if (createdUserId) {
+        await tx.membership.deleteMany({ where: { userId: createdUserId } }).catch(() => {});
+        await tx.appUser.delete({ where: { id: createdUserId } }).catch(() => {});
+      }
+      if (createdOrgId) {
+        await tx.location.deleteMany({ where: { organizationId: createdOrgId } }).catch(() => {});
+        await tx.organization.delete({ where: { id: createdOrgId } }).catch(() => {});
+      }
+      await tx.pendingRegistration.deleteMany({ where: { email } }).catch(() => {});
+    });
+  });
+
+  it('seeds a fresh pending row with DB now() + 24h', async () => {
+    const rawToken = randomBytes(32);
+    rawTokenHex = rawToken.toString('hex');
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+
+    await withoutRls(async (tx) => {
+      await tx.$executeRaw`
+        INSERT INTO pending_registrations
+          (email, password_hash, full_name, org_name, location_name, location_type, token_hash, expires_at)
+        VALUES
+          (${email}, 'fakehash', 'Race User', 'Race Org', 'Main', 'clinic', ${tokenHash},
+           now() + interval '24 hours')
+      `;
+    });
+  });
+
+  it('exactly one of two concurrent activations wins; the other gets InvalidInputError', async () => {
+    // Fire two activations in parallel. Exactly one must succeed; the other must throw.
+    const [r1, r2] = await Promise.allSettled([
+      activatePendingRegistration(rawTokenHex),
+      activatePendingRegistration(rawTokenHex),
+    ]);
+
+    const fulfilled = [r1, r2].filter((r) => r.status === 'fulfilled');
+    const rejected = [r1, r2].filter((r) => r.status === 'rejected');
+
+    // Exactly one succeeds.
+    expect(fulfilled).toHaveLength(1);
+    // The loser throws InvalidInputError.
+    expect(rejected).toHaveLength(1);
+    const err = (rejected[0] as PromiseRejectedResult).reason;
+    expect(err).toBeInstanceOf(InvalidInputError);
+
+    // Capture created IDs for cleanup.
+    if (fulfilled[0].status === 'fulfilled') {
+      createdUserId = fulfilled[0].value.userId;
+      createdOrgId = fulfilled[0].value.organizationId;
+    }
+
+    // Pending row must be gone — the winner consumed it.
+    const pending = await unsafePrismaAdmin.pendingRegistration.findUnique({ where: { email } });
+    expect(pending).toBeNull();
+  });
+});
+
 // ── pending_registrations expires_at is DB-computed ───────────────────────────
 //
 // createPendingRegistration now uses now() + interval rather than

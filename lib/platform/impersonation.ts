@@ -73,14 +73,23 @@ export async function startImpersonation(input: StartImpersonationInput) {
   });
   if (!target) throw new InvalidInputError('target user is not a member of that organization');
 
+  // Anchor to the DB clock so all expiry checks are consistent regardless of
+  // Node/server clock divergence. Both the conflict check and the new session's
+  // expiresAt use the same DB now().
+  const [dbNow] = await unsafePrismaAdmin.$queryRaw<[{ now: Date }]>`SELECT now() AS now`;
+  const expiresAt = new Date((dbNow.now as unknown as Date).getTime() + IMPERSONATION_TTL_MS);
+
   // One active session at a time. Prevents nesting confusion.
   const existing = await unsafePrismaAdmin.impersonationSession.findFirst({
-    where: { actorUserId: input.actor.userId, endedAt: null, expiresAt: { gt: new Date() } },
+    where: {
+      actorUserId: input.actor.userId,
+      endedAt: null,
+      expiresAt: { gt: dbNow.now as unknown as Date },
+    },
     select: { id: true },
   });
   if (existing) throw new ConflictError('you already have an active impersonation session');
 
-  const expiresAt = new Date(Date.now() + IMPERSONATION_TTL_MS);
   const session = await unsafePrismaAdmin.impersonationSession.create({
     data: {
       actorUserId: input.actor.userId,

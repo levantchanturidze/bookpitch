@@ -21,7 +21,10 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const save = (id: string | null, input: Omit<LocationRow, 'id' | 'counts' | 'publicSlug'> & { publicSlug: string | null }) => {
+  const save = (
+    id: string | null,
+    input: Omit<LocationRow, 'id' | 'counts' | 'publicSlug'> & { publicSlug: string | null },
+  ) => {
     setError(null);
     startTransition(async () => {
       try {
@@ -125,7 +128,9 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
             setEditing(null);
             setError(null);
           }}
-          onSubmit={(values) => save(editing?.id ?? null, { ...values, publicSlug: values.publicSlug })}
+          onSubmit={(values) =>
+            save(editing?.id ?? null, { ...values, publicSlug: values.publicSlug })
+          }
         />
       )}
     </section>
@@ -141,7 +146,13 @@ function LocationForm({
   initial?: LocationRow;
   isPending: boolean;
   onCancel: () => void;
-  onSubmit: (v: { type: LocationType; name: string; timezone: string; taxRate: number; publicSlug: string | null }) => void;
+  onSubmit: (v: {
+    type: LocationType;
+    name: string;
+    timezone: string;
+    taxRate: number;
+    publicSlug: string | null;
+  }) => void;
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [type, setType] = useState<LocationType>(initial?.type ?? 'clinic');
@@ -153,7 +164,13 @@ function LocationForm({
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit({ name, type, timezone, taxRate: Number(taxRate), publicSlug: publicSlug.trim() || null });
+        onSubmit({
+          name,
+          type,
+          timezone,
+          taxRate: Number(taxRate),
+          publicSlug: publicSlug.trim() || null,
+        });
       }}
       className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-5"
     >
@@ -205,7 +222,7 @@ function LocationForm({
           placeholder="e.g. tbilisi-clinic"
           className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 font-mono text-xs font-normal text-slate-800"
         />
-        <span className="mt-0.5 block font-normal normal-case text-slate-400">
+        <span className="mt-0.5 block font-normal text-slate-400 normal-case">
           Leave blank to hide from public booking page.
         </span>
       </label>

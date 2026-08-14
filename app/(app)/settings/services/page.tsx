@@ -33,7 +33,12 @@ export default async function SettingsServicesPage() {
   return (
     <ServicesPanel
       services={services}
-      locations={locations.map((l) => ({ id: l.id, name: l.name, type: l.type, timezone: l.timezone }))}
+      locations={locations.map((l) => ({
+        id: l.id,
+        name: l.name,
+        type: l.type,
+        timezone: l.timezone,
+      }))}
       currency={org.currency}
     />
   );

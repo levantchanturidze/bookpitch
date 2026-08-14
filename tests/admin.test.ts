@@ -50,21 +50,22 @@ describe('admin CRUD × 4 surfaces', () => {
   const trackedUserIds: string[] = [];
 
   beforeAll(async () => {
+    const ts = Date.now();
     const seed = await withoutRls(async (tx) => {
-      const org = await tx.organization.create({ data: { name: 'Admin Fixture Org' } });
-      const other = await tx.organization.create({ data: { name: 'Other Admin Org' } });
+      const org = await tx.organization.create({ data: { name: `Admin Fixture Org ${ts}` } });
+      const other = await tx.organization.create({ data: { name: `Other Admin Org ${ts}` } });
       const user = await tx.appUser.create({
         data: {
           authProvider: 'credentials',
-          authSubject: 'admin-owner@bookpitch.dev',
-          email: 'admin-owner@bookpitch.dev',
+          authSubject: `admin-owner-${ts}@bookpitch.dev`,
+          email: `admin-owner-${ts}@bookpitch.dev`,
         },
       });
       const otherUser = await tx.appUser.create({
         data: {
           authProvider: 'credentials',
-          authSubject: 'other-admin-owner@bookpitch.dev',
-          email: 'other-admin-owner@bookpitch.dev',
+          authSubject: `other-admin-owner-${ts}@bookpitch.dev`,
+          email: `other-admin-owner-${ts}@bookpitch.dev`,
         },
       });
       await tx.membership.create({
@@ -73,7 +74,14 @@ describe('admin CRUD × 4 surfaces', () => {
       await tx.membership.create({
         data: { organizationId: other.id, userId: otherUser.id, role: 'owner' },
       });
-      return { orgId: org.id, otherId: other.id, userId: user.id, otherUserId: otherUser.id };
+      return {
+        orgId: org.id,
+        otherId: other.id,
+        userId: user.id,
+        otherUserId: otherUser.id,
+        email: `admin-owner-${ts}@bookpitch.dev`,
+        otherEmail: `other-admin-owner-${ts}@bookpitch.dev`,
+      };
     });
     orgId = seed.orgId;
     otherOrgId = seed.otherId;
@@ -81,13 +89,13 @@ describe('admin CRUD × 4 surfaces', () => {
     ownerSession = {
       organizationId: orgId,
       userId,
-      email: 'admin-owner@bookpitch.dev',
+      email: seed.email,
       role: 'owner',
     };
     otherOwnerSession = {
       organizationId: otherOrgId,
       userId: seed.otherUserId,
-      email: 'other-admin-owner@bookpitch.dev',
+      email: seed.otherEmail,
       role: 'owner',
     };
     trackedUserIds.push(userId, seed.otherUserId);
@@ -210,7 +218,11 @@ describe('admin CRUD × 4 surfaces', () => {
   // ---------------------------------------------------------------------------
   it('createLocation: duplicate publicSlug → ConflictError, not a raw Prisma error', async () => {
     const slug = `slug-${Date.now()}`;
-    const first = await createLocation(ownerSession, { type: 'clinic', name: 'First', publicSlug: slug });
+    const first = await createLocation(ownerSession, {
+      type: 'clinic',
+      name: 'First',
+      publicSlug: slug,
+    });
     trackedLocationIds.push(first.id);
 
     // Complement: same slug from the same org → ConflictError.
@@ -222,8 +234,16 @@ describe('admin CRUD × 4 surfaces', () => {
   it('updateLocation: duplicate publicSlug → ConflictError, not a raw Prisma error', async () => {
     const slugA = `sluga-${Date.now()}`;
     const slugB = `slugb-${Date.now()}`;
-    const locA = await createLocation(ownerSession, { type: 'clinic', name: 'LocA', publicSlug: slugA });
-    const locB = await createLocation(ownerSession, { type: 'clinic', name: 'LocB', publicSlug: slugB });
+    const locA = await createLocation(ownerSession, {
+      type: 'clinic',
+      name: 'LocA',
+      publicSlug: slugA,
+    });
+    const locB = await createLocation(ownerSession, {
+      type: 'clinic',
+      name: 'LocB',
+      publicSlug: slugB,
+    });
     trackedLocationIds.push(locA.id, locB.id);
 
     // Complement: update locB to take locA's slug → ConflictError.

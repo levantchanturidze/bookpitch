@@ -62,5 +62,10 @@ export default async function BillingPage() {
     }));
   });
 
-  return <BillingList location={{ name: active.name, type: active.type, currency: org.currency }} rows={rows} />;
+  return (
+    <BillingList
+      location={{ name: active.name, type: active.type, currency: org.currency }}
+      rows={rows}
+    />
+  );
 }

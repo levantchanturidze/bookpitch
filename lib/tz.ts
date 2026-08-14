@@ -142,11 +142,13 @@ export function utcTimeValueToLocalHHMM(utcTime: Date, tz: string): string {
   // Build a reference timestamp for TODAY at those UTC hours/minutes,
   // so we read the current (not historical) UTC offset.
   const today = new Date();
-  const ref = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), utcHH, utcMM, 0));
+  const ref = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), utcHH, utcMM, 0),
+  );
   const offsetMs = utcOffsetMs(ref, tz);
   const offsetMin = Math.round(offsetMs / 60_000);
 
-  const localMin = ((utcHH * 60 + utcMM + offsetMin) % 1440 + 1440) % 1440;
+  const localMin = (((utcHH * 60 + utcMM + offsetMin) % 1440) + 1440) % 1440;
   const h = Math.floor(localMin / 60);
   const min = localMin % 60;
   return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
@@ -161,11 +163,13 @@ export function utcTimeValueToLocalHHMM(utcTime: Date, tz: string): string {
 export function localHHMMToUtcHHMM(localHHMM: string, tz: string): string {
   const [hh, mm] = localHHMM.split(':').map(Number);
   const today = new Date();
-  const ref = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), hh, mm, 0));
+  const ref = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), hh, mm, 0),
+  );
   const offsetMs = utcOffsetMs(ref, tz);
   const offsetMin = Math.round(offsetMs / 60_000);
 
-  const utcMin = ((hh * 60 + mm - offsetMin) % 1440 + 1440) % 1440;
+  const utcMin = (((hh * 60 + mm - offsetMin) % 1440) + 1440) % 1440;
   const uh = Math.floor(utcMin / 60);
   const um = utcMin % 60;
   return `${String(uh).padStart(2, '0')}:${String(um).padStart(2, '0')}`;
@@ -175,11 +179,7 @@ export function localHHMMToUtcHHMM(localHHMM: string, tz: string): string {
  * Format a UTC Date for user display (date + time) in the given timezone.
  * Example: "12 Aug 2026, 09:00" for a Tbilisi clinic.
  */
-export function formatLocalDateTime(
-  utc: Date,
-  tz: string,
-  locale = 'ka-GE',
-): string {
+export function formatLocalDateTime(utc: Date, tz: string, locale = 'ka-GE'): string {
   try {
     return new Intl.DateTimeFormat(locale, {
       timeZone: tz,

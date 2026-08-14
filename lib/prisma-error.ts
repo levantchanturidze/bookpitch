@@ -13,8 +13,8 @@ const P2002_MESSAGES: Record<string, string> = {
   'Location.publicSlug': 'That URL slug is already taken — choose a different one.',
   'AppUser.email': 'An account with that email address already exists.',
   // DB constraint names (fallback: NOBYPASSRLS role, originalMessage only)
-  'idx_locations_public_slug': 'That URL slug is already taken — choose a different one.',
-  'app_users_email_key': 'An account with that email address already exists.',
+  idx_locations_public_slug: 'That URL slug is already taken — choose a different one.',
+  app_users_email_key: 'An account with that email address already exists.',
 };
 
 // Prisma 7.x nests constraint details inside driverAdapterError.
@@ -38,8 +38,8 @@ function p2002Fields(err: Prisma.PrismaClientKnownRequestError): string[] {
   const legacyFields: string[] = Array.isArray(raw)
     ? (raw as string[])
     : typeof raw === 'string'
-    ? [raw]
-    : [];
+      ? [raw]
+      : [];
 
   return [...new Set([...camelFields, ...legacyFields])];
 }

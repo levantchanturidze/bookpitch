@@ -168,9 +168,7 @@ describe('getAvailableSlots', () => {
 
   // ---------------------------------------------------------------------------
   it('no appointments → full default window 07:00–21:00 at 30-min steps', async () => {
-    const slots = await withoutRls((tx) =>
-      getAvailableSlots(tx, staffDefault, dateStr(1), 30),
-    );
+    const slots = await withoutRls((tx) => getAvailableSlots(tx, staffDefault, dateStr(1), 30));
     // 07:00 to 20:30 inclusive: (21*60-7*60)/30 = 28 slots
     expect(slots).toContain('07:00');
     expect(slots).toContain('20:30');
@@ -188,9 +186,7 @@ describe('getAvailableSlots', () => {
     //   11:00 (ends 12:30) ↔ 11:00 < 11:30 && 12:30 > 10:00 → taken
     //   11:30 (ends 13:00) ↔ 11:30 < 11:30 → FALSE → available ✓
     await plant(staffDefault, 2, 10, 11, 30);
-    const slots = await withoutRls((tx) =>
-      getAvailableSlots(tx, staffDefault, dateStr(2), 90),
-    );
+    const slots = await withoutRls((tx) => getAvailableSlots(tx, staffDefault, dateStr(2), 90));
     expect(slots).not.toContain('09:00');
     expect(slots).not.toContain('09:30');
     expect(slots).not.toContain('10:00');
@@ -202,9 +198,7 @@ describe('getAvailableSlots', () => {
   // ---------------------------------------------------------------------------
   it('availability window boundary: 60-min service in a 09:00–18:00 window', async () => {
     // 17:00+60=18:00 fits; 17:30+60=18:30 does not → last slot is 17:00.
-    const slots = await withoutRls((tx) =>
-      getAvailableSlots(tx, staffWindowed, dateStr(3), 60),
-    );
+    const slots = await withoutRls((tx) => getAvailableSlots(tx, staffWindowed, dateStr(3), 60));
     expect(slots).toContain('09:00');
     expect(slots).toContain('17:00');
     expect(slots).not.toContain('17:30'); // 17:30+60=18:30 > 18:00
@@ -214,9 +208,7 @@ describe('getAvailableSlots', () => {
   // ---------------------------------------------------------------------------
   it('90-min service in a 09:00–18:00 window: last slot is 16:30', async () => {
     // 16:30+90=18:00 fits; 17:00+90=18:30 does not.
-    const slots = await withoutRls((tx) =>
-      getAvailableSlots(tx, staffWindowed, dateStr(4), 90),
-    );
+    const slots = await withoutRls((tx) => getAvailableSlots(tx, staffWindowed, dateStr(4), 90));
     expect(slots).toContain('16:30');
     expect(slots).not.toContain('17:00');
   });
@@ -226,9 +218,7 @@ describe('getAvailableSlots', () => {
     // 10:00–10:30 and 10:30–11:00 both booked; 11:00 must be free.
     await plant(staffDefault, 5, 10, 10, 30);
     await plant(staffDefault, 5, 10, 11, 0, 30);
-    const slots = await withoutRls((tx) =>
-      getAvailableSlots(tx, staffDefault, dateStr(5), 30),
-    );
+    const slots = await withoutRls((tx) => getAvailableSlots(tx, staffDefault, dateStr(5), 30));
     expect(slots).not.toContain('10:00');
     expect(slots).not.toContain('10:30');
     expect(slots).toContain('11:00');
@@ -241,12 +231,10 @@ describe('getAvailableSlots', () => {
     // 09:20 starts exactly at booking end: 09:20 < 09:20 → FALSE → NOT blocked → offered.
     // 09:30 is not on the 20-min grid (07:00 + n*20 never lands on :30).
     await plant(staffDefault, 6, 9, 9, 20);
-    const slots = await withoutRls((tx) =>
-      getAvailableSlots(tx, staffDefault, dateStr(6), 20),
-    );
+    const slots = await withoutRls((tx) => getAvailableSlots(tx, staffDefault, dateStr(6), 20));
     expect(slots).not.toContain('09:00'); // overlaps 09:00–09:20
-    expect(slots).toContain('09:20');     // step=20; strict < means not blocked
-    expect(slots).toContain('09:40');     // also not blocked
+    expect(slots).toContain('09:20'); // step=20; strict < means not blocked
+    expect(slots).toContain('09:40'); // also not blocked
     // Complement: 07:30 is on a 30-min grid but NOT on the 20-min grid.
     expect(slots).toContain('07:20');
     expect(slots).not.toContain('07:30');
@@ -259,12 +247,10 @@ describe('getAvailableSlots', () => {
     //   09:30 < 09:45 && (09:30+45=10:15) > 09:00 → taken.
     // Candidate 10:00: 10:00 < 09:45? No → available.
     await plant(staffDefault, 7, 9, 9, 45);
-    const slots = await withoutRls((tx) =>
-      getAvailableSlots(tx, staffDefault, dateStr(7), 45),
-    );
+    const slots = await withoutRls((tx) => getAvailableSlots(tx, staffDefault, dateStr(7), 45));
     expect(slots).not.toContain('09:00');
     expect(slots).not.toContain('09:30'); // overlaps 09:00–09:45
-    expect(slots).toContain('10:00');     // 10:00 starts after 09:45 end
+    expect(slots).toContain('10:00'); // 10:00 starts after 09:45 end
   });
 
   // ---------------------------------------------------------------------------
@@ -285,9 +271,7 @@ describe('getAvailableSlots', () => {
       }),
     );
     createdAppointments.push(appt.id);
-    const slots = await withoutRls((tx) =>
-      getAvailableSlots(tx, staffDefault, dateStr(8), 30),
-    );
+    const slots = await withoutRls((tx) => getAvailableSlots(tx, staffDefault, dateStr(8), 30));
     expect(slots).toContain('14:00');
   });
 
@@ -356,6 +340,7 @@ describe('toAppointmentDto timezone', () => {
 function makeRow(startsAt: Date, endsAt: Date) {
   return {
     id: 'test-id',
+    organizationId: 'org-id',
     locationId: 'loc-id',
     customerId: 'cust-id',
     staffId: 'staff-id',
@@ -367,6 +352,11 @@ function makeRow(startsAt: Date, endsAt: Date) {
     status: 'confirmed' as const,
     paymentStatus: 'unpaid' as const,
     notes: null,
+    icd10Code: null,
+    icd10Description: null,
+    createdBy: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
     customer: { id: 'c', name: 'Customer', phone: null, avatarUrl: null },
     staff: { id: 's', name: 'Staff', roleTitle: 'GP', calendarColor: null },
   };

@@ -11,6 +11,7 @@ declare global {
         el: HTMLElement,
         opts: {
           sitekey: string;
+          action?: string;
           callback: (token: string) => void;
           'expired-callback': () => void;
           'error-callback': () => void;
@@ -38,6 +39,7 @@ export default function SignupForm() {
       if (!window.turnstile || !containerRef.current || widgetIdRef.current) return;
       widgetIdRef.current = window.turnstile.render(containerRef.current, {
         sitekey: SITE_KEY,
+        action: 'signup',
         callback: (token) => setCaptchaToken(token),
         'expired-callback': () => setCaptchaToken(null),
         'error-callback': () => setCaptchaToken(null),
@@ -95,9 +97,10 @@ export default function SignupForm() {
     router.push('/onboard/pending');
   }
 
-  // When a site key is configured, the button is disabled until the CAPTCHA is
-  // solved. In dev (no site key) the button is always enabled.
-  const submitDisabled = status === 'submitting' || (!!SITE_KEY && !captchaToken);
+  // Button is disabled while submitting, while waiting for CAPTCHA solution,
+  // or in production when site key is entirely absent (misconfiguration).
+  const captchaRequired = !!SITE_KEY || process.env.NODE_ENV === 'production';
+  const submitDisabled = status === 'submitting' || (captchaRequired && !captchaToken);
 
   return (
     <form action={submit} className="space-y-4">
@@ -141,7 +144,13 @@ export default function SignupForm() {
         </div>
       </div>
 
-      {SITE_KEY && <div ref={containerRef} className="flex justify-center" />}
+      {SITE_KEY ? (
+        <div ref={containerRef} className="flex justify-center" />
+      ) : process.env.NODE_ENV === 'production' ? (
+        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          Bot protection is unavailable. Please try again later.
+        </p>
+      ) : null}
 
       {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
 

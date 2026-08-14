@@ -23,7 +23,7 @@
 // -----------------------------------------------------------------------------
 
 import { withOrg } from '@/lib/db';
-import type { AuthContext, PermissionKey } from './types';
+import type { AuthContext } from './types';
 import { perm } from './types';
 
 /**

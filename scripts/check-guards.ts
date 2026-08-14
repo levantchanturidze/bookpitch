@@ -44,6 +44,10 @@ const NO_GUARD_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   },
   { path: 'app/api/onboard/route.ts', reason: 'Self-signup — no session yet, rate-limited' },
   {
+    path: 'app/api/onboard/resend/route.ts',
+    reason: 'Resend verification email — no session yet; enumeration-safe, IP + email rate-limited',
+  },
+  {
     path: 'app/api/onboard/verify/route.ts',
     reason: 'Email verification link — no session; auth is 256-bit token in URL, rate-limited',
   },

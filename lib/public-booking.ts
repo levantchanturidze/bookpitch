@@ -28,6 +28,7 @@ export type PublicLocation = {
   locationId: string;
   locationName: string;
   locationType: 'clinic' | 'salon';
+  timezone: string;
   staff: Array<{ id: string; name: string; roleTitle: string }>;
   services: Array<{ id: string; name: string; price: number; durationMinutes: number }>;
 };
@@ -58,6 +59,7 @@ export async function getPublicLocation(slug: string): Promise<PublicLocation | 
     locationId: row.id,
     locationName: row.name,
     locationType: row.type as 'clinic' | 'salon',
+    timezone: row.timezone,
     staff: row.staff,
     services: row.services.map((s) => ({
       id: s.id,

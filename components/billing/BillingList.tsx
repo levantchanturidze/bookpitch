@@ -53,7 +53,9 @@ export default function BillingList({
           </p>
           <p className="text-2xl font-extrabold text-slate-900">
             {unpaid.reduce((sum, r) => sum + r.price, 0).toFixed(2)}
-            <span className="ml-1 font-mono text-xs font-normal text-slate-400">{location.currency}</span>
+            <span className="ml-1 font-mono text-xs font-normal text-slate-400">
+              {location.currency}
+            </span>
           </p>
         </div>
       </header>

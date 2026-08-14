@@ -1,4 +1,7 @@
-export const metadata = { title: 'Account verified · Bookpitch' };
+export const metadata = {
+  title: 'Account verified · Bookpitch',
+  robots: { index: false, follow: false },
+};
 
 export default function OnboardSuccessPage() {
   return (

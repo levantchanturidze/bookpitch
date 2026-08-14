@@ -70,6 +70,24 @@ describe('hashForBucket', () => {
     }
   });
 
+  it('throws when NODE_ENV=production and RATE_LIMIT_HMAC_KEY is absent (production enforcement)', () => {
+    const prevR = process.env.RATE_LIMIT_HMAC_KEY;
+    const env = process.env as Record<string, string | undefined>;
+    const prevEnv = env.NODE_ENV;
+    try {
+      delete process.env.RATE_LIMIT_HMAC_KEY;
+      env.NODE_ENV = 'production';
+      // Must fail closed — not fall through to the FIELD_ENCRYPTION_KEY fallback.
+      expect(() => hashForBucket('p', 'v')).toThrow(
+        'RATE_LIMIT_HMAC_KEY must be set in production',
+      );
+    } finally {
+      if (prevR === undefined) delete process.env.RATE_LIMIT_HMAC_KEY;
+      else process.env.RATE_LIMIT_HMAC_KEY = prevR;
+      env.NODE_ENV = prevEnv;
+    }
+  });
+
   it('RATE_LIMIT_HMAC_KEY and FIELD_ENCRYPTION_KEY produce different hashes (proving key is read correctly)', () => {
     const prevR = process.env.RATE_LIMIT_HMAC_KEY;
     const prevF = process.env.FIELD_ENCRYPTION_KEY;

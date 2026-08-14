@@ -1,4 +1,7 @@
-export const metadata = { title: 'Verification error · Bookpitch' };
+export const metadata = {
+  title: 'Verification error · Bookpitch',
+  robots: { index: false, follow: false },
+};
 
 export default function OnboardErrorPage() {
   return (

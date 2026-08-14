@@ -58,7 +58,6 @@ const DEFAULT_RESTRICTED: ReadonlySet<PermissionKey> = new Set([
   perm('platform.config.manage'),
 ]);
 
-// eslint-disable-next-line prefer-const  -- intentionally rebindable for tests
 export let RESTRICTED_DURING_IMPERSONATION: ReadonlySet<PermissionKey> = DEFAULT_RESTRICTED;
 
 /** Test-only helper. Do not call from application code. */

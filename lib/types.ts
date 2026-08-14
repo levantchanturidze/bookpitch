@@ -68,6 +68,6 @@ export interface SyncQueueItem {
   id: string;
   action: 'create' | 'update' | 'delete';
   entity: 'appointment' | 'patient' | 'staff';
-  data: any;
+  data: unknown;
   timestamp: string;
 }

@@ -3,13 +3,47 @@ import { NextResponse } from 'next/server';
 import { createPendingRegistration } from '@/lib/onboarding';
 import { InvalidInputError } from '@/lib/auth';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
-import { consumeGlobalBucket, hashForBucket } from '@/lib/platform/rate-limit';
+import { consumeGlobalBucket, hashForBucket, extractClientIp } from '@/lib/platform/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Body size guard — reject payloads over 16 KB before parsing.
+// Maximum body size. Enforced by consuming the stream up to this limit —
+// Content-Length alone is falsifiable by a chunked or malformed request.
 const MAX_BODY_BYTES = 16 * 1024;
+
+// Read the request body up to maxBytes, returning null if the body exceeds
+// the limit. Counts actual bytes received, not the Content-Length claim.
+async function readBodyLimited(req: NextRequest, maxBytes: number): Promise<Uint8Array | null> {
+  const stream = req.body;
+  if (!stream) return new Uint8Array(0);
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > maxBytes) return null;
+        chunks.push(value);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
 
 // Onboard rate limit: 5 new signup attempts per IP per hour.
 const ONBOARD_LIMIT = 5;
@@ -109,6 +143,16 @@ async function verifyTurnstile(token: string | null, ip: string | null): Promise
     }
   }
 
+  // Challenge age — reject tokens older than 5 minutes to prevent replay.
+  if (data.challenge_ts) {
+    const challengeAge = Date.now() - new Date(data.challenge_ts).getTime();
+    const maxAgeMs = 5 * 60 * 1000;
+    if (challengeAge > maxAgeMs) {
+      log.warn('onboard.turnstile_challenge_expired', {});
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -121,18 +165,23 @@ async function verifyTurnstile(token: string | null, ip: string | null): Promise
 //
 // Returns generic 400 for all validation failures (enumeration-safe).
 export async function POST(req: NextRequest) {
-  const contentLength = Number(req.headers.get('content-length') ?? 0);
-  if (contentLength > MAX_BODY_BYTES) {
+  const rawBytes = await readBodyLimited(req, MAX_BODY_BYTES);
+  if (rawBytes === null) {
     return NextResponse.json({ error: 'invalid request' }, { status: 400 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  let body: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(rawBytes));
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      body = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // fall through
+  }
   if (!body) return NextResponse.json({ error: 'invalid body' }, { status: 400 });
 
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-    req.headers.get('x-real-ip') ??
-    null;
+  const ip = extractClientIp(req.headers);
 
   try {
     if (ip) {

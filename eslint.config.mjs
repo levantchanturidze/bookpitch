@@ -93,20 +93,17 @@ const RESTRICT_TZ_DISPLAY = {
   'no-restricted-syntax': [
     'error',
     {
-      selector:
-        "CallExpression[callee.type='MemberExpression'][callee.property.name='getHours']",
+      selector: "CallExpression[callee.type='MemberExpression'][callee.property.name='getHours']",
       message:
         "TZ-001: .getHours() reads process-local time. Use toLocalTimeHHMM(utc, tz) from '@/lib/tz'.",
     },
     {
-      selector:
-        "CallExpression[callee.type='MemberExpression'][callee.property.name='getMinutes']",
+      selector: "CallExpression[callee.type='MemberExpression'][callee.property.name='getMinutes']",
       message:
         "TZ-001: .getMinutes() reads process-local time. Use toLocalTimeHHMM(utc, tz) from '@/lib/tz'.",
     },
     {
-      selector:
-        "CallExpression[callee.type='MemberExpression'][callee.property.name='getDay']",
+      selector: "CallExpression[callee.type='MemberExpression'][callee.property.name='getDay']",
       message:
         "TZ-001: .getDay() reads process-local weekday. Use localDateWeekday(dateStr, tz) from '@/lib/tz'.",
     },
@@ -173,6 +170,17 @@ const eslintConfig = defineConfig([
   {
     files: ['lib/tz.ts', 'tests/**'],
     rules: { 'no-restricted-syntax': 'off' },
+  },
+  // LOG-001: ban raw console.* in server-side code. All logging must go through
+  // lib/logger.ts (log.info / log.warn / log.error) so scrubSensitive redacts
+  // PII before emission. lib/logger.ts is the sole allowlisted caller.
+  {
+    files: ['app/**/*.{ts,tsx}', 'lib/**/*.{ts,tsx}'],
+    rules: { 'no-console': 'error' },
+  },
+  {
+    files: ['lib/logger.ts'],
+    rules: { 'no-console': 'off' },
   },
 ]);
 

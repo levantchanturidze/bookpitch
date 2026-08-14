@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { activatePendingRegistration } from '@/lib/onboarding';
 import { InvalidInputError } from '@/lib/auth';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
-import { consumeGlobalBucket, hashForBucket } from '@/lib/platform/rate-limit';
+import { consumeGlobalBucket, hashForBucket, extractClientIp } from '@/lib/platform/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,10 +29,7 @@ const VERIFY_WINDOW_MS = 5 * 60 * 1000;
 //   • Redirect rather than returning the token in a JSON body so it doesn't
 //     appear in fetch() response logs or API-level analytics.
 export async function GET(req: NextRequest) {
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-    req.headers.get('x-real-ip') ??
-    'unknown';
+  const ip = extractClientIp(req.headers);
 
   const appUrl = process.env.NEXTAUTH_URL ?? process.env.APP_URL ?? '';
 
@@ -43,9 +40,12 @@ export async function GET(req: NextRequest) {
 
   try {
     // Rate limit before touching the token. Hash the IP so PII is not stored
-    // in plaintext in platform_rate_limit.
-    const ipHash = hashForBucket('verify-ip', ip);
-    await consumeGlobalBucket(`verify:ip:${ipHash}`, VERIFY_LIMIT, VERIFY_WINDOW_MS);
+    // in plaintext in platform_rate_limit. Skip when no IP header is present
+    // (direct calls in tests / local dev — proxy always sets this in production).
+    if (ip) {
+      const ipHash = hashForBucket('verify-ip', ip);
+      await consumeGlobalBucket(`verify:ip:${ipHash}`, VERIFY_LIMIT, VERIFY_WINDOW_MS);
+    }
 
     const token = new URL(req.url).searchParams.get('token') ?? '';
 

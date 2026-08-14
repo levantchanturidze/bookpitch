@@ -1,5 +1,4 @@
 import type { NextRequest } from 'next/server';
-import { NextResponse } from 'next/server';
 import { InvalidInputError, ctxToSession, withApi } from '@/lib/auth';
 import { requireAuthContext, requirePermission, scopedLocationIds, scopedByOwn } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
@@ -80,7 +79,7 @@ export async function GET(req: NextRequest) {
         count: rows.length,
         locationId: locationId ?? null,
       });
-      return rows.map(toAppointmentDto);
+      return rows.map((row) => toAppointmentDto(row));
     });
 
     return { appointments };
