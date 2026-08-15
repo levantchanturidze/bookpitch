@@ -28,46 +28,49 @@ const MAX_BODY_BYTES = 4 * 1024;
 // distinguish between "email not found", "already activated", "cooldown", or
 // "resend scheduled".
 export async function POST(req: NextRequest) {
-  let rawBytes: Uint8Array | null = null;
+  const stream = req.body;
+  if (!stream) {
+    return NextResponse.json({ ok: true }, { status: 202 });
+  }
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let overflow = false;
+
   try {
-    const stream = req.body;
-    if (!stream) {
-      rawBytes = new Uint8Array(0);
-    } else {
-      const reader = stream.getReader();
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      let overflow = false;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            total += value.byteLength;
-            if (total > MAX_BODY_BYTES) {
-              overflow = true;
-              break;
-            }
-            chunks.push(value);
-          }
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > MAX_BODY_BYTES) {
+          overflow = true;
+          // Cancel the underlying stream so the connection is not held open
+          // awaiting the remainder of an oversized body.
+          reader.cancel().catch(() => {});
+          break;
         }
-      } finally {
-        reader.releaseLock();
-      }
-      if (!overflow) {
-        const out = new Uint8Array(total);
-        let offset = 0;
-        for (const chunk of chunks) {
-          out.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        rawBytes = out;
+        chunks.push(value);
       }
     }
   } catch {
-    // Body read failure — return generic 202 (enumeration-safe).
+    return NextResponse.json({ ok: true }, { status: 202 });
+  } finally {
+    reader.releaseLock();
   }
-  if (rawBytes === null) return NextResponse.json({ ok: true }, { status: 202 });
+
+  if (overflow) {
+    return NextResponse.json({ error: 'request too large' }, { status: 413 });
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const rawBytes = out;
 
   let body: { email?: unknown } | null = null;
   try {

@@ -348,6 +348,136 @@ describe('log integration', () => {
   });
 });
 
+// ── Req 14 additions — email-bearing keys and value-level IP detection ────────
+
+describe('scrubSensitive — Req 14 exact-key and value-level coverage', () => {
+  it('redacts toAddress key (outbox recipient PII)', () => {
+    const addr = `canary_${canary('TOADDR')}@example.com`;
+    const out = scrubSensitive({ toAddress: addr }) as Record<string, unknown>;
+    expect(out.toAddress).toBe('[redacted]');
+  });
+
+  it('redacts to_address key (snake_case variant)', () => {
+    const addr = `canary_${canary('TOADDR2')}@example.com`;
+    const out = scrubSensitive({ to_address: addr }) as Record<string, unknown>;
+    expect(out.to_address).toBe('[redacted]');
+  });
+
+  it('redacts recipient key', () => {
+    const addr = `canary_${canary('RECIP')}@example.com`;
+    const out = scrubSensitive({ recipient: addr }) as Record<string, unknown>;
+    expect(out.recipient).toBe('[redacted]');
+  });
+
+  it('redacts emailAddress key', () => {
+    const addr = `canary_${canary('EADDR')}@example.com`;
+    const out = scrubSensitive({ emailAddress: addr }) as Record<string, unknown>;
+    expect(out.emailAddress).toBe('[redacted]');
+  });
+
+  it('does NOT redact orgName (operational — safe to log)', () => {
+    const out = scrubSensitive({ orgName: 'Grand Medical Clinic' }) as Record<string, unknown>;
+    expect(out.orgName).toBe('Grand Medical Clinic');
+  });
+
+  it('redacts bare email address as a string VALUE in any key (value-level detection)', () => {
+    const addr = `victim_${canary('VAL_EMAIL')}@clinic.example.com`;
+    const out = scrubSensitive({ someArbitraryKey: addr }) as Record<string, unknown>;
+    expect(out.someArbitraryKey).toBe('[redacted]');
+  });
+
+  it('redacts IPv4 address as a string VALUE in any key (value-level detection)', () => {
+    const out = scrubSensitive({ clientEndpoint: '203.0.113.42' }) as Record<string, unknown>;
+    expect(out.clientEndpoint).toBe('[redacted]');
+  });
+
+  it('redacts IPv6 address as a string VALUE in any key (value-level detection)', () => {
+    const out = scrubSensitive({ remoteAddr: '2001:db8::1' }) as Record<string, unknown>;
+    expect(out.remoteAddr).toBe('[redacted]');
+  });
+
+  it('does NOT false-positive on version strings or short numbers', () => {
+    // Version strings look like "1.2.3" and must not be treated as IPv4.
+    const out = scrubSensitive({ version: '1.2.3', count: '42' }) as Record<string, unknown>;
+    expect(out.version).toBe('1.2.3');
+    expect(out.count).toBe('42');
+  });
+
+  it('case-insensitive key matching: ToAddress, RECIPIENT, EmailAddress all redacted', () => {
+    const addr = `case_${canary('CASE')}@example.com`;
+    const out = scrubSensitive({
+      ToAddress: addr,
+      RECIPIENT: addr,
+      EmailAddress: addr,
+    }) as Record<string, unknown>;
+    expect(out.ToAddress).toBe('[redacted]');
+    expect(out.RECIPIENT).toBe('[redacted]');
+    expect(out.EmailAddress).toBe('[redacted]');
+  });
+
+  // ── Module-level log capture: onboarding ──────────────────────────────────
+  it('onboard.pending_created log does not leak orgName (structural check)', () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((s: string) => lines.push(s));
+    try {
+      // onboard.pending_created uses { orgName } — operationally safe (not PII).
+      // Confirm it passes through (no over-redaction).
+      log.info('onboard.pending_created', { orgName: 'Test Clinic' });
+    } finally {
+      spy.mockRestore();
+    }
+    const parsed = JSON.parse(lines[0]);
+    expect(parsed.orgName).toBe('Test Clinic');
+  });
+
+  it('onboard log: email field is always absent from output', () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((s: string) => lines.push(s));
+    const addr = `onboard_log_${canary('OB_MAIL')}@example.com`;
+    try {
+      log.info('onboard.debug', { email: addr, step: 'validate' });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines.join('\n')).not.toContain(addr);
+  });
+
+  it('break-glass log: actor email is absent from output when emitted as email key', () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((s: string) => lines.push(s));
+    const addr = `bg_${canary('BG_ACTOR')}@internal.example.com`;
+    try {
+      log.info('platform.break_glass.start', { email: addr, sessionId: 'sess-123' });
+    } finally {
+      spy.mockRestore();
+    }
+    const output = lines.join('\n');
+    expect(output).not.toContain(addr);
+    const parsed = JSON.parse(lines[0]);
+    expect(parsed.sessionId).toBe('sess-123');
+  });
+
+  it('impersonation log: target email absent when logged as toAddress', () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((s: string) => lines.push(s));
+    const addr = `imp_${canary('IMP_ADDR')}@tenant.example.com`;
+    try {
+      log.info('platform.impersonation.alert', { toAddress: addr, purpose: 'impersonation.alert' });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines.join('\n')).not.toContain(addr);
+  });
+
+  it('provider-error log: address in error message stripped by sanitizeErrorMessage', () => {
+    const addr = `prov_${canary('PROV_ERR')}@mail.example.com`;
+    const err = new Error(`SMTP rejected: <${addr}> Mailbox not found`);
+    const safe = sanitizeErrorMessage(err);
+    expect(safe).not.toContain(addr);
+    expect(safe).toContain('[email]');
+  });
+});
+
 // ── Phase 7 §7.7 — HMAC key fail-closed (production guard) ───────────────────
 
 describe('rate-limit HMAC key production guard', () => {

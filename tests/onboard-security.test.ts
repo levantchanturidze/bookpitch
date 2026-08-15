@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 
+const { hashEmailForIndex } = await import('@/lib/crypto');
+const emailToAddressHash = hashEmailForIndex;
+
 vi.mock('@/auth', () => ({ auth: vi.fn(), handlers: {}, signIn: vi.fn(), signOut: vi.fn() }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
@@ -71,25 +74,60 @@ describe('POST /api/onboard — F3 security controls', () => {
     // Build a body whose JSON representation is genuinely >16 KB.
     const oversized = JSON.stringify({ ...goodBody, pad: 'x'.repeat(20 * 1024) });
     const res = await onboardRoute.POST(onboardReq(goodBody, { bodyOverride: oversized }));
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(413);
     const b = await json<{ error: string }>(res);
-    expect(b.error).toBe('invalid request');
+    expect(b.error).toBe('request too large');
+  });
+
+  it('rejects request at exactly MAX_BODY_BYTES + 1 (16385 bytes) — boundary+1', async () => {
+    // MAX_BODY_BYTES = 16 * 1024 = 16384. The check is `total > maxBytes`,
+    // so a body of exactly 16385 bytes must be rejected.
+    const padLen = 16385 - JSON.stringify({ ...goodBody, pad: '' }).length - 1;
+    const boundary1 = JSON.stringify({ ...goodBody, pad: 'x'.repeat(Math.max(0, padLen)) });
+    // Ensure the body is at least 16385 bytes.
+    const body16385 =
+      boundary1.length < 16385
+        ? JSON.stringify({
+            ...goodBody,
+            pad: 'x'.repeat(16385 - JSON.stringify({ ...goodBody, pad: '' }).length),
+          })
+        : boundary1;
+    if (body16385.length <= 16384) {
+      // Fallback: build a body guaranteed to be > 16384 bytes.
+      const fallback = JSON.stringify({ ...goodBody, pad: 'x'.repeat(16385) });
+      const res2 = await onboardRoute.POST(
+        onboardReq(goodBody, { bodyOverride: fallback, ip: '9.9.9.3' }),
+      );
+      expect(res2.status).toBe(413);
+    } else {
+      const res = await onboardRoute.POST(
+        onboardReq(goodBody, { bodyOverride: body16385, ip: '9.9.9.3' }),
+      );
+      expect(res.status).toBe(413);
+      const b = await json<{ error: string }>(res);
+      expect(b.error).toBe('request too large');
+    }
+  });
+
+  it('accepts request at exactly MAX_BODY_BYTES (16384 bytes) — exact boundary', async () => {
+    // A body of exactly 16384 bytes is at the limit; `total > maxBytes` is false.
+    // The streaming guard must NOT fire. JSON validation may reject the body (pad key
+    // is not a valid onboard field), but the status must not be 413.
+    const exactPad = 'x'.repeat(16384);
+    const res = await onboardRoute.POST(
+      onboardReq(goodBody, { bodyOverride: exactPad, ip: '9.9.9.4' }),
+    );
+    expect(res.status).not.toBe(413);
   });
 
   it('passes guard when actual body is small (streaming, not header-based)', async () => {
     // The "valid payload returns 202" test below is the natural complement —
     // it sends a normally-sized body and expects 202, confirming the streaming
-    // guard does not fire on legitimate requests. This test additionally
-    // confirms that a body at exactly the limit boundary is also accepted.
-    const atLimit = JSON.stringify({ ...goodBody, pad: 'x'.repeat(16 * 1024 - 500) });
+    // guard does not fire on legitimate requests.
+    const small = JSON.stringify({ ...goodBody, note: 'small' });
     const res = await onboardRoute.POST(
-      onboardReq(goodBody, { bodyOverride: atLimit, ip: '9.9.9.2' }),
+      onboardReq(goodBody, { bodyOverride: small, ip: '9.9.9.2' }),
     );
-    // At-limit body: guard must not reject with 400 {error:'invalid request'}.
-    // If validation subsequently rejects (e.g. the padded body fails JSON parse
-    // of the field values), that's fine — what matters is the size guard didn't fire.
-    // A 400 here means something other than the size guard fired (validation path).
-    // We can confirm the size guard didn't fire because the at-limit body IS within bounds.
     expect(res.status).not.toBeGreaterThanOrEqual(500);
   });
 
@@ -183,5 +221,61 @@ describe('POST /api/onboard — F3 security controls', () => {
       select: { id: true },
     });
     expect(pending).toBeTruthy();
+  });
+
+  // ── Non-PII idempotency keys ──────────────────────────────────────────────────
+
+  it('outbox idempotency key does not contain the plaintext email', async () => {
+    const email = `idempkey-${Date.now()}@example.dev`;
+    const res = await onboardRoute.POST(onboardReq({ ...goodBody, email }, { ip: '4.4.4.4' }));
+    expect(res.status).toBe(202);
+
+    // Find outbox rows for this registration via hash (to_address is encrypted).
+    const rows = await unsafePrismaAdmin.emailOutbox.findMany({
+      where: { toAddressHash: emailToAddressHash(email), purpose: 'onboard.verify' },
+      select: { idempotencyKey: true },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      if (row.idempotencyKey) {
+        expect(
+          row.idempotencyKey,
+          'idempotency key must not contain plaintext email',
+        ).not.toContain(email);
+      }
+    }
+  });
+
+  // ── Old outbox rows superseded on resend ──────────────────────────────────────
+
+  it('second registration attempt cancels the previous pending outbox row', async () => {
+    const email = `supersede-${Date.now()}@example.dev`;
+    const ip = '5.5.5.6';
+
+    // First registration.
+    const r1 = await onboardRoute.POST(onboardReq({ ...goodBody, email }, { ip }));
+    expect(r1.status).toBe(202);
+
+    const firstRows = await unsafePrismaAdmin.emailOutbox.findMany({
+      where: { toAddressHash: emailToAddressHash(email), purpose: 'onboard.verify' },
+      select: { id: true, status: true, idempotencyKey: true },
+    });
+    expect(firstRows.length).toBeGreaterThan(0);
+
+    // Flush rate limit so the second attempt is not blocked.
+    await unsafePrismaAdmin.platformRateLimit
+      .deleteMany({ where: { bucket: { startsWith: 'onboard:ip:' } } })
+      .catch(() => {});
+
+    // Second registration (resend / upsert).
+    const r2 = await onboardRoute.POST(onboardReq({ ...goodBody, email }, { ip }));
+    expect(r2.status).toBe(202);
+
+    // Previous pending rows must be cancelled — old token links are invalid.
+    const firstIds = firstRows.map((r) => r.id);
+    const stillPending = await unsafePrismaAdmin.emailOutbox.findMany({
+      where: { id: { in: firstIds }, status: 'pending' },
+    });
+    expect(stillPending).toHaveLength(0);
   });
 });

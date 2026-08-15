@@ -3,6 +3,8 @@ export const metadata = {
   robots: { index: false, follow: false },
 };
 
+import ResendVerificationForm from '@/components/onboard/ResendVerificationForm';
+
 export default function OnboardPendingPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
@@ -27,13 +29,7 @@ export default function OnboardPendingPage() {
           We sent a verification link to your email address. Click the link to activate your
           Bookpitch workspace. The link expires in 24 hours.
         </p>
-        <p className="mt-4 text-xs text-slate-400">
-          Didn&apos;t receive it? Check your spam folder, or{' '}
-          <a href="/signup" className="font-semibold text-slate-600 hover:underline">
-            sign up again
-          </a>{' '}
-          to resend.
-        </p>
+        <ResendVerificationForm />
       </div>
     </main>
   );

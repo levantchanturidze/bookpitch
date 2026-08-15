@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterAll } from 'vitest';
 import { createHash, randomBytes } from 'node:crypto';
 
+const { hashEmailForIndex } = await import('@/lib/crypto');
+const emailToAddressHash = hashEmailForIndex;
+
 vi.mock('@/auth', () => ({ auth: vi.fn(), handlers: {}, signIn: vi.fn(), signOut: vi.fn() }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
@@ -58,7 +61,12 @@ async function cleanupPending(email: string): Promise<void> {
 }
 
 async function cleanupOutbox(email: string): Promise<void> {
-  await unsafePrismaAdmin.emailOutbox.deleteMany({ where: { toAddress: email } });
+  const hash = emailToAddressHash(email);
+  // Match by hash (encrypted rows) or plaintext address (legacy/test rows).
+  await unsafePrismaAdmin.$executeRaw`
+    DELETE FROM email_outbox
+    WHERE to_address_hash = ${hash} OR to_address = ${email}
+  `;
 }
 
 // Use the last two digits of Date.now() (mod 100) to vary the third octet per run.
@@ -99,6 +107,28 @@ describe('POST /api/onboard/resend', () => {
     expect(body.ok).toBe(true);
   });
 
+  it('identical status+body for known pending email vs unknown email (anti-enumeration)', async () => {
+    // Known pending registration email.
+    const knownEmail = `resend-enum-${run}@example.dev`;
+    await seedPending(knownEmail);
+
+    const knownRes = await resendRoute.POST(resendReq(knownEmail, `${TEST_IP_PREFIX}.12`));
+    const unknownRes = await resendRoute.POST(
+      resendReq(`resend-nosuch-${run}@example.dev`, `${TEST_IP_PREFIX}.13`),
+    );
+
+    // Both must return the same HTTP status.
+    expect(knownRes.status).toBe(202);
+    expect(unknownRes.status).toBe(202);
+
+    // Both response bodies must be indistinguishable to a caller.
+    const knownBody = await json<Record<string, unknown>>(knownRes);
+    const unknownBody = await json<Record<string, unknown>>(unknownRes);
+    expect(JSON.stringify(knownBody)).toBe(JSON.stringify(unknownBody));
+
+    await cleanupOutbox(knownEmail).catch(() => {});
+  });
+
   it('returns 202 for invalid email format', async () => {
     const res = await resendRoute.POST(resendReq('not-an-email', `${TEST_IP_PREFIX}.11`));
     expect(res.status).toBe(202);
@@ -114,7 +144,7 @@ describe('POST /api/onboard/resend', () => {
     expect(res.status).toBe(202);
 
     const rows = await unsafePrismaAdmin.emailOutbox.findMany({
-      where: { toAddress: activeEmail, purpose: 'onboard.verify' },
+      where: { toAddressHash: emailToAddressHash(activeEmail), purpose: 'onboard.verify' },
     });
     expect(rows.length).toBe(0);
   });
@@ -131,7 +161,7 @@ describe('POST /api/onboard/resend', () => {
     expect(res.status).toBe(202); // still 202 — enumeration-safe
 
     const outboxRows = await unsafePrismaAdmin.emailOutbox.findMany({
-      where: { toAddress: email, purpose: 'onboard.verify' },
+      where: { toAddressHash: emailToAddressHash(email), purpose: 'onboard.verify' },
     });
     expect(outboxRows.length).toBe(0); // no row: cooldown enforced at DB level
 
@@ -160,7 +190,7 @@ describe('POST /api/onboard/resend', () => {
 
     // A new outbox row must exist.
     const outboxRows = await unsafePrismaAdmin.emailOutbox.findMany({
-      where: { toAddress: email, purpose: 'onboard.verify' },
+      where: { toAddressHash: emailToAddressHash(email), purpose: 'onboard.verify' },
     });
     expect(outboxRows.length).toBeGreaterThanOrEqual(1);
     expect(outboxRows[0].idempotencyKey).toMatch(/^onboard_resend:/);
@@ -208,7 +238,7 @@ describe('POST /api/onboard/resend', () => {
     await resendRoute.POST(resendReq(email, `${TEST_IP_PREFIX}.50`));
 
     const rows = await unsafePrismaAdmin.emailOutbox.findMany({
-      where: { toAddress: email, purpose: 'onboard.verify' },
+      where: { toAddressHash: emailToAddressHash(email), purpose: 'onboard.verify' },
     });
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(['pending', 'sent']).toContain(rows[0].status);
@@ -227,7 +257,7 @@ describe('POST /api/onboard/resend', () => {
 
     // A new outbox row should exist with a fresh 24h expiry.
     const outboxRows = await unsafePrismaAdmin.emailOutbox.findMany({
-      where: { toAddress: email, purpose: 'onboard.verify' },
+      where: { toAddressHash: emailToAddressHash(email), purpose: 'onboard.verify' },
     });
     expect(outboxRows.length).toBeGreaterThanOrEqual(1);
 
@@ -241,5 +271,46 @@ describe('POST /api/onboard/resend', () => {
     );
     expect(pending[0]?.token_hash).not.toBe(oldHash);
     expect(pending[0]?.diff_s).toBeGreaterThan(23.5 * 3600); // fresh 24h token
+  });
+
+  // ── Body size guard ──────────────────────────────────────────────────────────
+  // MAX_BODY_BYTES for resend is 4096. The streaming reader counts actual bytes,
+  // not Content-Length, so a chunked/falsified header cannot bypass the guard.
+
+  it('rejects a body exceeding 4 KB with 413', async () => {
+    const oversized = 'x'.repeat(5000);
+    const req = new Request('http://x/api/onboard/resend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: oversized,
+    }) as unknown as import('next/server').NextRequest;
+    const res = await resendRoute.POST(req);
+    expect(res.status).toBe(413);
+    const b = (await res.json()) as Record<string, unknown>;
+    expect(b.error).toBe('request too large');
+  });
+
+  it('accepts a body at exactly 4096 bytes — exact boundary', async () => {
+    // 4096 bytes: `total > 4096` is false → not rejected by size guard.
+    const body4096 = 'x'.repeat(4096);
+    const req = new Request('http://x/api/onboard/resend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: body4096,
+    }) as unknown as import('next/server').NextRequest;
+    const res = await resendRoute.POST(req);
+    // JSON parse will fail (not valid JSON) but size guard must not fire → not 413.
+    expect(res.status).not.toBe(413);
+  });
+
+  it('rejects a body at 4097 bytes — boundary+1', async () => {
+    const body4097 = 'x'.repeat(4097);
+    const req = new Request('http://x/api/onboard/resend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: body4097,
+    }) as unknown as import('next/server').NextRequest;
+    const res = await resendRoute.POST(req);
+    expect(res.status).toBe(413);
   });
 });

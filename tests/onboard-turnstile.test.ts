@@ -362,3 +362,92 @@ describe('TS.13 — provider error body is not in the response', () => {
     }
   });
 });
+
+// ── TS.14: Production mandatory action env var ────────────────────────────────
+
+describe('TS.14 — production: TURNSTILE_EXPECTED_ACTION is mandatory', () => {
+  it('production + secret key set + no TURNSTILE_EXPECTED_ACTION → 400 (fail closed)', async () => {
+    process.env.TURNSTILE_SECRET_KEY = 'test-secret';
+    process.env.TURNSTILE_ALLOWED_HOSTNAMES = 'bookpitch.com';
+    Object.assign(process.env, { NODE_ENV: 'production' });
+    // action env var intentionally absent
+    const restore = mockTurnstile({
+      success: true,
+      hostname: 'bookpitch.com',
+      action: 'signup',
+      challenge_ts: VALID_TS,
+    });
+    try {
+      const res = await POST(makeReq({ turnstileToken: 'tok' }));
+      expect(res.status).toBe(400);
+    } finally {
+      restore();
+    }
+  });
+
+  it('non-production: absent TURNSTILE_EXPECTED_ACTION → accepted (action binding optional)', async () => {
+    process.env.TURNSTILE_SECRET_KEY = 'test-secret';
+    // No TURNSTILE_EXPECTED_ACTION — action binding is optional in non-production.
+    Object.assign(process.env, { NODE_ENV: 'test' });
+    const restore = mockTurnstile({ success: true, challenge_ts: VALID_TS });
+    try {
+      const res = await POST(makeReq({ turnstileToken: 'tok' }));
+      expect(res.status).toBe(202);
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ── TS.15: Production mandatory hostname allowlist ────────────────────────────
+
+describe('TS.15 — production: TURNSTILE_ALLOWED_HOSTNAMES is mandatory', () => {
+  it('production + secret key set + no TURNSTILE_ALLOWED_HOSTNAMES → 400 (fail closed)', async () => {
+    process.env.TURNSTILE_SECRET_KEY = 'test-secret';
+    process.env.TURNSTILE_EXPECTED_ACTION = 'signup';
+    Object.assign(process.env, { NODE_ENV: 'production' });
+    // hostname allowlist env var intentionally absent
+    const restore = mockTurnstile({
+      success: true,
+      action: 'signup',
+      hostname: 'bookpitch.com',
+      challenge_ts: VALID_TS,
+    });
+    try {
+      const res = await POST(makeReq({ turnstileToken: 'tok' }));
+      expect(res.status).toBe(400);
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ── TS.16: Production absent challenge_ts → fail closed ──────────────────────
+
+describe('TS.16 — production: absent challenge_ts is treated as expired', () => {
+  it('production + no challenge_ts in provider response → 400', async () => {
+    process.env.TURNSTILE_SECRET_KEY = 'test-secret';
+    process.env.TURNSTILE_EXPECTED_ACTION = 'signup';
+    process.env.TURNSTILE_ALLOWED_HOSTNAMES = 'bookpitch.com';
+    Object.assign(process.env, { NODE_ENV: 'production' });
+    const restore = mockTurnstile({ success: true, action: 'signup', hostname: 'bookpitch.com' });
+    try {
+      const res = await POST(makeReq({ turnstileToken: 'tok' }));
+      expect(res.status).toBe(400);
+    } finally {
+      restore();
+    }
+  });
+
+  it('non-production: absent challenge_ts is tolerated', async () => {
+    process.env.TURNSTILE_SECRET_KEY = 'test-secret';
+    Object.assign(process.env, { NODE_ENV: 'test' });
+    const restore = mockTurnstile({ success: true });
+    try {
+      const res = await POST(makeReq({ turnstileToken: 'tok' }));
+      expect(res.status).toBe(202);
+    } finally {
+      restore();
+    }
+  });
+});

@@ -21,12 +21,26 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { generateSecret, NobleCryptoPlugin, ScureBase32Plugin } from 'otplib';
 import { verify } from '@otplib/totp';
-import { encryptField, decryptField } from '@/lib/crypto';
+import { encryptField, decryptField, hashEmailForIndex } from '@/lib/crypto';
 import { unsafePrismaAdmin } from '@/lib/db';
-import { InvalidInputError } from '@/lib/auth';
+import { InvalidInputError, ForbiddenError } from '@/lib/auth';
 import { consumeGlobalBucket } from './rate-limit';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { getEmailProvider } from '@/lib/messaging';
+
+// Verify the user holds the SUPER_ADMIN platform role by key (not just by
+// permission). MFA enrollment and recovery-code management are SUPER_ADMIN-only
+// operations that must not be reachable via any other platform role, even if
+// that role happens to share an overlapping permission.
+async function requireSuperAdmin(userId: string): Promise<void> {
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+    where: { id: userId },
+    select: { platformRole: { select: { key: true } } },
+  });
+  if (user.platformRole?.key !== 'SUPER_ADMIN') {
+    throw new ForbiddenError('MFA management is SUPER_ADMIN only');
+  }
+}
 
 // Shared plugin set for all TOTP operations.
 const TOTP_PLUGINS = {
@@ -64,6 +78,8 @@ export type TotpEnrollmentResult = {
  *   mfaTotpPending → mfaTotp and clears the pending column.
  */
 export async function generateTotpEnrollment(userId: string): Promise<TotpEnrollmentResult> {
+  await requireSuperAdmin(userId);
+
   const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: userId },
     select: { email: true, mfaEnabled: true },
@@ -107,8 +123,19 @@ export async function generateTotpEnrollment(userId: string): Promise<TotpEnroll
  * The TOTP algorithm runs outside the transaction (CPU-only); the conditional
  * UPDATE then commits the result only if no concurrent call already consumed
  * the same time-step.
+ *
+ * Initial enrollment only: also generates and returns the initial recovery codes
+ * (shown once, never stored in plaintext). Re-enrollment returns no codes.
  */
-export async function confirmTotpEnrollment(userId: string, code: string): Promise<void> {
+export type ConfirmTotpEnrollmentResult = {
+  recoveryCodes: string[] | null;
+};
+
+export async function confirmTotpEnrollment(
+  userId: string,
+  code: string,
+): Promise<ConfirmTotpEnrollmentResult> {
+  await requireSuperAdmin(userId);
   await consumeGlobalBucket(`totp:${userId}`, TOTP_RATE_LIMIT, TOTP_RATE_WINDOW_MS);
 
   const user = await unsafePrismaAdmin.appUser.findUnique({
@@ -134,9 +161,28 @@ export async function confirmTotpEnrollment(userId: string, code: string): Promi
 
   const totpWindow = BigInt(result.timeStep);
 
+  // Pre-generate recovery codes before the transaction (crypto is not DB-dependent).
+  // Only used for initial enrollment; re-enrollment leaves existing codes intact.
+  let pendingRecoveryCodes: {
+    codes: string[];
+    records: { userId: string; codeHash: string }[];
+  } | null = null;
+  if (!isReEnrollment) {
+    const codes: string[] = [];
+    const records: { userId: string; codeHash: string }[] = [];
+    for (let i = 0; i < RECOVERY_CODE_COUNT; i++) {
+      const formatted = formatRecoveryCode(randomBytes(RECOVERY_CODE_BYTES));
+      const normalized = normalizeRecoveryCode(formatted);
+      records.push({ userId, codeHash: hashRecoveryCode(normalized) });
+      codes.push(formatted);
+    }
+    pendingRecoveryCodes = { codes, records };
+  }
+
   // Atomic transaction: promote secret + advance replay fence + bump session
-  // version + invalidate grants + write audit. The conditional UPDATE ensures
-  // two concurrent confirmations with the same time-step both cannot succeed.
+  // version + invalidate grants + write audit + initial recovery codes.
+  // The conditional UPDATE ensures two concurrent confirmations with the same
+  // time-step both cannot succeed.
   await unsafePrismaAdmin.$transaction(async (tx) => {
     let rowsUpdated: number | bigint;
     if (isReEnrollment) {
@@ -174,15 +220,25 @@ export async function confirmTotpEnrollment(userId: string, code: string): Promi
     // state cannot be used to access MFA-gated operations.
     await tx.platformReauthGrant.deleteMany({ where: { userId } });
 
+    // Initial enrollment: atomically create initial recovery codes in the same
+    // transaction. The user sees them once — they must copy them now.
+    if (pendingRecoveryCodes) {
+      await tx.appUserRecoveryCode.deleteMany({ where: { userId } });
+      await tx.appUserRecoveryCode.createMany({ data: pendingRecoveryCodes.records });
+    }
+
     await tx.auditLog.create({
       data: {
         organizationId: null,
         actorUserId: userId,
         action: isReEnrollment ? 'mfa.totp.re_enrolled' : 'mfa.totp.enrolled',
         entity: 'staff',
+        meta: pendingRecoveryCodes ? { recoveryCodesGenerated: RECOVERY_CODE_COUNT } : {},
       },
     });
   });
+
+  return { recoveryCodes: pendingRecoveryCodes?.codes ?? null };
 }
 
 /**
@@ -316,6 +372,7 @@ export type GenerateRecoveryCodesResult = {
 
 /** Count of unused recovery codes remaining for `userId`. */
 export async function getRemainingRecoveryCodeCount(userId: string): Promise<number> {
+  await requireSuperAdmin(userId);
   return unsafePrismaAdmin.appUserRecoveryCode.count({
     where: { userId, usedAt: null },
   });
@@ -327,6 +384,8 @@ export async function getRemainingRecoveryCodeCount(userId: string): Promise<num
  * RECOVERY_CODE_COUNT new ones. Returns plaintexts — display once and discard.
  */
 export async function generateRecoveryCodes(userId: string): Promise<GenerateRecoveryCodesResult> {
+  await requireSuperAdmin(userId);
+
   const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: userId },
     select: { mfaEnabled: true },
@@ -426,10 +485,15 @@ export async function consumeRecoveryCode(userId: string, code: string): Promise
       const alertEncrypted = encryptField(alertPlain) ?? alertPlain;
       const bodyEncrypted = alertEncrypted !== alertPlain;
       const idempotencyKey = `recovery_alert:${userId}:${codeHash.slice(0, 16)}`;
+      const encryptedAlertTo = encryptField(alertTo) ?? alertTo;
+      const alertToEncrypted = encryptedAlertTo !== alertTo;
+      const alertToHash = hashEmailForIndex(alertTo);
       await tx.emailOutbox.create({
         data: {
           idempotencyKey,
-          toAddress: alertTo,
+          toAddress: encryptedAlertTo,
+          toAddressEncrypted: alertToEncrypted,
+          toAddressHash: alertToHash,
           subject: '[Bookpitch] MFA recovery code used',
           body: alertEncrypted,
           bodyEncrypted,
@@ -448,6 +512,7 @@ export async function consumeRecoveryCode(userId: string, code: string): Promise
       type ClaimedRow = {
         id: string;
         to_address: string;
+        to_address_encrypted: boolean;
         subject: string;
         body: string;
         body_encrypted: boolean;
@@ -459,14 +524,17 @@ export async function consumeRecoveryCode(userId: string, code: string): Promise
             claim_expires_at = now() + interval '120 seconds',
             claimed_at = now()
         WHERE idempotency_key = ${alertIdempotencyKey} AND status = 'pending'
-        RETURNING id, to_address, subject, body, body_encrypted
+        RETURNING id, to_address, to_address_encrypted, subject, body, body_encrypted
       `;
       if (claimed) {
+        const toAddress = claimed.to_address_encrypted
+          ? (decryptField(claimed.to_address) ?? claimed.to_address)
+          : claimed.to_address;
         const body = claimed.body_encrypted
           ? (decryptField(claimed.body) ?? claimed.body)
           : claimed.body;
         const provider = getEmailProvider();
-        await provider.send(claimed.to_address, claimed.subject, body);
+        await provider.send(toAddress, claimed.subject, body);
         await unsafePrismaAdmin.$executeRaw`
           UPDATE email_outbox
           SET status = 'sent', sent_at = now(), claim_owner = NULL

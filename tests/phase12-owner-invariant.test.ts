@@ -511,6 +511,49 @@ describe('Phase 12 — PostgreSQL ORG_OWNER deferred constraint (v3)', () => {
     }
   });
 
+  // ── T12.N16: owner_user_id=A while only user B has owner membership → rejected ─
+  //
+  // This is the complement of T12.N15. It proves the same-user invariant:
+  // "the active owner membership must belong to owner_user_id" (not just any owner).
+
+  it('T12.N16: owner_user_id=A while user B holds the only active owner membership → rejected', async () => {
+    const userBId = randomUUID();
+    await unsafePrismaAdmin.appUser.create({
+      data: {
+        id: userBId,
+        authProvider: 'credentials',
+        authSubject: `phase12-n16-${userBId}@bookpitch-test.invalid`,
+        email: `phase12-n16-${userBId}@bookpitch-test.invalid`,
+        passwordHash: 'x',
+      },
+    });
+    try {
+      // Attempt to:
+      //   1. Give user B an active owner membership (in addition to user A's).
+      //   2. Remove user A's membership.
+      //   3. Set owner_user_id = A (who no longer has a membership).
+      // The trigger must reject because owner_user_id=A but only B has an active owner.
+      await expect(
+        unsafePrismaAdmin.$transaction(async (tx) => {
+          await tx.membership.create({
+            data: { userId: userBId, organizationId: F.orgId, role: 'owner', status: 'active' },
+          });
+          await tx.membership.delete({ where: { id: F.membershipId } });
+          // owner_user_id stays as F.userId (A) but only userB (B) now has the membership.
+        }),
+      ).rejects.toThrow(/org_owner invariant/);
+
+      // The org and original membership must be unchanged.
+      const org = await unsafePrismaAdmin.organization.findUnique({ where: { id: F.orgId } });
+      expect(org?.ownerUserId).toBe(F.userId);
+      const mem = await unsafePrismaAdmin.membership.findUnique({ where: { id: F.membershipId } });
+      expect(mem).not.toBeNull();
+    } finally {
+      await unsafePrismaAdmin.membership.deleteMany({ where: { userId: userBId } }).catch(() => {});
+      await unsafePrismaAdmin.appUser.delete({ where: { id: userBId } }).catch(() => {});
+    }
+  });
+
   // ── T12.D1: DEFERRABLE — delete-first then add-second works ─────────────
 
   it('T12.D1: delete old owner FIRST then add new owner — succeeds (proves DEFERRED not IMMEDIATE)', async () => {
@@ -699,6 +742,211 @@ describe('Phase 12 — PostgreSQL ORG_OWNER deferred constraint (v3)', () => {
         .catch(() => {});
       await unsafePrismaAdmin.appUser.delete({ where: { id: userId2 } }).catch(() => {});
       await unsafePrismaAdmin.appUser.delete({ where: { id: userId3 } }).catch(() => {});
+    }
+  });
+
+  // ── T12.C2: READ COMMITTED — last-owner removal rejected via Prisma admin ───
+  //
+  // Proves the deferred trigger fires correctly under READ COMMITTED (PostgreSQL
+  // default). Uses unsafePrismaAdmin which connects as the admin role and can
+  // read the organizations table from the trigger function's SECURITY INVOKER context.
+  // The trigger fires at COMMIT; a raw transaction that removes the last owner
+  // membership MUST be rejected even when run in the default isolation level.
+  //
+  // Note: a pure pg.Client DELETE with the restricted bookpitch_app role would
+  // silently pass because the SECURITY INVOKER trigger can't read organizations
+  // under RLS without SET LOCAL. The admin-role path is the relevant protection.
+
+  it('T12.C2: READ COMMITTED — last-owner membership DELETE rejected by deferred trigger at COMMIT', async () => {
+    const testOrgId = randomUUID();
+    const testOwnerId = randomUUID();
+
+    await unsafePrismaAdmin.appUser.create({
+      data: {
+        id: testOwnerId,
+        authProvider: 'credentials',
+        authSubject: `phase12-c2-${testOwnerId}@bookpitch-test.invalid`,
+        email: `phase12-c2-${testOwnerId}@bookpitch-test.invalid`,
+        passwordHash: 'x',
+      },
+    });
+    const mem = await unsafePrismaAdmin.$transaction(async (tx) => {
+      await tx.organization.create({
+        data: { id: testOrgId, name: `Phase12 C2 ${testOrgId.slice(0, 8)}` },
+      });
+      const m = await tx.membership.create({
+        data: { userId: testOwnerId, organizationId: testOrgId, role: 'owner', status: 'active' },
+      });
+      await tx.organization.update({
+        where: { id: testOrgId },
+        data: { ownerUserId: testOwnerId },
+      });
+      return m;
+    });
+
+    try {
+      // A Prisma admin transaction runs under READ COMMITTED (the Prisma default).
+      // Deleting the only owner membership in a deferred-constraint transaction
+      // must be caught by the trigger at COMMIT.
+      await expect(
+        unsafePrismaAdmin.$transaction(async (tx) => {
+          await tx.$executeRaw`SET CONSTRAINTS ALL DEFERRED`;
+          await tx.$executeRaw`DELETE FROM memberships WHERE id = ${mem.id}::uuid`;
+          // Trigger fires at COMMIT — must raise P0001.
+        }),
+      ).rejects.toThrow();
+
+      // The membership must still exist — the rollback preserved it.
+      const remaining = await unsafePrismaAdmin.membership.findUnique({ where: { id: mem.id } });
+      expect(remaining).not.toBeNull();
+      expect(remaining?.role).toBe('owner');
+      expect(remaining?.status).toBe('active');
+    } finally {
+      await unsafePrismaAdmin.organization
+        .update({ where: { id: testOrgId }, data: { ownerUserId: null, status: 'archived' } })
+        .catch(() => {});
+      await unsafePrismaAdmin.membership
+        .deleteMany({ where: { organizationId: testOrgId } })
+        .catch(() => {});
+      await unsafePrismaAdmin.organization.delete({ where: { id: testOrgId } }).catch(() => {});
+      await unsafePrismaAdmin.appUser.delete({ where: { id: testOwnerId } }).catch(() => {});
+    }
+  });
+
+  // ── T12.C3: READ COMMITTED — concurrent two-owner simultaneous demotion ────
+  //
+  // Setup: org with owner_user_id=A; both A and B have active owner memberships.
+  //
+  // Two independent pg.Client connections run concurrently under READ COMMITTED:
+  //   E demotes B (not org.owner_user_id). B's row, no lock conflict with F.
+  //   F demotes A (the org.owner_user_id). A's row, no lock conflict with E.
+  //
+  // E commits first:
+  //   Trigger checks org.owner_user_id (=A). Does A have active owner membership?
+  //   YES — F hasn't committed yet, memA still 'owner'. COMMIT ok.
+  //
+  // F commits second:
+  //   Trigger checks org.owner_user_id (=A). Does A have active owner membership?
+  //   NO — E's COMMIT made memB 'practitioner'; F's own change makes memA 'practitioner'.
+  //   owner_user_id=A but no active owner membership for A → ROLLBACK.
+  //
+  // Net result: 1 success (E), 1 failure (F); A remains the only active owner.
+  //
+  // Connection role: superuser (BYPASSRLS) is required because the trigger is
+  // SECURITY INVOKER. Using bookpitch_app (NOBYPASSRLS) causes the trigger's
+  // SELECT on organizations to return 0 rows (RLS blocks without SET LOCAL),
+  // making v_owner_uid = NULL and silently skipping the invariant check.
+
+  it('T12.C3: READ COMMITTED — concurrent two-owner demotion leaves exactly one owner', async () => {
+    const testOrgId3 = randomUUID();
+    const ownerIdA = randomUUID();
+    const ownerIdB = randomUUID();
+
+    for (const [uid, suffix] of [
+      [ownerIdA, 'c3a'],
+      [ownerIdB, 'c3b'],
+    ] as const) {
+      await unsafePrismaAdmin.appUser.create({
+        data: {
+          id: uid,
+          authProvider: 'credentials',
+          authSubject: `phase12-${suffix}-${uid}@bookpitch-test.invalid`,
+          email: `phase12-${suffix}-${uid}@bookpitch-test.invalid`,
+          passwordHash: 'x',
+        },
+      });
+    }
+
+    const { memAId, memBId } = await unsafePrismaAdmin.$transaction(async (tx) => {
+      await tx.organization.create({
+        data: { id: testOrgId3, name: `Phase12 C3 ${testOrgId3.slice(0, 8)}` },
+      });
+      const mA = await tx.membership.create({
+        data: { userId: ownerIdA, organizationId: testOrgId3, role: 'owner', status: 'active' },
+      });
+      const mB = await tx.membership.create({
+        data: { userId: ownerIdB, organizationId: testOrgId3, role: 'owner', status: 'active' },
+      });
+      // owner_user_id = A — the trigger enforces that user A holds an active owner membership.
+      await tx.organization.update({ where: { id: testOrgId3 }, data: { ownerUserId: ownerIdA } });
+      return { memAId: mA.id, memBId: mB.id };
+    });
+
+    // Use the superuser (BYPASSRLS) session URL so the SECURITY INVOKER trigger
+    // function can read the organizations table without RLS filtering rows out.
+    // The NOBYPASSRLS app role causes the trigger to see 0 rows from organizations,
+    // making v_owner_uid = NULL and silently passing the invariant check.
+    const dbUrl =
+      process.env.DATABASE_URL_SUPERUSER_SESSION ??
+      process.env.ADMIN_DATABASE_URL ??
+      process.env.DATABASE_URL_SUPERUSER_TXPOOL ??
+      process.env.ADMIN_RUNTIME_DATABASE_URL ??
+      process.env.DATABASE_URL!;
+
+    const clientE = new Client({ connectionString: dbUrl });
+    const clientF = new Client({ connectionString: dbUrl });
+    await clientE.connect();
+    await clientF.connect();
+
+    try {
+      // Phase 1: Both clients start deferred-constraint transactions and execute
+      // their demotions on DIFFERENT rows — no row-level lock contention.
+      //
+      // E demotes B (memBId) — the non-designated-owner user.
+      // F demotes A (memAId) — the designated owner (org.owner_user_id = A).
+      await Promise.all([
+        (async () => {
+          await clientE.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+          await clientE.query('SET CONSTRAINTS ALL DEFERRED');
+          await clientE.query(
+            `UPDATE memberships SET role = 'practitioner' WHERE id = '${memBId}'::uuid`,
+          );
+        })(),
+        (async () => {
+          await clientF.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+          await clientF.query('SET CONSTRAINTS ALL DEFERRED');
+          await clientF.query(
+            `UPDATE memberships SET role = 'practitioner' WHERE id = '${memAId}'::uuid`,
+          );
+        })(),
+      ]);
+
+      // Phase 2: Commit E first.
+      // Trigger fires for memB (ownerIdB). Checks org.owner_user_id = ownerIdA.
+      // Does ownerIdA have active owner membership? YES (F not committed) → COMMIT ok.
+      await clientE.query('COMMIT');
+
+      // Phase 3: Now F tries to commit.
+      // Trigger fires for memA (ownerIdA). Checks org.owner_user_id = ownerIdA.
+      // Does ownerIdA have active owner membership?
+      //   memA → 'practitioner' (F's own deferred change now committing)
+      //   memB → 'practitioner' (E committed in Phase 2)
+      // NO active owner for ownerIdA → ERROR.
+      await expect(clientF.query('COMMIT')).rejects.toMatchObject({ code: 'P0001' });
+      await clientF.query('ROLLBACK').catch(() => {});
+
+      // memA (ownerIdA) is still 'owner' because F rolled back.
+      // memB (ownerIdB) is 'practitioner' because E committed.
+      // Exactly 1 active owner remains: ownerIdA.
+      const remainingOwners = await unsafePrismaAdmin.membership.findMany({
+        where: { organizationId: testOrgId3, role: 'owner', status: 'active' },
+      });
+      expect(remainingOwners.length).toBe(1);
+      expect(remainingOwners[0].userId).toBe(ownerIdA);
+    } finally {
+      await clientE.end().catch(() => {});
+      await clientF.end().catch(() => {});
+
+      // Cleanup: archive first to bypass owner invariant, then delete memberships, org, users.
+      await unsafePrismaAdmin.organization
+        .update({ where: { id: testOrgId3 }, data: { ownerUserId: null, status: 'archived' } })
+        .catch(() => {});
+      await unsafePrismaAdmin.membership
+        .deleteMany({ where: { organizationId: testOrgId3 } })
+        .catch(() => {});
+      await unsafePrismaAdmin.organization.delete({ where: { id: testOrgId3 } }).catch(() => {});
+      await unsafePrismaAdmin.appUser.delete({ where: { id: ownerIdA } }).catch(() => {});
+      await unsafePrismaAdmin.appUser.delete({ where: { id: ownerIdB } }).catch(() => {});
     }
   });
 });

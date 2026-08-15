@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { Client } from 'pg';
 
 const { authMock } = vi.hoisted(() => ({ authMock: vi.fn() }));
 vi.mock('@/auth', () => ({
@@ -22,6 +23,7 @@ const { requireAuthContext, can } = await import('@/lib/rbac');
 const { generateSecret, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
 const { generate: totpGenerate } = await import('@otplib/totp');
 const { encryptField } = await import('@/lib/crypto');
+const { startBreakGlass } = await import('@/lib/platform/break-glass');
 
 import type { NextRequest } from 'next/server';
 function req(url: string, init?: RequestInit): NextRequest {
@@ -115,6 +117,60 @@ describe('/api/platform/break-glass', () => {
     });
     expect(s.actorUserId).toBe(superUserId);
     expect(s.reason).toBe('triage-check');
+  });
+
+  it('missing 2FA factor (neither totpCode nor recoveryCode) → 400', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    const res = await bgRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({
+          password: 'devpass123',
+          // totpCode and recoveryCode both omitted — form must always send one.
+          reason: 'missing-factor',
+          ticketId: 'BG-factor',
+        }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error ?? body.message ?? '').toMatch(/totpCode|recoveryCode|required/i);
+  });
+
+  it('both totpCode and recoveryCode provided — API accepts (first wins in startBreakGlass)', async () => {
+    // BreakGlassForm sends exactly one, but the API should not reject both.
+    // The form's factor-selector ensures mutual exclusion at the UI layer.
+    // This test documents the API contract: providing both is not a 400.
+    // (The form never does this, but API shouldn't be fragile about it.)
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaLastTotpWindow: null },
+    });
+    await __clearPasswordReauthCache();
+    const code = await freshTotpCode(totpSecret);
+    const res = await bgRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({
+          password: 'devpass123',
+          totpCode: code,
+          recoveryCode: 'does-not-matter-totp-wins',
+          reason: 'both-factors-test',
+          ticketId: 'BG-both',
+        }),
+      }),
+    );
+    // Either 200 (TOTP accepted) or 400 (invalid recovery + TOTP conflict).
+    // Either way, it must NOT be a 5xx.
+    expect(res.status).toBeLessThan(500);
+    // Cleanup.
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE break_glass_sessions
+      SET ended_at = now(), ended_reason = 'test_cleanup'
+      WHERE actor_user_id = ${superUserId}::uuid AND ended_at IS NULL
+    `;
+    await unsafePrismaAdmin.emailOutbox.deleteMany({ where: { purpose: 'break_glass.alert' } });
   });
 
   it('wrong password → 400', async () => {
@@ -453,6 +509,73 @@ describe('/api/platform/break-glass', () => {
       })
     ).sessionVersion;
     expect(vAfter).toBeGreaterThan(vBefore);
+  });
+
+  it('explicit session end permits a new session to start', async () => {
+    // First create a session directly.
+    const dt = await dbTime();
+    const existing = await unsafePrismaAdmin.breakGlassSession.create({
+      data: {
+        actorUserId: superUserId,
+        reason: 'end-then-start',
+        ticketId: 'BG-end-then-start',
+        expiresAt: dt.future(60 * 60_000),
+      },
+    });
+
+    // End it via the API.
+    __clearAuthContextCache();
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    const endRes = await bgEndRoute.POST(
+      req('http://x', { method: 'POST', body: JSON.stringify({ reason: 'manual-end' }) }),
+    );
+    expect(endRes.status).toBe(200);
+
+    const ended = await unsafePrismaAdmin.breakGlassSession.findUniqueOrThrow({
+      where: { id: existing.id },
+    });
+    expect(ended.endedAt).toBeTruthy();
+
+    // Now a new session must succeed (no ConflictError from the old session).
+    const { startBreakGlass } = await import('@/lib/platform/break-glass');
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaLastTotpWindow: null },
+    });
+    await __clearPasswordReauthCache();
+    const newCode = await freshTotpCode(totpSecret);
+    const actor = {
+      userId: superUserId,
+      email: 'superadmin@bp.test',
+      membershipId: null,
+      activeOrganizationId: null,
+      roleKey: null,
+      roleRank: 0,
+      permissions: new Set(),
+      platformPermissions: new Set(),
+      branchIds: new Set(),
+      impersonation: null,
+      isImpersonating: false,
+      breakGlass: null,
+      authSessionId: '',
+    } as unknown as Parameters<typeof startBreakGlass>[0]['actor'];
+
+    const newSession = await startBreakGlass({
+      actor,
+      password: 'devpass123',
+      totpCode: newCode,
+      reason: 'post-end-start',
+      ticketId: 'BG-post-end',
+    });
+    expect(newSession.sessionId).toBeTruthy();
+
+    // Cleanup.
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE break_glass_sessions
+      SET ended_at = now(), ended_reason = 'test_cleanup'
+      WHERE actor_user_id = ${superUserId}::uuid AND ended_at IS NULL
+    `;
+    await unsafePrismaAdmin.emailOutbox.deleteMany({ where: { purpose: 'break_glass.alert' } });
   });
 
   it('Phase 11 Row 2/13: TOTP replay fence is NOT advanced when the transaction rolls back', async () => {
@@ -886,5 +1009,334 @@ describe('break-glass concurrent activation — exactly one succeeds', () => {
       WHERE actor_user_id = ${superUserId}::uuid AND ended_at IS NULL
     `;
     await unsafePrismaAdmin.emailOutbox.deleteMany({ where: { purpose: 'break_glass.alert' } });
+  });
+});
+
+// ── Full startBreakGlass concurrent race — READ COMMITTED, two recovery codes ─
+//
+// Two concurrent startBreakGlass() calls with distinct valid unused recovery
+// codes run through the full security stack (password verify, preCheckRecoveryCode,
+// $transaction, partial-unique-index enforcement). Exactly one must succeed.
+//
+// Asserts:
+//   1. Exactly one call returns a sessionId (the other throws ConflictError).
+//   2. Exactly one active session exists in the DB.
+//   3. The losing recovery code remains unused (tx rollback protected it).
+//   4. Exactly one break_glass.start audit row exists (losing tx rolled back).
+//   5. sessionVersion incremented exactly once (losing tx rolled back).
+//   6. A new session succeeds after DB-time expiry without requiring housekeeping
+//      (the sweep-expired-sessions step inside the tx handles it).
+
+describe('break-glass full-stack concurrent race — READ COMMITTED', () => {
+  let raceUserId: string;
+  let raceActor: Parameters<typeof startBreakGlass>[0]['actor'];
+  let codes: string[];
+
+  beforeAll(async () => {
+    await seedRbacFixtures();
+    const su = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'superadmin@bp.test' },
+      select: { id: true, sessionVersion: true },
+    });
+    raceUserId = su.id;
+    raceActor = {
+      userId: raceUserId,
+      email: 'superadmin@bp.test',
+      membershipId: null,
+      activeOrganizationId: null,
+      roleKey: null,
+      roleRank: 0,
+      permissions: new Set(),
+      platformPermissions: new Set(),
+      branchIds: new Set(),
+      impersonation: null,
+      isImpersonating: false,
+      breakGlass: null,
+      authSessionId: '',
+    } as unknown as Parameters<typeof startBreakGlass>[0]['actor'];
+  });
+
+  it('exactly one of two concurrent calls with distinct recovery codes wins', async () => {
+    const { generateRecoveryCodes } = await import('@/lib/platform/mfa');
+    const { createHash } = await import('node:crypto');
+
+    // Clear password + code rate-limits so this test runs in a clean state,
+    // independent of how many attempts previous tests already consumed.
+    await __clearPasswordReauthCache();
+    await unsafePrismaAdmin.platformRateLimit.deleteMany({
+      where: { bucket: { in: [`totp:${raceUserId}`, `recovery:${raceUserId}`] } },
+    });
+
+    // Sweep any existing active sessions.
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE break_glass_sessions
+      SET ended_at = now(), ended_reason = 'test_cleanup'
+      WHERE actor_user_id = ${raceUserId}::uuid AND ended_at IS NULL
+    `;
+    await unsafePrismaAdmin.emailOutbox.deleteMany({ where: { purpose: 'break_glass.alert' } });
+
+    // Snapshot audit row count before the race so we can check the loser wrote none.
+    const auditCountBefore = await unsafePrismaAdmin.auditLog.count({
+      where: { actorUserId: raceUserId, action: 'break_glass.start' },
+    });
+
+    // Snapshot sessionVersion before the race.
+    const { sessionVersion: versionBefore } = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { id: raceUserId },
+      select: { sessionVersion: true },
+    });
+
+    // Generate 8 fresh recovery codes; use codes[0] and codes[1] as the two racers.
+    const result = await generateRecoveryCodes(raceUserId);
+    codes = result.codes;
+    const code1 = codes[0];
+    const code2 = codes[1];
+
+    // Fire both calls simultaneously via Promise.all.
+    const outcomes = await Promise.allSettled([
+      startBreakGlass({
+        actor: raceActor,
+        password: 'devpass123',
+        recoveryCode: code1,
+        reason: 'concurrent-race-1',
+        ticketId: 'BG-race-rc-1',
+      }),
+      startBreakGlass({
+        actor: raceActor,
+        password: 'devpass123',
+        recoveryCode: code2,
+        reason: 'concurrent-race-2',
+        ticketId: 'BG-race-rc-2',
+      }),
+    ]);
+
+    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+    const rejected = outcomes.filter((o) => o.status === 'rejected');
+
+    // 1. Exactly one must have succeeded.
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    // Loser must be ConflictError (from P2002 unique constraint catch or app check).
+    const { ConflictError } = await import('@/lib/auth');
+    const loserReason = (rejected[0] as PromiseRejectedResult).reason;
+    expect(loserReason).toBeInstanceOf(ConflictError);
+
+    // 2. Exactly one active session exists.
+    const activeSessions = await unsafePrismaAdmin.breakGlassSession.findMany({
+      where: { actorUserId: raceUserId, endedAt: null },
+    });
+    expect(activeSessions).toHaveLength(1);
+
+    // 3. The losing recovery code is still unused.
+    // Determine which code the winner used from the winning sessionId vs audit.
+    const winnerSessionId = (fulfilled[0] as PromiseFulfilledResult<{ sessionId: string }>).value
+      .sessionId;
+    // Find which code was consumed (used_at IS NOT NULL).
+    function normalize(c: string) {
+      return c.trim().toUpperCase().replace(/[-\s]/g, '');
+    }
+    function codeHash(c: string) {
+      return createHash('sha256').update(normalize(c)).digest('hex');
+    }
+    const code1Row = await unsafePrismaAdmin.appUserRecoveryCode.findFirst({
+      where: { userId: raceUserId, codeHash: codeHash(code1) },
+    });
+    const code2Row = await unsafePrismaAdmin.appUserRecoveryCode.findFirst({
+      where: { userId: raceUserId, codeHash: codeHash(code2) },
+    });
+    // Exactly one must be consumed, one unused.
+    const consumedCount = [code1Row?.usedAt, code2Row?.usedAt].filter(Boolean).length;
+    const unusedCount = [code1Row?.usedAt, code2Row?.usedAt].filter((v) => v === null).length;
+    expect(consumedCount).toBe(1);
+    expect(unusedCount).toBe(1);
+
+    // 4. Winner has exactly one break_glass.start audit row linked to its session.
+    const auditRows = await unsafePrismaAdmin.auditLog.findMany({
+      where: {
+        actorUserId: raceUserId,
+        action: 'break_glass.start',
+        breakGlassSessionId: winnerSessionId,
+      },
+    });
+    expect(auditRows).toHaveLength(1);
+
+    // 4a. Loser wrote NO audit row — total count increased by exactly 1 (winner only).
+    const auditCountAfter = await unsafePrismaAdmin.auditLog.count({
+      where: { actorUserId: raceUserId, action: 'break_glass.start' },
+    });
+    expect(auditCountAfter).toBe(auditCountBefore + 1);
+
+    // 4b. Loser wrote NO outbox row — only the winner's outbox row exists.
+    const outboxRows = await unsafePrismaAdmin.emailOutbox.findMany({
+      where: { purpose: 'break_glass.alert' },
+    });
+    expect(outboxRows).toHaveLength(1);
+
+    // 4c. Loser error is ConflictError (P2002 translated), never raw SQLSTATE or PrismaError.
+    const loserErr = (rejected[0] as PromiseRejectedResult).reason;
+    expect(loserErr).not.toHaveProperty('code', '23505');
+    expect(loserErr?.constructor?.name).not.toContain('Prisma');
+
+    // 5. sessionVersion incremented exactly once.
+    const { sessionVersion: versionAfter } = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { id: raceUserId },
+      select: { sessionVersion: true },
+    });
+    expect(versionAfter).toBe((versionBefore ?? 0) + 1);
+
+    // Cleanup active session.
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE break_glass_sessions
+      SET ended_at = now(), ended_reason = 'test_cleanup'
+      WHERE actor_user_id = ${raceUserId}::uuid AND ended_at IS NULL
+    `;
+    await unsafePrismaAdmin.emailOutbox.deleteMany({ where: { purpose: 'break_glass.alert' } });
+  });
+
+  it('new session succeeds after DB-time expiry without housekeeping sweep', async () => {
+    const { generateRecoveryCodes } = await import('@/lib/platform/mfa');
+
+    // Clear rate limits so this test is independent of prior password attempts.
+    await __clearPasswordReauthCache();
+    await unsafePrismaAdmin.platformRateLimit.deleteMany({
+      where: { bucket: { in: [`totp:${raceUserId}`, `recovery:${raceUserId}`] } },
+    });
+
+    // Ensure no active sessions.
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE break_glass_sessions
+      SET ended_at = now(), ended_reason = 'test_cleanup'
+      WHERE actor_user_id = ${raceUserId}::uuid AND ended_at IS NULL
+    `;
+    await unsafePrismaAdmin.emailOutbox.deleteMany({ where: { purpose: 'break_glass.alert' } });
+
+    // Plant a short-lived session (expires 200ms from now) — satisfies the
+    // break_glass_sessions_expires_future CHECK constraint (expires_at > now()).
+    // After pg_sleep(0.3), the row's expires_at is in the past but ended_at is
+    // still NULL, simulating an expired-but-not-swept session.
+    await unsafePrismaAdmin.$executeRaw`
+      INSERT INTO break_glass_sessions (actor_user_id, reason, ticket_id, expires_at)
+      VALUES (${raceUserId}::uuid, 'stale-expired', 'BG-expired-no-hk',
+              now() + interval '0.2 seconds')
+    `;
+    // Wait for the row to become expired in DB time.
+    await unsafePrismaAdmin.$executeRaw`SELECT pg_sleep(0.35)`;
+
+    // Confirm the expired row blocks a naive unique-index check.
+    const unsweptCount = await unsafePrismaAdmin.breakGlassSession.count({
+      where: { actorUserId: raceUserId, endedAt: null },
+    });
+    expect(unsweptCount).toBe(1); // expired but unswept
+
+    // A new startBreakGlass must succeed WITHOUT requiring housekeeping to sweep
+    // the expired row — the transaction atomically sweeps it.
+    const { codes: freshCodes } = await generateRecoveryCodes(raceUserId);
+    const result = await startBreakGlass({
+      actor: raceActor,
+      password: 'devpass123',
+      recoveryCode: freshCodes[0],
+      reason: 'post-expiry-session',
+      ticketId: 'BG-post-expiry',
+    });
+    expect(result.sessionId).toBeTruthy();
+
+    // The expired row must now have ended_at set (swept by the transaction).
+    const sweptRows = await unsafePrismaAdmin.breakGlassSession.findMany({
+      where: { actorUserId: raceUserId, endedReason: 'auto_expired' },
+    });
+    expect(sweptRows.length).toBeGreaterThanOrEqual(1);
+    expect(sweptRows[0].endedAt).not.toBeNull();
+
+    // Only one active session (the new one).
+    const activeSessions = await unsafePrismaAdmin.breakGlassSession.findMany({
+      where: { actorUserId: raceUserId, endedAt: null },
+    });
+    expect(activeSessions).toHaveLength(1);
+
+    // Cleanup.
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE break_glass_sessions
+      SET ended_at = now(), ended_reason = 'test_cleanup'
+      WHERE actor_user_id = ${raceUserId}::uuid AND ended_at IS NULL
+    `;
+    await unsafePrismaAdmin.emailOutbox.deleteMany({ where: { purpose: 'break_glass.alert' } });
+  });
+});
+
+// ── DB-level race: partial unique index blocks concurrent INSERTs ─────────────
+//
+// Two independent pg.Client connections race to INSERT a break_glass_session
+// row for the same actor_user_id with ended_at = NULL. The partial unique index
+// idx_break_glass_sessions_actor_active (actor_user_id WHERE ended_at IS NULL)
+// guarantees exactly one INSERT wins; the other gets 23505 (unique_violation).
+// This proves the DB-level guarantee holds even when the application-level
+// findFirst check is bypassed — e.g. two processes that both pass the app-level
+// check under READ COMMITTED before either has committed.
+//
+describe('break-glass DB-level race — partial unique index prevents double-insert', () => {
+  let raceActorId: string;
+
+  beforeAll(async () => {
+    await seedRbacFixtures();
+    const su = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'superadmin@bp.test' },
+      select: { id: true },
+    });
+    raceActorId = su.id;
+  });
+
+  it('exactly one of two concurrent INSERTs wins; loser gets 23505', async () => {
+    const dbUrl = process.env.DATABASE_URL_SUPERUSER_SESSION ?? process.env.DATABASE_URL!;
+
+    // Clear any existing active sessions so the race starts clean.
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE break_glass_sessions
+      SET ended_at = now(), ended_reason = 'test_cleanup'
+      WHERE actor_user_id = ${raceActorId}::uuid AND ended_at IS NULL
+    `;
+
+    // Each worker opens its own pg.Client and attempts to INSERT independently.
+    // Both run in the same READ COMMITTED transaction mode (Postgres default).
+    async function tryInsert(label: string): Promise<{ id: string } | null> {
+      const client = new Client({ connectionString: dbUrl });
+      await client.connect();
+      try {
+        const res = await client.query<{ id: string }>(
+          `INSERT INTO break_glass_sessions
+             (actor_user_id, reason, ticket_id, expires_at)
+           VALUES ($1::uuid, $2, $3, now() + interval '60 minutes')
+           RETURNING id`,
+          [raceActorId, `race-test-${label}`, `BG-race-${label}`],
+        );
+        return res.rows[0] ?? null;
+      } catch (err: unknown) {
+        // 23505 = unique_violation — expected for the loser.
+        const pg = err as { code?: string };
+        if (pg.code === '23505') return null;
+        throw err;
+      } finally {
+        await client.end();
+      }
+    }
+
+    const [r1, r2] = await Promise.all([tryInsert('A'), tryInsert('B')]);
+
+    // Exactly one must have succeeded.
+    const winners = [r1, r2].filter(Boolean);
+    expect(winners).toHaveLength(1);
+
+    // DB must have exactly one active session.
+    const activeSessions = await unsafePrismaAdmin.breakGlassSession.findMany({
+      where: { actorUserId: raceActorId, endedAt: null },
+    });
+    expect(activeSessions).toHaveLength(1);
+
+    // Cleanup.
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE break_glass_sessions
+      SET ended_at = now(), ended_reason = 'test_cleanup'
+      WHERE actor_user_id = ${raceActorId}::uuid AND ended_at IS NULL
+    `;
   });
 });

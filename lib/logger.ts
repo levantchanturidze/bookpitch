@@ -117,62 +117,71 @@ function safeStringify(v: unknown): string {
 // intentional friction.
 // -----------------------------------------------------------------------------
 
+// All entries are lowercase. Lookups use k.toLowerCase() so that mixed-case
+// variants (Email, PASSWORD, mfaTotp, MFA_TOTP) are all caught without
+// maintaining separate case variants for every key.
 const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   // ── Contact / demographic PII ─────────────────────────────────────────────
   'email',
+  'emailaddress',
+  'email_address',
+  'toaddress',
+  'to_address',
+  'recipient',
   'phone',
   'dob',
   'address',
   // ── Client / patient names ────────────────────────────────────────────────
-  'customerName',
-  'patientName',
-  'clientName',
-  'fullName',
+  'customername',
+  'patientname',
+  'clientname',
+  'fullname',
   'customer_name',
   'patient_name',
   'client_name',
   'full_name',
   // ── Clinical / sensitive-category fields ──────────────────────────────────
   'allergies',
-  'clinicalNotes',
+  'clinicalnotes',
   'clinical_notes',
   // ── Passwords and hashes ─────────────────────────────────────────────────
   'password',
-  'passwordHash',
+  'passwordhash',
   'password_hash',
-  'passwordDigest',
-  'hashedPassword',
+  'passworddigest',
+  'hashedpassword',
   // ── Session / auth tokens ─────────────────────────────────────────────────
   'token',
-  'refreshToken',
-  'accessToken',
-  'sessionToken',
-  'idToken',
-  'csrfToken',
-  'authSecret',
-  'authToken',
+  'refreshtoken',
+  'accesstoken',
+  'sessiontoken',
+  'idtoken',
+  'csrftoken',
+  'authsecret',
+  'authtoken',
   // ── MFA / TOTP ────────────────────────────────────────────────────────────
-  'mfaTotp',
-  'mfaTotpPending',
-  'totpSecret',
-  'otpauthUri',
-  'backupCode',
-  'recoveryCode',
-  'codeHash',
+  'mfatotp',
+  'mfatotppending',
+  'totpsecret',
+  'otpauthuri',
+  'backupcode',
+  'recoverycode',
+  'recovery_code',
+  'codehash',
   // ── API and HMAC keys ─────────────────────────────────────────────────────
-  'apiKey',
+  'apikey',
   'api_key',
-  'hmacKey',
-  'signingKey',
-  'encryptionKey',
-  'secretKey',
+  'hmackey',
+  'signingkey',
+  'encryptionkey',
+  'secretkey',
   'secret',
   // ── Crypto internals ──────────────────────────────────────────────────────
   'iv',
-  'authTag',
-  'encryptedData',
-  'encryptedField',
-  'encryptedSecret',
+  'authtag',
+  'encrypteddata',
+  'encryptedfield',
+  'encryptedsecret',
   // ── HTTP auth headers ─────────────────────────────────────────────────────
   'cookie',
   'cookies',
@@ -180,18 +189,18 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'bearer',
   'x-api-key',
   // ── Database and connection strings ───────────────────────────────────────
-  'connectionString',
-  'databaseUrl',
+  'connectionstring',
+  'databaseurl',
   'database_url',
   'sql',
   'query',
   'params',
   // ── Network / privacy ─────────────────────────────────────────────────────
   'ip',
-  'ipAddress',
+  'ipaddress',
   'ip_address',
-  'rawIp',
-  'userAgent',
+  'rawip',
+  'useragent',
   'user_agent',
 ]);
 
@@ -201,7 +210,7 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
  * negatives over false positives that destroy operational context.
  */
 function looksLikeSecret(s: string): boolean {
-  if (s.length < 10) return false;
+  if (s.length < 4) return false;
   // Database connection strings.
   if (/^postgres(?:ql)?:\/\//i.test(s)) return true;
   // HTTP bearer / basic auth headers when the entire value is an auth credential.
@@ -210,6 +219,12 @@ function looksLikeSecret(s: string): boolean {
   // Compact JWT (three base64url segments, total > 60 chars).
   if (s.length > 60 && /^[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$/.test(s))
     return true;
+  // Email addresses — catch raw PII in arbitrary-key values.
+  if (/^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/.test(s)) return true;
+  // IPv4 addresses — e.g. 203.0.113.42 logged under any key name.
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(s)) return true;
+  // IPv6 addresses — compressed or full notation.
+  if (/^[0-9a-fA-F:]{2,39}$/.test(s) && s.includes(':') && s.split(':').length >= 3) return true;
   return false;
 }
 
@@ -282,7 +297,7 @@ export function scrubSensitive<T>(value: T, _seen?: WeakSet<object>, _depth?: nu
         keyCount++;
         try {
           const v = (value as Record<string, unknown>)[k];
-          if (SENSITIVE_KEYS.has(k)) {
+          if (SENSITIVE_KEYS.has(k.toLowerCase())) {
             out[k] = '[redacted]';
           } else {
             out[k] = scrubSensitive(v, seen, depth + 1);

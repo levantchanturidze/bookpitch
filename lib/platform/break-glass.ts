@@ -13,12 +13,13 @@
 
 import { unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError, ConflictError, ForbiddenError } from '@/lib/auth';
+import { Prisma } from '@prisma/client';
 import type { AuthContext } from '@/lib/rbac';
 import { verifyPasswordDirect } from './password-reauth';
 import { preCheckTotp, preCheckRecoveryCode } from './mfa';
 import { getEmailProvider } from '@/lib/messaging';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
-import { encryptField, decryptField } from '@/lib/crypto';
+import { encryptField, decryptField, hashEmailForIndex } from '@/lib/crypto';
 
 export const BREAK_GLASS_TTL_MS = 60 * 60 * 1000; // 60 minutes — spec §7.2 rule 4
 
@@ -81,12 +82,43 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
   // Full atomic transaction: eligibility check, credential commit,
   // session creation, audit log, sessionVersion bump.
   // expiresAt uses DB clock to prevent Node clock-skew pre-expiry.
-  const { session, expiresAt, alertIdempotencyKey } = await unsafePrismaAdmin.$transaction(
-    async (tx) => {
+  // The partial unique index idx_break_glass_sessions_actor_active enforces
+  // one active session per actor at the DB level. A concurrent INSERT that
+  // races past the app-level findFirst check will hit P2002; we translate
+  // that to ConflictError so callers get the same error from either path.
+  let txResult: Awaited<ReturnType<typeof runBreakGlassTx>>;
+  try {
+    txResult = await runBreakGlassTx();
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      throw new ConflictError('you already have an active break-glass session');
+    }
+    throw err;
+  }
+  const { session, expiresAt, alertIdempotencyKey } = txResult;
+
+  // Inline function so variable bindings from the outer scope (input, reason, etc.)
+  // are captured; the try/catch above converts DB unique-constraint violations to
+  // ConflictError without leaking Prisma internals.
+  async function runBreakGlassTx() {
+    return unsafePrismaAdmin.$transaction(async (tx) => {
       const [dbNow] = await tx.$queryRaw<[{ now: Date }]>`SELECT now() AS now`;
       const expiresAt = new Date(dbNow.now.getTime() + BREAK_GLASS_TTL_MS);
 
-      // One active session at a time (inside tx for snapshot consistency).
+      // Atomically sweep DB-expired sessions (ended_at IS NULL but expires_at <= now())
+      // for this actor before the uniqueness check. The partial unique index covers
+      // ended_at IS NULL, so an unswept expired row would block a legitimate new
+      // session even without a concurrent housekeeping worker. Sweeping inside this
+      // transaction removes the housekeeping dependency for correctness.
+      await tx.$executeRaw`
+        UPDATE break_glass_sessions
+        SET ended_at = ${dbNow.now}, ended_reason = 'auto_expired'
+        WHERE actor_user_id = ${input.actor.userId}::uuid
+          AND ended_at IS NULL
+          AND expires_at <= ${dbNow.now}
+      `;
+
+      // One active (not expired) session at a time (inside tx for snapshot consistency).
       const existing = await tx.breakGlassSession.findFirst({
         where: { actorUserId: input.actor.userId, endedAt: null, expiresAt: { gt: dbNow.now } },
         select: { id: true },
@@ -185,10 +217,15 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
         `If this wasn't you, reset your password immediately.`;
       const alertEncryptedBody = encryptField(alertPlainBody) ?? alertPlainBody;
       const alertBodyEncrypted = alertEncryptedBody !== alertPlainBody;
+      const alertToEncrypted = encryptField(alertTo) ?? alertTo;
+      const alertToIsEncrypted = alertToEncrypted !== alertTo;
+      const alertToHash = hashEmailForIndex(alertTo);
       await tx.emailOutbox.create({
         data: {
           idempotencyKey: alertIdempotencyKey,
-          toAddress: alertTo,
+          toAddress: alertToEncrypted,
+          toAddressEncrypted: alertToIsEncrypted,
+          toAddressHash: alertToHash,
           subject: '[Bookpitch] Break-glass session activated',
           body: alertEncryptedBody,
           bodyEncrypted: alertBodyEncrypted,
@@ -197,8 +234,8 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
       });
 
       return { session, expiresAt, alertTo, alertIdempotencyKey };
-    },
-  );
+    });
+  } // end runBreakGlassTx
 
   // Attempt immediate drain — best-effort, no throw. Claim atomically via
   // UPDATE … RETURNING to prevent a concurrent housekeeping worker from
@@ -209,6 +246,7 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
     type ClaimedRow = {
       id: string;
       to_address: string;
+      to_address_encrypted: boolean;
       subject: string;
       body: string;
       body_encrypted: boolean;
@@ -220,13 +258,16 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
           claim_expires_at = now() + interval '120 seconds',
           claimed_at = now()
       WHERE idempotency_key = ${alertIdempotencyKey} AND status = 'pending'
-      RETURNING id, to_address, subject, body, body_encrypted
+      RETURNING id, to_address, to_address_encrypted, subject, body, body_encrypted
     `;
     if (claimed) {
+      const toAddress = claimed.to_address_encrypted
+        ? (decryptField(claimed.to_address) ?? claimed.to_address)
+        : claimed.to_address;
       const body = claimed.body_encrypted
         ? (decryptField(claimed.body) ?? claimed.body)
         : claimed.body;
-      await provider.send(claimed.to_address, claimed.subject, body);
+      await provider.send(toAddress, claimed.subject, body);
       await unsafePrismaAdmin.$executeRaw`
         UPDATE email_outbox
         SET status = 'sent', sent_at = now(), claim_owner = NULL

@@ -598,6 +598,75 @@ describe('platform MFA (F2 — TOTP enrollment + verification)', () => {
     // Must still be false — enrollment is not confirmed yet.
     expect(after.mfaEnabled).toBe(false);
   });
+
+  // ── Recovery codes generated on initial enrollment ────────────────────────
+
+  it('confirmTotpEnrollment returns 8 recovery codes on initial enrollment', async () => {
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaEnabled: false, mfaTotp: null, mfaLastTotpWindow: null },
+    });
+    await unsafePrismaAdmin.appUserRecoveryCode.deleteMany({ where: { userId: superUserId } });
+
+    const secret = generateSecret();
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaTotp: encryptField(secret), mfaEnabled: false, mfaLastTotpWindow: null },
+    });
+
+    const result = await confirmTotpEnrollment(superUserId, await freshCode(secret));
+
+    // Initial enrollment must return plaintext recovery codes.
+    expect(result.recoveryCodes).not.toBeNull();
+    expect(result.recoveryCodes).toHaveLength(8);
+    result.recoveryCodes!.forEach((c) =>
+      expect(c).toMatch(/^[0-9A-F]+-[0-9A-F]+-[0-9A-F]+-[0-9A-F]+$/),
+    );
+
+    // Codes must exist in DB as hashes.
+    const dbCodes = await unsafePrismaAdmin.appUserRecoveryCode.count({
+      where: { userId: superUserId, usedAt: null },
+    });
+    expect(dbCodes).toBe(8);
+  });
+
+  it('confirmTotpEnrollment returns null recoveryCodes on re-enrollment', async () => {
+    // Starting from enrolled state (beforeEach restored this).
+    await generateTotpEnrollment(superUserId); // triggers re-enrollment path
+
+    const rowBefore = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { id: superUserId },
+      select: { mfaTotpPending: true },
+    });
+    const { decryptField } = await import('@/lib/crypto');
+    const pendingSecret = decryptField(rowBefore.mfaTotpPending!);
+    if (!pendingSecret) throw new Error('test setup: could not decrypt pending blob');
+
+    const result = await confirmTotpEnrollment(superUserId, await freshCode(pendingSecret));
+
+    // Re-enrollment must NOT return new recovery codes — existing codes remain.
+    expect(result.recoveryCodes).toBeNull();
+  });
+
+  // ── Lib-level SUPER_ADMIN enforcement ────────────────────────────────────────
+
+  it('generateTotpEnrollment rejects non-SUPER_ADMIN at the lib level', async () => {
+    const { ForbiddenError } = await import('@/lib/auth');
+    const platformAdmin = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'platform-admin@bp.test' },
+      select: { id: true },
+    });
+    await expect(generateTotpEnrollment(platformAdmin.id)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it('generateRecoveryCodes rejects non-SUPER_ADMIN at the lib level', async () => {
+    const { ForbiddenError } = await import('@/lib/auth');
+    const platformAdmin = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'platform-admin@bp.test' },
+      select: { id: true },
+    });
+    await expect(generateRecoveryCodes(platformAdmin.id)).rejects.toBeInstanceOf(ForbiddenError);
+  });
 });
 
 // ── Recovery code API (GET + POST /api/platform/mfa/recovery-codes) ──────────

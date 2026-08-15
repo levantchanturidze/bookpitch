@@ -1702,14 +1702,23 @@ describe('SEC § SEC-009 — changeOrganizationOwner must atomically promote mem
       });
       expect(memAfter.roleRef?.key).toBe('ORG_OWNER');
     } finally {
-      await unsafePrismaAdmin.membership.update({
-        where: { id: origMem.id },
-        data: { role: origMem.role, roleId: origMem.roleId },
-      });
-      await unsafePrismaAdmin.organization.update({
-        where: { id: H.splitOrgId },
-        data: { ownerUserId: origOrg.ownerUserId },
-      });
+      // Restore membership role and owner_user_id atomically — the deferred
+      // trigger checks at commit that owner_user_id's user has an active owner
+      // membership, so both must be consistent by the time the tx commits.
+      await unsafePrismaAdmin
+        .$transaction(async (tx) => {
+          await tx.membership.update({
+            where: { id: origMem.id },
+            data: { role: origMem.role, roleId: origMem.roleId },
+          });
+          await tx.organization.update({
+            where: { id: H.splitOrgId },
+            data: { ownerUserId: origOrg.ownerUserId },
+          });
+        })
+        .catch(() => {
+          // If rollback fails (e.g. split-owner membership was deleted), best-effort.
+        });
       __clearAuthContextCache();
     }
   });

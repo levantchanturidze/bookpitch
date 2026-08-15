@@ -177,9 +177,11 @@ export async function runHousekeeping(): Promise<HousekeepingResult> {
 
   // ── Email outbox drain ────────────────────────────────────────────────────
   // Done outside the advisory-locked transaction because email I/O must not
-  // hold a DB transaction open. Reads and marks rows atomically via individual
-  // UPDATE … RETURNING to avoid processing the same row twice under concurrent
-  // invocations (advisory lock above already prevents that, but defensive).
+  // hold a DB transaction open. The advisory lock (pg_try_advisory_xact_lock)
+  // is transaction-scoped and is released when the tx above commits — it does
+  // NOT cover the drain. Concurrent drain workers are instead prevented by the
+  // atomic claim inside drainEmailOutbox (FOR UPDATE SKIP LOCKED): each row is
+  // claimed by exactly one worker at a time regardless of concurrency.
   const outboxResult = await drainEmailOutbox(now);
 
   const final: HousekeepingResult = { ...result, ...outboxResult };
@@ -196,6 +198,7 @@ const OUTBOX_BATCH_SIZE = 10;
 type OutboxRow = {
   id: string;
   to_address: string;
+  to_address_encrypted: boolean;
   subject: string;
   body: string;
   body_encrypted: boolean;
@@ -223,10 +226,12 @@ async function drainEmailOutbox(
     `;
 
     // Step 2: atomically claim a batch via FOR UPDATE SKIP LOCKED.
-    // This is the concurrent-safe entry point — two workers cannot claim the same row.
+    // This is the concurrent-safe entry point: two workers racing to claim
+    // the same row will see different rows because SKIP LOCKED skips rows
+    // already locked by the other worker's transaction.
     const claimed = await unsafePrismaAdmin.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<OutboxRow[]>`
-        SELECT id, to_address, subject, body, body_encrypted, purpose, attempts, max_attempts
+        SELECT id, to_address, to_address_encrypted, subject, body, body_encrypted, purpose, attempts, max_attempts
         FROM email_outbox
         WHERE status = 'pending'
           AND next_attempt_at <= ${now}
@@ -250,8 +255,11 @@ async function drainEmailOutbox(
     // Step 3: send each claimed row outside the DB transaction.
     for (const row of claimed) {
       try {
+        const toAddress = row.to_address_encrypted
+          ? (decryptField(row.to_address) ?? row.to_address)
+          : row.to_address;
         const body = row.body_encrypted ? (decryptField(row.body) ?? row.body) : row.body;
-        await provider.send(row.to_address, row.subject, body);
+        await provider.send(toAddress, row.subject, body);
         await unsafePrismaAdmin.$executeRaw`
           UPDATE email_outbox
           SET status = 'sent', sent_at = ${now}, claim_owner = NULL

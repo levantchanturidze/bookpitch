@@ -522,7 +522,7 @@ model Notification {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@index([organizationId, createdAt], map: "idx_notifications_org")
+  @@index([organizationId, createdAt(sort: Desc)], map: "idx_notifications_org")
   @@map("notifications")
 }
 
@@ -943,9 +943,14 @@ model EmailOutbox {
   claimedAt      DateTime? @map("claimed_at") @db.Timestamptz(6)
   // When true, body contains AES-256-GCM ciphertext from encryptField().
   // Drain decrypts before passing to the email provider.
-  bodyEncrypted  Boolean   @default(false) @map("body_encrypted")
+  bodyEncrypted       Boolean  @default(false) @map("body_encrypted")
+  // When true, to_address contains AES-256-GCM ciphertext (encryptField).
+  // to_address_hash stores SHA-256 hex of the lowercase plaintext for filtering.
+  toAddressEncrypted  Boolean  @default(false) @map("to_address_encrypted")
+  toAddressHash       String?  @map("to_address_hash")
 
   // idx_email_outbox_worker (WHERE status = 'pending') — partial, migration only.
+  // idx_email_outbox_to_address_hash — partial index on non-null hash, migration only.
   @@index([createdAt], map: "idx_email_outbox_created")
   @@map("email_outbox")
 }

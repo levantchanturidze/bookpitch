@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createCipheriv } from 'node:crypto';
 
 // -----------------------------------------------------------------------------
 // Field encryption key rotation tests.
@@ -12,7 +12,8 @@ import { randomBytes } from 'node:crypto';
 //   • The key cache is properly cleared between rotations (__clearKeyCache).
 // -----------------------------------------------------------------------------
 
-const { encryptField, decryptField, __clearKeyCache } = await import('@/lib/crypto');
+const { encryptField, decryptField, hashEmailForIndex, __clearKeyCache, __clearEmailHmacKeyCache } =
+  await import('@/lib/crypto');
 
 function makeKey(): string {
   return randomBytes(32).toString('hex');
@@ -110,6 +111,75 @@ describe('crypto rotation — encrypt with K1, rotate to K2, K1 in OLD_KEYS', ()
     const plain = 'another-sensitive-value';
     const ct = encryptField(plain)!;
     expect(decryptField(ct)).toBe(plain);
+  });
+});
+
+// ── Legacy format round-trips ─────────────────────────────────────────────────
+//
+// decryptField must handle three historical ciphertext formats:
+//   1. Current:  "v1:<key-id>:<base64>"
+//   2. Legacy:   "v1:<base64>"         (no key-id; uses active key)
+//   3. Oldest:   "<base64>"            (no prefix at all; uses active key)
+
+function aesGcmEncrypt(key: Buffer, plaintext: string): Buffer {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, ct, tag]);
+}
+
+describe('crypto legacy format round-trips', () => {
+  it('decryptField handles legacy "v1:<base64>" format (no key-id)', () => {
+    const key = Buffer.from(K1_HEX, 'hex');
+    const payload = aesGcmEncrypt(key, 'legacy-no-key-id');
+    const blob = `v1:${payload.toString('base64')}`;
+    expect(decryptField(blob)).toBe('legacy-no-key-id');
+  });
+
+  it('decryptField handles oldest bare "<base64>" format (no v1: prefix)', () => {
+    const key = Buffer.from(K1_HEX, 'hex');
+    const payload = aesGcmEncrypt(key, 'oldest-no-prefix');
+    const blob = payload.toString('base64');
+    // Must not start with "v1:" to hit the bare-base64 branch.
+    expect(blob.startsWith('v1:')).toBe(false);
+    expect(decryptField(blob)).toBe('oldest-no-prefix');
+  });
+
+  it('decryptField with key-id still works after rotation (current format)', () => {
+    const ciphertext = encryptField('current-format-value')!;
+    expect(ciphertext).toMatch(/^v1:[A-Za-z0-9_-]+:/);
+    expect(decryptField(ciphertext)).toBe('current-format-value');
+  });
+});
+
+// ── HMAC missing-key production failure ───────────────────────────────────────
+
+describe('hashEmailForIndex — production fail-closed when key is absent', () => {
+  const origNodeEnv = process.env.NODE_ENV;
+  const origHmacKey = process.env.EMAIL_PRIVACY_HMAC_KEY;
+
+  afterEach(() => {
+    Object.assign(process.env, { NODE_ENV: origNodeEnv });
+    if (origHmacKey !== undefined) process.env.EMAIL_PRIVACY_HMAC_KEY = origHmacKey;
+    else delete process.env.EMAIL_PRIVACY_HMAC_KEY;
+    __clearEmailHmacKeyCache();
+  });
+
+  it('throws in production when EMAIL_PRIVACY_HMAC_KEY is absent', () => {
+    delete process.env.EMAIL_PRIVACY_HMAC_KEY;
+    Object.assign(process.env, { NODE_ENV: 'production' });
+    __clearEmailHmacKeyCache();
+    expect(() => hashEmailForIndex('any@example.com')).toThrow(/EMAIL_PRIVACY_HMAC_KEY/);
+  });
+
+  it('succeeds in non-production when only FIELD_ENCRYPTION_KEY is set', () => {
+    delete process.env.EMAIL_PRIVACY_HMAC_KEY;
+    Object.assign(process.env, { NODE_ENV: 'test' });
+    __clearEmailHmacKeyCache();
+    // Falls back to FIELD_ENCRYPTION_KEY — must not throw.
+    const result = hashEmailForIndex('fallback@example.com');
+    expect(result).toHaveLength(64);
   });
 });
 

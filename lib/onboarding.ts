@@ -5,7 +5,7 @@ import { withoutRls, unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
-import { encryptField, decryptField } from '@/lib/crypto';
+import { encryptField, decryptField, hashEmailForIndex } from '@/lib/crypto';
 
 // -----------------------------------------------------------------------------
 // Self-service org onboarding — two-phase: pending → activated.
@@ -135,7 +135,14 @@ export async function createPendingRegistration(input: OnboardInput): Promise<vo
   const verifyUrl = `${appUrl}/api/onboard/verify?token=${rawToken.toString('hex')}`;
   const emailBody = `Thanks for signing up!\n\nClick the link below to verify your email and activate your account.\nThis link expires in 24 hours.\n\n${verifyUrl}\n\nIf you didn't sign up, you can ignore this email.`;
   const encryptedBody = encryptField(emailBody) ?? emailBody;
-  const idempotencyKey = `onboard_verify:${email}:${tokenHash.slice(0, 16)}`;
+  // Use a SHA-256 digest of the email so the idempotency key contains no PII.
+  const emailHash = createHash('sha256').update(email).digest('hex').slice(0, 16);
+  const idempotencyKey = `onboard_verify:${emailHash}:${tokenHash.slice(0, 16)}`;
+  // HMAC-SHA256 of the lowercase address — stored in to_address_hash for indexed
+  // lookup. Keyed by EMAIL_PRIVACY_HMAC_KEY to resist rainbow-table attacks.
+  const toAddressHash = hashEmailForIndex(email);
+  const encryptedToAddress = encryptField(email) ?? email;
+  const toAddressEncrypted = encryptedToAddress !== email;
 
   await withoutRls(async (tx) => {
     await tx.$executeRaw`
@@ -154,25 +161,37 @@ export async function createPendingRegistration(input: OnboardInput): Promise<vo
         token_hash     = EXCLUDED.token_hash,
         expires_at     = now() + (${tokenTtlMs} * interval '1 millisecond')
     `;
-    // Upsert outbox row via raw SQL — idempotency_key has a partial unique index
+    // Cancel any previously pending verification emails for this address. The
+    // cancel query matches on to_address_hash (for encrypted rows) OR the
+    // plaintext to_address (for legacy plaintext rows), so both are covered.
+    await tx.$executeRaw`
+      UPDATE email_outbox
+      SET status = 'cancelled'
+      WHERE purpose = 'onboard.verify'
+        AND (to_address_hash = ${toAddressHash} OR to_address = ${email})
+        AND status = 'pending'
+    `;
+    // Insert new outbox row via raw SQL — idempotency_key has a partial unique index
     // (WHERE idempotency_key IS NOT NULL) so the ON CONFLICT clause must include
     // the same predicate to match the index. Prisma's upsert can't use partial indexes.
-    // ON CONFLICT resets delivery state so the new encrypted body is sent, not the old one.
     await tx.$executeRaw`
       INSERT INTO email_outbox
-        (idempotency_key, to_address, subject, body, body_encrypted, purpose)
+        (idempotency_key, to_address, to_address_encrypted, to_address_hash, subject, body, body_encrypted, purpose)
       VALUES
-        (${idempotencyKey}, ${email}, 'Verify your Bookpitch account',
-         ${encryptedBody}, true, 'onboard.verify')
+        (${idempotencyKey}, ${encryptedToAddress}, ${toAddressEncrypted}, ${toAddressHash},
+         'Verify your Bookpitch account', ${encryptedBody}, true, 'onboard.verify')
       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE SET
-        body             = EXCLUDED.body,
-        body_encrypted   = true,
-        status           = 'pending',
-        next_attempt_at  = now(),
-        attempts         = 0,
-        claim_owner      = NULL,
-        claim_expires_at = NULL,
-        claimed_at       = NULL
+        body               = EXCLUDED.body,
+        body_encrypted     = true,
+        to_address         = EXCLUDED.to_address,
+        to_address_encrypted = EXCLUDED.to_address_encrypted,
+        to_address_hash    = EXCLUDED.to_address_hash,
+        status             = 'pending',
+        next_attempt_at    = now(),
+        attempts           = 0,
+        claim_owner        = NULL,
+        claim_expires_at   = NULL,
+        claimed_at         = NULL
     `;
   });
 
@@ -418,11 +437,17 @@ export async function resendPendingRegistration(email: string): Promise<void> {
     const encryptedOrRaw = encryptField(rawBody);
     const bodyEncrypted = encryptedOrRaw !== null;
     const encryptedBody = encryptedOrRaw ?? rawBody;
-    const idempotencyKey = `onboard_resend:${email}:${tokenHash.slice(0, 16)}`;
+    const resendEmailHash = createHash('sha256').update(email).digest('hex').slice(0, 16);
+    const idempotencyKey = `onboard_resend:${resendEmailHash}:${tokenHash.slice(0, 16)}`;
+    const resendToAddressHash = hashEmailForIndex(email);
+    const encryptedToAddress = encryptField(email) ?? email;
+    const toAddressEncrypted = encryptedToAddress !== email;
     await tx.emailOutbox.create({
       data: {
         idempotencyKey,
-        toAddress: email,
+        toAddress: encryptedToAddress,
+        toAddressEncrypted,
+        toAddressHash: resendToAddressHash,
         subject: 'Verify your Bookpitch account',
         body: encryptedBody,
         bodyEncrypted,
@@ -440,6 +465,7 @@ export async function resendPendingRegistration(email: string): Promise<void> {
     type ClaimedRow = {
       id: string;
       to_address: string;
+      to_address_encrypted: boolean;
       subject: string;
       body: string;
       body_encrypted: boolean;
@@ -451,14 +477,17 @@ export async function resendPendingRegistration(email: string): Promise<void> {
           claim_expires_at = now() + interval '120 seconds',
           claimed_at = now()
       WHERE idempotency_key = ${rotated.idempotencyKey} AND status = 'pending'
-      RETURNING id, to_address, subject, body, body_encrypted
+      RETURNING id, to_address, to_address_encrypted, subject, body, body_encrypted
     `;
     if (claimed) {
+      const toAddress = claimed.to_address_encrypted
+        ? (decryptField(claimed.to_address) ?? claimed.to_address)
+        : claimed.to_address;
       const body = claimed.body_encrypted
         ? (decryptField(claimed.body) ?? claimed.body)
         : claimed.body;
       const provider = getEmailProvider();
-      await provider.send(claimed.to_address, claimed.subject, body);
+      await provider.send(toAddress, claimed.subject, body);
       await unsafePrismaAdmin.$executeRaw`
         UPDATE email_outbox
         SET status = 'sent', sent_at = now(), claim_owner = NULL

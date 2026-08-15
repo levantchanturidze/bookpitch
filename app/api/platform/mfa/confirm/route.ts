@@ -22,7 +22,8 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => ({}))) as { code?: unknown };
     const code = typeof body.code === 'string' ? body.code.trim() : '';
     if (!code) throw new InvalidInputError('code is required');
-    await confirmTotpEnrollment(ctx.userId, code);
-    return { ok: true };
+    const { recoveryCodes } = await confirmTotpEnrollment(ctx.userId, code);
+    // recoveryCodes is non-null only for initial enrollment — show once, never again.
+    return { ok: true, recoveryCodes };
   });
 }
