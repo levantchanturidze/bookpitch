@@ -170,10 +170,13 @@ jobs:
         # audit_log UPDATE revoke is verified separately because that invariant is
         # critical for the append-only guarantee (Phase 1 §9.11).
         run: |
+          # NOTE: bool::text in PostgreSQL returns the spelled-out form
+          # ("true"/"false"), not the single-letter form ("t"/"f") that
+          # psql emits without a cast. Compare against the spelled-out form.
           ATTRS=$(psql -h localhost -U bookpitch_ci -d bookpitch_ci -tAc \
             "SELECT rolsuper::text || ',' || rolbypassrls::text \
              FROM pg_roles WHERE rolname = 'bookpitch_app'")
-          if [ "$ATTRS" != "f,f" ]; then
+          if [ "$ATTRS" != "false,false" ]; then
             echo "FAIL: bookpitch_app must be NOSUPERUSER NOBYPASSRLS, got: $ATTRS"
             exit 1
           fi
