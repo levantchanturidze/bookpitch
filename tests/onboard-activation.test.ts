@@ -315,15 +315,22 @@ describe('GET /api/onboard/verify — public-access, redirect, and security head
   });
 
   it('redirect URL uses APP_URL prefix from env, not a raw relative path', async () => {
-    const saved = process.env.APP_URL;
+    // verify/route.ts resolves the base with:
+    //   NEXTAUTH_URL ?? APP_URL ?? ''
+    // CI sets both to http://localhost:3000, so overriding only APP_URL
+    // has no effect. Override NEXTAUTH_URL too (unset it) so APP_URL wins.
+    const savedApp = process.env.APP_URL;
+    const savedNext = process.env.NEXTAUTH_URL;
     process.env.APP_URL = 'https://app.bookpitch.test';
+    delete process.env.NEXTAUTH_URL;
     try {
       const res = await verifyRoute.GET(verifyReq('0'.repeat(64), '198.51.100.6'));
       const loc = res.headers.get('location') ?? '';
       expect(loc).toContain('https://app.bookpitch.test');
     } finally {
-      if (saved !== undefined) process.env.APP_URL = saved;
+      if (savedApp !== undefined) process.env.APP_URL = savedApp;
       else delete process.env.APP_URL;
+      if (savedNext !== undefined) process.env.NEXTAUTH_URL = savedNext;
     }
   });
 

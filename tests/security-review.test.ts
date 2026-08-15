@@ -1036,8 +1036,28 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
   it('P6.15: cannot demote the last SUPER_ADMIN (SEC-006 fixed 2026-08-03)', async () => {
     const { assignPlatformRole } = await import('@/lib/platform/roles');
     // Migration 000007 creates levaaani@gmail.com as a second SUPER_ADMIN in
-    // all environments (dev/CI/prod). Reduce to exactly one first so the
+    // all environments (dev/CI/prod). In CI, `npm run db:seed` runs after
+    // migrations and does `appUser.deleteMany()` — wiping the user before
+    // tests run. Ensure the user exists (as SUPER_ADMIN) so the guard has
+    // two SUPER_ADMINs to work with, then reduce to exactly one so the
     // "last SUPER_ADMIN" guard fires correctly for superadmin@bp.test.
+    const superRole = await unsafePrismaAdmin.role.findFirstOrThrow({
+      where: { key: 'SUPER_ADMIN', organizationId: null },
+      select: { id: true },
+    });
+    await unsafePrismaAdmin.appUser.upsert({
+      where: { email: 'levaaani@gmail.com' },
+      create: {
+        authProvider: 'credentials',
+        authSubject: 'levaaani@gmail.com',
+        email: 'levaaani@gmail.com',
+        fullName: 'Levan Tchanturidze',
+        passwordHash: 'x',
+        platformRoleId: superRole.id,
+        mfaEnabled: false,
+      },
+      update: { platformRoleId: superRole.id },
+    });
     await assignPlatformRole(
       (await buildAuthContext(H.superUserId, null))!,
       'levaaani@gmail.com',
