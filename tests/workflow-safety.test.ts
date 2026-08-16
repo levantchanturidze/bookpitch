@@ -143,6 +143,7 @@ describe('production backup workflow safety', () => {
   });
 
   it('never passes the database URL as a command argument', () => {
+    // See the pg_wrapper test below for the other half of the version story.
     // The URL is only ever bound to an env var; scripts/pg-conn-env.py turns it
     // into PG* + .pgpass so it never reaches argv or a log.
     const steps = allSteps(doc);
@@ -302,6 +303,34 @@ describe('production monitor workflow safety', () => {
   it('never reads a database URL', () => {
     expect(raw).not.toMatch(/DATABASE_URL/);
     expect(raw).not.toMatch(/postgres(ql)?:\/\//);
+  });
+});
+
+describe('PostgreSQL 17 binaries are pinned, not left to pg_wrapper', () => {
+  // Regression test for backup run 31967250073. Every step that installs the
+  // client must also put /usr/lib/postgresql/17/bin on PATH, because Debian's
+  // pg_wrapper resolves a connection-less command (`pg_restore --list`) to the
+  // runner's *default* cluster version — PostgreSQL 16 on ubuntu-latest — which
+  // cannot read the version-1.16 archive pg_dump 17 writes. The backup was
+  // good; the verifier was reading it with the wrong binary.
+  for (const file of [BACKUP, RESTORE]) {
+    it(`${file}: every postgresql-client-17 install pins the version-17 bin directory`, () => {
+      const { doc } = readWorkflow(file);
+      const installs = allSteps(doc).filter((s) => s.run?.includes('postgresql-client-17'));
+      expect(installs.length, `${file} installs no PostgreSQL client`).toBeGreaterThan(0);
+      for (const step of installs) {
+        expect(step.run, `${file} "${step.name}" does not pin the v17 bin directory`).toContain(
+          'echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"',
+        );
+      }
+    });
+  }
+
+  it('the backup verify job checks the pg_restore version it will actually use', () => {
+    const { doc } = readWorkflow(BACKUP);
+    const verifySteps = doc.jobs?.verify?.steps ?? [];
+    const install = verifySteps.find((s) => s.run?.includes('postgresql-client-17'));
+    expect(install?.run).toContain('/usr/lib/postgresql/17/bin/pg_restore --version');
   });
 });
 
