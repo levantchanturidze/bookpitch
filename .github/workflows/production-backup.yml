@@ -232,15 +232,26 @@ jobs:
           tar -C "${RUNNER_TEMP}/unpacked" -xf "${RUNNER_TEMP}/bundle.tar"
 
           echo "--- pg_restore --list on the decrypted archive ---"
-          ENTRIES=$(pg_restore --list "${RUNNER_TEMP}/unpacked/database.dump" | grep -cvE '^(;|$)')
+          # Materialise the table of contents ONCE, to a file. Piping pg_restore
+          # into `grep -q` makes grep exit on its first match, which SIGPIPEs
+          # pg_restore; under `set -o pipefail` that non-zero status propagates
+          # and the check reports a missing table that is right there in the
+          # archive. Run 31967906684 failed exactly that way with
+          # "could not write to file: Broken pipe" immediately before a bogus
+          # "missing _prisma_migrations". One invocation, one file, no pipes.
+          TOC="${RUNNER_TEMP}/toc.txt"
+          pg_restore --list "${RUNNER_TEMP}/unpacked/database.dump" > "$TOC"
+          ENTRIES=$(grep -cvE '^(;|$)' "$TOC")
           echo "restorable entries: ${ENTRIES}"
           if [ "$ENTRIES" -lt 20 ]; then
             echo "::error::decrypted archive has only ${ENTRIES} entries"
             exit 1
           fi
           for required in _prisma_migrations organizations audit_log email_outbox; do
-            pg_restore --list "${RUNNER_TEMP}/unpacked/database.dump" | grep -q "TABLE .*${required}" \
-              || { echo "::error::decrypted archive is missing ${required}"; exit 1; }
+            if ! grep -q "TABLE .*${required}" "$TOC"; then
+              echo "::error::decrypted archive is missing ${required}"
+              exit 1
+            fi
           done
 
           echo "OK: artifact is encrypted, intact, and restorable."
