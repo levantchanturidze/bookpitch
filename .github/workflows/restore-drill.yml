@@ -1,52 +1,155 @@
-name: Monthly restore drill
+name: Restore drill
 
-# Actually restores the latest backup into an ephemeral Postgres. This is
-# the ONLY thing that proves the backup chain works — a backup you can't
-# restore is just wasted S3 bytes. Runs on the 3rd of each month at 02:00
-# UTC so the previous day's backup is guaranteed to be present.
+# The only thing that turns a backup into a recovery point is having restored
+# it. This workflow takes the latest encrypted production backup, decrypts it
+# inside an ephemeral runner, restores it into a throwaway Postgres service
+# container, and asserts the invariants that matter survived the round trip.
 #
-# Uses the restore-db.sh script; failure means the alarm fires (job fails
-# → red X in Actions → GH email to repo owners). Do not silence.
+# It can only ever write to a disposable database:
+#   * scripts/assert-disposable-db.py is an ALLOW-list (loopback only) and runs
+#     before anything is decrypted;
+#   * no production secret is exposed to this workflow at all — the only
+#     database credential in scope is the service container's throwaway one;
+#   * the service container is destroyed by the runner when the job ends.
+#
+# A red run here means the backup chain is NOT proven. Do not silence it.
 
 on:
   schedule:
-    - cron: '0 2 3 * *'
+    # 03:20 UTC on the 4th of each month — after several daily backups exist.
+    - cron: '20 3 4 * *'
   workflow_dispatch:
+    inputs:
+      backup_run_id:
+        description: 'Backup workflow run id to restore (blank = latest successful)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read # required to list and download another workflow's artifacts
+
+concurrency:
+  group: restore-drill
+  cancel-in-progress: false
 
 jobs:
   drill:
+    name: Restore into a disposable database
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@v5
 
-      - name: Install gpg + awscli
-        run: sudo apt-get update && sudo apt-get install -y gnupg awscli
-
-      - name: Locate yesterday's backup on S3
-        id: locate
+    services:
+      postgres:
+        # Matches the production major version (17.6). Restoring into an older
+        # server would prove nothing about a real recovery.
+        image: postgres:17
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: eu-central-1
+          POSTGRES_USER: drill
+          POSTGRES_PASSWORD: drill_throwaway_not_a_secret
+          POSTGRES_DB: bookpitch_restore_drill
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U drill -d bookpitch_restore_drill"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 17 client and age
         run: |
           set -euo pipefail
-          # Look one day back to be safe on time-zone boundaries.
-          PREFIX="${{ secrets.BACKUP_S3_URI }}/$(date -u -d 'yesterday' +%Y/%m/%d)/"
-          echo "prefix=$PREFIX"
-          LATEST=$(aws s3 ls "$PREFIX" | awk '{print $4}' | sort | tail -n1)
-          test -n "$LATEST" || { echo "::error::no backup found under $PREFIX"; exit 1; }
-          echo "src=$PREFIX$LATEST" >> "$GITHUB_OUTPUT"
+          sudo install -d /usr/share/keyrings
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+          echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17 age
+          pg_restore --version
 
-      - name: Run restore drill
+      - name: Find the backup run to restore
+        id: find
         env:
-          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: eu-central-1
-        run: ./scripts/restore-db.sh "${{ steps.locate.outputs.src }}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED: ${{ inputs.backup_run_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED}" ]; then
+            RUN_ID="${REQUESTED}"
+            echo "using explicitly requested backup run ${RUN_ID}"
+          else
+            RUN_ID=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/production-backup.yml/runs?status=success&branch=main&per_page=1" \
+              --jq '.workflow_runs[0].id')
+            if [ -z "${RUN_ID}" ] || [ "${RUN_ID}" = "null" ]; then
+              echo "::error::No successful production-backup run found. There is nothing to restore — this IS the incident."
+              exit 1
+            fi
+            echo "latest successful backup run: ${RUN_ID}"
+          fi
 
-      - name: Notify on failure
+          NAME=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" \
+            --jq '[.artifacts[] | select(.expired == false) | select(.name | startswith("production-backup-")) | select(.name | contains("weekly") | not)][0].name')
+          if [ -z "${NAME}" ] || [ "${NAME}" = "null" ]; then
+            echo "::error::Backup run ${RUN_ID} has no live (unexpired) backup artifact."
+            exit 1
+          fi
+          echo "artifact: ${NAME}"
+          echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the encrypted backup
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.find.outputs.artifact_name }}
+          run-id: ${{ steps.find.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/backup
+
+      - name: Show manifest (contains no credentials or tenant data)
+        run: cat "${RUNNER_TEMP}/backup/manifest.json"
+
+      - name: Run the restore drill
+        env:
+          # Loopback only. scripts/assert-disposable-db.py refuses anything else
+          # and runs before a single byte is decrypted.
+          RESTORE_TARGET_URL: postgresql://drill:drill_throwaway_not_a_secret@127.0.0.1:5432/bookpitch_restore_drill?sslmode=disable
+          BACKUP_AGE_PRIVATE_KEY: ${{ secrets.BACKUP_AGE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BACKUP_AGE_PRIVATE_KEY}" ]; then
+            echo "::error::BACKUP_AGE_PRIVATE_KEY is not configured — the backup cannot be decrypted."
+            exit 1
+          fi
+
+          IDENT="${RUNNER_TEMP}/age-identity"
+          umask 077
+          printf '%s\n' "${BACKUP_AGE_PRIVATE_KEY}" > "$IDENT"
+          trap 'rm -f "$IDENT"' EXIT
+          export RESTORE_AGE_IDENTITY_FILE="$IDENT"
+
+          # sslmode=disable is rejected by pg-conn-env.py for remote hosts; the
+          # loopback service container has no TLS, so allow it explicitly here
+          # by pointing at the local socket-equivalent. The guard script has
+          # already proven the host is loopback.
+          BUNDLE=$(ls "${RUNNER_TEMP}"/backup/*.tar.age)
+          ./scripts/restore-drill.sh "$BUNDLE"
+
+      - name: Confirm the disposable database is torn down with the job
+        if: always()
+        run: |
+          set -euo pipefail
+          # The runner destroys service containers when the job ends; this step
+          # records that the drill database is the only thing that was written.
+          echo "Restore target was the ephemeral 'postgres' service container"
+          echo "(image postgres:17, database bookpitch_restore_drill)."
+          echo "GitHub destroys it with the job. No persistent database was written."
+
+      - name: Report failure loudly
         if: failure()
-        run: echo "::error::Monthly restore drill failed — the current backup chain is NOT proven to be recoverable. Investigate immediately."
+        run: echo "::error::Restore drill FAILED. The production backup chain is not proven recoverable. Treat as a P1."

@@ -39,6 +39,10 @@ const NO_GUARD_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   { path: 'app/api/cron/retention/route.ts', reason: 'Scheduled worker — Bearer CRON_SECRET' },
   { path: 'app/api/health/route.ts', reason: 'Uptime probe — no tenant data' },
   {
+    path: 'app/api/health/ops/route.ts',
+    reason: 'Production monitor probe — Bearer CRON_SECRET, numeric counts only',
+  },
+  {
     path: 'app/api/invitations/accept/route.ts',
     reason: 'Invitation token consume — invitee has no session yet',
   },
