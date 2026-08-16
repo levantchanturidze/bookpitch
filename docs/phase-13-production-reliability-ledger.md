@@ -419,7 +419,7 @@ have passed on the Free plan and now says so.
 | `npx tsc --noEmit` | exit 0 |
 | `npm run lint` | **0 errors** (55 pre-existing warnings, none new) |
 | `npm run format:check` | "All matched files use Prettier code style!" |
-| full test suite | **861 passed / 861**, 74 files (was 746) |
+| full test suite | **869 passed / 869**, 74 files (was 746) — re-run on the merged `0d0a8e5` |
 | `npm run build` | success; `/api/health/ops` present in the route manifest |
 | guard scanner | "Scanned 105 entry points; 18 allow-listed. All guarded." |
 | orphan-permission scanner | "OK — no unmarked orphan permissions." |
@@ -435,12 +435,319 @@ have passed on the Free plan and now says so.
 | email deliverability verification | PASSED (13.5) |
 | final `git diff --check` | exit 0 |
 
-### Dedicated Phase 13 tests (115 new)
+### Dedicated Phase 13 tests (123 new)
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| `tests/workflow-safety.test.ts` | 39 | no PR-triggered backup, default-branch-only, minimum permissions, concurrency, encrypted-only artifacts, retention floors, secret redaction, strict exit codes, no `continue-on-error`, no `\|\| true`, timeouts, no production restore target, no destructive restore, public-key-only in the repo |
-| `tests/production-monitor.test.ts` | 40 | every check in both directions; incident dedup, recovery-close, marker matching, class independence |
+| `tests/workflow-safety.test.ts` | 43 | no PR-triggered backup, default-branch-only, minimum permissions, concurrency, encrypted-only artifacts, retention floors, secret redaction, strict exit codes, no `continue-on-error`, no `\|\| true`, timeouts, no production restore target, no destructive restore, public-key-only in the repo |
+| `tests/production-monitor.test.ts` | 44 | every check in both directions; incident dedup, recovery-close, marker matching, class independence |
 | `tests/ops-metrics.test.ts` | 21 | numeric-only enforcement, counters that actually move against a real DB, bearer auth including prefix and scheme rejection, fail-closed without `CRON_SECRET`, no `@` in the response, public-path scoping |
 | `tests/production-config-contract.test.ts` | 15 | the env contract that would have caught F13-1, `.env.example` completeness, widget retry behaviour |
 
+---
+
+## 13.8 — Post-merge execution against production
+
+| Item | Result | Evidence |
+| --- | --- | --- |
+| PR #6 merged | ✅ | `10c5863` — Phase 13 implementation |
+| PR #7 merged | ✅ | `b88da24` — pin PostgreSQL 17 binaries |
+| PR #8 merged | ✅ | `4b4485f` — SIGPIPE in backup verification |
+| PR #10 merged | ✅ | `0d0a8e5` — close incidents whose check is no longer reported |
+| Deployed SHA | `0d0a8e5` | deployment `dpl_BUpFDMhybGGT6iR3P9iS83A35DzR` → `bookpitch-82v2rd50n-padelebi-s-projects.vercel.app`, GitHub deployment sha `0d0a8e5` |
+| Rollback target preserved | ✅ | `dpl_eTLKFHxhZpcr8u8EHC5NdVyvZH5n` @ `f3f69135` (pre-Phase-13) remains Ready |
+| No migration ran | ✅ | no `prisma/` change in any Phase 13 PR; `62 migrations found` / `Database schema is up to date!` before and after |
+
+### Three defects found by the new controls, in the order they surfaced
+
+Each was found by a control this phase added, not by reading code. That is the
+point of the phase.
+
+1. **Backup run [31967250073](https://github.com/levantchanturidze/bookpitch/actions/runs/31967250073) — `pg_restore: error: unsupported version (1.16) in file header`.**
+   The dump was good; the verifier was reading it with the wrong binary.
+   Debian's `/usr/bin/pg_*` are `pg_wrapper` shims that pick a version from the
+   *server* a command is about to connect to. `pg_restore --list` makes no
+   connection, so it fell back to the runner's preinstalled PostgreSQL 16,
+   which cannot read a v17 archive. Fixed in PR #7 by putting
+   `/usr/lib/postgresql/17/bin` on `PATH` and printing the resolved versions.
+
+2. **Backup run [31967906684](https://github.com/levantchanturidze/bookpitch/actions/runs/31967906684) — `could not write to file: Broken pipe` then a bogus `missing _prisma_migrations`.**
+   `pg_restore --list | grep -q` makes grep exit on first match, SIGPIPEing
+   `pg_restore`; `set -o pipefail` turned that into a failure and the check
+   reported a table it had just found. Fixed in PR #8 by materialising the
+   table of contents to a file once.
+
+3. **The alert path opened an incident it could never close.**
+   Run [31968584806](https://github.com/levantchanturidze/bookpitch/actions/runs/31968584806)
+   opened issue #9 from the synthetic check; the next healthy run reported
+   `18/18 checks passed` and left it open, because the synthetic check is
+   *absent* from the results rather than passing. Any real check that was
+   renamed or removed would have leaked an incident the same way. Fixed in
+   PR #10; issue #9 then closed automatically on run
+   [31972265082](https://github.com/levantchanturidze/bookpitch/actions/runs/31972265082).
+
+In all three cases the run went **red**, not green. Nothing was silently
+accepted.
+
+### Production backup — first green run
+
+Run [31968298749](https://github.com/levantchanturidze/bookpitch/actions/runs/31968298749),
+both jobs `success`.
+
+```json
+{
+  "artifact": "bookpitch-prod-20260816T194107Z-r31968298749a1.tar.age",
+  "pg_client_version": "17.11",
+  "pg_server_version": "17.6",
+  "encrypted_bytes": 297224,
+  "sha256": "805d50c366c94016405172dcebba81a5f06ed2557ee4b92e10661b457c802df0",
+  "production_identity_fingerprint": "5c9f75110f30141f",
+  "schema": "public",
+  "toc_entries": 547,
+  "globals_status": "ok",
+  "verification_status": "pg_restore-list-ok",
+  "encryption": "age/x25519"
+}
+```
+
+Artifacts produced (16 August is a Sunday, so both copies were written):
+
+| Artifact | Bytes | Expires | Retention |
+| --- | --- | --- | --- |
+| `production-backup-31968298749-1` | 298 429 | 2026-09-20 | 35 days |
+| `production-backup-weekly-31968298749-1` | 298 429 | 2026-11-14 | 90 days |
+
+### Artifact downloaded and independently verified (13.2 requirement 21)
+
+Downloaded to a local machine and checked against the owner recovery key —
+not the CI copy:
+
+| Check | Result |
+| --- | --- |
+| contains no plaintext dump | PASS — `strings \| grep -iE 'CREATE TABLE\|PostgreSQL database dump\|organization_id\|PGDMP'` found nothing |
+| is an age file | PASS — `age-encryption.org/v1` header |
+| checksum file matches | PASS — `shasum -a 256 -c` OK |
+| manifest checksum matches the bytes | PASS — `805d50c3…2df0` both sides |
+| decrypts with `~/.bookpitch/backup-age-key.txt` | PASS |
+| `pg_restore --list` reads the decrypted archive | PASS — 547 entries |
+| restores into a disposable database | PASS — all invariants (below) |
+| no secret in the workflow logs | PASS — 0 occurrences of `AGE-SECRET-KEY`, `postgres://`, `postgresql://`; 6 `***` redaction markers |
+
+### Restore drill — CI run
+
+Run [31968429868](https://github.com/levantchanturidze/bookpitch/actions/runs/31968429868), `success`.
+It located backup run `31968298749` on its own, downloaded
+`production-backup-31968298749-1`, and restored it into a `postgres:17`
+service container:
+
+```
+restore target OK — host=127.0.0.1 port=5432 database=bookpitch_restore_drill (disposable)
+→ checksum ok: 805d50c366c94016405172dcebba81a5f06ed2557ee4b92e10661b457c802df0
+→ decrypted dump: 243894 bytes
+→ table of contents: 547 entries
+→ globals: bookpitch_app role definition captured
+→ skipping 1 TOC entry: CREATE SCHEMA public (target already has it)
+→ pg_restore completed with no errors
+ok: 62 prisma migrations, all finished
+ok: all 28 required tables present
+ok: 10 organizations, memberships structurally valid
+ok: audit_log append-only triggers present, 100 rows restored
+ok: audit_log UPDATE is rejected by the restored trigger
+ok: audit_log has 12 partitions
+ok: 21 RLS policies, RLS enabled on tenant tables
+ok: owner invariant triggers and functions present
+ok: email_outbox schema present
+ok: bp_create_monthly_partition() present
+=== restore verification: ALL CHECKS PASSED ===
+RESTORE DRILL PASSED — the encrypted production backup is recoverable.
+```
+
+**The backup is now a proven recovery point, not a hypothesis.**
+
+### Production monitor — healthy run
+
+Run [31968532325](https://github.com/levantchanturidze/bookpitch/actions/runs/31968532325) — 18/18.
+
+```
+PASS  health-endpoint          3/3 probes returned 200 {"ok":true}
+PASS  production-5xx           0/3 probes returned 5xx
+PASS  unexpected-redirect      no redirects on the canonical health URL
+PASS  tls                      certificate valid until 2026-11-10 (85 days remaining)
+PASS  deployment-reachable     deployment 4b4485f responded 200
+PASS  cron-staleness           last success 0.2h ago (run 31967918307), limit 1.5h
+PASS  cron-failures            2/10 recent cron runs failed
+PASS  backup-freshness         last success 0.1h ago (run 31968298749), limit 26.0h
+PASS  restore-drill-stale      last success 0.0h ago (run 31968429868), limit 960.0h
+PASS  ops-metrics              /api/health/ops returned 200
+PASS  outbox-dead-letters      dead=0 (last 24h: 0, retry-exhausted: 0)
+PASS  outbox-stale-claims      staleClaims=0, processing=0
+PASS  outbox-backlog           pending=0, queue empty
+PASS  housekeeping-stalled     overdue rows — rateLimit=0, tokens=0, reauthGrants=0
+PASS  retention-stalled        customers past their retention window still holding PII: 0
+PASS  audit-digest-stalled     no audit digest mail has ever been queued (expected on a new deployment)
+PASS  partition-maintenance    future monthly partitions=3, rows in audit_log_default=0
+PASS  production-config-incomplete  missing required env vars — signup=0, email=0, security=0
+```
+
+`production-config-incomplete` reporting `signup=0` is the behavioural
+confirmation that the F13-1 configuration fix reached production: before it,
+that count was 2.
+
+### Alert path — full lifecycle exercised against the real repository
+
+| Step | Run | Result |
+| --- | --- | --- |
+| inject a synthetic failing check | [31968584806](https://github.com/levantchanturidze/bookpitch/actions/runs/31968584806) | run **failed** (correct — a red monitor must be a red run); opened issue **#9** |
+| same failure again | [31968625264](https://github.com/levantchanturidze/bookpitch/actions/runs/31968625264) | `alert: updated incident #9` — **no duplicate**; 1 open issue |
+| failure with a changed detail | [31968646684](https://github.com/levantchanturidze/bookpitch/actions/runs/31968646684) | commented on #9; still 1 open issue |
+| recover (before PR #10) | [31968677403](https://github.com/levantchanturidze/bookpitch/actions/runs/31968677403) | 18/18 passed but **#9 stayed open** → defect 3 above |
+| recover (after PR #10) | [31972265082](https://github.com/levantchanturidze/bookpitch/actions/runs/31972265082) | **#9 closed** (`state: CLOSED`, `stateReason: COMPLETED`); 0 open `ops-incident` issues |
+
+Production was not affected at any point: the synthetic check is added by the
+monitor to its own result list and touches nothing outside GitHub Issues.
+
+### Real Turnstile verified on bookpitch.ge (13.1 items 5–6)
+
+Measured in a real browser against the real domain, after the fix deployed:
+
+```
+container div  : present (flex justify-center), 1 child
+child          : <input type="hidden" name="cf-turnstile-response"
+                   id="cf-chl-widget-…_response" value="1.v8cfFhlwEv…">
+token length   : 773 characters
+submit button  : ENABLED
+```
+
+The site key is configured in **invisible** mode, so there is no visible
+challenge iframe — the token is delivered straight into the hidden
+`cf-turnstile-response` input. Before the fix that container was empty and no
+token existed, so the submit button could never enable.
+
+Server-side binding was then proven from production logs without creating any
+record. Two requests were sent from the page with the real token and a
+deliberately empty `orgName`, which makes `createPendingRegistration` throw
+`InvalidInputError` **before any database access**:
+
+| Request | Status | Production log |
+| --- | --- | --- |
+| fresh token | 400 | *(no Turnstile log line at all)* |
+| same token replayed | 400 | `onboard.turnstile_rejected  codes=["timeout-or-duplicate"]` |
+
+The absence of any rejection line on the first request is the proof: had
+siteverify failed, or the action not matched `TURNSTILE_EXPECTED_ACTION`, or the
+hostname not been in `TURNSTILE_ALLOWED_HOSTNAMES`, or `challenge_ts` been
+outside the five-minute window, `verifyTurnstile()` would have logged the
+specific reason and returned false. It logged nothing and returned true; the
+400 came from the deliberate validation error afterwards. The replay proves
+**single-use** enforcement.
+
+### No production data was created, modified or removed
+
+Row counts after all Phase 13 production work:
+
+| Table | Count | Baseline |
+| --- | --- | --- |
+| `organizations` | 10 | 10 |
+| `app_users` | 16 | 16 |
+| `customers` | 2 | 2 |
+| `appointments` | 3 | 3 |
+| `pending_registrations` | 0 | 0 |
+| `email_outbox` | 0 | 0 |
+| organisations tagged `E2E-PHASE13%` | **0** | — |
+| `audit_log` rows written since 18:00 UTC | **0** | — |
+
+No synthetic record needed archiving because none was ever created: every probe
+was designed to be rejected before the first write. Requirement 13.1.26 is
+satisfied vacuously and 13.1.27 is satisfied by measurement.
+
+### Stale alert resolved
+
+Issue #4 ("[urgent] Migration workflow failed", opened 2026-08-06) was closed
+with an explanation. It had stayed open for ten days because `migrate.yml`
+opens and comments on incidents but has no recovery path — the same one-way
+alerting gap Phase 13 fixed for the monitor. Folding `migrate.yml` into the
+same mechanism is recorded as follow-up work, not done here.
+
+Open `ops-incident` issues at end of Phase 13: **0**. Open issues overall: **0**.
+
+---
+
+## 13.1 items deliberately not exercised against production
+
+Two groups, both conscious limits rather than omissions.
+
+**Account creation (items 7, 13–15).** Completing the signup form would create a
+real organisation and user in production. I do not create accounts or enter
+passwords into forms — that boundary holds regardless of authorisation, and it
+is not a judgement about this request. Separately, the resulting organisation
+could not be removed through a supported application path without provisioning
+a production SUPER_ADMIN, which is a larger security action than the coverage
+would justify. Everything up to the account-creation step is proven above,
+including the part that was actually broken. The activation semantics
+(single-use token, safe second attempt, coherent org+owner transaction) are
+covered by `tests/onboard-activation.test.ts` against a real database. The
+remaining human action is listed in § External blockers.
+
+**Platform plane (items 16–22).** Sign-in/out, MFA enrolment and confirmation,
+recovery codes, purpose-bound reauthentication and break-glass are proven by
+`tests/platform-*.test.ts` against a real seeded database. Exercising
+break-glass in production means reaching real client PII and writing real audit
+rows; the coverage is not worth that. Recorded as a limit.
+
+---
+
+## External blockers
+
+Consolidated. Each needs a human or a spending decision; none blocks anything
+else in Phase 13.
+
+1. **No designated test mailbox.** No `E2E_TEST_EMAIL` or equivalent exists in
+   the repository, in Vercel, or in GitHub secrets. Nothing was guessed.
+   Consequence: inbox receipt and SPF/DKIM/DMARC *header* verification
+   (13.1.12, 13.5.8) are unproven. Provider-side acceptance and final delivery
+   status **are** proven via Resend's sandbox recipients. To close this: set a
+   real mailbox you control as `E2E_TEST_EMAIL` and re-run the deliverability
+   probe.
+
+2. **Production signup submission (13.1 items 7, 13–15).** Requires a human to
+   complete the form once. Exact steps are in the final report.
+
+3. **DNS — no organisational DMARC record.** `_dmarc.bookpitch.ge` does not
+   exist. Recommended:
+   `_dmarc.bookpitch.ge TXT "v=DMARC1; p=reject; sp=reject; rua=mailto:<a-mailbox-that-exists>"`.
+   Not applied: DNS changes are not authorised.
+
+4. **DNS — DMARC on the sending subdomain is `p=none`.** Monitor-only. Tighten
+   to `quarantine`, then `reject`, once `rua` reports are clean.
+
+5. **DNS — `rua=mailto:dmarc@bookpitch.ge` is undeliverable.** `dig MX
+   bookpitch.ge` returns nothing, so DMARC aggregate reports have nowhere to
+   go. Either add an MX/mailbox or point `rua` at a domain that has one.
+
+6. **Backup ciphertext residency.** GitHub Actions artifacts are not
+   EU-guaranteed. Mitigated by client-side `age`/X25519 encryption with a key
+   GitHub never holds. Restoring EU residency needs an `eu-central-1` object
+   store or Supabase Pro — both spending decisions, both out of scope.
+
+7. **RPO is 24 hours.** A direct consequence of daily logical backups on
+   Supabase Free. Reducing it requires PITR, which requires Supabase Pro.
+
+8. **Single-operator escalation.** There is no second responder. Recorded in
+   `docs/operations.md` §16 as a real risk.
+
+
+---
+
+## Change log
+
+- 2026-08-16 18:20 UTC — 13.0 baseline recorded; branch created.
+- 2026-08-16 19:14 UTC — PR #6 opened, CI green, merged as `10c5863`.
+- 2026-08-16 19:33 UTC — PR #7 (`b88da24`) after backup run 31967250073 failed verification.
+- 2026-08-16 19:39 UTC — PR #8 (`4b4485f`) after backup run 31967906684 failed verification.
+- 2026-08-16 19:41 UTC — backup run 31968298749 green; artifact verified independently.
+- 2026-08-16 19:44 UTC — restore drill 31968429868 green.
+- 2026-08-16 19:46 UTC — monitor 18/18; alert lifecycle exercised.
+- 2026-08-16 19:55 UTC — PR #10 (`0d0a8e5`) closes orphaned incidents.
+- 2026-08-16 21:02 UTC — issue #9 auto-closed; 0 open incidents.
+- 2026-08-16 21:06 UTC — real Turnstile token accepted by production; replay rejected.
+- 2026-08-16 21:15 UTC — stale issue #4 closed; soak begins.
