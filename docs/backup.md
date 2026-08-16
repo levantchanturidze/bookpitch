@@ -1,120 +1,47 @@
 # Database backup & restore
 
-Bookpitch stores patient records — a backup that leaves the EU region
-defeats the whole GDPR + Georgia-data-law posture the app is built on.
-Both scripts assume the destination is in the same EU region as the
-database (Frankfurt).
+**This document was replaced on 2026-08-16 (Phase 13).** The authoritative
+runbook is [`docs/operations.md`](./operations.md) — §4 backups, §5 key custody,
+§6 restore, §11 RTO/RPO.
 
-## Contract
+## What changed, and why it matters
 
-- **Backup**: `scripts/backup-db.sh <destination>` runs `pg_dump` against
-  `DIRECT_URL`, encrypts with GPG symmetric AES-256, writes the blob to
-  `<destination>`.
-- **Restore drill**: `scripts/restore-db.sh <source>` decrypts the same
-  blob, spins up a **temporary** Postgres container, restores into it,
-  and runs sanity `SELECT`s. Never touches your real DBs.
+The previous design dumped with `pg_dump`, encrypted with GPG symmetric
+AES-256, and pushed to an `eu-central-1` S3 bucket on a nightly cron, with a
+monthly restore drill and two compliance audits layered on top. On paper it was
+the stronger design: EU-resident, PITR-aware, residency-audited.
 
-## Prerequisites
+It never worked. `backup.yml`, `restore-drill.yml`, `residency-audit.yml` and
+`pitr-audit.yml` all referenced repository secrets that had never been created
+(`DIRECT_URL`, `BACKUP_PASSPHRASE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+`BACKUP_S3_URI`). Every scheduled run failed, every night, from the day they
+were merged until 2026-08-16. **Not one backup was ever produced**, and the
+`pitr-audit` workflow could never have passed at all: PITR is a Supabase Pro
+feature and this project is on Free.
 
-- `pg_dump` (from the Postgres client tools; on macOS `brew install libpq && brew link --force libpq`).
-- `gpg` (`brew install gnupg`).
-- If backing up to S3: `aws` CLI (`brew install awscli`).
-- If restoring: `docker` (used by the restore drill to spin up an
-  ephemeral Postgres).
+That is the same failure this project has hit before, and it is why CLAUDE.md
+says a control that does not change observable behaviour does not exist. Here
+the signal was not even green — it was red, nightly, and nobody was listening.
 
-## One-off setup
+## What replaced it
 
-```bash
-# 32-byte-ish passphrase; keep out of Git.
-export BACKUP_PASSPHRASE=$(openssl rand -base64 32)
+| Old | New |
+| --- | --- |
+| `.github/workflows/backup.yml` (S3 + GPG) | `.github/workflows/production-backup.yml` (artifact + `age`) |
+| `.github/workflows/restore-drill.yml` (S3, docker) | `.github/workflows/restore-drill.yml` (artifact, service container) |
+| `scripts/backup-db.sh`, `scripts/restore-db.sh` | `scripts/backup-production.sh`, `scripts/restore-drill.sh`, `scripts/restore-verify.sql` |
+| `residency-audit.yml`, `verify-eu-residency.sh` | removed — there is no S3 bucket; the residency trade-off is documented in `operations.md` §4 |
+| `pitr-audit.yml`, `verify-pitr.sh` | removed — PITR requires Supabase Pro; RPO is stated honestly in `operations.md` §11 |
+| nothing verified the backup | every backup is decrypted and `pg_restore --list`-checked the day it is taken, by a job that does not hold the database credential |
 
-# EU-region destination (pick one — S3 in eu-central-1, or a mounted disk).
-export BACKUP_DEST="s3://bookpitch-backups-eu/$(date +%Y%m%d)/bookpitch.sql.gpg"
-```
+The new system uses secrets that exist, runs on a schedule that fires, and its
+first manual run is recorded in `docs/phase-13-production-reliability-ledger.md`
+with the artifact checksum and the restore-drill result.
 
-## Daily backup
+## The one thing that got weaker
 
-```bash
-./scripts/backup-db.sh "$BACKUP_DEST"
-```
-
-A GitHub Actions cron is checked in at `.github/workflows/backup.yml`
-(daily 02:00 UTC). It needs these repo secrets:
-
-- `DIRECT_URL` — production Postgres URL (no `?schema=` query string).
-- `BACKUP_PASSPHRASE` — GPG symmetric passphrase.
-- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — S3 writer.
-- `BACKUP_S3_URI` — e.g. `s3://bookpitch-backups-eu`.
-
-The workflow writes to `${BACKUP_S3_URI}/YYYY/MM/DD/bookpitch-HHMMSS.sql.gpg`
-so successive runs never collide.
-
-## Restore drill (do this at least monthly)
-
-```bash
-./scripts/restore-db.sh "$BACKUP_DEST"
-```
-
-Expected output ends with row counts and a `1` for the
-`no_staff_double_booking` constraint. If either the decrypt or the
-`psql -v ON_ERROR_STOP=1` step fails, the backup is corrupt — treat
-that as an incident.
-
-The GitHub Actions workflow at `.github/workflows/restore-drill.yml`
-runs this automatically on the 3rd of each month against the previous
-day's S3 backup. A failure fails the workflow (email + red X). Do not
-disable this — it's the only proof the backup chain works.
-
-## What the scripts don't do
-
-- **No off-EU copies.** The `verify-eu-residency.sh` script + the
-  `.github/workflows/residency-audit.yml` monthly cron catch a
-  misconfigured bucket after the fact. For belt-and-braces, add an
-  IAM policy on the bucket that only allows `eu-*` regions.
-- **No key rotation.** Rotating `BACKUP_PASSPHRASE` means old backups
-  become undecryptable — plan for it.
-- **PITR is layered on top, not replaced.** These are logical dumps —
-  they recover a *day*. Point-in-time recovery on the provider (Neon's
-  history retention, Supabase Pro's PITR) recovers a *minute*. Enable
-  both; verify PITR is on via `.github/workflows/pitr-audit.yml`, which
-  runs `scripts/verify-pitr.sh` monthly and fails loudly on a
-  disabled / short-window configuration.
-
-## Point-In-Time Recovery (provider-side)
-
-Enabled at the platform level; there is no app code to configure. The
-`pitr-audit.yml` workflow polls the provider API monthly to confirm the
-retention window has not been shortened or disabled.
-
-- **Neon**: PITR is the `history_retention_seconds` on a project.
-  Default is 24h on the free tier, 7d on Launch, 30d on Scale. Extend
-  via the Neon console → Settings → Point-in-time restore.
-- **Supabase**: PITR is a Pro-plan add-on. Enable via Dashboard →
-  Database → Backups. Default retention is 7d (Pro), 28d (Team).
-
-Required repo secrets for the audit workflow:
-
-- `PITR_PROVIDER` = `neon` or `supabase`
-- Neon: `NEON_API_KEY`, `NEON_PROJECT_ID`
-- Supabase: `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`
-
-Optional repo variables:
-
-- `PITR_MIN_HOURS` — minimum acceptable retention window. Defaults to
-  24. Bump to 168 (7d) once we're on a paid tier.
-- `SUPABASE_PITR_HOURS` — provider doesn't expose this on the backups
-  API, so we take it from a variable matched to the plan tier.
-
-## Emergency restore (real incident)
-
-1. Provision a fresh EU-region Postgres.
-2. Set `DIRECT_URL` to the new DB.
-3. Decrypt + restore with the same script pattern:
-   ```bash
-   gpg --batch --passphrase "$BACKUP_PASSPHRASE" --decrypt < bookpitch.sql.gpg | psql "$DIRECT_URL"
-   ```
-4. Re-run `npm run db:migrate` — a pg_dump captures schema, not the
-   `_prisma_migrations` table's advisory locks. This is a no-op if the
-   dump is current, and a safety belt otherwise.
-5. Update the app's `DATABASE_URL` / `DIRECT_URL` / `ADMIN_DATABASE_URL`
-   env vars in Vercel and redeploy.
+Backups are now GitHub Actions artifacts rather than EU-region object storage,
+so the ciphertext may rest outside the EU. It is encrypted client-side with
+`age`/X25519 before it leaves the runner and GitHub never holds the private key.
+Restoring EU residency needs an object store or a Supabase Pro upgrade — both
+spending decisions. See `operations.md` §4.

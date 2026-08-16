@@ -41,6 +41,8 @@ const UNSAFE_DB_ALLOWLIST = [
   'app/api/cron/reminders/route.ts',
   'app/api/cron/retention/route.ts',
   'app/api/health/route.ts',
+  // Phase 13 production monitor probe: cross-tenant COUNTs only, no session.
+  'lib/ops-metrics.ts',
   'lib/audit-digest.ts',
   'lib/housekeeping.ts',
   'lib/messaging/reminders.ts',

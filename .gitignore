@@ -60,6 +60,11 @@ scripts/*.sh
 !scripts/*.ts
 !scripts/*.mjs
 !scripts/*.js
+# Phase 13 operational tooling. These are maintained, reviewed shell scripts
+# that read every credential from the environment and never hold one — the
+# exact opposite of the one-shot rotation scripts the rule above blocks.
+!scripts/backup-production.sh
+!scripts/restore-drill.sh
 # One-shot state files created during operator flows — pattern lets them
 # stay local without accidentally being staged.
 .env.mint-token-oneshot

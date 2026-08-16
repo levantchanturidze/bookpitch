@@ -1,0 +1,231 @@
+name: Production backup
+
+# Supabase Free has neither automated backups nor PITR — both are paid tiers.
+# This workflow is therefore the ONLY recovery point that exists for
+# bookpitch.ge. Treat a red run here as a production incident.
+#
+# Chain of custody:
+#   pg_dump (custom format)          → ephemeral runner disk, 0700 work dir
+#   pg_restore --list validation     → an unreadable archive never ships
+#   age encryption to the public key → ops/backup-age-recipient.txt
+#   GitHub Actions artifact          → encrypted bytes only, 35-day retention
+#
+# The private key is NOT available to the `backup` job. Only the `verify` job
+# reads BACKUP_AGE_PRIVATE_KEY, so a compromise of the dump step cannot decrypt
+# anything, including its own output.
+#
+# Required secrets (values never printed anywhere):
+#   DATABASE_URL_SUPERUSER_MIGRATE — production connection URL (read access)
+#   BACKUP_AGE_PRIVATE_KEY        — age identity, verify job only
+
+on:
+  schedule:
+    # 01:30 UTC daily. Deliberately not on the hour and not colliding with the
+    # 02:00 slot the old S3 workflow used, so a backup never contends with
+    # monthly partition maintenance (01:30 on the 1st) on the same connection.
+    - cron: '40 1 * * *'
+  workflow_dispatch:
+
+# Least privilege. The job reads the repo (for the scripts and the public key)
+# and nothing else. Artifact upload/download does not need a token scope.
+permissions:
+  contents: read
+
+# Two production dumps must never run at once: they would contend for the same
+# connection budget on a Free-tier pooler. Never cancel a backup in progress —
+# a half-finished backup is worse than a late one.
+concurrency:
+  group: production-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Dump, validate, encrypt
+    # Trusted default branch only. `schedule` can only fire on the default
+    # branch, but `workflow_dispatch` accepts a ref, so this guard is what
+    # actually stops a branch from producing an artifact labelled "production".
+    # There is no `pull_request` trigger on this workflow at all, so untrusted
+    # fork code can never reach the database secret.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      artifact_name: ${{ steps.backup.outputs.artifact_name }}
+      sha256: ${{ steps.backup.outputs.sha256 }}
+      encrypted_bytes: ${{ steps.backup.outputs.encrypted_bytes }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 17 client and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/keyrings
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+          echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
+          # postgresql-client-17 matches the production server major (17.6).
+          # pg_dump refuses to dump from a newer server, so this pin is
+          # load-bearing, not cosmetic.
+          sudo apt-get install -y postgresql-client-17 age
+          pg_dump --version
+          age --version
+
+      - name: Decide whether this run also keeps a weekly copy
+        id: names
+        run: |
+          set -euo pipefail
+          echo "is_weekly=$([ "$(date -u +%u)" = "7" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Run production backup
+        id: backup
+        env:
+          # Reused deliberately rather than minted fresh: this role already has
+          # the read access pg_dump needs, and a second copy of a production
+          # credential is a second thing to rotate. See docs/operations.md.
+          BACKUP_DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
+          BACKUP_NAME_SUFFIX: r${{ github.run_id }}a${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BACKUP_DATABASE_URL}" ]; then
+            echo "::error::No production database secret is configured (DATABASE_URL_SUPERUSER_MIGRATE)."
+            exit 1
+          fi
+          ./scripts/backup-production.sh "${RUNNER_TEMP}/backup-out"
+
+      - name: Assert the output directory holds no plaintext
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/backup-out"
+          ls -l
+          # Only three kinds of file may exist here.
+          UNEXPECTED=$(find . -maxdepth 1 -type f \
+            ! -name '*.tar.age' ! -name '*.tar.age.sha256' ! -name 'manifest.json' -print)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::error::Unexpected files staged for upload: $UNEXPECTED"
+            exit 1
+          fi
+          # A custom-format pg_dump starts with the magic string "PGDMP", and a
+          # SQL dump contains CREATE TABLE. Neither may appear in the artifact.
+          for f in *.tar.age; do
+            if head -c 5 "$f" | grep -q 'PGDMP'; then
+              echo "::error::$f is a raw pg_dump archive, not an encrypted file"
+              exit 1
+            fi
+            if ! head -c 21 "$f" | grep -q 'age-encryption.org'; then
+              echo "::error::$f is missing the age header"
+              exit 1
+            fi
+            if strings "$f" | grep -qiE 'CREATE TABLE|PostgreSQL database dump|organization_id'; then
+              echo "::error::$f contains plaintext database markers"
+              exit 1
+            fi
+          done
+          echo "OK: only encrypted artifacts staged"
+
+      - name: Upload encrypted backup (daily, 35-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-backup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backup-out/
+          # 35 days ≥ the required 31, and gives 35 daily recovery points,
+          # which contain 5 distinct weekly points.
+          retention-days: 35
+          if-no-files-found: error
+          compression-level: 0 # already compressed and encrypted
+
+      - name: Upload encrypted backup (weekly, 90-day retention)
+        # A second, longer-lived copy every Sunday so the "4 weekly recovery
+        # points" guarantee survives a week of failed daily runs.
+        if: steps.names.outputs.is_weekly == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-backup-weekly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backup-out/
+          retention-days: 90
+          if-no-files-found: error
+          compression-level: 0
+
+  verify:
+    name: Verify the uploaded artifact decrypts
+    needs: backup
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 17 client and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/keyrings
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+          echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17 age
+
+      - name: Download the artifact that was just uploaded
+        uses: actions/download-artifact@v4
+        with:
+          name: production-backup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/downloaded
+
+      - name: Verify checksum, decryption and archive readability
+        env:
+          BACKUP_AGE_PRIVATE_KEY: ${{ secrets.BACKUP_AGE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/downloaded"
+
+          if [ -z "${BACKUP_AGE_PRIVATE_KEY}" ]; then
+            echo "::error::BACKUP_AGE_PRIVATE_KEY is not configured — the backup cannot be proven recoverable."
+            exit 1
+          fi
+
+          echo "--- manifest ---"
+          cat manifest.json
+
+          BUNDLE=$(ls *.tar.age)
+          echo "--- checksum ---"
+          sha256sum -c "${BUNDLE}.sha256"
+
+          MANIFEST_SUM=$(python3 -c "import json;print(json.load(open('manifest.json'))['sha256'])")
+          ACTUAL_SUM=$(sha256sum "$BUNDLE" | awk '{print $1}')
+          if [ "$MANIFEST_SUM" != "$ACTUAL_SUM" ]; then
+            echo "::error::manifest sha256 does not match the artifact"
+            exit 1
+          fi
+
+          # Identity file written 0600 and removed by the trap, never echoed.
+          IDENT="${RUNNER_TEMP}/age-identity"
+          umask 077
+          printf '%s\n' "${BACKUP_AGE_PRIVATE_KEY}" > "$IDENT"
+          trap 'rm -f "$IDENT" "${RUNNER_TEMP}/bundle.tar"; rm -rf "${RUNNER_TEMP}/unpacked"' EXIT
+
+          echo "--- decrypting ---"
+          age --decrypt --identity "$IDENT" --output "${RUNNER_TEMP}/bundle.tar" "$BUNDLE"
+          mkdir -p "${RUNNER_TEMP}/unpacked"
+          tar -C "${RUNNER_TEMP}/unpacked" -xf "${RUNNER_TEMP}/bundle.tar"
+
+          echo "--- pg_restore --list on the decrypted archive ---"
+          ENTRIES=$(pg_restore --list "${RUNNER_TEMP}/unpacked/database.dump" | grep -cvE '^(;|$)')
+          echo "restorable entries: ${ENTRIES}"
+          if [ "$ENTRIES" -lt 20 ]; then
+            echo "::error::decrypted archive has only ${ENTRIES} entries"
+            exit 1
+          fi
+          for required in _prisma_migrations organizations audit_log email_outbox; do
+            pg_restore --list "${RUNNER_TEMP}/unpacked/database.dump" | grep -q "TABLE .*${required}" \
+              || { echo "::error::decrypted archive is missing ${required}"; exit 1; }
+          done
+
+          echo "OK: artifact is encrypted, intact, and restorable."

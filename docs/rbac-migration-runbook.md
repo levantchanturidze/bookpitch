@@ -43,26 +43,27 @@ Prod today (Phase 0 §9): 2 users, 1 org, 0 customers, 0 appointments.
 Run each command; do not skip on the assumption that yesterday's answer is
 still valid.
 
-1. **PITR window intact.** Supabase must be retaining WAL for at least the
-   past hour (buys us the ability to point-in-time restore if something goes
-   wrong post-cutover and we notice hours later).
-   ```
-   bash scripts/verify-pitr.sh
-   ```
-   Expect green. If red, stop; do not proceed until Supabase support confirms
-   PITR is back.
+1. **PITR window intact.** *(No longer applicable — 2026-08-16.)* This project
+   is on Supabase **Free**, which has neither PITR nor automated backups; the
+   `verify-pitr.sh` check it referred to could never have passed and has been
+   removed. The recovery point is the daily logical backup instead, so the
+   pre-flight requirement is now step 2: there must be a **fresh** backup, not
+   yesterday's. See `docs/operations.md` §11 for the resulting RPO.
 
-2. **Manual encrypted snapshot.** Belt-and-braces on top of Supabase's
-   automated backup.
+2. **Manual encrypted snapshot.** This is the last known good for the runbook.
    ```
-   bash scripts/backup-db.sh
+   gh workflow run production-backup.yml
+   gh run watch "$(gh run list --workflow=production-backup.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
    ```
-   Note the output path. This is the "last known good" for the runbook.
+   Note the run id. Do not proceed until the run is green, including its
+   `verify` job.
 
 3. **Restore that snapshot to a scratch DB and dry-run against it.** This
    is the only way to know the migration behaves on real prod data.
    ```
-   bash scripts/restore-db.sh <path-from-step-2>
+   gh workflow run restore-drill.yml -f backup_run_id=<run-id-from-step-2>
+   # for a hands-on scratch DB, follow docs/operations.md §6 to decrypt the
+   # artifact and restore it into a database you created for the purpose
    # then, pointing ADMIN_DATABASE_URL at the restored DB:
    ADMIN_DATABASE_URL='postgresql://...restored...' npx tsx scripts/rbac-backfill.ts dry-run
    ADMIN_DATABASE_URL='postgresql://...restored...' npx tsx scripts/rbac-backfill.ts apply
@@ -94,10 +95,10 @@ existing bookings." Then wait until HH:MM before touching anything.
 ### Step 2. Take a fresh snapshot
 
 ```
-bash scripts/backup-db.sh
+gh workflow run production-backup.yml
 ```
 
-Different file from pre-flight. Note the path in the incident channel.
+A different run from pre-flight. Note the run id in the incident channel.
 
 ### Step 3. Put the app in maintenance mode
 
@@ -284,12 +285,12 @@ with `role_id IS NULL`, or a new location doesn't get a matching branch.
 
 ### The DB is a mess and I need to start over
 
-Restore from the pre-flight snapshot:
-```
-bash scripts/restore-db.sh <path-from-preflight-step-2>
-```
+Restore from the pre-flight snapshot. There is deliberately **no automation**
+for restoring into production — follow `docs/operations.md` §6 "Real recovery
+into production", which restores into a *new* database and repoints the
+application, rather than writing over the live one.
 
-This overwrites prod with the pre-migration state. Do not do this without
+The end state is prod running the pre-migration data. Do not do this without
 confirming in the incident channel first — anything committed to prod
 after the snapshot is lost.
 

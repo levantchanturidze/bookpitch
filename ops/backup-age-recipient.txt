@@ -1,0 +1,16 @@
+# Bookpitch production backup — age public recipient.
+#
+# This is the PUBLIC half of the backup encryption key pair. It is safe to
+# commit: it can only encrypt, never decrypt. Every production backup produced
+# by .github/workflows/production-backup.yml is encrypted to this recipient
+# before it leaves the ephemeral runner.
+#
+# The PRIVATE half lives in exactly two places and nowhere else:
+#   1. GitHub Actions secret  BACKUP_AGE_PRIVATE_KEY  (used by the restore drill)
+#   2. Owner recovery copy    ~/.bookpitch/backup-age-key.txt  (mode 0400)
+#
+# Rotating this recipient makes every previously-taken backup undecryptable by
+# the new key. See docs/operations.md § Backup key rotation before changing it.
+#
+# Lines beginning with '#' and blank lines are ignored by scripts/backup-production.sh.
+age1q2kf05uhwrth0cl7k4ppaefhmz5ryyzduamgevesss2g9fr2aeaqge8k0v

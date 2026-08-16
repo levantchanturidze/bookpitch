@@ -1,0 +1,635 @@
+# Bookpitch — Production Operations Runbook
+
+Everything an operator needs to run, recover, and reason about production.
+Written 2026-08-16 (Phase 13). No credential, connection string, key, token or
+customer identifier appears in this file — commands show you how to obtain a
+value, never the value itself.
+
+---
+
+## 1. Production architecture
+
+| Layer | What it is | Where |
+| --- | --- | --- |
+| Domain | `bookpitch.ge` (apex). `www.bookpitch.ge` and `http://` 308-redirect to it. | DNS on Vercel (`ns1/ns2.vercel-dns.com`) |
+| Application | Next.js 16 App Router, Node runtime, Vercel Production | project `padelebi-s-projects/bookpitch`, region `fra1` |
+| Database | Supabase PostgreSQL **17.6**, **Free plan**, `eu-central-1` | reached through the Supavisor session pooler (IPv4) |
+| Email | Resend, region `eu-west-1`, verified domain `send.bookpitch.ge` | `EMAIL_PROVIDER=resend` |
+| Scheduled work | GitHub Actions (`cron.yml`) → bearer-authenticated `/api/cron/*` | not Vercel Cron |
+| Backups | GitHub Actions (`production-backup.yml`) → age-encrypted artifact | see §4 |
+| Monitoring | GitHub Actions (`production-monitor.yml`) every 30 min | see §8 |
+| Error tracking | Sentry | `SENTRY_ENVIRONMENT=production` |
+
+Database roles (see `docs/rbac-spec.md` §9 for the full rationale):
+
+- `postgres` — schema owner, `BYPASSRLS`. Migrations and backups only.
+- `bookpitch_app` — the runtime role. `NOSUPERUSER NOBYPASSRLS`, no `UPDATE` on
+  `audit_log`. CI asserts both attributes on every run.
+
+### Free-plan consequences you must know
+
+Supabase Free has **no automated backups and no point-in-time recovery**. Both
+are paid-tier features. `production-backup.yml` is therefore not a belt-and-
+braces extra — **it is the only recovery point that exists**. A red backup run
+is a production incident, not a chore.
+
+RPO/RTO under this design are in §11.
+
+---
+
+## 2. Required production environment
+
+The application fails closed on several of these, sometimes silently. The
+production monitor counts how many are missing every 30 minutes
+(`lib/ops-metrics.ts`, check id `production-config-incomplete`) — that check
+exists because two of them were unset for a week and nobody noticed.
+
+Verify **by name, never by value**:
+
+```bash
+vercel env ls production          # names + "Encrypted", never the values
+gh secret list                    # GitHub Actions secret names + last update
+```
+
+| Variable | Owner | Failure mode if missing |
+| --- | --- | --- |
+| `TURNSTILE_SECRET_KEY` | Vercel | signup fails closed in production |
+| `TURNSTILE_EXPECTED_ACTION` | Vercel | **every signup returns 400** (see §12) |
+| `TURNSTILE_ALLOWED_HOSTNAMES` | Vercel | **every signup returns 400** (see §12) |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Vercel | widget never renders; submit stays disabled |
+| `EMAIL_PROVIDER`, `RESEND_API_KEY`, `RESEND_FROM` | Vercel | no verification or alert mail is ever sent |
+| `AUTH_SECRET` | Vercel | sessions cannot be signed |
+| `FIELD_ENCRYPTION_KEY` | Vercel | encrypted columns unreadable |
+| `RATE_LIMIT_HMAC_KEY`, `EMAIL_PRIVACY_HMAC_KEY` | Vercel | PII hashed with a fallback key |
+| `CRON_SECRET` | Vercel **and** GitHub | every cron run 401s (see §7) |
+| `DATABASE_URL`, `DATABASE_URL_APP_NOBYPASSRLS`, `DATABASE_URL_LOGIN`, `DATABASE_URL_SUPERUSER_TXPOOL`, `ADMIN_DATABASE_URL`, `DIRECT_URL` | Vercel | app cannot reach the database |
+| `DATABASE_URL_SUPERUSER_MIGRATE` | GitHub | migrations and **backups** fail |
+| `BACKUP_AGE_PRIVATE_KEY` | GitHub | backups still run; nothing can be restored |
+| `APP_URL` | GitHub | cron workflow has no target |
+
+`.env.example` documents every one of these. A test
+(`tests/production-config-contract.test.ts`) fails if a required variable is
+added to the contract without being documented.
+
+> Sensitive Vercel variables are **one-way**: they cannot be read back through
+> the API or CLI. Whatever local file holds the plaintext must be updated at
+> rotation time or the next session starts blocked (CLAUDE.md, F-12).
+
+---
+
+## 3. Deployment sequence
+
+Vercel deploys automatically on push to `main`. The migration workflow fires
+from the same push. **Migrations must land before or with the code that needs
+them**, which is guaranteed by the expand-only rule, not by ordering.
+
+1. Open a PR against `main`. CI must be green: format, lint, types, Prisma
+   validate, strict drift detection, seeded test DB, full suite, guard scanner,
+   orphan-permission scanner, `npm audit --audit-level=high`, gitleaks, build.
+2. **Before merging anything that touches `prisma/`**, confirm a recent green
+   `production-backup.yml` run. If there is not one, run it manually and wait.
+3. Merge. Vercel builds the merge commit; `migrate.yml` runs
+   `prisma migrate deploy` against `DATABASE_URL_SUPERUSER_MIGRATE`.
+4. Verify:
+
+   ```bash
+   curl -sS https://bookpitch.ge/api/health          # must be exactly {"ok":true}
+   vercel inspect bookpitch.ge | sed -n '1,20p'      # id, target, status
+   gh run list --workflow=migrate.yml --limit 1
+   gh workflow run production-monitor.yml            # full smoke pass on demand
+   ```
+
+5. Keep the previous deployment as the rollback target (§10).
+
+### The migration-before-deploy rule
+
+Every migration is **expand-only**: add columns and tables, never remove or
+narrow a shape in the same PR that ships the code depending on it. That is what
+makes it safe for the deployed code to run for a minute against the pre-
+migration schema. Removals go in a *later* PR, after the code that used the old
+shape is gone from production. Every migration has a written rollback.
+
+Adding a Vercel environment variable does **not** apply to running deployments.
+Add the variable, then redeploy:
+
+```bash
+printf '%s' "$VALUE" | vercel env add NAME production   # never --value: it lands in ps and shell history
+vercel redeploy <deployment-url>                        # or push an empty commit
+```
+
+---
+
+## 4. Backups
+
+**Workflow:** `.github/workflows/production-backup.yml`
+**Script:** `scripts/backup-production.sh`
+**Schedule:** 01:40 UTC daily, plus `workflow_dispatch`. Default branch only.
+
+What one run does, in order:
+
+1. Installs `postgresql-client-17` (matching the 17.6 server — `pg_dump`
+   refuses to dump from a newer server) and `age`.
+2. `pg_dump --format=custom --compress=9 --schema=public` into a 0700 temp dir.
+3. `pg_dumpall --globals-only --no-role-passwords` for roles and grants. The
+   script **refuses to ship** a globals file that contains a role password.
+4. `pg_restore --list` on the plaintext archive. Fewer than 20 restorable
+   entries, or a missing `_prisma_migrations` / `organizations` / `audit_log`
+   table, aborts the run before anything is published.
+5. `tar` + `age --encrypt` to the public recipient in
+   `ops/backup-age-recipient.txt`. The output is checked for the
+   `age-encryption.org` header and deleted if it is not an age file.
+6. SHA-256 and a `manifest.json` holding only: UTC timestamp, client/server
+   versions, encrypted size, checksum, a **hashed** production identity
+   fingerprint, TOC entry count, globals status, verification status.
+7. Upload as a GitHub Actions artifact — **encrypted bytes only**. A dedicated
+   step fails the run if any unexpected file, any `PGDMP` header, or any
+   plaintext SQL marker is staged.
+8. A **separate job** (which has the private key but *not* the database URL)
+   downloads the artifact, verifies the checksum, decrypts it, and runs
+   `pg_restore --list` on the result. Every backup is proven readable the day
+   it is taken.
+
+The connection URL never reaches `argv`, a log, or a filename:
+`scripts/pg-conn-env.py` parses it into `PG*` variables and a 0600 `.pgpass`.
+
+### Retention
+
+| Copy | Retention | Recovery points |
+| --- | --- | --- |
+| daily | 35 days | 35 daily, containing 5 weekly |
+| weekly (Sundays) | 90 days | 12–13 weekly |
+
+Combined this exceeds the 31-day / 7-daily / 4-weekly requirement even if a
+full week of daily runs fails.
+
+### Manual backup
+
+```bash
+gh workflow run production-backup.yml
+gh run watch "$(gh run list --workflow=production-backup.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+### Where backups live, and the residency trade-off
+
+Backups are GitHub Actions artifacts. GitHub does not guarantee EU-region
+storage for artifacts, so the **ciphertext** may rest outside the EU. Mitigation:
+the data is encrypted client-side with `age`/X25519 before it leaves the runner,
+and GitHub never holds the private key. The previous design targeted an
+`eu-central-1` S3 bucket — but it required AWS secrets that were never created,
+so **it produced zero backups in its entire lifetime** (every scheduled run
+failed from 2026-07 to 2026-08-16). A working encrypted backup outside the EU is
+strictly better than a non-existent one inside it.
+
+If EU residency of backup ciphertext is required, the options both need a
+spending decision and are therefore **not** implemented here:
+
+- add an `eu-central-1` object store and push the same encrypted artifact to it;
+- upgrade Supabase to Pro for provider-side backups and PITR in-region.
+
+---
+
+## 5. Backup key custody
+
+`age` X25519 key pair, generated 2026-08-16.
+
+- **Public recipient** — `ops/backup-age-recipient.txt`, committed. It can only
+  encrypt. Safe in the repository, safe in a screenshot.
+- **Private key** — exists in exactly two places:
+  1. GitHub Actions secret `BACKUP_AGE_PRIVATE_KEY` (restore drill + verify job)
+  2. Owner recovery copy at `~/.bookpitch/backup-age-key.txt`, mode `0400`
+
+Confirm the recovery copy exists and is locked down, without printing it:
+
+```bash
+ls -l ~/.bookpitch/backup-age-key.txt   # expect -r-------- owned by you
+age-keygen -y ~/.bookpitch/backup-age-key.txt   # prints only the PUBLIC half
+```
+
+The public half printed by that command must equal the line in
+`ops/backup-age-recipient.txt`. If it does not, the secret and the recipient
+have drifted and **no current backup can be decrypted** — treat as a P1.
+
+### Backup key rotation
+
+Rotating the recipient makes every previously-taken backup undecryptable with
+the new key. So:
+
+1. Generate the new pair; keep the old private key **forever** (or at least
+   past the retention window of every backup encrypted to the old recipient).
+2. `gh secret set BACKUP_AGE_PRIVATE_KEY < <new-key-file>` (stdin, never a flag).
+3. Replace the line in `ops/backup-age-recipient.txt`, commit, merge.
+4. Run `production-backup.yml` manually and then `restore-drill.yml` against
+   that run. Only after the drill passes is the rotation complete.
+
+---
+
+## 6. Restore
+
+### Restore drill (proves the chain, touches nothing real)
+
+**Workflow:** `.github/workflows/restore-drill.yml` — 03:20 UTC on the 4th of
+each month, plus `workflow_dispatch` (optionally with a specific backup run id).
+
+```bash
+gh workflow run restore-drill.yml
+gh workflow run restore-drill.yml -f backup_run_id=<run-id>   # a specific backup
+```
+
+It finds the latest successful backup, verifies the checksum, decrypts inside
+the runner, and restores into a `postgres:17` **service container**. Then
+`scripts/restore-verify.sql` asserts: 60+ finished Prisma migrations, 28
+required tables, structurally valid tenant rows, the three `audit_log`
+append-only triggers **and that an UPDATE against `audit_log` is actually
+rejected**, the monthly partition set, 15+ RLS policies with RLS enabled on
+tenant tables, the owner-invariant triggers and functions, the `email_outbox`
+schema, and `bp_create_monthly_partition()`.
+
+It cannot reach production. `scripts/assert-disposable-db.py` runs **before
+anything is decrypted** and is an allow-list: loopback hosts only, no
+managed-provider hostnames, no URL byte-identical to any known production URL,
+and no production-shaped database name. The workflow references no production
+database secret at all — a test asserts that.
+
+### Real recovery into production (human-driven, never automated)
+
+There is no automation for this and there must not be. If you have to do it:
+
+1. **Stop writes.** Suspend the Vercel deployment or put the app in maintenance;
+   a restore racing live traffic produces a worse state than the outage.
+2. Take a fresh backup of the damaged database first, whatever its state. You
+   will want it.
+3. Download and verify the chosen artifact:
+
+   ```bash
+   gh run download <backup-run-id> -n production-backup-<run-id>-<attempt> -D ./restore
+   cd restore && sha256sum -c *.tar.age.sha256
+   age --decrypt --identity ~/.bookpitch/backup-age-key.txt -o bundle.tar *.tar.age
+   tar -xf bundle.tar && pg_restore --list database.dump | head
+   ```
+
+4. Restore into a **new** Supabase project or database, never over the live one.
+5. Point `DATABASE_URL*` at the restored database, redeploy, smoke-test (§9).
+6. Only then decommission the damaged database.
+
+`prisma migrate reset` and `prisma db push` are never run against production.
+
+---
+
+## 7. Scheduled jobs
+
+`.github/workflows/cron.yml`, all bearer-authenticated with `CRON_SECRET`:
+
+| Job | Schedule (UTC) | Endpoint | Visible symptom if it stops |
+| --- | --- | --- | --- |
+| reminders | every 15 min | `/api/cron/reminders` | reminders stop going out |
+| housekeeping | hourly at :03 | `/api/cron/housekeeping` | outbox stops draining; stale rows accumulate |
+| retention | 02:17 daily | `/api/cron/retention` | customers past their window keep PII |
+| audit-digest | Mon 08:00 | `/api/cron/audit-digest` | owners stop getting the weekly rollup |
+| db-partitions | 01:30 on the 1st | `/api/cron/db-partitions` | rows fall into `audit_log_default` |
+
+`CRON_SECRET` lives in **two** places and must match: Vercel Production and the
+GitHub Actions secret. Rotating one without the other produces exactly the
+failure seen on 2026-08-16 — every cron run 401s until both sides agree.
+
+```bash
+printf '%s' "$NEW" | vercel env add CRON_SECRET production
+printf '%s' "$NEW" | gh secret set CRON_SECRET
+vercel redeploy <deployment-url>            # Vercel side needs a redeploy
+gh workflow run cron.yml                     # prove it before walking away
+```
+
+The monitor watches the *symptoms* of each job in the database, not just the
+workflow's exit code, because a cron that returns 200 while doing nothing has
+happened here before.
+
+---
+
+## 8. Monitoring and alert handling
+
+**Workflow:** `.github/workflows/production-monitor.yml`, every 30 minutes.
+**Logic:** `scripts/production-monitor.mjs` (dependency-free; no `npm ci`).
+
+Checks, each of which is its own incident class:
+
+| id | Fails when |
+| --- | --- |
+| `health-endpoint` | `/api/health` is not exactly `{"ok":true}` |
+| `production-5xx` | 2+ of 3 probes return 5xx |
+| `unexpected-redirect` | the canonical health URL redirects |
+| `tls` | certificate invalid or expiring within 14 days |
+| `deployment-reachable` | the current Production deployment does not answer |
+| `cron-staleness` | no successful cron run in 90 minutes |
+| `cron-failures` | 3+ of the last 10 cron runs failed |
+| `backup-freshness` | no successful backup in 26 hours |
+| `restore-drill-stale` | no successful drill in 40 days |
+| `ops-metrics` | `/api/health/ops` is unreachable or non-200 |
+| `outbox-dead-letters` | any `email_outbox` row is `dead` |
+| `outbox-stale-claims` | a worker died holding a claim |
+| `outbox-backlog` | oldest pending row older than 3 hours |
+| `housekeeping-stalled` | rows housekeeping should have pruned are still there |
+| `retention-stalled` | customers past their window still hold PII |
+| `audit-digest-stalled` | the weekly digest queued nothing for 10 days |
+| `partition-maintenance` | no future partition, or rows in `audit_log_default` |
+| `production-config-incomplete` | a required env var is unset (§2) |
+
+### Alerts
+
+A failing check opens **one** GitHub issue labelled `ops-incident`, titled
+`[ops] <check title>`, with a hidden marker `<!-- bookpitch-ops-incident:<id> -->`
+in the body. Deduplication matches on that marker, so:
+
+- repeated failures **comment** on the existing issue, and only when the detail
+  line has changed — a stable outage stays one quiet issue;
+- recovery **comments and closes** the issue automatically;
+- renaming the issue does not break deduplication;
+- unrelated human-filed issues are never touched.
+
+Alerting runs after the checks and its own failure is reported separately
+(exit code 2) so a broken alerter can never be read as a healthy production.
+
+Handling an alert:
+
+```bash
+gh issue list --label ops-incident --state open
+gh run list --workflow=production-monitor.yml --limit 5
+gh run view <run-id> --log | tail -60          # the check table is in the summary
+```
+
+Then read the row for that check id in the table above; each maps to a section
+of this document.
+
+### Testing the alert path without touching production
+
+```bash
+gh workflow run production-monitor.yml -f simulate_failure=drill
+gh workflow run production-monitor.yml            # the next healthy run closes it
+gh workflow run production-monitor.yml -f alerts=off   # checks only, no issues
+```
+
+`simulate_failure` adds one synthetic failing check named
+`Monitor alert-path test (synthetic, not a real incident)`. It changes nothing
+in production.
+
+### Operational metrics endpoint
+
+`GET /api/health/ops`, bearer `CRON_SECRET`. Returns counts and ages only.
+`assertMetricsAreNumericOnly()` fails the request rather than emit a string, so
+no address, body, token, IP or tenant identifier can reach a CI log.
+`/api/health/ready` is a different endpoint and stays behind a SUPER_ADMIN
+session.
+
+---
+
+## 9. Production smoke-test checklist
+
+Run after every deployment. Nothing here writes tenant data.
+
+```bash
+# 1. canonical health, exact body, no redirect
+curl -sS -w '\n%{http_code} %{num_redirects}\n' https://bookpitch.ge/api/health   # {"ok":true} 200 0
+
+# 2. TLS
+curl -sSI https://bookpitch.ge | head -1
+
+# 3. signup page renders
+curl -sS https://bookpitch.ge/signup | grep -c 'Create your Bookpitch workspace'  # 1
+
+# 4. bot protection is on: no token must be rejected
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST https://bookpitch.ge/api/onboard \
+  -H 'content-type: application/json' -d '{"email":"x@example.invalid"}'          # 400
+
+# 5. byte limit is real
+python3 -c "import json;print(json.dumps({'padding':'x'*200000}))" | \
+  curl -sS -o /dev/null -w '%{http_code}\n' -X POST https://bookpitch.ge/api/onboard \
+  -H 'content-type: application/json' --data-binary @-                            # 413
+
+# 6. enumeration safety: identical response for known and unknown
+curl -sS -X POST https://bookpitch.ge/api/onboard/resend -H 'content-type: application/json' \
+  -d '{"email":"definitely-unknown@example.invalid"}'                             # {"ok":true}
+
+# 7. protected surfaces redirect, never 200
+for p in /dashboard /platform /api/customers /api/health/ready; do
+  curl -sS -o /dev/null -w "$p %{http_code}\n" "https://bookpitch.ge$p"; done      # all 307
+
+# 8. everything at once
+gh workflow run production-monitor.yml
+```
+
+**In a browser**, additionally confirm the Turnstile widget actually renders on
+`https://bookpitch.ge/signup` — a checkbox widget appears above the button and
+the button becomes enabled. A missing widget is invisible to every curl above
+and is exactly how signup was broken for a week (§12).
+
+---
+
+## 10. Rollback: application versus database
+
+They are different operations and conflating them is how a bad hour becomes a
+bad week.
+
+**Application rollback** — code only, no data loss, seconds:
+
+```bash
+vercel ls --prod                       # find the last known-good deployment
+vercel promote <deployment-url>        # or `vercel rollback`
+curl -sS https://bookpitch.ge/api/health
+```
+
+Safe whenever the schema has not moved, which the expand-only rule guarantees
+for one step back.
+
+**Database recovery** — §6. Slow, lossy up to one day, and a last resort.
+
+Decision rule: if the schema is intact and the data is correct, roll back the
+application. Only reach for a restore when data is *wrong*, and never roll the
+application back past a migration that removed something.
+
+---
+
+## 11. RTO and RPO
+
+| Scenario | RPO (data loss) | RTO (time to serve) | Path |
+| --- | --- | --- | --- |
+| Bad deploy, schema unchanged | 0 | ~2 min | `vercel promote` (§10) |
+| Bad migration, expand-only | 0 | ~10 min | roll app back, fix forward |
+| Data corruption / accidental deletion | **up to 24 h** | 2–4 h | restore latest backup into a new database (§6) |
+| Supabase project loss | **up to 24 h** | 4–8 h | new project, restore, repoint `DATABASE_URL*`, redeploy |
+| Backup key lost | total | — | unrecoverable; §5 exists to prevent this |
+
+The 24-hour RPO is a direct consequence of daily logical backups on Supabase
+Free. Reducing it requires PITR, which requires Supabase Pro — a spending
+decision, out of scope here. **State this number to stakeholders explicitly.**
+
+---
+
+## 12. Incident response
+
+1. **Confirm it is real.** `gh workflow run production-monitor.yml`, then read
+   the run summary table. One red check with a clear detail line beats guessing.
+2. **Classify.** Application (rollback), data (restore), configuration (§2), or
+   dependency (Supabase / Resend / Cloudflare status pages).
+3. **Contain.** Roll the application back before debugging if users are affected.
+4. **Fix the root cause**, not the symptom. Add the test that would have caught
+   it — that is the standing rule in CLAUDE.md and it exists because this
+   project has repeatedly shipped controls that changed no observable behaviour.
+5. **Re-run every affected gate**, redeploy, and re-run the smoke test.
+6. **Close the incident issue** or let the next healthy monitor run close it.
+
+### Worked example — the 2026-08-16 signup outage
+
+Symptom: nothing. No alert, no error page, no failing test. Production signup
+returned `400 {"error":"invalid request"}` for every request and no
+organisation could be created.
+
+Two independent causes, both invisible from outside:
+
+1. `TURNSTILE_EXPECTED_ACTION` and `TURNSTILE_ALLOWED_HOSTNAMES` were never set
+   in Vercel Production. `verifyTurnstile()` fails closed on either being
+   absent while `NODE_ENV=production`, so no token could ever be accepted.
+   Tests set their own environment, so they passed.
+2. `SignupForm.tsx` rendered the Turnstile widget from the script's `load`
+   event. `window.turnstile` is not guaranteed to exist at that moment; the
+   render call was guarded, the guard returned early, and nothing retried.
+   Production served a signup page with **zero widget iframes** and a
+   permanently disabled submit button.
+
+Fixes: the env vars were added; the widget now polls (bounded) until
+`window.turnstile.render` is callable. Regression tests live in
+`tests/production-config-contract.test.ts`, and the monitor's
+`production-config-incomplete` check now watches the configuration contract so
+the first cause cannot recur silently.
+
+The lesson is the one already written in CLAUDE.md: a control that does not
+change observable behaviour does not exist. Neither cause was detectable
+without loading the real page in a real browser against the real domain.
+
+---
+
+## 13. Email operations
+
+- **Provider:** Resend, `eu-west-1`. **Verified domain:** `send.bookpitch.ge`
+  (the apex is deliberately *not* in Resend, to keep its reputation separate).
+- **From:** `Bookpitch <no-reply@send.bookpitch.ge>` (`RESEND_FROM`).
+
+DNS (Vercel-managed), verified 2026-08-16:
+
+| Record | Name | Status |
+| --- | --- | --- |
+| DKIM | `resend._domainkey.send.bookpitch.ge` | present, 1024-bit RSA |
+| SPF | `send.send.bookpitch.ge` TXT `v=spf1 include:amazonses.com ~all` | present |
+| Bounce MX | `send.send.bookpitch.ge` → `feedback-smtp.eu-west-1.amazonses.com` | present |
+| DMARC | `_dmarc.send.bookpitch.ge` `v=DMARC1; p=none; rua=mailto:dmarc@bookpitch.ge` | present |
+
+```bash
+dig +short TXT resend._domainkey.send.bookpitch.ge
+dig +short TXT send.send.bookpitch.ge
+dig +short MX  send.send.bookpitch.ge
+dig +short TXT _dmarc.send.bookpitch.ge
+```
+
+Open recommendations, each requiring a DNS change (**not authorised here** —
+see the Phase 13 ledger § External blockers):
+
+- no organisational DMARC record at `_dmarc.bookpitch.ge`, so the apex has no
+  policy of its own;
+- DMARC is `p=none` (monitor only); tighten to `quarantine` then `reject` once
+  the `rua` reports look clean;
+- `rua=mailto:dmarc@bookpitch.ge` has **no MX on `bookpitch.ge`**, so aggregate
+  reports are being sent to a domain that cannot receive them.
+
+### Outbox
+
+All durable mail goes through `email_outbox`: onboarding verification, resend,
+break-glass alerts, recovery-code notices, impersonation notices, audit digest.
+State machine `pending → processing → sent | dead`. Housekeeping drains it
+hourly with `FOR UPDATE SKIP LOCKED`, recovers claims whose lease expired,
+retries with exponential backoff and jitter computed from the **database**
+clock, and gives up at `max_attempts` (default 3) — so a permanently invalid
+recipient is retried three times and then dead-lettered, never forever.
+
+Dead rows older than 30 days are swept.
+
+### Dead-letter recovery
+
+The monitor alerts on any `dead` row. To investigate **without reading message
+bodies or recipients**:
+
+```sql
+-- counts and categories only
+SELECT purpose, failure_category, count(*), max(failed_at)
+FROM email_outbox WHERE status = 'dead' GROUP BY 1, 2 ORDER BY 3 DESC;
+```
+
+To retry a class of failure after fixing the cause:
+
+```sql
+UPDATE email_outbox
+   SET status = 'pending', attempts = 0, next_attempt_at = NOW(),
+       last_error = NULL, failed_at = NULL
+ WHERE status = 'dead' AND purpose = '<purpose>' AND failed_at > NOW() - interval '7 days';
+```
+
+Then `gh workflow run cron.yml` and confirm the count returns to zero. Never
+select `to_address` or `body` — they are encrypted at rest for a reason.
+
+### Testing delivery safely
+
+Use Resend's own sandbox recipients, never a real inbox:
+
+- `delivered@resend.dev` — always accepted and delivered
+- `bounced@resend.dev` — always hard-bounces
+
+---
+
+## 14. Synthetic test-data policy
+
+- Every synthetic record is prefixed `E2E-PHASE13-` (or the current phase tag)
+  and carries a unique run id.
+- Email addresses use `@example.invalid` (RFC 6761 — can never be delivered) or
+  a Resend sandbox address. **Never** a real person's mailbox.
+- Phone numbers are non-real.
+- Synthetic organisations are removed through supported application paths
+  (soft-delete / anonymise), never by hand-written production `DELETE`.
+- Before and after any production E2E run, record the counts of
+  `organizations`, `app_users`, `customers` and `appointments` and diff them.
+  Any change to a row that is not tagged synthetic is an incident.
+
+---
+
+## 15. Key rotation
+
+| Secret | Where | Notes |
+| --- | --- | --- |
+| `CRON_SECRET` | Vercel + GitHub | must be rotated in **both**, then redeploy (§7) |
+| `BACKUP_AGE_PRIVATE_KEY` | GitHub + owner copy | keep the old key; see §5 |
+| `DATABASE_URL_SUPERUSER_MIGRATE` | GitHub | Supabase dashboard "Reset database password" rotates **only** `postgres` |
+| `bookpitch_app` password | Supabase SQL editor | needs an explicit `ALTER USER bookpitch_app WITH PASSWORD` — the dashboard does not do it, and missing it leaves a leaked credential live |
+| `AUTH_SECRET` | Vercel | invalidates every session |
+| `FIELD_ENCRYPTION_KEY` | Vercel | use `scripts/rotate-encryption-key.ts`; never rotate without it |
+| `RESEND_API_KEY` | Vercel + Resend | revoke the old key only after a successful send |
+
+Rules that are not negotiable (CLAUDE.md, F-12 incident):
+
+- never `cat`/`grep`/loop over a file containing secrets;
+- read a value into a variable and pipe it via **stdin** — never `--value`;
+- parse `.env*` with a language that has real string handling, print keys only;
+- rotation scripts do not live in the repository; delete them after use.
+
+---
+
+## 16. Escalation
+
+| Role | Contact | When |
+| --- | --- | --- |
+| Owner / primary on-call | Levan Tchanturidze (repo owner) | any P1 |
+| Secondary | _unassigned — single-operator project_ | — |
+| Supabase | dashboard support, project on Free plan | database unreachable |
+| Vercel | dashboard support | deploys failing, DNS |
+| Resend | dashboard support | delivery failures |
+| Cloudflare | Turnstile dashboard | widget or siteverify outage |
+
+GitHub notifies the owner by assigning incident issues. There is no second
+responder: the single-operator gap is a real risk and is recorded as such.
+
+Status pages: `status.supabase.com`, `vercel-status.com`, `resend-status.com`,
+`cloudflarestatus.com`.

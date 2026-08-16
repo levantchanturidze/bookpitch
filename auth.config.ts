@@ -74,6 +74,11 @@ export function isPublicPath(path: string): boolean {
     path.startsWith('/api/auth') ||
     // Uptime probe — no session cookie, no PII in the response.
     path === '/api/health' ||
+    // Operational metrics for the production monitor. Reachable without a
+    // session because the caller is a GitHub Actions runner; the handler
+    // itself requires the CRON_SECRET bearer, exactly like /api/cron/*.
+    // Exact match only — /api/health/ready stays session-gated.
+    path === '/api/health/ops' ||
     // Payment gateway webhooks are called by external services and
     // authenticate via HMAC in the handler itself.
     path.startsWith('/api/webhooks') ||

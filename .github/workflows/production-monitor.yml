@@ -1,0 +1,68 @@
+name: Production monitor
+
+# Watches bookpitch.ge and the operational jobs behind it, every 30 minutes.
+#
+# What it actually checks is in scripts/production-monitor.mjs. The short
+# version: the public health endpoint returns exactly {"ok":true} with no
+# redirect, TLS is valid and not about to expire, the current production
+# deployment answers, the cron workflow is still running and not failing
+# repeatedly, a backup happened within the last 26 hours, the restore drill is
+# not stale, and the database-side symptoms of every scheduled job are at zero.
+#
+# The script is dependency-free on purpose — no `npm ci`, so a run is seconds,
+# not minutes, and the monitor cannot be taken down by a registry outage.
+#
+# Failures open a deduplicated GitHub issue labelled `ops-incident`, one per
+# incident class, and recovery closes it automatically.
+
+on:
+  schedule:
+    # Every 30 minutes. Frequent enough to catch an outage inside half an hour,
+    # infrequent enough not to double this repository's Actions consumption
+    # (the cron workflow already runs every 15 minutes).
+    - cron: '5,35 * * * *'
+  workflow_dispatch:
+    inputs:
+      simulate_failure:
+        description: 'Inject a synthetic failing check to test the alert path (production unaffected)'
+        required: false
+        default: ''
+        type: string
+      alerts:
+        description: 'Set to "off" to run checks without touching GitHub issues'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  issues: write # open, comment on and close deduplicated incident issues
+  actions: read # read cron / backup / restore-drill run outcomes
+  deployments: read # confirm the current production deployment is reachable
+
+concurrency:
+  group: production-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Check production health
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run production monitor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Bearer for /api/health/ops. The same secret the cron workflow
+          # already uses; the endpoint returns counts and ages only.
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          MONITOR_PRODUCTION_URL: https://bookpitch.ge
+          MONITOR_SIMULATE_FAILURE: ${{ inputs.simulate_failure }}
+          MONITOR_ALERTS: ${{ inputs.alerts }}
+        # No `continue-on-error`, no `|| true`. A red monitor must be a red run:
+        # that is the whole point of the workflow.
+        run: node scripts/production-monitor.mjs

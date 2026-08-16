@@ -35,8 +35,28 @@ export default function SignupForm() {
   useEffect(() => {
     if (!SITE_KEY) return; // No site key: skip widget (dev / CI).
 
-    function renderWidget() {
-      if (!window.turnstile || !containerRef.current || widgetIdRef.current) return;
+    // Phase 13 (2026-08-16): this used to render from the script's `load`
+    // event. In production that silently never fired the render — the script
+    // loaded, `window.turnstile` was defined a moment later, and the guard
+    // inside renderWidget() returned early and was never retried. The result
+    // was a signup page with no widget, a permanently disabled submit button,
+    // and a completely unusable signup flow that no test could see because no
+    // test rendered the real widget. Verified on bookpitch.ge: script present,
+    // window.turnstile.render a function, zero widget iframes.
+    //
+    // The script `load` event is not a guarantee that `window.turnstile` is
+    // usable — Cloudflare only guarantees that through its documented
+    // `?onload=` callback. So: poll for readiness with a bounded interval,
+    // which also covers the case where the script was already loaded by an
+    // earlier mount and no `load` event will ever fire again.
+    let cancelled = false;
+    let poll: ReturnType<typeof setInterval> | null = null;
+
+    function renderWidget(): boolean {
+      if (cancelled) return true; // stop polling; the component went away
+      if (widgetIdRef.current) return true;
+      if (!window.turnstile || typeof window.turnstile.render !== 'function') return false;
+      if (!containerRef.current) return false;
       widgetIdRef.current = window.turnstile.render(containerRef.current, {
         sitekey: SITE_KEY,
         action: 'signup',
@@ -44,24 +64,36 @@ export default function SignupForm() {
         'expired-callback': () => setCaptchaToken(null),
         'error-callback': () => setCaptchaToken(null),
       });
+      return true;
     }
 
     const scriptId = 'cf-turnstile-script';
-    if (window.turnstile) {
-      renderWidget();
-    } else {
-      let script = document.getElementById(scriptId) as HTMLScriptElement | null;
-      if (!script) {
-        script = document.createElement('script');
-        script.id = scriptId;
-        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
-        script.async = true;
-        script.defer = true;
-        document.head.appendChild(script);
-      }
-      script.addEventListener('load', renderWidget);
-      return () => script!.removeEventListener('load', renderWidget);
+    if (!document.getElementById(scriptId)) {
+      const script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
     }
+
+    if (!renderWidget()) {
+      // ~15s of 100ms attempts. Long enough for a slow network, short enough
+      // that it cannot leak a timer for the life of the page.
+      let attempts = 0;
+      poll = setInterval(() => {
+        attempts += 1;
+        if (renderWidget() || attempts >= 150) {
+          if (poll) clearInterval(poll);
+          poll = null;
+        }
+      }, 100);
+    }
+
+    return () => {
+      cancelled = true;
+      if (poll) clearInterval(poll);
+    };
   }, []);
 
   async function submit(fd: FormData) {
