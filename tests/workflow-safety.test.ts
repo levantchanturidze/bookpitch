@@ -332,6 +332,25 @@ describe('PostgreSQL 17 binaries are pinned, not left to pg_wrapper', () => {
     const install = verifySteps.find((s) => s.run?.includes('postgresql-client-17'));
     expect(install?.run).toContain('/usr/lib/postgresql/17/bin/pg_restore --version');
   });
+
+  it('never pipes pg_restore into a short-circuiting grep', () => {
+    // `pg_restore --list | grep -q` makes grep exit on its first match, which
+    // SIGPIPEs pg_restore; with `set -o pipefail` that becomes a failure and
+    // the check reports a missing table that is present in the archive.
+    // Run 31967906684 failed exactly this way. Write the TOC to a file first.
+    for (const file of [BACKUP, RESTORE]) {
+      const { doc } = readWorkflow(file);
+      for (const step of allSteps(doc)) {
+        if (!step.run) continue;
+        expect(step.run, `${file} "${step.name}" pipes pg_restore into grep -q`).not.toMatch(
+          /pg_restore[^\n|]*\|\s*grep\s+(-\w*q|\S*\s+-\w*q)/,
+        );
+      }
+    }
+    // The scripts have always written the list to a file; keep it that way.
+    const backupSh = readFileSync(path.join(ROOT, 'scripts', 'backup-production.sh'), 'utf8');
+    expect(backupSh).not.toMatch(/pg_restore[^\n|]*\|\s*grep\s+-\w*q/);
+  });
 });
 
 describe('no required gate is silently suppressed', () => {
