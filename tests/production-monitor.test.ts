@@ -372,6 +372,45 @@ describe('incident deduplication', () => {
     expect(toClose.map((c) => c.result.id)).toEqual(['tls']);
   });
 
+  it('closes an incident whose check is no longer reported at all', () => {
+    // Found by the live alert-path test on 2026-08-16: the synthetic
+    // `simulated-failure` check only exists while MONITOR_SIMULATE_FAILURE is
+    // set, so on the next healthy run it was absent from `results` entirely —
+    // not passing, just gone — and its issue stayed open forever. The same
+    // would happen to any real check that is renamed or removed.
+    const existing = [
+      { number: 11, title: '[ops] gone', body: incidentMarker('a-check-that-no-longer-exists') },
+    ];
+    const { toOpen, toComment, toClose } = reconcileIncidents([passing], existing);
+    expect(toOpen).toHaveLength(0);
+    expect(toComment).toHaveLength(0);
+    expect(toClose).toHaveLength(1);
+    expect(toClose[0].issue.number).toBe(11);
+    expect(toClose[0].orphaned).toBe(true);
+    // …and it must not claim a recovery it never observed.
+    expect(toClose[0].result.detail).toContain('no longer reported');
+  });
+
+  it('marks a genuine recovery as a recovery, not an orphan', () => {
+    const existing = [{ number: 12, body: incidentMarker('health-endpoint') }];
+    const { toClose } = reconcileIncidents([passing], existing);
+    expect(toClose).toHaveLength(1);
+    expect(toClose[0].orphaned).toBeUndefined();
+  });
+
+  it('does not close an orphan and a recovery twice for the same issue', () => {
+    const existing = [{ number: 13, body: incidentMarker('health-endpoint') }];
+    const { toClose } = reconcileIncidents([passing], existing);
+    expect(toClose.map((c) => c.issue.number)).toEqual([13]);
+  });
+
+  it('leaves a still-failing check open rather than treating it as an orphan', () => {
+    const existing = [{ number: 14, body: incidentMarker('health-endpoint') }];
+    const { toComment, toClose } = reconcileIncidents([failing], existing);
+    expect(toComment).toHaveLength(1);
+    expect(toClose).toHaveLength(0);
+  });
+
   it('ignores unrelated open issues that carry no incident marker', () => {
     const existing = [{ number: 4, body: 'a human-written bug report' }];
     const { toOpen, toComment, toClose } = reconcileIncidents([failing], existing);
