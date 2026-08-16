@@ -341,6 +341,9 @@ in the body. Deduplication matches on that marker, so:
 - repeated failures **comment** on the existing issue, and only when the detail
   line has changed — a stable outage stays one quiet issue;
 - recovery **comments and closes** the issue automatically;
+- an incident whose check is **no longer reported at all** — renamed, removed,
+  or only conditionally present — is also closed, but with a different comment
+  saying the check is gone rather than claiming a recovery nobody observed;
 - renaming the issue does not break deduplication;
 - unrelated human-filed issues are never touched.
 

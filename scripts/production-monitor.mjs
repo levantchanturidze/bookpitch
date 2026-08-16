@@ -318,6 +318,8 @@ export function reconcileIncidents(results, openIssues) {
   const toComment = [];
   const toClose = [];
 
+  const reportedIds = new Set(results.map((r) => r.id));
+
   for (const result of results) {
     const existing = byId.get(result.id);
     if (!result.ok) {
@@ -326,6 +328,27 @@ export function reconcileIncidents(results, openIssues) {
     } else if (existing) {
       toClose.push({ result, issue: existing });
     }
+  }
+
+  // An open incident for a check that is no longer reported at all cannot still
+  // be true — the check that raised it does not exist any more. Close it, with
+  // its own reason so the comment does not claim a recovery that was never
+  // observed. Found by the alert-path test: the synthetic `simulated-failure`
+  // check only exists while MONITOR_SIMULATE_FAILURE is set, so its issue was
+  // never in `results` on the next healthy run and stayed open forever. The
+  // same would happen to any real check that is renamed or removed.
+  for (const [id, issue] of byId) {
+    if (reportedIds.has(id)) continue;
+    toClose.push({
+      result: {
+        id,
+        title: issue.title ?? id,
+        ok: true,
+        detail: 'this check is no longer reported by the monitor',
+      },
+      issue,
+      orphaned: true,
+    });
   }
 
   return { toOpen, toComment, toClose };
@@ -758,18 +781,24 @@ async function syncIncidents(repo, token, results, now) {
     console.log(`alert: updated incident #${issue.number} for ${result.id}`);
   }
 
-  for (const { result, issue } of toClose) {
+  for (const { result, issue, orphaned } of toClose) {
+    // Two different closings, said honestly. A recovery means the check ran and
+    // passed. An orphan means the check is gone — claiming "recovered" there
+    // would be a small lie in the audit trail.
+    const body = orphaned
+      ? `Closed at ${now.toISOString()} because ${result.detail}.\n\nThe check that opened this incident is no longer part of the monitor, so its state can no longer be observed. If the underlying condition still matters, re-add a check for it.`
+      : `Recovered at ${now.toISOString()}.\n\n**Detail:** ${result.detail}\n\nClosing automatically.`;
     await gh(`/repos/${repo}/issues/${issue.number}/comments`, token, {
       method: 'POST',
-      body: JSON.stringify({
-        body: `Recovered at ${now.toISOString()}.\n\n**Detail:** ${result.detail}\n\nClosing automatically.`,
-      }),
+      body: JSON.stringify({ body }),
     });
     await gh(`/repos/${repo}/issues/${issue.number}`, token, {
       method: 'PATCH',
       body: JSON.stringify({ state: 'closed', state_reason: 'completed' }),
     });
-    console.log(`alert: closed recovered incident #${issue.number} for ${result.id}`);
+    console.log(
+      `alert: closed ${orphaned ? 'orphaned' : 'recovered'} incident #${issue.number} for ${result.id}`,
+    );
   }
 }
 
