@@ -2,7 +2,6 @@ import { ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { listInsurers } from '@/lib/insurance';
 import { withOrg } from '@/lib/db';
-import { toCustomerDto } from '@/lib/customers';
 import InsuranceView from './InsuranceView';
 
 export const metadata = { title: 'Insurance · Bookpitch' };

@@ -1,4 +1,9 @@
-export const metadata = { title: 'Verification error · Bookpitch' };
+export const metadata = {
+  title: 'Verification error · Bookpitch',
+  robots: { index: false, follow: false },
+};
+
+import ResendVerificationForm from '@/components/onboard/ResendVerificationForm';
 
 export default function OnboardErrorPage() {
   return (
@@ -23,15 +28,10 @@ export default function OnboardErrorPage() {
           Something went wrong
         </h1>
         <p className="mt-2 text-sm text-slate-500">
-          We couldn&apos;t complete your email verification due to an unexpected error. Please try
-          again. If the problem persists, contact support.
+          We couldn&apos;t complete your email verification due to an unexpected error. Enter your
+          email address below to request a new link.
         </p>
-        <a
-          href="/signup"
-          className="mt-6 inline-block rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800"
-        >
-          Try again
-        </a>
+        <ResendVerificationForm />
       </div>
     </main>
   );

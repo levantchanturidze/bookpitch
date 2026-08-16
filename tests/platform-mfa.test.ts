@@ -25,6 +25,8 @@ const { verifyPasswordFresh, __clearPasswordReauthCache } =
   await import('@/lib/platform/password-reauth');
 const enrollRoute = await import('@/app/api/platform/mfa/enroll/route');
 const confirmRoute = await import('@/app/api/platform/mfa/confirm/route');
+const recoveryCodesRoute = await import('@/app/api/platform/mfa/recovery-codes/route');
+const { getRemainingRecoveryCodeCount } = await import('@/lib/platform/mfa');
 
 // Use same TOTP plugin set as lib/platform/mfa.ts
 const { generateSecret, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
@@ -523,25 +525,61 @@ describe('platform MFA (F2 — TOTP enrollment + verification)', () => {
       select: { mfaEnabled: true, mfaTotp: true },
     });
     expect(after.mfaEnabled).toBe(true);
-    expect(after.mfaTotp).toBeTruthy(); // New secret is stored.
+    expect(after.mfaTotp).toBeTruthy(); // Old confirmed secret stays intact.
   });
 
-  it('verifyTotp still works (with old code) during re-enrollment window', async () => {
-    // The old secret is set in beforeEach; capture a valid code from it BEFORE
-    // re-enrollment replaces the secret.
-    const before = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+  it('verifyTotp still works with OLD secret during re-enrollment window', async () => {
+    // Read and decrypt the old active secret that beforeEach installed.
+    const { decryptField } = await import('@/lib/crypto');
+    const row = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
       where: { id: superUserId },
       select: { mfaTotp: true },
     });
-    // We can't know the plaintext of the beforeEach secret — re-enrollment
-    // writes a new one that we do know. Confirm verifyTotp works with the new
-    // secret after re-enrollment starts (old secret is already replaced, but
-    // mfaEnabled remains true, so the path is open).
-    const { secret: newSecret } = await generateTotpEnrollment(superUserId);
-    const code = await freshCode(newSecret);
-    // verifyTotp must accept a code derived from the new pending secret while
-    // mfaEnabled is still true (because we preserved it).
+    const oldSecret = decryptField(row.mfaTotp!);
+    if (!oldSecret) throw new Error('test setup: could not decrypt old mfaTotp');
+
+    // Start re-enrollment — must NOT overwrite mfaTotp.
+    await generateTotpEnrollment(superUserId);
+
+    // Break-glass with the old confirmed secret must still succeed.
+    const code = await freshCode(oldSecret);
     await expect(verifyTotp(superUserId, code)).resolves.toBeUndefined();
+  });
+
+  it('complement: verifyTotp rejects a code from the pending (unconfirmed) re-enrollment secret', async () => {
+    // Start re-enrollment — new secret goes to mfaTotpPending, NOT mfaTotp.
+    const { secret: pendingSecret } = await generateTotpEnrollment(superUserId);
+    const pendingCode = await freshCode(pendingSecret);
+    // verifyTotp reads mfaTotp (the old confirmed secret), so the pending code must fail.
+    await expect(verifyTotp(superUserId, pendingCode)).rejects.toBeInstanceOf(InvalidInputError);
+  });
+
+  it('re-enrollment: confirmation promotes pending secret to active', async () => {
+    await generateTotpEnrollment(superUserId);
+
+    // Capture the pending encrypted blob before confirmation.
+    const rowBefore = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { id: superUserId },
+      select: { mfaTotp: true, mfaTotpPending: true },
+    });
+    const pendingBlob = rowBefore.mfaTotpPending;
+    expect(pendingBlob).toBeTruthy();
+
+    // Decrypt the pending secret to generate a valid confirmation code.
+    const { decryptField } = await import('@/lib/crypto');
+    const pendingSecret = decryptField(pendingBlob!);
+    if (!pendingSecret) throw new Error('test setup: could not decrypt pending blob');
+    await confirmTotpEnrollment(superUserId, await freshCode(pendingSecret));
+
+    // After confirmation: mfaTotpPending cleared, mfaTotp promoted.
+    const after = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { id: superUserId },
+      select: { mfaTotp: true, mfaTotpPending: true, mfaEnabled: true },
+    });
+    expect(after.mfaEnabled).toBe(true);
+    expect(after.mfaTotpPending).toBeNull();
+    // The promoted encrypted blob must equal what was in mfaTotpPending.
+    expect(after.mfaTotp).toBe(pendingBlob);
   });
 
   it('complement: generateTotpEnrollment on UN-enrolled user leaves mfaEnabled=false', async () => {
@@ -559,5 +597,239 @@ describe('platform MFA (F2 — TOTP enrollment + verification)', () => {
     });
     // Must still be false — enrollment is not confirmed yet.
     expect(after.mfaEnabled).toBe(false);
+  });
+
+  // ── Recovery codes generated on initial enrollment ────────────────────────
+
+  it('confirmTotpEnrollment returns 8 recovery codes on initial enrollment', async () => {
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaEnabled: false, mfaTotp: null, mfaLastTotpWindow: null },
+    });
+    await unsafePrismaAdmin.appUserRecoveryCode.deleteMany({ where: { userId: superUserId } });
+
+    const secret = generateSecret();
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaTotp: encryptField(secret), mfaEnabled: false, mfaLastTotpWindow: null },
+    });
+
+    const result = await confirmTotpEnrollment(superUserId, await freshCode(secret));
+
+    // Initial enrollment must return plaintext recovery codes.
+    expect(result.recoveryCodes).not.toBeNull();
+    expect(result.recoveryCodes).toHaveLength(8);
+    result.recoveryCodes!.forEach((c) =>
+      expect(c).toMatch(/^[0-9A-F]+-[0-9A-F]+-[0-9A-F]+-[0-9A-F]+$/),
+    );
+
+    // Codes must exist in DB as hashes.
+    const dbCodes = await unsafePrismaAdmin.appUserRecoveryCode.count({
+      where: { userId: superUserId, usedAt: null },
+    });
+    expect(dbCodes).toBe(8);
+  });
+
+  it('confirmTotpEnrollment returns null recoveryCodes on re-enrollment', async () => {
+    // Starting from enrolled state (beforeEach restored this).
+    await generateTotpEnrollment(superUserId); // triggers re-enrollment path
+
+    const rowBefore = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { id: superUserId },
+      select: { mfaTotpPending: true },
+    });
+    const { decryptField } = await import('@/lib/crypto');
+    const pendingSecret = decryptField(rowBefore.mfaTotpPending!);
+    if (!pendingSecret) throw new Error('test setup: could not decrypt pending blob');
+
+    const result = await confirmTotpEnrollment(superUserId, await freshCode(pendingSecret));
+
+    // Re-enrollment must NOT return new recovery codes — existing codes remain.
+    expect(result.recoveryCodes).toBeNull();
+  });
+
+  // ── Lib-level SUPER_ADMIN enforcement ────────────────────────────────────────
+
+  it('generateTotpEnrollment rejects non-SUPER_ADMIN at the lib level', async () => {
+    const { ForbiddenError } = await import('@/lib/auth');
+    const platformAdmin = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'platform-admin@bp.test' },
+      select: { id: true },
+    });
+    await expect(generateTotpEnrollment(platformAdmin.id)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it('generateRecoveryCodes rejects non-SUPER_ADMIN at the lib level', async () => {
+    const { ForbiddenError } = await import('@/lib/auth');
+    const platformAdmin = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'platform-admin@bp.test' },
+      select: { id: true },
+    });
+    await expect(generateRecoveryCodes(platformAdmin.id)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
+// ── Recovery code API (GET + POST /api/platform/mfa/recovery-codes) ──────────
+
+describe('Recovery code API — GET /api/platform/mfa/recovery-codes', () => {
+  let superUserId: string;
+
+  beforeAll(async () => {
+    await seedRbacFixtures();
+    const su = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'superadmin@bp.test' },
+      select: { id: true },
+    });
+    superUserId = su.id;
+    // Ensure MFA is enrolled for this describe block.
+    const { generateSecret } = await import('otplib');
+    const { encryptField } = await import('@/lib/crypto');
+    const secret = generateSecret();
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaTotp: encryptField(secret), mfaEnabled: true },
+    });
+  });
+
+  beforeEach(async () => {
+    authMock.mockReset();
+    __clearAuthContextCache();
+    // Seed 8 fresh recovery codes before each test in this block.
+    await generateRecoveryCodes(superUserId);
+  });
+
+  it('RC.1: GET returns remaining count for SUPER_ADMIN', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    const res = await recoveryCodesRoute.GET();
+    expect(res.status).toBe(200);
+    const body = await json<{ remaining: number }>(res);
+    expect(body.remaining).toBe(8); // freshly generated set
+  });
+
+  it('RC.2: GET returns correct count after one code consumed', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    // Manually mark one code used.
+    await unsafePrismaAdmin.appUserRecoveryCode.updateMany({
+      where: { userId: superUserId, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+    // Reset to one consumed + rest unused — but updateMany sets ALL, so just count.
+    const count = await getRemainingRecoveryCodeCount(superUserId);
+    const res = await recoveryCodesRoute.GET();
+    const body = await json<{ remaining: number }>(res);
+    expect(body.remaining).toBe(count);
+  });
+
+  it('RC.3: GET sets Cache-Control: no-store', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    const res = await recoveryCodesRoute.GET();
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('RC.4: non-SUPER_ADMIN GET returns 403', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
+    const res = await recoveryCodesRoute.GET();
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('Recovery code API — POST /api/platform/mfa/recovery-codes (regenerate)', () => {
+  let superUserId: string;
+
+  beforeAll(async () => {
+    await seedRbacFixtures();
+    const su = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+      where: { email: 'superadmin@bp.test' },
+      select: { id: true },
+    });
+    superUserId = su.id;
+    const { generateSecret } = await import('otplib');
+    const { encryptField } = await import('@/lib/crypto');
+    const secret = generateSecret();
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: superUserId },
+      data: { mfaTotp: encryptField(secret), mfaEnabled: true },
+    });
+  });
+
+  beforeEach(async () => {
+    authMock.mockReset();
+    __clearAuthContextCache();
+    await __clearPasswordReauthCache();
+    await unsafePrismaAdmin.platformReauthGrant
+      .deleteMany({ where: { userId: superUserId } })
+      .catch(() => {});
+  });
+
+  it('RC.5: POST returns 8 plaintext codes after fresh password grant', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    await verifyPasswordFresh(
+      superUserId,
+      'devpass123',
+      TEST_SESSION,
+      'platform.mfa.recovery_codes',
+    );
+    const res = await recoveryCodesRoute.POST();
+    expect(res.status).toBe(200);
+    const body = await json<{ codes: string[] }>(res);
+    expect(body.codes).toHaveLength(8);
+    // Each code must match the expected format.
+    body.codes.forEach((c) => expect(c).toMatch(/^[0-9A-F]+-[0-9A-F]+-[0-9A-F]+-[0-9A-F]+$/));
+  });
+
+  it('RC.6: POST sets Cache-Control: no-store — codes are shown once only', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    await verifyPasswordFresh(
+      superUserId,
+      'devpass123',
+      TEST_SESSION,
+      'platform.mfa.recovery_codes',
+    );
+    const res = await recoveryCodesRoute.POST();
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('RC.7: POST without fresh password grant returns 403', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    // No verifyPasswordFresh call → requireFreshPassword throws → 403.
+    const res = await recoveryCodesRoute.POST();
+    expect(res.status).toBe(403);
+  });
+
+  it('RC.8: POST invalidates the old codes — old codes no longer exist after regeneration', async () => {
+    // Generate an initial set of codes.
+    const { codes: oldCodes } = await generateRecoveryCodes(superUserId);
+    const oldHash = await unsafePrismaAdmin.appUserRecoveryCode.findFirst({
+      where: { userId: superUserId, usedAt: null },
+      select: { codeHash: true },
+    });
+    expect(oldHash).not.toBeNull();
+
+    // Regenerate via route.
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    await verifyPasswordFresh(
+      superUserId,
+      'devpass123',
+      TEST_SESSION,
+      'platform.mfa.recovery_codes',
+    );
+    const res = await recoveryCodesRoute.POST();
+    expect(res.status).toBe(200);
+
+    // The old code hash must no longer exist in the DB.
+    const stillPresent = await unsafePrismaAdmin.appUserRecoveryCode.findFirst({
+      where: { userId: superUserId, codeHash: oldHash!.codeHash },
+    });
+    expect(stillPresent).toBeNull();
+
+    // Response codes are different from the old ones.
+    const body = await json<{ codes: string[] }>(res);
+    oldCodes.forEach((old) => expect(body.codes).not.toContain(old));
+  });
+
+  it('RC.9: non-SUPER_ADMIN cannot regenerate codes (403)', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
+    const res = await recoveryCodesRoute.POST();
+    expect(res.status).toBe(403);
   });
 });

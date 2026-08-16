@@ -196,7 +196,10 @@ export function parseUpdateInput(body: unknown): CustomerUpdateInput {
   setIfDefined('clinicalNotes', optionalString(b.clinicalNotes, 'clinicalNotes'));
   if (b.consent === true) out.consent = true;
   setIfDefined('insurerName', optionalString(b.insurerName, 'insurerName'));
-  setIfDefined('insurancePolicyNumber', optionalString(b.insurancePolicyNumber, 'insurancePolicyNumber'));
+  setIfDefined(
+    'insurancePolicyNumber',
+    optionalString(b.insurancePolicyNumber, 'insurancePolicyNumber'),
+  );
   return out;
 }
 
@@ -239,7 +242,8 @@ export function buildUpdateData(input: CustomerUpdateInput): {
   if (input.allergies !== undefined) set('allergies', encryptField(input.allergies));
   if (input.clinicalNotes !== undefined) set('clinicalNotes', encryptField(input.clinicalNotes));
   if (input.insurerName !== undefined) set('insurerName', input.insurerName);
-  if (input.insurancePolicyNumber !== undefined) set('insurancePolicyNumber', input.insurancePolicyNumber);
+  if (input.insurancePolicyNumber !== undefined)
+    set('insurancePolicyNumber', input.insurancePolicyNumber);
   if (input.consent === true) {
     set('consentAt', new Date());
     set('consentVersion', CONSENT_VERSION);

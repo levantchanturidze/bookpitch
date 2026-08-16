@@ -96,11 +96,15 @@ model Organization {
   // code, not migrations. Absent key = disabled.
   features Json @default("{}") @db.JsonB
 
+  // ISO 4217 currency code for all payments in this org. Default GEL; change
+  // when multi-currency support lands.
+  currency String @default("GEL") @db.VarChar(3) @map("currency")
+
   // ---- Spec §3 additions (RBAC Phase 1). Backfill in Phase 2.
   vertical                  String? // clinic|salon|fitness|mixed — CHECK in migration
   legalName                 String? @map("legal_name")
   brandName                 String? @map("brand_name")
-  status                    String  @default("active") // trial|active|suspended|archived
+  status                    String  @default("active") // pending_setup|trial|active|suspended|archived
   ownerUserId               String? @map("owner_user_id") @db.Uuid
   allowSupportImpersonation Boolean @default(false) @map("allow_support_impersonation")
 
@@ -152,6 +156,7 @@ model Location {
   staff        Staff[]
   services     Service[]
   appointments Appointment[]
+  waitlists    Waitlist[]    @relation("WaitlistLocation")
   // Reverse of Branch.legacyLocation — Phase 2 sets one Branch per Location.
   branch       Branch?       @relation("BranchLegacyLocation")
 
@@ -187,6 +192,12 @@ model AppUser {
   // AES-GCM encrypted TOTP secret (same scheme as allergies/clinicalNotes).
   // NULL = MFA not enrolled; non-null = TOTP required for break-glass.
   mfaTotp           String?   @map("mfa_totp")
+  // Pending TOTP secret during re-enrollment. Written by generateTotpEnrollment
+  // when mfaEnabled=true; promoted to mfaTotp (and cleared) by confirmTotpEnrollment.
+  // verifyTotp always reads mfaTotp so the active break-glass path is unaffected.
+  mfaTotpPending          String?   @map("mfa_totp_pending")
+  // Timestamp when mfaTotpPending was written, for housekeeping to sweep stale challenges.
+  mfaTotpPendingCreatedAt DateTime? @map("mfa_totp_pending_created_at") @db.Timestamptz(6)
   // Unix epoch of the last successfully consumed TOTP 30s window, for replay protection.
   mfaLastTotpWindow BigInt?   @map("mfa_last_totp_window")
   lastLoginAt       DateTime? @map("last_login_at") @db.Timestamptz(6)
@@ -212,6 +223,7 @@ model AppUser {
   ownershipTransfersReceived   OwnershipTransfer[]    @relation("OwnershipTransferTo")
   platformReauthGrants         PlatformReauthGrant[]
   recoveryCode                 AppUserRecoveryCode[]
+  issuedInvitations            Invitation[]           @relation("InvitationInvitedBy")
 
   @@unique([authProvider, authSubject])
   @@index([status], map: "idx_app_users_status")
@@ -232,7 +244,7 @@ model PushSubscription {
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
 
-  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "push_subscription_user_fk")
 
   @@index([userId], map: "idx_push_subscription_user")
   @@map("push_subscription")
@@ -304,6 +316,7 @@ model Staff {
   user         AppUser?            @relation(fields: [userId], references: [id], onDelete: SetNull)
   availability StaffAvailability[]
   appointments Appointment[]
+  waitlists    Waitlist[]          @relation("WaitlistStaff")
 
   @@index([locationId], map: "idx_staff_location")
   @@map("staff")
@@ -340,6 +353,7 @@ model Service {
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   location     Location      @relation(fields: [locationId], references: [id], onDelete: Cascade)
   appointments Appointment[]
+  waitlists    Waitlist[]    @relation("WaitlistService")
 
   @@index([locationId], map: "idx_services_location")
   @@map("services")
@@ -374,6 +388,7 @@ model Customer {
   organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   treatmentHistory TreatmentHistory[]
   appointments     Appointment[]
+  waitlists        Waitlist[]         @relation("WaitlistCustomer")
 
   @@index([organizationId], map: "idx_customers_org")
   @@index([organizationId, insurerName], map: "idx_customers_org_insurer")
@@ -507,7 +522,7 @@ model Notification {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@index([organizationId, createdAt], map: "idx_notifications_org")
+  @@index([organizationId, createdAt(sort: Desc)], map: "idx_notifications_org")
   @@map("notifications")
 }
 
@@ -521,7 +536,7 @@ model AssistantUsage {
   count          Int      @default(0)
   updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "assistant_usage_org_fk")
 
   @@id([organizationId, yearMonth])
   @@map("assistant_usage")
@@ -541,7 +556,11 @@ model Waitlist {
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   notifiedAt     DateTime? @map("notified_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "waitlist_org_fk")
+  customer     Customer     @relation("WaitlistCustomer", fields: [customerId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "waitlist_customer_fk")
+  location     Location?    @relation("WaitlistLocation", fields: [locationId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "waitlist_location_fk")
+  staff        Staff?       @relation("WaitlistStaff", fields: [staffId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "waitlist_staff_fk")
+  service      Service?     @relation("WaitlistService", fields: [serviceId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "waitlist_service_fk")
 
   @@index([organizationId, status], map: "idx_waitlist_org_status")
   @@index([organizationId, status, preferredFrom, preferredTo], map: "idx_waitlist_matcher")
@@ -560,7 +579,8 @@ model Invitation {
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "invitations_org_fk")
+  invitedByUser AppUser?     @relation("InvitationInvitedBy", fields: [invitedBy], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "invitations_invited_by_fk")
 
   @@index([organizationId, status], map: "idx_invitations_org_status")
   @@map("invitations")
@@ -572,7 +592,7 @@ model RateLimit {
   windowStart    DateTime @map("window_start") @db.Timestamptz(0)
   count          Int      @default(0)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "rate_limit_org_fk")
 
   @@id([organizationId, bucket, windowStart])
   @@index([windowStart], map: "idx_rate_limit_window")
@@ -664,8 +684,8 @@ model RoleCanManage {
   childRoleId  String   @map("child_role_id") @db.Uuid
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  parent Role @relation("RoleCanManage_Parent", fields: [parentRoleId], references: [id], onDelete: Cascade)
-  child  Role @relation("RoleCanManage_Child", fields: [childRoleId], references: [id], onDelete: Cascade)
+  parent Role @relation("RoleCanManage_Parent", fields: [parentRoleId], references: [id], onDelete: Cascade, map: "role_can_manage_parent_fkey")
+  child  Role @relation("RoleCanManage_Child", fields: [childRoleId], references: [id], onDelete: Cascade, map: "role_can_manage_child_fkey")
 
   @@id([parentRoleId, childRoleId])
   @@index([parentRoleId], map: "idx_role_can_manage_parent")
@@ -758,9 +778,9 @@ model ImpersonationSession {
   userAgent        String?   @map("user_agent")
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  actor        AppUser      @relation("ImpersonationActor", fields: [actorUserId], references: [id], onDelete: NoAction)
-  onBehalfOf   AppUser      @relation("ImpersonationTarget", fields: [onBehalfOfUserId], references: [id], onDelete: NoAction)
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: NoAction)
+  actor        AppUser      @relation("ImpersonationActor", fields: [actorUserId], references: [id], onDelete: NoAction, map: "impersonation_sessions_actor_fkey")
+  onBehalfOf   AppUser      @relation("ImpersonationTarget", fields: [onBehalfOfUserId], references: [id], onDelete: NoAction, map: "impersonation_sessions_on_behalf_of_fkey")
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: NoAction, map: "impersonation_sessions_org_fkey")
 
   // idx_impersonation_sessions_actor_active is a partial index
   // (WHERE ended_at IS NULL) declared in the migration; Prisma can't
@@ -786,8 +806,8 @@ model BreakGlassSession {
   userAgent            String?   @map("user_agent")
   createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  actor        AppUser       @relation(fields: [actorUserId], references: [id], onDelete: NoAction)
-  organization Organization? @relation(fields: [targetOrganizationId], references: [id], onDelete: NoAction)
+  actor        AppUser       @relation(fields: [actorUserId], references: [id], onDelete: NoAction, map: "break_glass_sessions_actor_fkey")
+  organization Organization? @relation(fields: [targetOrganizationId], references: [id], onDelete: NoAction, map: "break_glass_sessions_org_fkey")
 
   @@map("break_glass_sessions")
 }
@@ -807,9 +827,9 @@ model OwnershipTransfer {
   decidedAt      DateTime? @map("decided_at") @db.Timestamptz(6)
   decidedReason  String?   @map("decided_reason")
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  fromUser     AppUser      @relation("OwnershipTransferFrom", fields: [fromUserId], references: [id], onDelete: NoAction)
-  toUser       AppUser      @relation("OwnershipTransferTo", fields: [toUserId], references: [id], onDelete: NoAction)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "ownership_transfers_org_fkey")
+  fromUser     AppUser      @relation("OwnershipTransferFrom", fields: [fromUserId], references: [id], onDelete: NoAction, map: "ownership_transfers_from_fkey")
+  toUser       AppUser      @relation("OwnershipTransferTo", fields: [toUserId], references: [id], onDelete: NoAction, map: "ownership_transfers_to_fkey")
 
   @@map("ownership_transfers")
 }
@@ -851,8 +871,8 @@ model PlatformReauthGrant {
   // Set atomically by requireFreshPassword. Non-null = already consumed.
   consumedAt     DateTime? @map("consumed_at") @db.Timestamptz(6)
 
-  user AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  org  Organization? @relation("OrgReauthGrants", fields: [orgId], references: [id], onDelete: Cascade)
+  user AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  org  Organization? @relation("OrgReauthGrants", fields: [orgId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   // idx_reauth_grant_active: UNIQUE PARTIAL (WHERE consumed_at IS NULL) declared
   // in migration 20260806000003. Prisma cannot express partial/conditional indexes
@@ -884,6 +904,57 @@ model PendingRegistration {
   @@map("pending_registrations")
 }
 
+// Transactional email outbox.
+//
+// Written inside the same DB transaction as the event that triggers the email
+// (e.g. break-glass session start). The housekeeping cron drains pending rows.
+// This ensures:
+//   • Emails are not sent for events that roll back.
+//   • Email send failures do not silently swallow security alerts.
+//   • Each row is retried up to maxAttempts before being marked failed.
+//
+// Purpose tokens:
+//   break_glass.alert   — security alert sent to SECURITY_ALERT_EMAIL
+//   impersonation.notify — org-owner notification on impersonation start
+model EmailOutbox {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  // Caller-supplied idempotency key (e.g. 'break_glass_alert:{sessionId}').
+  // Enforced UNIQUE via sparse DB index (migration 20260813000005).
+  // Prisma cannot express partial unique indexes — DB enforcement only.
+  idempotencyKey String?   @map("idempotency_key")
+  toAddress      String    @map("to_address")
+  subject        String
+  body           String
+  purpose        String
+  // State machine: pending → processing → sent | dead
+  status         String    @default("pending")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Exponential-backoff scheduling for retries. Set to now() initially.
+  nextAttemptAt  DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  sentAt         DateTime? @map("sent_at") @db.Timestamptz(6)
+  failedAt       DateTime? @map("failed_at") @db.Timestamptz(6)
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3) @map("max_attempts")
+  lastError      String?   @map("last_error")
+  failureCategory String?  @map("failure_category")
+  // Concurrent-worker claiming (FOR UPDATE SKIP LOCKED in migration 20260813000005).
+  claimOwner     String?   @map("claim_owner")
+  claimExpiresAt DateTime? @map("claim_expires_at") @db.Timestamptz(6)
+  claimedAt      DateTime? @map("claimed_at") @db.Timestamptz(6)
+  // When true, body contains AES-256-GCM ciphertext from encryptField().
+  // Drain decrypts before passing to the email provider.
+  bodyEncrypted       Boolean  @default(false) @map("body_encrypted")
+  // When true, to_address contains AES-256-GCM ciphertext (encryptField).
+  // to_address_hash stores SHA-256 hex of the lowercase plaintext for filtering.
+  toAddressEncrypted  Boolean  @default(false) @map("to_address_encrypted")
+  toAddressHash       String?  @map("to_address_hash")
+
+  // idx_email_outbox_worker (WHERE status = 'pending') — partial, migration only.
+  // idx_email_outbox_to_address_hash — partial index on non-null hash, migration only.
+  @@index([createdAt], map: "idx_email_outbox_created")
+  @@map("email_outbox")
+}
+
 // Single-use backup codes for TOTP recovery. Generated in batches of 8;
 // stored as SHA-256 hashes (codes are random, so SHA-256 is sufficient).
 // Consumption atomically marks used_at; rate-limited via platform_rate_limit.
@@ -894,7 +965,7 @@ model AppUserRecoveryCode {
   usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([userId], map: "idx_recovery_codes_user_unused")
   @@map("app_user_recovery_codes")

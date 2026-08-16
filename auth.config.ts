@@ -44,9 +44,19 @@ export function isPublicPath(path: string): boolean {
     // session (that's the whole point).
     path === '/reset' ||
     // Self-service org onboarding — the whole point is that the caller
-    // has no account yet.
+    // has no account yet. Exact matches only; no prefix wildcard so we
+    // cannot accidentally expose platform-internal /api/onboard/admin routes.
     path === '/signup' ||
     path === '/api/onboard' ||
+    // Email verification link — must work for a completely signed-out browser.
+    path === '/api/onboard/verify' ||
+    // Resend verification email — caller has no account/session yet.
+    path === '/api/onboard/resend' ||
+    // Post-signup status pages — must render before the user can sign in.
+    path === '/onboard/pending' ||
+    path === '/onboard/success' ||
+    path === '/onboard/expired' ||
+    path === '/onboard/error' ||
     // Invitation acceptance — invitee doesn't have a session yet.
     path === '/invite' ||
     path === '/api/invitations/accept' ||

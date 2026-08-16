@@ -35,6 +35,11 @@ describe('audit digest builder', () => {
       await tx.membership.create({
         data: { organizationId: org.id, userId: actor.id, role: 'owner' },
       });
+      // Invariant B: non-archived orgs must have owner_user_id set (spec §5).
+      await tx.organization.update({
+        where: { id: org.id },
+        data: { ownerUserId: actor.id },
+      });
       const inWindow = new Date();
       const outOfWindow = new Date(Date.now() - 40 * 24 * 3600 * 1000);
       const mk = async (action: string, at: Date) =>

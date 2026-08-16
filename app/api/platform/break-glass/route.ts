@@ -2,6 +2,7 @@ import type { NextRequest } from 'next/server';
 import { withApi, InvalidInputError } from '@/lib/auth';
 import { requireAuthContext } from '@/lib/rbac';
 import { startBreakGlass } from '@/lib/platform/break-glass';
+import { extractClientIp } from '@/lib/platform/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
         'password, (totpCode or recoveryCode), reason, ticketId are required',
       );
     }
-    const ip = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip');
+    const ip = extractClientIp(req.headers);
     const userAgent = req.headers.get('user-agent');
     return startBreakGlass({
       actor: ctx,

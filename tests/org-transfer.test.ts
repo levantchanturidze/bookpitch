@@ -99,6 +99,25 @@ describe('ownership transfer', () => {
 
   afterAll(async () => {
     await unsafePrismaAdmin.ownershipTransfer.deleteMany({ where: { organizationId: orgId } });
+    // Restore fixture membership state so other test files see a clean slate.
+    const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
+      where: { key: 'ORG_OWNER', organizationId: null },
+    });
+    const providerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
+      where: { key: 'PROVIDER', organizationId: null },
+    });
+    await unsafePrismaAdmin.organization.update({
+      where: { id: orgId },
+      data: { ownerUserId },
+    });
+    await unsafePrismaAdmin.membership.update({
+      where: { id: ownerMembershipId },
+      data: { role: 'owner', roleId: orgOwnerRole.id },
+    });
+    await unsafePrismaAdmin.membership.update({
+      where: { id: targetMembershipId },
+      data: { role: 'practitioner', roleId: providerRole.id },
+    });
   });
 
   const ownerSession = () => ({
@@ -234,5 +253,34 @@ describe('ownership transfer', () => {
     expect(inbox.length).toBe(1);
     expect(inbox[0].organizationName).toBe('Split Practice');
     expect(inbox[0].fromEmail).toBe('split-owner@bp.test');
+  });
+
+  it('OT.concurrent — concurrent double-accept: exactly one succeeds, the other throws', async () => {
+    // Race two simultaneous acceptTransfer calls for the same transfer ID.
+    // The atomic conditional UPDATE inside the tx guarantees exactly one
+    // caller wins; the loser gets InvalidInputError from the 0-rows check.
+    const { id } = await nominateTransfer(ownerSession(), targetUserId);
+
+    const results = await Promise.allSettled([
+      acceptTransfer(targetSession(), id),
+      acceptTransfer(targetSession(), id),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    // The loser must throw InvalidInputError (not a crash or silent success).
+    const err = (rejected[0] as PromiseRejectedResult).reason;
+    expect(err).toBeInstanceOf(InvalidInputError);
+
+    // Final state must be accepted with the correct new owner.
+    const org = await unsafePrismaAdmin.organization.findUniqueOrThrow({ where: { id: orgId } });
+    expect(org.ownerUserId).toBe(targetUserId);
+
+    const transfer = await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id } });
+    expect(transfer.status).toBe('accepted');
   });
 });

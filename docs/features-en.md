@@ -182,7 +182,8 @@ Compiled 2026-08-05 from `main`.
 | Impersonate an org member (diagnostic; audited) | `app/api/platform/impersonate/route.ts` POST + `lib/platform/impersonation.ts::startImpersonation` | `platform.impersonate` + org's `allow_support_impersonation` flag | Cross-tenant |
 | End an impersonation session | `app/api/platform/impersonate/end/route.ts` POST + `endImpersonation` | Session actor | Own session |
 | RESTRICTED-during-impersonation permissions block destructive/clinical/policy ops | `lib/rbac/impersonation.ts::RESTRICTED_DURING_IMPERSONATION` | RBAC gate | 16 specific perms including `platform.config.manage` |
-| Start a break-glass session (SUPER; audited; time-bound) | `app/api/platform/break-glass/route.ts` POST + `lib/platform/break-glass.ts::startBreakGlass` | SUPER_ADMIN, password re-auth, ticketId required | Optional target org |
+| Start a break-glass session (SUPER; audited; time-bound) | `app/api/platform/break-glass/route.ts` POST + `lib/platform/break-glass.ts::startBreakGlass` | SUPER_ADMIN, password re-auth + TOTP/recovery-code, ticketId required | Optional target org |
+| Security alert email written to durable `email_outbox` inside the break-glass tx (housekeeping drain retries on failure) | `lib/platform/break-glass.ts::startBreakGlass` + `email_outbox` table + `lib/housekeeping.ts::drainEmailOutbox` | System | Alert lost only if DB commit itself fails |
 | End a break-glass session | `app/api/platform/break-glass/end/route.ts` POST + `endBreakGlass` | Session actor | Own session |
 | Break-glass session activation form + persistent banner | `app/platform/break-glass/page.tsx` + `components/platform/BreakGlassForm.tsx` + `PlatformShell` banner | SUPER_ADMIN | Platform |
 | Every break-glass read writes an audit row (fail-closed if audit-write fails) | `lib/platform/api.ts::withPlatformApi` + `auditBreakGlassRead` | System | Auto-audited |

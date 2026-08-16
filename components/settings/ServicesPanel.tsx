@@ -19,9 +19,11 @@ export type ServiceRow = {
 export default function ServicesPanel({
   services,
   locations,
+  currency,
 }: {
   services: ServiceRow[];
   locations: LocationRef[];
+  currency: string;
 }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<ServiceRow | null>(null);
@@ -82,7 +84,7 @@ export default function ServicesPanel({
                 <td className="px-2 py-2 text-slate-600">{s.locationName}</td>
                 <td className="px-2 py-2 text-slate-500">{s.category ?? '—'}</td>
                 <td className="px-2 py-2 font-mono text-[11px] text-slate-600">
-                  {s.price.toFixed(2)} GEL · {s.durationMinutes}m
+                  {s.price.toFixed(2)} {currency} · {s.durationMinutes}m
                 </td>
                 <td className="px-2 py-2">
                   <span
@@ -122,6 +124,7 @@ export default function ServicesPanel({
         <ServiceForm
           initial={editing ?? undefined}
           locations={locations}
+          currency={currency}
           isPending={isPending}
           onCancel={() => {
             setAdding(false);
@@ -138,12 +141,14 @@ export default function ServicesPanel({
 function ServiceForm({
   initial,
   locations,
+  currency,
   isPending,
   onCancel,
   onSubmit,
 }: {
   initial?: ServiceRow;
   locations: LocationRef[];
+  currency: string;
   isPending: boolean;
   onCancel: () => void;
   onSubmit: (v: {
@@ -209,7 +214,7 @@ function ServiceForm({
         />
       </label>
       <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase md:col-span-2">
-        Price (GEL)
+        Price ({currency})
         <input
           value={price}
           onChange={(e) => setPrice(e.target.value)}

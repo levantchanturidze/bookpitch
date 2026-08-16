@@ -272,9 +272,9 @@ export function isExclusionViolation(err: unknown): boolean {
 export async function getAvailableSlots(
   tx: TxClient,
   staffId: string,
-  date: string,       // YYYY-MM-DD in the location's local timezone
+  date: string, // YYYY-MM-DD in the location's local timezone
   durationMinutes: number,
-  timezone = 'UTC',   // IANA timezone of the location
+  timezone = 'UTC', // IANA timezone of the location
 ): Promise<string[]> {
   const weekday = localDateWeekday(date, timezone);
   const { start: dayStart, end: dayEnd } = localDayRange(date, timezone);
@@ -339,8 +339,14 @@ function utcTimeValueToLocalMin(utcTime: Date, tz: string): number {
     (() => {
       const today = new Date();
       return new Date(
-        Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(),
-          utcTime.getUTCHours(), utcTime.getUTCMinutes(), 0),
+        Date.UTC(
+          today.getUTCFullYear(),
+          today.getUTCMonth(),
+          today.getUTCDate(),
+          utcTime.getUTCHours(),
+          utcTime.getUTCMinutes(),
+          0,
+        ),
       );
     })(),
     tz,

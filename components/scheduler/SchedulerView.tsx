@@ -27,7 +27,12 @@ import AssistantModal from './AssistantModal';
 // -----------------------------------------------------------------------------
 // Types passed by the server component.
 // -----------------------------------------------------------------------------
-export type ScheduleLocation = { id: string; type: 'clinic' | 'salon'; name: string; timezone: string };
+export type ScheduleLocation = {
+  id: string;
+  type: 'clinic' | 'salon';
+  name: string;
+  timezone: string;
+};
 export type ScheduleStaff = {
   id: string;
   name: string;
@@ -139,9 +144,7 @@ export default function SchedulerView(props: Props) {
       const result = await updateAppointmentAction(id, patch);
       if (!result.ok) {
         setError(
-          result.error === 'slot_taken'
-            ? 'That time slot is no longer available.'
-            : result.error,
+          result.error === 'slot_taken' ? 'That time slot is no longer available.' : result.error,
         );
       } else {
         setSelected(null);
@@ -388,7 +391,11 @@ function MonthNav({ anchor, onChange }: { anchor: Date; onChange: (d: Date) => v
         <ChevronLeft className="h-4 w-4" />
       </button>
       <span className="min-w-[100px] px-3 py-1 text-center text-xs font-semibold text-slate-700">
-        {new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(anchor)}
+        {new Intl.DateTimeFormat('en-US', {
+          month: 'long',
+          year: 'numeric',
+          timeZone: 'UTC',
+        }).format(anchor)}
       </span>
       <button
         onClick={() =>
@@ -751,11 +758,7 @@ function BookingModal({
   }, [values.staffId, values.serviceId, values.date, services]);
 
   const canSubmit =
-    !!values.customerId &&
-    !!values.staffId &&
-    !!values.serviceId &&
-    !!values.date &&
-    !!values.time;
+    !!values.customerId && !!values.staffId && !!values.serviceId && !!values.date && !!values.time;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
@@ -859,9 +862,7 @@ function BookingModal({
                   {slots.map((s) => (
                     <option key={s} value={s}>
                       {s}
-                      {activeService
-                        ? ` – ${formatEndTime(s, activeService.durationMinutes)}`
-                        : ''}
+                      {activeService ? ` – ${formatEndTime(s, activeService.durationMinutes)}` : ''}
                     </option>
                   ))}
                 </select>

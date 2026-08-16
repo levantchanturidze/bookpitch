@@ -234,6 +234,48 @@ describe('/api/platform/impersonate — start / end / restricted perms / expiry'
     expect(ctx.isImpersonating).toBe(false);
   });
 
+  it('alert outbox row is written inside the impersonation transaction (transactional proof)', async () => {
+    await unsafePrismaAdmin.organization.update({
+      where: { id: orgId },
+      data: { allowSupportImpersonation: true },
+    });
+
+    // Snapshot outbox count before starting impersonation.
+    const before = await unsafePrismaAdmin.emailOutbox.count({
+      where: { purpose: 'impersonation.alert' },
+    });
+
+    authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
+    const res = await impersonateRoute.POST(
+      req('http://x', {
+        method: 'POST',
+        body: JSON.stringify({
+          organizationId: orgId,
+          targetUserId,
+          reason: 'outbox proof',
+          ticketId: 'T-outbox',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    // Outbox row must have been written (count increased by at least 1).
+    const after = await unsafePrismaAdmin.emailOutbox.count({
+      where: { purpose: 'impersonation.alert' },
+    });
+    expect(after).toBeGreaterThan(before);
+
+    // Row exists, is for this session, and is encrypted (to_address_encrypted=true).
+    const rows = await unsafePrismaAdmin.emailOutbox.findMany({
+      where: { purpose: 'impersonation.alert' },
+      orderBy: { createdAt: 'desc' },
+      take: 1,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].toAddressEncrypted).toBe(true);
+    expect(rows[0].bodyEncrypted).toBe(true);
+  });
+
   it('end marks the session ended + bumps sessionVersion', async () => {
     const active = await unsafePrismaAdmin.impersonationSession.create({
       data: {

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { log } from '@/lib/logger';
 import type { EmailProvider, SendResult } from '../index';
 
 // Mock email provider — swap for postmark.ts / resend.ts once we have
@@ -11,9 +12,11 @@ export class MockEmailProvider implements EmailProvider {
 
   async send(_to: string, subject: string, body: string): Promise<SendResult> {
     const providerMsgId = `mock_email_${randomBytes(6).toString('hex')}`;
-    console.log(
-      `[EMAIL/mock] provider_msg_id=${providerMsgId} subject_len=${subject.length} body_len=${body.length}`,
-    );
+    log.info('messaging.email.mock', {
+      providerMsgId,
+      subjectLen: subject.length,
+      bodyLen: body.length,
+    });
     return { providerMsgId };
   }
 }

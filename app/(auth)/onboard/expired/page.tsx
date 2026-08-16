@@ -1,4 +1,9 @@
-export const metadata = { title: 'Link expired · Bookpitch' };
+export const metadata = {
+  title: 'Link expired · Bookpitch',
+  robots: { index: false, follow: false },
+};
+
+import ResendVerificationForm from '@/components/onboard/ResendVerificationForm';
 
 export default function OnboardExpiredPage() {
   return (
@@ -23,15 +28,10 @@ export default function OnboardExpiredPage() {
           Link expired or invalid
         </h1>
         <p className="mt-2 text-sm text-slate-500">
-          Your verification link has expired or has already been used. Verification links are valid
-          for 24 hours and can only be clicked once.
+          Your verification link has expired or has already been used. Enter your email address
+          below and we will send a new link — if a pending registration exists.
         </p>
-        <a
-          href="/signup"
-          className="mt-6 inline-block rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800"
-        >
-          Request a new link
-        </a>
+        <ResendVerificationForm />
         <p className="mt-4 text-xs text-slate-400">
           Already verified?{' '}
           <a href="/signin" className="font-semibold text-slate-600 hover:underline">

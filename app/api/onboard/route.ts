@@ -3,13 +3,56 @@ import { NextResponse } from 'next/server';
 import { createPendingRegistration } from '@/lib/onboarding';
 import { InvalidInputError } from '@/lib/auth';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
-import { consumeGlobalBucket, hashForBucket } from '@/lib/platform/rate-limit';
+import { consumeGlobalBucket, hashForBucket, extractClientIp } from '@/lib/platform/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Body size guard — reject payloads over 16 KB before parsing.
+// Maximum body size. Enforced by consuming the stream up to this limit —
+// Content-Length alone is falsifiable by a chunked or malformed request.
 const MAX_BODY_BYTES = 16 * 1024;
+
+// Read the request body up to maxBytes. Returns null when the body exceeds
+// the limit — caller should respond 413. Counts actual bytes received, not
+// the Content-Length header (which an attacker can falsify on chunked requests).
+// Cancels the underlying stream on overflow so the connection is not held open.
+async function readBodyLimited(
+  req: NextRequest,
+  maxBytes: number,
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; tooLarge: boolean }> {
+  const stream = req.body;
+  if (!stream) return { ok: true, bytes: new Uint8Array(0) };
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > maxBytes) {
+          // Cancel the stream so the connection is not held open awaiting the rest.
+          reader.cancel().catch(() => {});
+          return { ok: false, tooLarge: true };
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { ok: true, bytes: out };
+}
 
 // Onboard rate limit: 5 new signup attempts per IP per hour.
 const ONBOARD_LIMIT = 5;
@@ -87,8 +130,14 @@ async function verifyTurnstile(token: string | null, ip: string | null): Promise
     return false;
   }
 
-  // Action binding — prevents token reuse across different widget placements.
+  // In production the action and hostname allowlist are mandatory — a missing
+  // env var means the widget was not configured for binding and the token can
+  // be replayed across placements or attacker-controlled origins.
   const expectedAction = process.env.TURNSTILE_EXPECTED_ACTION;
+  if (isProduction && !expectedAction) {
+    log.error('onboard.turnstile_action_env_missing', {});
+    return false;
+  }
   if (expectedAction && data.action !== expectedAction) {
     log.warn('onboard.turnstile_action_mismatch', {});
     return false;
@@ -96,6 +145,10 @@ async function verifyTurnstile(token: string | null, ip: string | null): Promise
 
   // Hostname binding — prevents token reuse from an attacker-controlled domain.
   const allowedHostnames = process.env.TURNSTILE_ALLOWED_HOSTNAMES;
+  if (isProduction && !allowedHostnames) {
+    log.error('onboard.turnstile_hostname_env_missing', {});
+    return false;
+  }
   if (allowedHostnames) {
     const allowed = new Set(
       allowedHostnames
@@ -105,6 +158,22 @@ async function verifyTurnstile(token: string | null, ip: string | null): Promise
     );
     if (!allowed.has(data.hostname ?? '')) {
       log.warn('onboard.turnstile_hostname_mismatch', {});
+      return false;
+    }
+  }
+
+  // Challenge age — reject tokens older than 5 minutes to prevent replay.
+  // In production this check is strict: absent challenge_ts is treated as expired.
+  if (!data.challenge_ts) {
+    if (isProduction) {
+      log.warn('onboard.turnstile_challenge_ts_missing', {});
+      return false;
+    }
+  } else {
+    const challengeAge = Date.now() - new Date(data.challenge_ts).getTime();
+    const maxAgeMs = 5 * 60 * 1000;
+    if (challengeAge > maxAgeMs) {
+      log.warn('onboard.turnstile_challenge_expired', {});
       return false;
     }
   }
@@ -121,18 +190,23 @@ async function verifyTurnstile(token: string | null, ip: string | null): Promise
 //
 // Returns generic 400 for all validation failures (enumeration-safe).
 export async function POST(req: NextRequest) {
-  const contentLength = Number(req.headers.get('content-length') ?? 0);
-  if (contentLength > MAX_BODY_BYTES) {
-    return NextResponse.json({ error: 'invalid request' }, { status: 400 });
+  const bodyResult = await readBodyLimited(req, MAX_BODY_BYTES);
+  if (!bodyResult.ok) {
+    return NextResponse.json({ error: 'request too large' }, { status: 413 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  let body: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bodyResult.bytes));
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      body = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // fall through
+  }
   if (!body) return NextResponse.json({ error: 'invalid body' }, { status: 400 });
 
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-    req.headers.get('x-real-ip') ??
-    null;
+  const ip = extractClientIp(req.headers);
 
   try {
     if (ip) {

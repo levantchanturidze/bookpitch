@@ -79,7 +79,12 @@ export default async function SchedulerPage() {
 
   return (
     <SchedulerView
-      location={{ id: active.id, name: active.name, type: active.type, timezone: active.timezone ?? 'UTC' }}
+      location={{
+        id: active.id,
+        name: active.name,
+        type: active.type,
+        timezone: active.timezone ?? 'UTC',
+      }}
       staff={staff}
       services={services}
       customers={customers}

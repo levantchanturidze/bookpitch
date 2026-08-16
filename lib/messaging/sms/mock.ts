@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { log } from '@/lib/logger';
 import type { SendResult, SmsProvider } from '../index';
 
 // Mock SMS provider — swap for smsoffice.ts once we have an API key.
@@ -11,7 +12,7 @@ export class MockSmsProvider implements SmsProvider {
 
   async send(_to: string, body: string): Promise<SendResult> {
     const providerMsgId = `mock_sms_${randomBytes(6).toString('hex')}`;
-    console.log(`[SMS/mock] provider_msg_id=${providerMsgId} len=${body.length}`);
+    log.info('messaging.sms.mock', { providerMsgId, bodyLen: body.length });
     return { providerMsgId };
   }
 }

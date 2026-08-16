@@ -3,6 +3,7 @@ import { withPlatformApi } from '@/lib/platform/api';
 import { requirePermission } from '@/lib/rbac';
 import { InvalidInputError } from '@/lib/auth';
 import { startImpersonation } from '@/lib/platform/impersonation';
+import { extractClientIp } from '@/lib/platform/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,7 +27,7 @@ export async function POST(req: NextRequest) {
         'organizationId, targetUserId, reason, ticketId are all required',
       );
     }
-    const ip = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip');
+    const ip = extractClientIp(req.headers);
     const userAgent = req.headers.get('user-agent');
     return startImpersonation({
       actor: ctx,

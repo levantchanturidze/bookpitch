@@ -6,12 +6,11 @@ on:
   pull_request:
     branches: [main]
 
-# Least privilege: read source, write check results only.
+# Minimal global permissions — individual jobs may declare narrower or broader.
 # NOTE: do not add `pull_request_target` — that grants write access to
 # untrusted code from forks and is a common secret-exfiltration vector.
 permissions:
   contents: read
-  checks: write
 
 # Cancel in-progress runs on the same ref to save minutes.
 concurrency:
@@ -19,10 +18,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  secret-scan:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # pull-requests: read is required for gitleaks-action to read PR diff on
+    # pull_request events. Without it the action receives 403 from the API.
+    # checks: write lets gitleaks post a check-run result.
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks can scan all commits on this branch,
+          # not only the tip. Shallow clone (depth:1) misses historical leaks.
+          fetch-depth: 0
+
+      - name: Scan for secrets with gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   quality:
     name: Lint, type-check, test, and build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: write
 
     services:
       postgres:
@@ -34,23 +59,25 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U bookpitch_ci -d bookpitch_ci"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
 
     env:
-      # App client (NOBYPASSRLS) — uses same superuser in CI for simplicity.
+      # Superuser URL for migrations, seeding, and unsafePrismaAdmin calls.
+      # In CI the POSTGRES_USER is the schema owner, so this role has DDL grants.
+      DATABASE_URL_SUPERUSER_SESSION: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
+      # App client URL — overridden after bookpitch_app password is set below.
       DATABASE_URL: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
       DATABASE_URL_APP_NOBYPASSRLS: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
-      # Superuser client — must connect as the same user that owns the schema.
-      # In production this is a separate role. In CI the postgres superuser is fine.
-      DATABASE_URL_SUPERUSER_SESSION: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
+      # Shadow database for migrate diff drift detection.
       SHADOW_DATABASE_URL: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci_shadow'
       # Auth / encryption secrets — test-only values, never real credentials.
       AUTH_SECRET: 'ci-test-secret-32-chars-minimum!!'
       FIELD_ENCRYPTION_KEY: 'ci0:0000000000000000000000000000000000000000000000000000000000000000'
       RATE_LIMIT_HMAC_KEY: '0000000000000000000000000000000000000000000000000000000000000001'
+      EMAIL_PRIVACY_HMAC_KEY: '0000000000000000000000000000000000000000000000000000000000000002'
       NEXTAUTH_URL: 'http://localhost:3000'
       APP_URL: 'http://localhost:3000'
       RBAC_ENFORCE_MODULES: '*'
@@ -68,6 +95,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependencies for known vulnerabilities
+        # Fails on high or critical severity. Run after install so the exact
+        # installed tree is scanned, not just the lockfile resolution.
+        run: npm audit --audit-level=high
+
       - name: Check formatting
         run: npm run format:check
 
@@ -83,43 +115,81 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
-      - name: Apply migrations
-        # Sets up the full schema in the CI PostgreSQL service so tests can
-        # connect. Uses the superuser URL so the migration role grants land.
+      - name: Create shadow database for migrate diff
+        # Must be created BEFORE migrate deploy so it starts empty.
+        # prisma migrate diff --from-migrations applies migrations to this
+        # clean DB to derive the "from" state for drift detection.
+        run: createdb -h localhost -U bookpitch_ci bookpitch_ci_shadow
+        env:
+          PGPASSWORD: ci_password_not_a_secret
+
+      - name: Apply migrations to main CI database
+        # Uses DATABASE_URL_SUPERUSER_SESSION so the migration role grants
+        # (GRANT ... TO bookpitch_app etc.) are executed by the schema owner.
         run: npx prisma migrate deploy
+
+      - name: Verify schema matches migrations (strict drift detection)
+        # --from-migrations applies all migrations to the empty shadow DB,
+        # then compares the resulting schema with schema.prisma.
+        # --exit-code: exits 2 if any diff is found; exits 0 if schemas match;
+        # exits 1 on error. Propagate all non-zero exits as failures.
+        run: |
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema prisma/schema.prisma \
+            --exit-code
+          STATUS=$?
+          if [ $STATUS -eq 2 ]; then
+            echo "Schema drift detected: schema.prisma does not match applied migrations."
+            exit 1
+          elif [ $STATUS -ne 0 ]; then
+            exit $STATUS
+          fi
 
       - name: Seed CI database
         # Tests depend on seed data (Grand Medical org, Isolation Corp, RBAC
         # fixtures). The seed guard allows localhost URLs, so this is safe.
         run: npm run db:seed
 
-      - name: Set bookpitch_app password for RLS tests
+      - name: Set bookpitch_app password and switch DATABASE_URL to app role
         # Migrations create bookpitch_app (NOSUPERUSER NOBYPASSRLS) but leave
-        # it with no password. Set one so tests can connect as the non-bypass
+        # it passwordless. Set a CI password so tests connect as the non-bypass
         # role — required for RLS assertions to actually fire.
+        # DATABASE_URL is then updated to the app role for the test suite so
+        # prismaApp (which reads DATABASE_URL) uses the correct non-bypass role.
         run: |
           psql -h localhost -U bookpitch_ci -d bookpitch_ci \
             -c "ALTER ROLE bookpitch_app WITH PASSWORD 'ci_app_password_not_a_secret'"
-          echo "DATABASE_URL_APP_NOBYPASSRLS=postgresql://bookpitch_app:ci_app_password_not_a_secret@localhost:5432/bookpitch_ci" >> "$GITHUB_ENV"
           echo "DATABASE_URL=postgresql://bookpitch_app:ci_app_password_not_a_secret@localhost:5432/bookpitch_ci" >> "$GITHUB_ENV"
+          echo "DATABASE_URL_APP_NOBYPASSRLS=postgresql://bookpitch_app:ci_app_password_not_a_secret@localhost:5432/bookpitch_ci" >> "$GITHUB_ENV"
         env:
           PGPASSWORD: ci_password_not_a_secret
 
-      - name: Create shadow database for migrate diff
-        run: createdb -h localhost -U bookpitch_ci bookpitch_ci_shadow
-        env:
-          PGPASSWORD: ci_password_not_a_secret
-
-      - name: Verify schema matches migrations
-        # Runs migrate diff for visibility but does not block CI (no --exit-code).
-        # Known pre-existing drift: FK naming convention differences and ON UPDATE
-        # mismatches on inline-REFERENCES FKs (UUID PKs never change; no real risk).
-        # Add --exit-code once drift is resolved.
+      - name: Verify bookpitch_app role attributes (NOSUPERUSER NOBYPASSRLS)
+        # Guards against migrations silently gaining BYPASSRLS or SUPERUSER rights.
+        # audit_log UPDATE revoke is verified separately because that invariant is
+        # critical for the append-only guarantee (Phase 1 §9.11).
         run: |
-          npx prisma migrate diff \
-            --from-migrations prisma/migrations \
-            --to-schema prisma/schema.prisma \
-            || true
+          # NOTE: bool::text in PostgreSQL returns the spelled-out form
+          # ("true"/"false"), not the single-letter form ("t"/"f") that
+          # psql emits without a cast. Compare against the spelled-out form.
+          ATTRS=$(psql -h localhost -U bookpitch_ci -d bookpitch_ci -tAc \
+            "SELECT rolsuper::text || ',' || rolbypassrls::text \
+             FROM pg_roles WHERE rolname = 'bookpitch_app'")
+          if [ "$ATTRS" != "false,false" ]; then
+            echo "FAIL: bookpitch_app must be NOSUPERUSER NOBYPASSRLS, got: $ATTRS"
+            exit 1
+          fi
+          echo "OK: bookpitch_app is NOSUPERUSER NOBYPASSRLS"
+          AUDIT_UPDATE=$(psql -h localhost -U bookpitch_ci -d bookpitch_ci -tAc \
+            "SELECT has_table_privilege('bookpitch_app', 'audit_log', 'UPDATE')")
+          if [ "$AUDIT_UPDATE" = "t" ]; then
+            echo "FAIL: bookpitch_app must not have UPDATE on audit_log"
+            exit 1
+          fi
+          echo "OK: bookpitch_app has no UPDATE on audit_log (append-only enforced)"
+        env:
+          PGPASSWORD: ci_password_not_a_secret
 
       - name: Run unit + security tests
         run: npm run test

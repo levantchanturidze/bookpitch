@@ -69,6 +69,21 @@ describe('logger.scrubPhi — narrow exact-key match', () => {
     }
   });
 
+  it('redacts keys regardless of case (Email, PASSWORD, MfaTotp, RECOVERY_CODE)', () => {
+    const scrubbed = scrubPhi({
+      Email: 'patient@example.com',
+      PASSWORD: 'secret123',
+      MfaTotp: 'encrypted-totp-secret',
+      RECOVERY_CODE: 'ABCDE-FGHIJ-KLMNO-PQRST',
+      IpAddress: '203.0.113.42',
+    }) as Record<string, unknown>;
+    expect(scrubbed.Email).toBe('[redacted]');
+    expect(scrubbed.PASSWORD).toBe('[redacted]');
+    expect(scrubbed.MfaTotp).toBe('[redacted]');
+    expect(scrubbed.RECOVERY_CODE).toBe('[redacted]');
+    expect(scrubbed.IpAddress).toBe('[redacted]');
+  });
+
   it('does NOT redact operational *Name keys (serviceName, organizationName, etc.)', () => {
     const scrubbed = scrubPhi({
       serviceName: 'Deep Clean',

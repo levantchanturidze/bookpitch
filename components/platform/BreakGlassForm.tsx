@@ -15,6 +15,9 @@ export default function BreakGlassForm({
 }) {
   const router = useRouter();
   const [password, setPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'totp' | 'recovery'>('totp');
+  const [totpCode, setTotpCode] = useState('');
+  const [recoveryCode, setRecoveryCode] = useState('');
   const [reason, setReason] = useState('');
   const [ticketId, setTicketId] = useState('');
   const [target, setTarget] = useState('');
@@ -61,18 +64,26 @@ export default function BreakGlassForm({
     setError(null);
     startTransition(async () => {
       try {
+        const body: Record<string, string | null> = {
+          password,
+          reason,
+          ticketId,
+          targetOrganizationId: target || null,
+        };
+        if (authMode === 'totp') {
+          body.totpCode = totpCode;
+        } else {
+          body.recoveryCode = recoveryCode;
+        }
         const res = await fetch('/api/platform/break-glass', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            password,
-            reason,
-            ticketId,
-            targetOrganizationId: target || null,
-          }),
+          body: JSON.stringify(body),
         });
         if (!res.ok) throw new Error(await res.text());
         setPassword('');
+        setTotpCode('');
+        setRecoveryCode('');
         router.refresh();
       } catch (err) {
         setError((err as Error).message);
@@ -112,6 +123,65 @@ export default function BreakGlassForm({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-2 text-sm text-slate-100"
           />
         </label>
+
+        <div>
+          <p className="text-xs font-bold tracking-wider text-slate-500 uppercase">Second factor</p>
+          <div className="mt-2 flex gap-3">
+            <button
+              type="button"
+              onClick={() => setAuthMode('totp')}
+              className={`rounded px-3 py-1 text-xs font-semibold ${
+                authMode === 'totp'
+                  ? 'bg-red-600 text-white'
+                  : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              }`}
+            >
+              Authenticator app
+            </button>
+            <button
+              type="button"
+              onClick={() => setAuthMode('recovery')}
+              className={`rounded px-3 py-1 text-xs font-semibold ${
+                authMode === 'recovery'
+                  ? 'bg-red-600 text-white'
+                  : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              }`}
+            >
+              Recovery code
+            </button>
+          </div>
+          {authMode === 'totp' ? (
+            <label className="mt-2 block text-xs font-bold tracking-wider text-slate-500 uppercase">
+              6-digit TOTP code
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                required
+                autoComplete="one-time-code"
+                className="mt-1 w-full rounded bg-slate-950 px-2 py-2 font-mono text-sm text-slate-100"
+                placeholder="000000"
+              />
+            </label>
+          ) : (
+            <label className="mt-2 block text-xs font-bold tracking-wider text-slate-500 uppercase">
+              Recovery code (single-use)
+              <input
+                type="text"
+                value={recoveryCode}
+                onChange={(e) => setRecoveryCode(e.target.value)}
+                required
+                autoComplete="off"
+                className="mt-1 w-full rounded bg-slate-950 px-2 py-2 font-mono text-sm text-slate-100"
+                placeholder="XXXX-XXXX-XXXX"
+              />
+            </label>
+          )}
+        </div>
+
         <label className="block text-xs font-bold tracking-wider text-slate-500 uppercase">
           Reason (min 5 chars)
           <textarea

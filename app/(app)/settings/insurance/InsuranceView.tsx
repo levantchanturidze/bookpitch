@@ -52,60 +52,64 @@ export default function InsuranceView({
 
   return (
     <>
-    <div className="rounded-2xl border border-slate-200 bg-white p-5">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-        <label className="block">
-          <span className="mb-1 block text-[11px] font-semibold text-slate-500">From</span>
-          <input
-            type="date"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            className={inputCls}
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-[11px] font-semibold text-slate-500">To</span>
-          <input
-            type="date"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            className={inputCls}
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-[11px] font-semibold text-slate-500">Insurer</span>
-          <select value={insurer} onChange={(e) => setInsurer(e.target.value)} className={inputCls}>
-            <option value="">All insurers</option>
-            {insurers.map((i) => (
-              <option key={i} value={i}>
-                {i}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="flex items-end">
-          <button
-            type="button"
-            onClick={download}
-            disabled={busy}
-            className="w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
-          >
-            <Download className="mr-1 inline h-3.5 w-3.5" />
-            {busy ? 'Building…' : 'Download CSV'}
-          </button>
+      <div className="rounded-2xl border border-slate-200 bg-white p-5">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold text-slate-500">From</span>
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className={inputCls}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold text-slate-500">To</span>
+            <input
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className={inputCls}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold text-slate-500">Insurer</span>
+            <select
+              value={insurer}
+              onChange={(e) => setInsurer(e.target.value)}
+              className={inputCls}
+            >
+              <option value="">All insurers</option>
+              {insurers.map((i) => (
+                <option key={i} value={i}>
+                  {i}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={download}
+              disabled={busy}
+              className="w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              <Download className="mr-1 inline h-3.5 w-3.5" />
+              {busy ? 'Building…' : 'Download CSV'}
+            </button>
+          </div>
         </div>
+        {error && (
+          <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
+        )}
       </div>
-      {error && (
-        <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-      )}
-    </div>
 
-    <AddInsurerForm
-      customers={customerList}
-      onSaved={(updated) =>
-        setCustomerList((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
-      }
-    />
+      <AddInsurerForm
+        customers={customerList}
+        onSaved={(updated) =>
+          setCustomerList((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))
+        }
+      />
     </>
   );
 }
@@ -145,7 +149,12 @@ function AddInsurerForm({
         setError(body?.error ?? 'Failed to save insurance info');
         return;
       }
-      onSaved({ id: customerId, name: selected?.name ?? '', insurerName: insurerName || null, insurancePolicyNumber: policyNumber || null });
+      onSaved({
+        id: customerId,
+        name: selected?.name ?? '',
+        insurerName: insurerName || null,
+        insurancePolicyNumber: policyNumber || null,
+      });
       setSuccess(true);
     });
   };
@@ -203,9 +212,7 @@ function AddInsurerForm({
           >
             {isPending ? 'Saving…' : 'Save'}
           </button>
-          {success && (
-            <p className="ml-3 text-xs text-emerald-700">Insurance info updated.</p>
-          )}
+          {success && <p className="ml-3 text-xs text-emerald-700">Insurance info updated.</p>}
           {error && <p className="ml-3 text-xs text-rose-700">{error}</p>}
         </div>
       </form>

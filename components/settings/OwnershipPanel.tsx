@@ -83,9 +83,7 @@ export default function OwnershipPanel({
     <section className="space-y-6">
       <h3 className="text-sm font-bold text-slate-800">Ownership Transfer</h3>
 
-      {error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-      )}
+      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
 
       {!hasAnything && (
         <p className="rounded-2xl border border-slate-200 bg-white px-6 py-8 text-center text-xs text-slate-500">
@@ -95,7 +93,7 @@ export default function OwnershipPanel({
 
       {incomingList.length > 0 && (
         <div className="space-y-3">
-          <p className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+          <p className="text-xs font-bold tracking-wider text-slate-600 uppercase">
             Incoming — you have been nominated
           </p>
           {incomingList.map((t) => (
@@ -106,11 +104,15 @@ export default function OwnershipPanel({
               <div className="space-y-0.5 text-xs text-amber-900">
                 <p className="font-bold">{t.organizationName}</p>
                 <p>
-                  Nominated by{' '}
-                  <span className="font-mono">{t.fromName ?? t.fromEmail}</span>
+                  Nominated by <span className="font-mono">{t.fromName ?? t.fromEmail}</span>
                 </p>
                 <p className="font-mono text-[10px] text-amber-700">
-                  Expires {new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(t.expiresAt))}
+                  Expires{' '}
+                  {new Intl.DateTimeFormat('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                  }).format(new Date(t.expiresAt))}
                 </p>
               </div>
               <div className="flex shrink-0 gap-2">
@@ -136,7 +138,7 @@ export default function OwnershipPanel({
 
       {outgoingList.length > 0 && (
         <div className="space-y-3">
-          <p className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+          <p className="text-xs font-bold tracking-wider text-slate-600 uppercase">
             Outgoing — awaiting acceptance
           </p>
           {outgoingList.map((t) => (
@@ -150,7 +152,12 @@ export default function OwnershipPanel({
                   Nominated <span className="font-mono">{t.toName ?? t.toEmail}</span>
                 </p>
                 <p className="font-mono text-[10px] text-slate-500">
-                  Expires {new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(t.expiresAt))}
+                  Expires{' '}
+                  {new Intl.DateTimeFormat('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                  }).format(new Date(t.expiresAt))}
                 </p>
               </div>
               <button

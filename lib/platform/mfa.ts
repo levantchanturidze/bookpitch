@@ -21,12 +21,26 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { generateSecret, NobleCryptoPlugin, ScureBase32Plugin } from 'otplib';
 import { verify } from '@otplib/totp';
-import { encryptField, decryptField } from '@/lib/crypto';
+import { encryptField, decryptField, hashEmailForIndex } from '@/lib/crypto';
 import { unsafePrismaAdmin } from '@/lib/db';
-import { InvalidInputError } from '@/lib/auth';
+import { InvalidInputError, ForbiddenError } from '@/lib/auth';
 import { consumeGlobalBucket } from './rate-limit';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { getEmailProvider } from '@/lib/messaging';
+
+// Verify the user holds the SUPER_ADMIN platform role by key (not just by
+// permission). MFA enrollment and recovery-code management are SUPER_ADMIN-only
+// operations that must not be reachable via any other platform role, even if
+// that role happens to share an overlapping permission.
+async function requireSuperAdmin(userId: string): Promise<void> {
+  const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
+    where: { id: userId },
+    select: { platformRole: { select: { key: true } } },
+  });
+  if (user.platformRole?.key !== 'SUPER_ADMIN') {
+    throw new ForbiddenError('MFA management is SUPER_ADMIN only');
+  }
+}
 
 // Shared plugin set for all TOTP operations.
 const TOTP_PLUGINS = {
@@ -50,13 +64,22 @@ export type TotpEnrollmentResult = {
 };
 
 /**
- * Generate a new TOTP secret, encrypt it, and write it to the DB
- * (mfa_enabled stays false until confirmTotpEnrollment succeeds).
+ * Generate a new TOTP secret, encrypt it, and write it to the DB.
  * Returns the plaintext secret and otpauth URI for QR code rendering.
  *
- * Calling this again before confirmation replaces the pending secret.
+ * Initial enrollment (mfaEnabled=false):
+ *   Writes directly to mfaTotp. mfaEnabled stays false until
+ *   confirmTotpEnrollment sets it to true.
+ *
+ * Re-enrollment (mfaEnabled=true):
+ *   Writes to mfaTotpPending only — mfaTotp is NOT touched.
+ *   This preserves the active break-glass path (verifyTotp reads mfaTotp)
+ *   until the new secret is confirmed. confirmTotpEnrollment then promotes
+ *   mfaTotpPending → mfaTotp and clears the pending column.
  */
 export async function generateTotpEnrollment(userId: string): Promise<TotpEnrollmentResult> {
+  await requireSuperAdmin(userId);
+
   const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: userId },
     select: { email: true, mfaEnabled: true },
@@ -65,17 +88,19 @@ export async function generateTotpEnrollment(userId: string): Promise<TotpEnroll
   const secret = generateSecret();
   const encryptedSecret = encryptField(secret);
 
-  // Write the pending secret. If MFA is NOT yet active, set mfaEnabled=false
-  // to reflect the unconfirmed state. If MFA IS active, preserve mfaEnabled=true
-  // so the active break-glass path remains usable during the re-enrollment window.
-  // The new secret is stored regardless; confirmTotpEnrollment will verify against it.
-  await unsafePrismaAdmin.appUser.update({
-    where: { id: userId },
-    data: {
-      mfaTotp: encryptedSecret,
-      ...(user.mfaEnabled ? {} : { mfaEnabled: false }),
-    },
-  });
+  if (user.mfaEnabled) {
+    // Re-enrollment: write to pending only. Active secret stays intact.
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: userId },
+      data: { mfaTotpPending: encryptedSecret, mfaTotpPendingCreatedAt: new Date() },
+    });
+  } else {
+    // Initial enrollment: write directly to mfaTotp; mfaEnabled stays false.
+    await unsafePrismaAdmin.appUser.update({
+      where: { id: userId },
+      data: { mfaTotp: encryptedSecret, mfaEnabled: false },
+    });
+  }
 
   const issuer = 'Bookpitch';
   const otpauthUri = `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(user.email)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
@@ -85,20 +110,48 @@ export async function generateTotpEnrollment(userId: string): Promise<TotpEnroll
 
 /**
  * Confirm a TOTP enrollment by verifying the first code.
- * Sets mfa_enabled=true on the user row.
+ *
+ * Initial enrollment (mfaEnabled=false): verifies against mfaTotp, sets
+ * mfaEnabled=true.
+ *
+ * Re-enrollment (mfaEnabled=true, mfaTotpPending set): verifies against
+ * mfaTotpPending, promotes it to mfaTotp, and clears mfaTotpPending.
+ * The old mfaTotp remains active until this point so break-glass is unaffected.
+ *
+ * Atomic: the secret promotion, replay-window advance, session-version bump,
+ * reauth-grant invalidation, and audit write all succeed or all roll back.
+ * The TOTP algorithm runs outside the transaction (CPU-only); the conditional
+ * UPDATE then commits the result only if no concurrent call already consumed
+ * the same time-step.
+ *
+ * Initial enrollment only: also generates and returns the initial recovery codes
+ * (shown once, never stored in plaintext). Re-enrollment returns no codes.
  */
-export async function confirmTotpEnrollment(userId: string, code: string): Promise<void> {
+export type ConfirmTotpEnrollmentResult = {
+  recoveryCodes: string[] | null;
+};
+
+export async function confirmTotpEnrollment(
+  userId: string,
+  code: string,
+): Promise<ConfirmTotpEnrollmentResult> {
+  await requireSuperAdmin(userId);
   await consumeGlobalBucket(`totp:${userId}`, TOTP_RATE_LIMIT, TOTP_RATE_WINDOW_MS);
 
   const user = await unsafePrismaAdmin.appUser.findUnique({
     where: { id: userId },
-    select: { mfaTotp: true, mfaEnabled: true },
+    select: { mfaTotp: true, mfaTotpPending: true, mfaEnabled: true },
   });
-  if (!user?.mfaTotp) {
+
+  // Determine which column holds the candidate secret.
+  const isReEnrollment = user?.mfaEnabled && !!user?.mfaTotpPending;
+  const candidateEncrypted = isReEnrollment ? user!.mfaTotpPending! : user?.mfaTotp;
+
+  if (!candidateEncrypted) {
     throw new InvalidInputError('MFA enrollment not started — call enroll first');
   }
 
-  const secret = decryptField(user.mfaTotp);
+  const secret = decryptField(candidateEncrypted);
   if (!secret) throw new InvalidInputError('MFA secret is corrupt');
 
   const result = await verify({ ...TOTP_PLUGINS, token: code.trim(), secret });
@@ -106,10 +159,138 @@ export async function confirmTotpEnrollment(userId: string, code: string): Promi
     throw new InvalidInputError('invalid TOTP code');
   }
 
-  await unsafePrismaAdmin.appUser.update({
-    where: { id: userId },
-    data: { mfaEnabled: true, mfaLastTotpWindow: BigInt(result.timeStep) },
+  const totpWindow = BigInt(result.timeStep);
+
+  // Pre-generate recovery codes before the transaction (crypto is not DB-dependent).
+  // Only used for initial enrollment; re-enrollment leaves existing codes intact.
+  let pendingRecoveryCodes: {
+    codes: string[];
+    records: { userId: string; codeHash: string }[];
+  } | null = null;
+  if (!isReEnrollment) {
+    const codes: string[] = [];
+    const records: { userId: string; codeHash: string }[] = [];
+    for (let i = 0; i < RECOVERY_CODE_COUNT; i++) {
+      const formatted = formatRecoveryCode(randomBytes(RECOVERY_CODE_BYTES));
+      const normalized = normalizeRecoveryCode(formatted);
+      records.push({ userId, codeHash: hashRecoveryCode(normalized) });
+      codes.push(formatted);
+    }
+    pendingRecoveryCodes = { codes, records };
+  }
+
+  // Atomic transaction: promote secret + advance replay fence + bump session
+  // version + invalidate grants + write audit + initial recovery codes.
+  // The conditional UPDATE ensures two concurrent confirmations with the same
+  // time-step both cannot succeed.
+  await unsafePrismaAdmin.$transaction(async (tx) => {
+    let rowsUpdated: number | bigint;
+    if (isReEnrollment) {
+      // Promote mfa_totp_pending → mfa_totp only if pending still equals what
+      // we verified against. A concurrent re-enrollment overwriting pending
+      // would cause 0 rows here, which is the correct failure mode.
+      rowsUpdated = await tx.$executeRaw`
+        UPDATE app_users
+        SET mfa_totp = ${candidateEncrypted},
+            mfa_totp_pending = NULL,
+            mfa_totp_pending_created_at = NULL,
+            mfa_enabled = true,
+            mfa_last_totp_window = ${totpWindow},
+            session_version = session_version + 1
+        WHERE id = ${userId}::uuid
+          AND mfa_totp_pending = ${candidateEncrypted}
+          AND (mfa_last_totp_window IS NULL OR mfa_last_totp_window < ${totpWindow})
+      `;
+    } else {
+      rowsUpdated = await tx.$executeRaw`
+        UPDATE app_users
+        SET mfa_enabled = true,
+            mfa_last_totp_window = ${totpWindow},
+            session_version = session_version + 1
+        WHERE id = ${userId}::uuid
+          AND (mfa_last_totp_window IS NULL OR mfa_last_totp_window < ${totpWindow})
+      `;
+    }
+
+    if (Number(rowsUpdated) === 0) {
+      throw new InvalidInputError('TOTP code has already been used — wait for the next code');
+    }
+
+    // Invalidate any outstanding reauth grants so sessions tied to pre-MFA
+    // state cannot be used to access MFA-gated operations.
+    await tx.platformReauthGrant.deleteMany({ where: { userId } });
+
+    // Initial enrollment: atomically create initial recovery codes in the same
+    // transaction. The user sees them once — they must copy them now.
+    if (pendingRecoveryCodes) {
+      await tx.appUserRecoveryCode.deleteMany({ where: { userId } });
+      await tx.appUserRecoveryCode.createMany({ data: pendingRecoveryCodes.records });
+    }
+
+    await tx.auditLog.create({
+      data: {
+        organizationId: null,
+        actorUserId: userId,
+        action: isReEnrollment ? 'mfa.totp.re_enrolled' : 'mfa.totp.enrolled',
+        entity: 'staff',
+        meta: pendingRecoveryCodes ? { recoveryCodesGenerated: RECOVERY_CODE_COUNT } : {},
+      },
+    });
   });
+
+  return { recoveryCodes: pendingRecoveryCodes?.codes ?? null };
+}
+
+/**
+ * Rate-limit + verify a TOTP code WITHOUT advancing the replay fence.
+ * Returns the time-step bigint that the caller must atomically lock inside
+ * a DB transaction. Throws on invalid code so the transaction is never
+ * entered with bad credentials.
+ *
+ * Used by startBreakGlass to ensure the fence-advance is inside the same
+ * atomic transaction as session creation.
+ */
+export async function preCheckTotp(userId: string, code: string): Promise<bigint> {
+  await consumeGlobalBucket(`totp:${userId}`, TOTP_RATE_LIMIT, TOTP_RATE_WINDOW_MS);
+
+  const user = await unsafePrismaAdmin.appUser.findUnique({
+    where: { id: userId },
+    select: { mfaTotp: true, mfaEnabled: true },
+  });
+
+  if (!user?.mfaTotp || !user.mfaEnabled) {
+    throw new InvalidInputError(
+      'MFA not enrolled — enroll via POST /api/platform/mfa/enroll before activating break-glass',
+    );
+  }
+
+  const secret = decryptField(user.mfaTotp);
+  if (!secret) throw new InvalidInputError('MFA secret is corrupt — re-enroll');
+
+  const result = await verify({ ...TOTP_PLUGINS, token: code.trim(), secret });
+  if (!result.valid) {
+    throw new InvalidInputError('invalid or expired TOTP code');
+  }
+
+  return BigInt(result.timeStep);
+}
+
+/**
+ * Rate-limit and hash a recovery code WITHOUT marking it as used.
+ * Returns the code hash that the caller must atomically mark-used inside
+ * a DB transaction. Throws on format errors so the transaction is never
+ * entered with a clearly invalid code.
+ *
+ * Used by startBreakGlass to ensure the mark-used is inside the same
+ * atomic transaction as session creation.
+ */
+export async function preCheckRecoveryCode(userId: string, code: string): Promise<string> {
+  await consumeGlobalBucket(`recovery:${userId}`, RECOVERY_RATE_LIMIT, RECOVERY_RATE_WINDOW_MS);
+
+  const normalized = normalizeRecoveryCode(code);
+  if (normalized.length < 10) throw new InvalidInputError('invalid recovery code');
+
+  return hashRecoveryCode(normalized);
 }
 
 /**
@@ -189,12 +370,22 @@ export type GenerateRecoveryCodesResult = {
   codes: string[]; // Plaintext codes — shown once; never stored.
 };
 
+/** Count of unused recovery codes remaining for `userId`. */
+export async function getRemainingRecoveryCodeCount(userId: string): Promise<number> {
+  await requireSuperAdmin(userId);
+  return unsafePrismaAdmin.appUserRecoveryCode.count({
+    where: { userId, usedAt: null },
+  });
+}
+
 /**
  * Generate a fresh set of recovery codes for `userId`. Requires MFA to be
  * enrolled. Deletes all existing codes (including used ones) and creates
  * RECOVERY_CODE_COUNT new ones. Returns plaintexts — display once and discard.
  */
 export async function generateRecoveryCodes(userId: string): Promise<GenerateRecoveryCodesResult> {
+  await requireSuperAdmin(userId);
+
   const user = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { id: userId },
     select: { mfaEnabled: true },
@@ -203,9 +394,7 @@ export async function generateRecoveryCodes(userId: string): Promise<GenerateRec
     throw new InvalidInputError('MFA must be enrolled before generating recovery codes');
   }
 
-  // Delete all existing codes (used or not) and create a fresh batch.
-  await unsafePrismaAdmin.appUserRecoveryCode.deleteMany({ where: { userId } });
-
+  // Generate all codes before entering the transaction — randomBytes is not DB-dependent.
   const codes: string[] = [];
   const records: { userId: string; codeHash: string }[] = [];
 
@@ -216,7 +405,12 @@ export async function generateRecoveryCodes(userId: string): Promise<GenerateRec
     codes.push(formatted);
   }
 
-  await unsafePrismaAdmin.appUserRecoveryCode.createMany({ data: records });
+  // Atomic: delete all existing codes AND insert new ones in one transaction.
+  // Without this, a crash between deleteMany and createMany leaves the user with zero codes.
+  await unsafePrismaAdmin.$transaction(async (tx) => {
+    await tx.appUserRecoveryCode.deleteMany({ where: { userId } });
+    await tx.appUserRecoveryCode.createMany({ data: records });
+  });
 
   log.info('platform.mfa.recovery_codes.generated', { userId, count: codes.length });
 
@@ -241,57 +435,114 @@ export async function consumeRecoveryCode(userId: string, code: string): Promise
 
   const codeHash = hashRecoveryCode(normalized);
 
-  // Atomic: mark used only if this code exists and is unused.
-  const updated = await unsafePrismaAdmin.$executeRaw`
-    UPDATE app_user_recovery_codes
-    SET used_at = now()
-    WHERE user_id = ${userId}::uuid
-      AND code_hash = ${codeHash}
-      AND used_at IS NULL
-  `;
+  // Atomic transaction: mark-used, sessionVersion bump, reauth grant delete,
+  // audit log, and security alert outbox INSERT all succeed or all roll back.
+  // The alert is in the outbox (not a direct send) so a mail provider failure
+  // cannot roll back the consumed code — the durable worker retries delivery.
+  const alertIdempotencyKey = await unsafePrismaAdmin.$transaction(async (tx) => {
+    // Atomic: mark used only if this code exists and is unused.
+    const updated = await tx.$executeRaw`
+      UPDATE app_user_recovery_codes
+      SET used_at = now()
+      WHERE user_id = ${userId}::uuid
+        AND code_hash = ${codeHash}
+        AND used_at IS NULL
+    `;
 
-  if (updated === 0) {
-    throw new InvalidInputError('invalid or already-used recovery code');
-  }
+    if (updated === 0) {
+      throw new InvalidInputError('invalid or already-used recovery code');
+    }
 
-  // Bump sessionVersion: invalidates any cached sessions and reauth grants
-  // that reference the old version.
-  await unsafePrismaAdmin.appUser.update({
-    where: { id: userId },
-    data: { sessionVersion: { increment: 1 } },
-  });
+    // Bump sessionVersion: invalidates any cached sessions and reauth grants.
+    await tx.appUser.update({
+      where: { id: userId },
+      data: { sessionVersion: { increment: 1 } },
+    });
 
-  // Invalidate the reauth grant so the attacker's window closes.
-  await unsafePrismaAdmin.platformReauthGrant.deleteMany({ where: { userId } });
+    // Invalidate the reauth grant so the attacker's window closes.
+    await tx.platformReauthGrant.deleteMany({ where: { userId } });
 
-  await unsafePrismaAdmin.auditLog.create({
-    data: {
-      organizationId: null,
-      actorUserId: userId,
-      action: 'mfa.recovery_code.consumed',
-      entity: 'staff',
-    },
-  });
+    await tx.auditLog.create({
+      data: {
+        organizationId: null,
+        actorUserId: userId,
+        action: 'mfa.recovery_code.consumed',
+        entity: 'staff',
+      },
+    });
 
-  // Security notification.
-  const user = await unsafePrismaAdmin.appUser.findUnique({
-    where: { id: userId },
-    select: { email: true },
-  });
-  const alertTo = process.env.SECURITY_ALERT_EMAIL ?? user?.email ?? '';
-  if (alertTo) {
-    try {
-      const provider = getEmailProvider();
-      await provider.send(
-        alertTo,
-        '[Bookpitch] MFA recovery code used',
+    const user = await tx.appUser.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    const alertTo = process.env.SECURITY_ALERT_EMAIL ?? user?.email ?? '';
+
+    if (alertTo) {
+      const alertPlain =
         `A break-glass MFA recovery code was consumed.\n\n` +
-          `If this was not you, your account may be compromised. ` +
-          `Reset your password immediately.`,
-      );
-    } catch {
-      // Alert failure must not block the recovery — log and continue.
-      log.warn('platform.mfa.recovery_alert_failed', { userId });
+        `If this was not you, your account may be compromised. ` +
+        `Reset your password immediately.`;
+      const alertEncrypted = encryptField(alertPlain) ?? alertPlain;
+      const bodyEncrypted = alertEncrypted !== alertPlain;
+      const idempotencyKey = `recovery_alert:${userId}:${codeHash.slice(0, 16)}`;
+      const encryptedAlertTo = encryptField(alertTo) ?? alertTo;
+      const alertToEncrypted = encryptedAlertTo !== alertTo;
+      const alertToHash = hashEmailForIndex(alertTo);
+      await tx.emailOutbox.create({
+        data: {
+          idempotencyKey,
+          toAddress: encryptedAlertTo,
+          toAddressEncrypted: alertToEncrypted,
+          toAddressHash: alertToHash,
+          subject: '[Bookpitch] MFA recovery code used',
+          body: alertEncrypted,
+          bodyEncrypted,
+          purpose: 'mfa.recovery_alert',
+        },
+      });
+      return idempotencyKey;
+    }
+
+    return null;
+  });
+
+  // Immediate drain — best-effort, outside the DB transaction.
+  if (alertIdempotencyKey) {
+    try {
+      type ClaimedRow = {
+        id: string;
+        to_address: string;
+        to_address_encrypted: boolean;
+        subject: string;
+        body: string;
+        body_encrypted: boolean;
+      };
+      const [claimed] = await unsafePrismaAdmin.$queryRaw<ClaimedRow[]>`
+        UPDATE email_outbox
+        SET status = 'processing',
+            claim_owner = 'recovery_immediate',
+            claim_expires_at = now() + interval '120 seconds',
+            claimed_at = now()
+        WHERE idempotency_key = ${alertIdempotencyKey} AND status = 'pending'
+        RETURNING id, to_address, to_address_encrypted, subject, body, body_encrypted
+      `;
+      if (claimed) {
+        const toAddress = claimed.to_address_encrypted
+          ? (decryptField(claimed.to_address) ?? claimed.to_address)
+          : claimed.to_address;
+        const body = claimed.body_encrypted
+          ? (decryptField(claimed.body) ?? claimed.body)
+          : claimed.body;
+        const provider = getEmailProvider();
+        await provider.send(toAddress, claimed.subject, body);
+        await unsafePrismaAdmin.$executeRaw`
+          UPDATE email_outbox
+          SET status = 'sent', sent_at = now(), claim_owner = NULL
+          WHERE id = ${claimed.id}::uuid
+        `;
+      }
+    } catch (err) {
+      log.warn('platform.mfa.recovery_alert_drain_failed', { err: sanitizeErrorMessage(err) });
     }
   }
 }

@@ -16,7 +16,15 @@ export default async function BillingPage() {
     'billing',
   );
   const session = ctxToSession(ctx);
-  const { active } = await loadLocationsForOrg(session.organizationId);
+  const [{ active }, org] = await Promise.all([
+    loadLocationsForOrg(session.organizationId),
+    withOrg(session.organizationId, (tx) =>
+      tx.organization.findUniqueOrThrow({
+        where: { id: session.organizationId },
+        select: { currency: true },
+      }),
+    ),
+  ]);
 
   const rows: BillingRow[] = await withOrg(session.organizationId, async (tx) => {
     // Show current + last-30d appointments at the active location, plus their
@@ -54,5 +62,10 @@ export default async function BillingPage() {
     }));
   });
 
-  return <BillingList location={{ name: active.name, type: active.type }} rows={rows} />;
+  return (
+    <BillingList
+      location={{ name: active.name, type: active.type, currency: org.currency }}
+      rows={rows}
+    />
+  );
 }

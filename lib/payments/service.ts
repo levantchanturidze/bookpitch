@@ -50,15 +50,22 @@ export async function startCardCheckout(
   session: ActiveSession,
   appointmentId: string,
 ): Promise<{ paymentId: string; redirectUrl: string }> {
-  const appointment = await withOrg(session.organizationId, (tx) =>
-    tx.appointment.findUnique({
-      where: { id: appointmentId },
-      include: {
-        customer: { select: { name: true } },
-        location: { select: { name: true } },
-      },
-    }),
-  );
+  const { appointment, currency } = await withOrg(session.organizationId, async (tx) => {
+    const [appt, org] = await Promise.all([
+      tx.appointment.findUnique({
+        where: { id: appointmentId },
+        include: {
+          customer: { select: { name: true } },
+          location: { select: { name: true } },
+        },
+      }),
+      tx.organization.findUniqueOrThrow({
+        where: { id: session.organizationId },
+        select: { currency: true },
+      }),
+    ]);
+    return { appointment: appt, currency: org.currency };
+  });
   if (!appointment) throw new InvalidInputError('appointment not found');
   if (appointment.paymentStatus === 'paid') {
     throw new InvalidInputError('appointment is already paid');
@@ -74,7 +81,7 @@ export async function startCardCheckout(
         appointmentId,
         method: 'card',
         amount: appointment.price,
-        currency: 'GEL',
+        currency,
         status: 'unpaid',
         gateway: null,
         gatewayTxnId: null,
@@ -117,7 +124,13 @@ export async function settleCash(
 ): Promise<PaymentDto> {
   return withOrg(session.organizationId, async (tx) => {
     await assertOrgOwnerSet(tx, session.organizationId);
-    const appt = await tx.appointment.findUnique({ where: { id: appointmentId } });
+    const [appt, org] = await Promise.all([
+      tx.appointment.findUnique({ where: { id: appointmentId } }),
+      tx.organization.findUniqueOrThrow({
+        where: { id: session.organizationId },
+        select: { currency: true },
+      }),
+    ]);
     if (!appt) throw new InvalidInputError('appointment not found');
     if (appt.paymentStatus === 'paid') {
       throw new InvalidInputError('appointment is already paid');
@@ -130,7 +143,7 @@ export async function settleCash(
         appointmentId,
         method: 'cash',
         amount: appt.price,
-        currency: 'GEL',
+        currency: org.currency,
         status: 'paid',
         paidAt: now,
       },
@@ -146,7 +159,7 @@ export async function settleCash(
     await notifyEvent(tx, session.organizationId, {
       type: 'payment',
       title: 'Cash payment recorded',
-      body: `${Number(appt.price).toFixed(2)} GEL — ${appt.serviceName}`,
+      body: `${Number(appt.price).toFixed(2)} ${org.currency} — ${appt.serviceName}`,
     });
     return toPaymentDto(payment);
   });

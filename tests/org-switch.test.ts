@@ -27,18 +27,31 @@ describe('org switcher', () => {
   let orgB: string;
   let orgUnrelated: string;
   let userId: string;
+  let ownerOfBId: string;
 
   beforeAll(async () => {
+    const ts = Date.now();
     const seed = await withoutRls(async (tx) => {
-      const oA = await tx.organization.create({ data: { name: `swA-${Date.now()}` } });
-      const oB = await tx.organization.create({ data: { name: `swB-${Date.now()}` } });
-      const oU = await tx.organization.create({ data: { name: `swU-${Date.now()}` } });
+      const oA = await tx.organization.create({ data: { name: `swA-${ts}` } });
+      const oB = await tx.organization.create({ data: { name: `swB-${ts}` } });
+      const oU = await tx.organization.create({ data: { name: `swU-${ts}` } });
       const user = await tx.appUser.create({
         data: {
           authProvider: 'credentials',
-          authSubject: `sw-${Date.now()}@ex.dev`,
-          email: `sw-${Date.now()}@ex.dev`,
+          authSubject: `sw-${ts}@ex.dev`,
+          email: `sw-${ts}@ex.dev`,
           fullName: 'Switcher',
+          passwordHash: 'x',
+        },
+      });
+      // oB needs an owner to satisfy the org_owner invariant; use a separate
+      // fixture user so the test user stays a practitioner.
+      const ownerOfB = await tx.appUser.create({
+        data: {
+          authProvider: 'credentials',
+          authSubject: `sw-ownerb-${ts}@ex.dev`,
+          email: `sw-ownerb-${ts}@ex.dev`,
+          fullName: 'OwnerB',
           passwordHash: 'x',
         },
       });
@@ -46,20 +59,24 @@ describe('org switcher', () => {
         data: [
           { organizationId: oA.id, userId: user.id, role: 'owner' },
           { organizationId: oB.id, userId: user.id, role: 'practitioner' },
+          { organizationId: oB.id, userId: ownerOfB.id, role: 'owner' },
         ],
       });
-      return { oA, oB, oU, user };
+      return { oA, oB, oU, user, ownerOfB };
     });
     orgA = seed.oA.id;
     orgB = seed.oB.id;
     orgUnrelated = seed.oU.id;
     userId = seed.user.id;
+    ownerOfBId = seed.ownerOfB.id;
   });
 
   afterAll(async () => {
     await withoutRls(async (tx) => {
-      await tx.membership.deleteMany({ where: { userId } });
-      await tx.appUser.delete({ where: { id: userId } });
+      await tx.membership.deleteMany({
+        where: { organizationId: { in: [orgA, orgB, orgUnrelated] } },
+      });
+      await tx.appUser.deleteMany({ where: { id: { in: [userId, ownerOfBId] } } });
       await tx.organization.deleteMany({
         where: { id: { in: [orgA, orgB, orgUnrelated] } },
       });

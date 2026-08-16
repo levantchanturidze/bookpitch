@@ -43,7 +43,10 @@ function makeP2002v7(
 }
 
 // Build a P2002 with legacy meta.target array (Prisma < 6 / mocked units).
-function makeP2002legacy(target: string[], modelName?: string): Prisma.PrismaClientKnownRequestError {
+function makeP2002legacy(
+  target: string[],
+  modelName?: string,
+): Prisma.PrismaClientKnownRequestError {
   return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
     code: 'P2002',
     clientVersion: '0.0.0',
@@ -85,7 +88,10 @@ describe('mapPrismaError', () => {
   it('P2002 Prisma7: unknown field → ConflictError with field name in message', () => {
     const err = makeP2002v7(['weird_field'], 'Unknown');
     expect(() => mapPrismaError(err)).toThrow(
-      expect.objectContaining({ name: 'ConflictError', message: expect.stringContaining('weirdField') }),
+      expect.objectContaining({
+        name: 'ConflictError',
+        message: expect.stringContaining('weirdField'),
+      }),
     );
   });
 
@@ -98,7 +104,10 @@ describe('mapPrismaError', () => {
 
   it('P2003 without fkMessage → ConflictError with generic FK message', () => {
     expect(() => mapPrismaError(makeP2003())).toThrow(
-      expect.objectContaining({ name: 'ConflictError', message: expect.stringContaining('referenced') }),
+      expect.objectContaining({
+        name: 'ConflictError',
+        message: expect.stringContaining('referenced'),
+      }),
     );
   });
 

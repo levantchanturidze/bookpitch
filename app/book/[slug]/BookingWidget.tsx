@@ -1,10 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 
 type PublicLocation = {
   organizationId: string;
   organizationName: string;
+  currency: string;
   locationId: string;
   locationName: string;
   locationType: 'clinic' | 'salon';
@@ -96,7 +97,7 @@ export default function BookingWidget({
           <option value="">— pick a service —</option>
           {location.services.map((s) => (
             <option key={s.id} value={s.id}>
-              {s.name} · {s.durationMinutes} min · {s.price} ₾
+              {s.name} · {s.durationMinutes} min · {s.price} {location.currency}
             </option>
           ))}
         </select>

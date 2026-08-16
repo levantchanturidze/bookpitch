@@ -32,12 +32,10 @@ import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 // try/catch in the startTransition callback.
 // -----------------------------------------------------------------------------
 export type BookActionResult =
-  | { ok: true; appointment: AppointmentDto }
-  | { ok: false; error: string };
+  { ok: true; appointment: AppointmentDto } | { ok: false; error: string };
 
 export type UpdateActionResult =
-  | { ok: true; appointment: AppointmentDto | null }
-  | { ok: false; error: string };
+  { ok: true; appointment: AppointmentDto | null } | { ok: false; error: string };
 
 // Mirror the /api/appointments endpoints but skip the HTTP hop for internal
 // UI callers. Same withOrg + writeAudit pattern. revalidatePath refreshes
@@ -216,7 +214,7 @@ export async function updateAppointmentAction(
 // -----------------------------------------------------------------------------
 export async function fetchAvailableSlotsAction(
   staffId: string,
-  date: string,        // YYYY-MM-DD in the location's local timezone
+  date: string, // YYYY-MM-DD in the location's local timezone
   durationMinutes: number,
 ): Promise<string[]> {
   const ctx = await requireAuthContext();

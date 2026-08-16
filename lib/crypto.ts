@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 
 // -----------------------------------------------------------------------------
 // Field-level encryption for special-category health data and MFA secrets.
@@ -183,4 +183,74 @@ export function decryptField(blob: string | null | undefined): string | null {
   const decipher = createDecipheriv(ALG, key, iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
+}
+
+// -----------------------------------------------------------------------------
+// Privacy-preserving email index hash for the email_outbox.to_address_hash column.
+//
+// Email addresses are low-entropy and dictionary-guessable, so a plain SHA-256
+// digest would not resist an offline rainbow-table attack against a leaked DB
+// dump. We use a domain-separated HMAC-SHA256 with a dedicated secret key so
+// the hash is computationally bound to the secret and cannot be reversed without
+// it.
+//
+// Key configuration:
+//   EMAIL_PRIVACY_HMAC_KEY=<64-hex-chars>  (32 bytes)
+//     Generate with: openssl rand -hex 32
+//
+// Non-production fallback: if EMAIL_PRIVACY_HMAC_KEY is absent, the function
+// falls back to the FIELD_ENCRYPTION_KEY hex portion (same derivation as the
+// rate-limit HMAC fallback). This avoids breaking local dev / CI while still
+// requiring an explicit key in production.
+//
+// Fail-closed: throws in production if neither key is set.
+// Domain label: "email-index" — prevents cross-context hash collisions.
+// -----------------------------------------------------------------------------
+
+let _emailHmacKey: Buffer | null = null;
+
+function getEmailHmacKey(): Buffer {
+  if (_emailHmacKey) return _emailHmacKey;
+
+  const dedicated = process.env.EMAIL_PRIVACY_HMAC_KEY;
+  if (dedicated) {
+    const k = Buffer.from(dedicated, 'hex');
+    if (k.length !== 32) throw new Error('EMAIL_PRIVACY_HMAC_KEY must be 64 hex chars (32 bytes)');
+    _emailHmacKey = k;
+    return k;
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('EMAIL_PRIVACY_HMAC_KEY must be set in production (openssl rand -hex 32)');
+  }
+
+  // Non-production: derive from FIELD_ENCRYPTION_KEY hex portion.
+  const fek = process.env.FIELD_ENCRYPTION_KEY ?? '';
+  const colon = fek.indexOf(':');
+  if (colon < 1) throw new Error('FIELD_ENCRYPTION_KEY or EMAIL_PRIVACY_HMAC_KEY must be set');
+  const hex = fek.slice(colon + 1);
+  const k = Buffer.from(hex, 'hex');
+  if (k.length !== 32)
+    throw new Error(
+      'FIELD_ENCRYPTION_KEY hex portion must be 64 chars — set EMAIL_PRIVACY_HMAC_KEY',
+    );
+  _emailHmacKey = k;
+  return k;
+}
+
+/**
+ * Returns a 64-hex HMAC-SHA256 of the lowercase email address, keyed by
+ * EMAIL_PRIVACY_HMAC_KEY (or FIELD_ENCRYPTION_KEY as a non-production fallback).
+ *
+ * Used as email_outbox.to_address_hash for indexed lookup without exposing the
+ * plaintext address. Safe to store: reversing it requires the HMAC secret.
+ */
+export function hashEmailForIndex(email: string): string {
+  const key = getEmailHmacKey();
+  return createHmac('sha256', key).update('email-index:').update(email.toLowerCase()).digest('hex');
+}
+
+/** Reset the cached HMAC key — for tests that swap env vars. */
+export function __clearEmailHmacKeyCache(): void {
+  _emailHmacKey = null;
 }

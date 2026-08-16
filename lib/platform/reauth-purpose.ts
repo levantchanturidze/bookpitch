@@ -16,6 +16,7 @@ export const REAUTH_PURPOSES = [
   // Configuring security-sensitive org settings (toggles, impersonation policy).
   'platform.org.configure',
   'platform.break_glass.start',
+  'platform.mfa.recovery_codes',
 ] as const;
 
 export type ReauthPurpose = (typeof REAUTH_PURPOSES)[number];

@@ -48,6 +48,8 @@ const routePlatformOrgs = await import('@/app/api/platform/orgs/route');
 const routePlatformOrgItem = await import('@/app/api/platform/orgs/[id]/route');
 const routePlatformOrgToggles = await import('@/app/api/platform/orgs/[id]/toggles/route');
 const routePlatformRoles = await import('@/app/api/platform/roles/route');
+const routeHealth = await import('@/app/api/health/route');
+const routeHealthReady = await import('@/app/api/health/ready/route');
 const { verifyPasswordFresh, __clearPasswordReauthCache } =
   await import('@/lib/platform/password-reauth');
 const { __clearOrgTogglesCache } = await import('@/lib/rbac/toggles');
@@ -1034,8 +1036,28 @@ describe('SEC § platform §6.1 new-surface probes (Phase 7 delta 2026-08-03)', 
   it('P6.15: cannot demote the last SUPER_ADMIN (SEC-006 fixed 2026-08-03)', async () => {
     const { assignPlatformRole } = await import('@/lib/platform/roles');
     // Migration 000007 creates levaaani@gmail.com as a second SUPER_ADMIN in
-    // all environments (dev/CI/prod). Reduce to exactly one first so the
+    // all environments (dev/CI/prod). In CI, `npm run db:seed` runs after
+    // migrations and does `appUser.deleteMany()` — wiping the user before
+    // tests run. Ensure the user exists (as SUPER_ADMIN) so the guard has
+    // two SUPER_ADMINs to work with, then reduce to exactly one so the
     // "last SUPER_ADMIN" guard fires correctly for superadmin@bp.test.
+    const superRole = await unsafePrismaAdmin.role.findFirstOrThrow({
+      where: { key: 'SUPER_ADMIN', organizationId: null },
+      select: { id: true },
+    });
+    await unsafePrismaAdmin.appUser.upsert({
+      where: { email: 'levaaani@gmail.com' },
+      create: {
+        authProvider: 'credentials',
+        authSubject: 'levaaani@gmail.com',
+        email: 'levaaani@gmail.com',
+        fullName: 'Levan Tchanturidze',
+        passwordHash: 'x',
+        platformRoleId: superRole.id,
+        mfaEnabled: false,
+      },
+      update: { platformRoleId: superRole.id },
+    });
     await assignPlatformRole(
       (await buildAuthContext(H.superUserId, null))!,
       'levaaani@gmail.com',
@@ -1700,15 +1722,111 @@ describe('SEC § SEC-009 — changeOrganizationOwner must atomically promote mem
       });
       expect(memAfter.roleRef?.key).toBe('ORG_OWNER');
     } finally {
-      await unsafePrismaAdmin.membership.update({
-        where: { id: origMem.id },
-        data: { role: origMem.role, roleId: origMem.roleId },
-      });
-      await unsafePrismaAdmin.organization.update({
-        where: { id: H.splitOrgId },
-        data: { ownerUserId: origOrg.ownerUserId },
-      });
+      // Restore membership role and owner_user_id atomically — the deferred
+      // trigger checks at commit that owner_user_id's user has an active owner
+      // membership, so both must be consistent by the time the tx commits.
+      await unsafePrismaAdmin
+        .$transaction(async (tx) => {
+          await tx.membership.update({
+            where: { id: origMem.id },
+            data: { role: origMem.role, roleId: origMem.roleId },
+          });
+          await tx.organization.update({
+            where: { id: H.splitOrgId },
+            data: { ownerUserId: origOrg.ownerUserId },
+          });
+        })
+        .catch(() => {
+          // If rollback fails (e.g. split-owner membership was deleted), best-effort.
+        });
       __clearAuthContextCache();
     }
+  });
+});
+
+// ── Phase 7 §7.9 — Public health route reveals no sensitive details ───────────
+
+describe('GET /api/health — public liveness probe', () => {
+  it('returns 200 with ok:true — no DB probe, no extra fields', async () => {
+    const res = await routeHealth.GET();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    // Phase G: public liveness returns exactly { ok: true } — nothing else.
+    expect(Object.keys(body)).toEqual(['ok']);
+  });
+
+  it('response body is exactly {"ok":true} — no status, buildId, or diagnostics', async () => {
+    const res = await routeHealth.GET();
+    const body = await res.json();
+    expect(body).toEqual({ ok: true });
+  });
+
+  it('response body exposes no connection details, DB role names, or env vars', async () => {
+    const res = await routeHealth.GET();
+    const body = (await res.json()) as Record<string, unknown>;
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toMatch(/DATABASE_URL|postgres|SQLSTATE|latency|prisma|role/i);
+    expect(serialized).not.toMatch(/bookpitch_app|unsafePrisma|prismaLogin/i);
+  });
+});
+
+// ── Phase 7 §7.9 — Protected readiness probe: guard + response sanitization ───
+
+describe('GET /api/health/ready — protected diagnostic endpoint', () => {
+  it('H.RDY.1: SUPPORT_AGENT cannot GET /api/health/ready — platform.config.manage missing', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('support@bp.test'));
+    const res = await routeHealthReady.GET();
+    expect(res.status).toBe(403);
+  });
+
+  it('H.RDY.2: PLATFORM_ADMIN cannot GET /api/health/ready — platform.config.manage is SUPER-only', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
+    const res = await routeHealthReady.GET();
+    expect(res.status).toBe(403);
+  });
+
+  it('H.RDY.3: SUPER_ADMIN gets 200 (or 503 on probe failure) with sanitized payload', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    const res = await routeHealthReady.GET();
+    // 200 when all probes pass; 503 when any DB role is unreachable.
+    // Both are safe outcomes — the probe must not return 4xx for authorised callers.
+    expect([200, 503]).toContain(res.status);
+    const body = await json<{ ok: boolean; timestamp: string; checks: unknown[] }>(res);
+    expect(typeof body.ok).toBe('boolean');
+    expect(typeof body.timestamp).toBe('string');
+    expect(Array.isArray(body.checks)).toBe(true);
+    expect(body.checks.length).toBe(3);
+  });
+
+  it('H.RDY.4: response body restricted to safe keys — no env vars, connection strings, or raw SQLSTATE', async () => {
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+    const res = await routeHealthReady.GET();
+    const body = await json<Record<string, unknown>>(res);
+
+    // Top-level keys must be exactly {ok, timestamp, checks}.
+    const topKeys = new Set(Object.keys(body));
+    expect(topKeys).toEqual(new Set(['ok', 'timestamp', 'checks']));
+
+    // Each check must carry only safe bucketed fields — no raw ms values.
+    const allowedCheckKeys = new Set(['category', 'ok', 'latencyBucket', 'errorCategory']);
+    for (const check of body.checks as Record<string, unknown>[]) {
+      for (const k of Object.keys(check)) {
+        expect(allowedCheckKeys.has(k)).toBe(true);
+      }
+      // latencyBucket must be a word, not a raw millisecond count.
+      expect(['fast', 'moderate', 'slow', 'timeout']).toContain(check.latencyBucket);
+    }
+
+    // Serialized body must not leak sensitive identifiers.
+    const raw = JSON.stringify(body);
+    expect(raw).not.toMatch(/DATABASE_URL|postgres:\/\//i);
+    expect(raw).not.toMatch(/SQLSTATE|bookpitch_app|prismaLogin/i);
+    expect(raw).not.toMatch(/ECONNREFUSED|ETIMEDOUT/i);
+  });
+
+  it('H.RDY.5: unauthenticated callers are rejected — requireAuthContext throws', async () => {
+    authMock.mockResolvedValue(null);
+    await expect(routeHealthReady.GET()).rejects.toThrow();
   });
 });

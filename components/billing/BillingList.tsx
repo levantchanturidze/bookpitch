@@ -25,7 +25,7 @@ export default function BillingList({
   location,
   rows,
 }: {
-  location: { name: string; type: 'clinic' | 'salon' };
+  location: { name: string; type: 'clinic' | 'salon'; currency: string };
   rows: BillingRow[];
 }) {
   const unpaid = rows.filter((r) => r.paymentStatus === 'unpaid');
@@ -53,20 +53,22 @@ export default function BillingList({
           </p>
           <p className="text-2xl font-extrabold text-slate-900">
             {unpaid.reduce((sum, r) => sum + r.price, 0).toFixed(2)}
-            <span className="ml-1 font-mono text-xs font-normal text-slate-400">GEL</span>
+            <span className="ml-1 font-mono text-xs font-normal text-slate-400">
+              {location.currency}
+            </span>
           </p>
         </div>
       </header>
 
       <Section title={`Outstanding — ${unpaid.length}`} empty="No unpaid appointments.">
         {unpaid.map((r) => (
-          <UnpaidRow key={r.id} row={r} />
+          <UnpaidRow key={r.id} row={r} currency={location.currency} />
         ))}
       </Section>
 
       <Section title={`Recently paid — ${paid.length}`} empty="No paid appointments yet.">
         {paid.map((r) => (
-          <PaidRow key={r.id} row={r} />
+          <PaidRow key={r.id} row={r} currency={location.currency} />
         ))}
       </Section>
     </div>
@@ -98,7 +100,7 @@ function Section({
   );
 }
 
-function UnpaidRow({ row }: { row: BillingRow }) {
+function UnpaidRow({ row, currency }: { row: BillingRow; currency: string }) {
   return (
     <div className="flex flex-col gap-3 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0 flex-1">
@@ -113,7 +115,7 @@ function UnpaidRow({ row }: { row: BillingRow }) {
       <div className="flex items-center gap-3">
         <p className="text-lg font-extrabold text-slate-900">
           {row.price.toFixed(2)}
-          <span className="ml-1 font-mono text-xs font-normal text-slate-400">GEL</span>
+          <span className="ml-1 font-mono text-xs font-normal text-slate-400">{currency}</span>
         </p>
         <form action={settleCashAction}>
           <input type="hidden" name="appointmentId" value={row.id} />
@@ -138,7 +140,7 @@ function UnpaidRow({ row }: { row: BillingRow }) {
   );
 }
 
-function PaidRow({ row }: { row: BillingRow }) {
+function PaidRow({ row, currency }: { row: BillingRow; currency: string }) {
   return (
     <div className="flex items-center justify-between px-6 py-3">
       <div className="min-w-0 flex-1">
@@ -154,7 +156,7 @@ function PaidRow({ row }: { row: BillingRow }) {
         </span>
         <span className="text-xs font-bold text-slate-800">
           {row.price.toFixed(2)}
-          <span className="ml-1 font-mono text-[10px] font-normal text-slate-400">GEL</span>
+          <span className="ml-1 font-mono text-[10px] font-normal text-slate-400">{currency}</span>
         </span>
       </div>
     </div>
