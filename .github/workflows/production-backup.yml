@@ -71,7 +71,18 @@ jobs:
           # pg_dump refuses to dump from a newer server, so this pin is
           # load-bearing, not cosmetic.
           sudo apt-get install -y postgresql-client-17 age
-          pg_dump --version
+          # Put the version-17 binaries ahead of Debian's /usr/bin/pg_* wrappers.
+          # pg_wrapper picks a binary version from the *server* a command is
+          # about to connect to. A command with no connection — `pg_restore
+          # --list` — falls back to the default cluster version, which on a
+          # GitHub runner is the preinstalled PostgreSQL 16. pg_restore 16
+          # cannot read the version-1.16 archive pg_dump 17 writes, so
+          # verification failed with "unsupported version (1.16) in file
+          # header" (run 31967250073) while the backup itself was perfectly
+          # good. Pin the path so every step uses the real 17 binaries.
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          /usr/lib/postgresql/17/bin/pg_restore --version
           age --version
 
       - name: Decide whether this run also keeps a weekly copy
@@ -172,6 +183,10 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17 age
+          # This is the job the wrapper bug actually broke: `pg_restore --list`
+          # makes no connection, so pg_wrapper fell back to PostgreSQL 16.
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_restore --version
 
       - name: Download the artifact that was just uploaded
         uses: actions/download-artifact@v4

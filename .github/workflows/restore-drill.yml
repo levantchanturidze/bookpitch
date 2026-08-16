@@ -70,7 +70,11 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17 age
-          pg_restore --version
+          # See production-backup.yml for why the path is pinned: Debian's
+          # pg_wrapper resolves a connection-less `pg_restore` to the runner's
+          # preinstalled PostgreSQL 16, which cannot read a v17 archive.
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_restore --version
 
       - name: Find the backup run to restore
         id: find
