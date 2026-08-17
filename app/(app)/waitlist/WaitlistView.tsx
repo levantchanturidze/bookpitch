@@ -142,7 +142,7 @@ export default function WaitlistView({
                   {nameById(staff, r.staffId)} · {nameById(services, r.serviceId)} ·{' '}
                   {r.preferredFrom.slice(0, 10)} → {r.preferredTo.slice(0, 10)}
                 </p>
-                {r.notes && <p className="mt-0.5 text-slate-400 italic">{r.notes}</p>}
+                {r.notes && <p className="mt-0.5 text-slate-500 italic">{r.notes}</p>}
               </div>
               <div className="flex items-center gap-2">
                 <span
@@ -158,7 +158,7 @@ export default function WaitlistView({
                   type="button"
                   onClick={() => remove(r.id)}
                   disabled={busy}
-                  className="rounded p-1 text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                  className="rounded p-1 text-slate-600 hover:bg-slate-100 disabled:opacity-50"
                   aria-label="Remove"
                 >
                   <X className="h-3.5 w-3.5" />

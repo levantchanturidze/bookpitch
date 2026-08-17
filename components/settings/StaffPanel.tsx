@@ -4,6 +4,7 @@ import { useId, useState, useTransition } from 'react';
 import { CalendarClock, Plus, Trash2 } from 'lucide-react';
 import type { AvailabilityWindow } from '@/lib/admin';
 import ModalShell from '@/components/ui/ModalShell';
+import StatusMessage from '@/components/ui/StatusMessage';
 import {
   createStaffAction,
   deleteStaffAction,
@@ -79,7 +80,7 @@ export default function StaffPanel({
           <Plus className="h-3.5 w-3.5" /> Add staff
         </button>
       </div>
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
+      {error && <StatusMessage tone="error">{error}</StatusMessage>}
       <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
@@ -119,7 +120,7 @@ export default function StaffPanel({
                 <td className="px-2 py-2 text-slate-600">
                   {s.roleTitle}
                   {s.specialty && (
-                    <span className="block text-[10px] text-slate-400">{s.specialty}</span>
+                    <span className="block text-[10px] text-slate-500">{s.specialty}</span>
                   )}
                 </td>
                 <td className="px-2 py-2 text-slate-600">{s.locationName}</td>
@@ -384,7 +385,9 @@ function AvailabilityEditor({ staff, onClose }: { staff: StaffRow; onClose: () =
         ))}
       </div>
       {error && (
-        <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
+        <StatusMessage tone="error" className="mt-3">
+          {error}
+        </StatusMessage>
       )}
       <div className="mt-5 flex items-center justify-end gap-2">
         <button

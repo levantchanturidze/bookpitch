@@ -130,7 +130,7 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
       <StatusSummary orgs={orgs} />
       <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900">
         <table className="w-full text-left text-xs">
-          <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
+          <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-400 uppercase">
             <tr>
               <th scope="col" className="px-4 py-2 font-medium">
                 Name
@@ -176,7 +176,7 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
                 </td>
                 <td className="px-2 py-2 font-mono text-slate-300">
                   {o.plan}
-                  <span className="ml-1 text-[10px] text-slate-500">({o.planStatus})</span>
+                  <span className="ml-1 text-[10px] text-slate-400">({o.planStatus})</span>
                 </td>
                 <td className="px-2 py-2 text-right font-mono text-slate-300">{o.memberCount}</td>
                 <td className="px-2 py-2 font-mono text-[10px] text-slate-400">
@@ -186,10 +186,10 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
                   {o.allowSupportImpersonation ? (
                     <span className="text-emerald-300">enabled</span>
                   ) : (
-                    <span className="text-slate-500">disabled</span>
+                    <span className="text-slate-400">disabled</span>
                   )}
                 </td>
-                <td className="px-4 py-2 font-mono text-[10px] text-slate-500">
+                <td className="px-4 py-2 font-mono text-[10px] text-slate-400">
                   {o.createdAt.slice(0, 10)}
                 </td>
               </tr>

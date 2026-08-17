@@ -87,7 +87,7 @@ export default function PlatformShell({
       <header className="border-b border-slate-800 bg-slate-900 px-6 py-3">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
           <div>
-            <p className="font-mono text-[10px] tracking-widest text-slate-500 uppercase">
+            <p className="font-mono text-[10px] tracking-widest text-slate-400 uppercase">
               Bookpitch Platform
             </p>
             <h1 className="font-display text-sm font-extrabold tracking-tight">Operator console</h1>

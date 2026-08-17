@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 export default function InviteForm({ token }: { token: string }) {
   const router = useRouter();
@@ -50,7 +51,7 @@ export default function InviteForm({ token }: { token: string }) {
         </span>
       </label>
 
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
+      {error && <StatusMessage tone="error">{error}</StatusMessage>}
 
       <button
         type="submit"

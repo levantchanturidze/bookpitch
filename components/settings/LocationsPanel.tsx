@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import type { LocationType } from '@prisma/client';
 import { Plus, Trash2 } from 'lucide-react';
 import { createLocationAction, deleteLocationAction, updateLocationAction } from './actions';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 export type LocationRow = {
   id: string;
@@ -57,7 +58,7 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
           <Plus className="h-3.5 w-3.5" /> Add location
         </button>
       </div>
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
+      {error && <StatusMessage tone="error">{error}</StatusMessage>}
       <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">

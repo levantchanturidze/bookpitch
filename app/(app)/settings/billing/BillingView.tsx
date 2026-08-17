@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { Plan, PlanId } from '@/lib/billing/plans';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 export default function BillingView({
   plans,
@@ -35,7 +36,7 @@ export default function BillingView({
 
   return (
     <div className="space-y-4">
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
+      {error && <StatusMessage tone="error">{error}</StatusMessage>}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {plans.map((p) => {
           const isCurrent = p.id === currentPlanId;
@@ -64,7 +65,7 @@ export default function BillingView({
                     Current · {planStatus}
                   </span>
                 ) : p.id === 'free' ? (
-                  <span className="text-[11px] text-slate-500">
+                  <span className="text-[11px] text-slate-400">
                     Cancel from Stripe portal to downgrade.
                   </span>
                 ) : (

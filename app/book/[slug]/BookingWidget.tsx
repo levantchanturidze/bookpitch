@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 type PublicLocation = {
   organizationId: string;
@@ -181,9 +182,7 @@ export default function BookingWidget({
         </span>
       </label>
 
-      {result && !result.ok && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{result.msg}</p>
-      )}
+      {result && !result.ok && <StatusMessage tone="error">{result.msg}</StatusMessage>}
 
       <button
         type="submit"

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 // TypeScript declaration for the Cloudflare Turnstile browser global.
 declare global {
@@ -179,12 +180,12 @@ export default function SignupForm() {
       {SITE_KEY ? (
         <div ref={containerRef} className="flex justify-center" />
       ) : process.env.NODE_ENV === 'production' ? (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+        <StatusMessage tone="error">
           Bot protection is unavailable. Please try again later.
-        </p>
+        </StatusMessage>
       ) : null}
 
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
+      {error && <StatusMessage tone="error">{error}</StatusMessage>}
 
       <button
         type="submit"

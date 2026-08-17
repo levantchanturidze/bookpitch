@@ -23,7 +23,7 @@ export default function NotFound() {
       className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-16"
     >
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-10 text-center shadow-sm">
-        <div className="mx-auto mb-4 w-fit rounded-full bg-slate-100 p-4 text-slate-500">
+        <div className="mx-auto mb-4 w-fit rounded-full bg-slate-100 p-4 text-slate-600">
           <Compass className="h-8 w-8 stroke-[2.5]" aria-hidden="true" />
         </div>
         <h1 className="text-lg font-extrabold tracking-tight text-slate-900">Page not found</h1>

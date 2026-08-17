@@ -34,6 +34,16 @@ export type FieldProps = {
   label: ReactNode;
   /** Field-level validation message. Presence is what marks the field invalid. */
   error?: string | null;
+  /**
+   * Mark the control invalid WITHOUT rendering a per-field message.
+   *
+   * Needed by enumeration-safe forms: sign-in returns one message for "unknown
+   * email" and "wrong password" alike, so attaching it to a single field would
+   * tell an attacker which half was wrong. The form-level StatusMessage carries
+   * the text; both fields still need aria-invalid so a screen-reader user knows
+   * the submission was rejected.
+   */
+  invalid?: boolean;
   /** Persistent helper text, e.g. formatting rules. */
   hint?: ReactNode;
   required?: boolean;
@@ -45,6 +55,7 @@ export type FieldProps = {
 export default function Field({
   label,
   error,
+  invalid,
   hint,
   required,
   className = 'block',
@@ -76,7 +87,7 @@ export default function Field({
       </label>
       {children({
         id,
-        'aria-invalid': error ? true : undefined,
+        'aria-invalid': error || invalid ? true : undefined,
         'aria-describedby': describedBy || undefined,
       })}
       {hint && (

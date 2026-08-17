@@ -20,6 +20,7 @@ import { motion, AnimatePresence } from 'motion/react';
 
 import type { CustomerDetailDto } from '@/lib/customers';
 import ModalShell from '@/components/ui/ModalShell';
+import StatusMessage from '@/components/ui/StatusMessage';
 import {
   addTreatmentHistoryAction,
   anonymizeCustomerAction,
@@ -162,7 +163,7 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h3 className="text-base font-bold text-slate-800">{labelPlural} Database</h3>
-            <p className="text-[10px] text-slate-400">
+            <p className="text-[10px] text-slate-500">
               {customers.length} registered · {filtered.length} shown
             </p>
           </div>
@@ -178,7 +179,7 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
         </div>
 
         <div className="relative mb-4">
-          <Search className="absolute top-2.5 left-3 h-4 w-4 text-slate-400" />
+          <Search className="absolute top-2.5 left-3 h-4 w-4 text-slate-500" />
           <input
             type="text"
             placeholder={`Search ${labelPlural.toLowerCase()}…`}
@@ -189,12 +190,14 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
         </div>
 
         {error && (
-          <div className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
+          <StatusMessage tone="error" className="mb-3">
+            {error}
+          </StatusMessage>
         )}
 
         <div className="flex-1 space-y-2 overflow-y-auto pr-1">
           {filtered.length === 0 && (
-            <div className="flex flex-col items-center py-12 text-center text-slate-400">
+            <div className="flex flex-col items-center py-12 text-center text-slate-500">
               <Search className="mb-2 h-8 w-8 stroke-1 text-slate-300" />
               <p className="text-xs">No records match your search.</p>
             </div>
@@ -217,7 +220,7 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
                 <Avatar name={c.name} url={c.avatarUrl} />
                 <div className="min-w-0 flex-1">
                   <span className="block truncate text-xs font-bold">{c.name}</span>
-                  <span className="block font-mono text-[10px] text-slate-400">
+                  <span className="block font-mono text-[10px] text-slate-500">
                     {c.phone ?? '—'}
                   </span>
                 </div>
@@ -247,7 +250,7 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
             isPending={isPending}
           />
         ) : (
-          <div className="flex flex-1 flex-col items-center justify-center text-slate-400">
+          <div className="flex flex-1 flex-col items-center justify-center text-slate-500">
             <Info className="mb-2 h-10 w-10 stroke-1 text-slate-300" />
             <p className="text-xs">Select a {labelSingular.toLowerCase()} to inspect details.</p>
           </div>
@@ -354,7 +357,7 @@ function PatientDetail({
               <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[10px] text-slate-600">
                 ID: {active.id.slice(0, 8)}
               </span>
-              <span className="font-mono text-[10px] text-slate-400">
+              <span className="font-mono text-[10px] text-slate-500">
                 Joined {active.joinedDate}
               </span>
               <ConsentBadge consentAt={active.consentAt} consentVersion={active.consentVersion} />
@@ -375,15 +378,16 @@ function PatientDetail({
             </button>
             <button
               onClick={onDelete}
-              className="rounded-lg border border-rose-200 p-1.5 text-rose-500 hover:bg-rose-50"
+              className="rounded-lg border border-rose-200 p-1.5 text-rose-500 hover:bg-rose-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1"
               title="Delete profile"
+              aria-label="Delete profile"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           </div>
           <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5 text-right font-mono text-[11px] text-slate-500">
             <span className="flex items-center justify-end gap-1">
-              <Calendar className="h-3.5 w-3.5 text-slate-400" /> DOB: {active.dob ?? '—'}
+              <Calendar className="h-3.5 w-3.5 text-slate-500" /> DOB: {active.dob ?? '—'}
             </span>
             <span>Gender: {active.gender ?? '—'}</span>
           </div>
@@ -394,15 +398,15 @@ function PatientDetail({
       <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
         <div className="space-y-4">
           <div className="rounded-xl border border-slate-100 p-4">
-            <span className="mb-2 block font-mono text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+            <span className="mb-2 block font-mono text-[10px] font-bold tracking-wider text-slate-500 uppercase">
               Contact Details
             </span>
             <div className="space-y-2 text-xs">
               <div className="flex items-center gap-2 text-slate-600">
-                <Phone className="h-3.5 w-3.5 text-slate-400" /> {active.phone ?? '—'}
+                <Phone className="h-3.5 w-3.5 text-slate-500" /> {active.phone ?? '—'}
               </div>
               <div className="flex items-center gap-2 text-slate-600">
-                <Mail className="h-3.5 w-3.5 text-slate-400" /> {active.email ?? '—'}
+                <Mail className="h-3.5 w-3.5 text-slate-500" /> {active.email ?? '—'}
               </div>
             </div>
           </div>
@@ -412,7 +416,7 @@ function PatientDetail({
               hasAllergy ? 'border-rose-100 bg-rose-50/50' : 'border-slate-100 bg-slate-50/50'
             }`}
           >
-            <span className="mb-2 flex items-center gap-1 font-mono text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+            <span className="mb-2 flex items-center gap-1 font-mono text-[10px] font-bold tracking-wider text-slate-600 uppercase">
               <ShieldAlert
                 className={`h-3.5 w-3.5 ${hasAllergy ? 'text-rose-500' : 'text-slate-400'}`}
               />
@@ -426,7 +430,7 @@ function PatientDetail({
           </div>
 
           <div className="rounded-xl border border-slate-100 p-4">
-            <span className="mb-1 block font-mono text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+            <span className="mb-1 block font-mono text-[10px] font-bold tracking-wider text-slate-500 uppercase">
               {isClinic ? 'Clinical Intake Notes' : 'Stylist Session Notes'}
             </span>
             <p className="font-sans text-xs leading-relaxed text-slate-600">
@@ -437,12 +441,12 @@ function PatientDetail({
 
         <div className="space-y-4">
           <div className="flex h-[220px] flex-col rounded-xl border border-slate-100 p-4">
-            <span className="mb-2 block font-mono text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+            <span className="mb-2 block font-mono text-[10px] font-bold tracking-wider text-slate-500 uppercase">
               Treatment History
             </span>
             <div className="flex-1 space-y-1.5 overflow-y-auto pr-1">
               {active.treatmentHistory.length === 0 ? (
-                <p className="text-[11px] text-slate-400 italic">No history logged yet.</p>
+                <p className="text-[11px] text-slate-500 italic">No history logged yet.</p>
               ) : (
                 active.treatmentHistory.map((h) => (
                   <div
@@ -472,7 +476,8 @@ function PatientDetail({
               <button
                 type="submit"
                 disabled={isPending || !historyDraft.trim()}
-                className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800 disabled:opacity-40"
+                className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1 disabled:opacity-40"
+                aria-label="Add history entry"
               >
                 <Plus className="h-3.5 w-3.5" />
               </button>
@@ -480,10 +485,10 @@ function PatientDetail({
           </div>
 
           <div className="rounded-xl border border-slate-100 p-4">
-            <span className="mb-2 block font-mono text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+            <span className="mb-2 block font-mono text-[10px] font-bold tracking-wider text-slate-500 uppercase">
               Visits & Status
             </span>
-            <p className="text-[11px] text-slate-400 italic">
+            <p className="text-[11px] text-slate-500 italic">
               Appointment integration lands in P1.5.
             </p>
           </div>
@@ -672,7 +677,7 @@ function PatientFormModal({
           </h2>
           <button
             onClick={onCancel}
-            className="rounded-lg p-1 text-slate-400 hover:bg-slate-50"
+            className="rounded-lg p-1 text-slate-500 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1"
             aria-label="Close"
           >
             <X className="h-5 w-5" />
@@ -775,9 +780,7 @@ function PatientFormModal({
             </span>
           </label>
 
-          {error && (
-            <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-          )}
+          {error && <StatusMessage tone="error">{error}</StatusMessage>}
 
           <div className="flex items-center justify-end gap-2 pt-2">
             <button

@@ -141,7 +141,7 @@ export default function NewOrgForm() {
         </label>
 
         <fieldset className="rounded-md border border-slate-800 p-3">
-          <legend className="px-1 text-[11px] font-semibold text-slate-500 uppercase">
+          <legend className="px-1 text-[11px] font-semibold text-slate-400 uppercase">
             First location
           </legend>
           <label className="block">
@@ -176,7 +176,7 @@ export default function NewOrgForm() {
             className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
             placeholder="owner@acmeclinic.com"
           />
-          <span className="mt-1 block text-[11px] text-slate-500">
+          <span className="mt-1 block text-[11px] text-slate-400">
             If the email is already registered, they'll be promoted to ORG_OWNER of this new org.
             Otherwise an invitation link is generated (§9 rule 4 — never a temp password).
           </span>

@@ -68,7 +68,7 @@ export default function PlatformRolesPanel({
 
       <div className="mb-6 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900">
         <table className="w-full text-left text-xs">
-          <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
+          <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-400 uppercase">
             <tr>
               <th scope="col" className="px-4 py-2 font-medium">
                 Email
@@ -87,7 +87,7 @@ export default function PlatformRolesPanel({
           <tbody className="divide-y divide-slate-800">
             {holders.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-center text-slate-500">
+                <td colSpan={4} className="px-4 py-6 text-center text-slate-400">
                   No platform-role users assigned.
                 </td>
               </tr>
@@ -101,7 +101,7 @@ export default function PlatformRolesPanel({
                     {h.roleKey}
                   </span>
                 </td>
-                <td className="px-4 py-2 font-mono text-[10px] text-slate-500">
+                <td className="px-4 py-2 font-mono text-[10px] text-slate-400">
                   {h.assignedAt?.slice(0, 10) ?? '—'}
                 </td>
               </tr>
@@ -123,7 +123,7 @@ export default function PlatformRolesPanel({
                 className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
                 placeholder="user@example.com"
               />
-              <span className="mt-1 block text-[11px] text-slate-500">
+              <span className="mt-1 block text-[11px] text-slate-400">
                 User must already exist. Bootstrap SUPER_ADMINs via{' '}
                 <code>scripts/create-platform-user.ts</code>.
               </span>

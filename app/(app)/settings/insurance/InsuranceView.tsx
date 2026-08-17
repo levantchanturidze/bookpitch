@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { Download } from 'lucide-react';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 type CustomerBasic = {
   id: string;
@@ -100,7 +101,9 @@ export default function InsuranceView({
           </div>
         </div>
         {error && (
-          <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
+          <StatusMessage tone="error" className="mt-3">
+            {error}
+          </StatusMessage>
         )}
       </div>
 
