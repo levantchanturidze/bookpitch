@@ -159,46 +159,60 @@ export default function AuditView({ rows, initial }: Props) {
             No audit events match these filters.
           </p>
         ) : (
-          <table className="w-full text-left text-xs">
-            <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
-              <tr>
-                <th className="px-6 py-2 font-medium">When</th>
-                <th className="px-2 py-2 font-medium">Actor</th>
-                <th className="px-2 py-2 font-medium">Action</th>
-                <th className="px-2 py-2 font-medium">Entity</th>
-                <th className="px-2 py-2 font-medium">Target</th>
-                <th className="px-6 py-2 font-medium">Meta</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {rows.map((r) => (
-                <tr key={r.id}>
-                  <td className="px-6 py-2 font-mono text-[11px] whitespace-nowrap text-slate-500">
-                    {r.at.slice(0, 19).replace('T', ' ')}
-                  </td>
-                  <td className="px-2 py-2 text-[11px] text-slate-700">
-                    {r.actorEmail ?? <span className="text-slate-400 italic">system</span>}
-                  </td>
-                  <td className="px-2 py-2 font-mono text-[11px]">{r.action}</td>
-                  <td className="px-2 py-2 font-mono text-[11px] text-slate-600">{r.entity}</td>
-                  <td className="px-2 py-2 text-[11px]">
-                    {r.customerName ? (
-                      <span className="text-slate-700">{r.customerName}</span>
-                    ) : r.entityId ? (
-                      <span className="font-mono text-[10px] text-slate-400">
-                        {r.entityId.slice(0, 8)}
-                      </span>
-                    ) : (
-                      <span className="text-slate-300">—</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-2 font-mono text-[10px] text-slate-500">
-                    {r.meta ? JSON.stringify(r.meta) : '—'}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
+                <tr>
+                  <th scope="col" className="px-6 py-2 font-medium">
+                    When
+                  </th>
+                  <th scope="col" className="px-2 py-2 font-medium">
+                    Actor
+                  </th>
+                  <th scope="col" className="px-2 py-2 font-medium">
+                    Action
+                  </th>
+                  <th scope="col" className="px-2 py-2 font-medium">
+                    Entity
+                  </th>
+                  <th scope="col" className="px-2 py-2 font-medium">
+                    Target
+                  </th>
+                  <th scope="col" className="px-6 py-2 font-medium">
+                    Meta
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {rows.map((r) => (
+                  <tr key={r.id}>
+                    <td className="px-6 py-2 font-mono text-[11px] whitespace-nowrap text-slate-500">
+                      {r.at.slice(0, 19).replace('T', ' ')}
+                    </td>
+                    <td className="px-2 py-2 text-[11px] text-slate-700">
+                      {r.actorEmail ?? <span className="text-slate-400 italic">system</span>}
+                    </td>
+                    <td className="px-2 py-2 font-mono text-[11px]">{r.action}</td>
+                    <td className="px-2 py-2 font-mono text-[11px] text-slate-600">{r.entity}</td>
+                    <td className="px-2 py-2 text-[11px]">
+                      {r.customerName ? (
+                        <span className="text-slate-700">{r.customerName}</span>
+                      ) : r.entityId ? (
+                        <span className="font-mono text-[10px] text-slate-400">
+                          {r.entityId.slice(0, 8)}
+                        </span>
+                      ) : (
+                        <span className="text-slate-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-2 font-mono text-[10px] text-slate-500">
+                      {r.meta ? JSON.stringify(r.meta) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>

@@ -128,18 +128,34 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
         </Link>
       </div>
       <StatusSummary orgs={orgs} />
-      <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
+      <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
             <tr>
-              <th className="px-4 py-2 font-medium">Name</th>
-              <th className="px-2 py-2 font-medium">Vertical</th>
-              <th className="px-2 py-2 font-medium">Status</th>
-              <th className="px-2 py-2 font-medium">Plan</th>
-              <th className="px-2 py-2 font-medium">Members</th>
-              <th className="px-2 py-2 font-medium">Owner</th>
-              <th className="px-2 py-2 font-medium">Impersonation</th>
-              <th className="px-4 py-2 font-medium">Created</th>
+              <th scope="col" className="px-4 py-2 font-medium">
+                Name
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Vertical
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Status
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Plan
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Members
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Owner
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Impersonation
+              </th>
+              <th scope="col" className="px-4 py-2 font-medium">
+                Created
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">

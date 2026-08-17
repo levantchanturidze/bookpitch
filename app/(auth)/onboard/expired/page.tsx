@@ -32,7 +32,7 @@ export default function OnboardExpiredPage() {
           below and we will send a new link — if a pending registration exists.
         </p>
         <ResendVerificationForm />
-        <p className="mt-4 text-xs text-slate-400">
+        <p className="mt-4 text-xs text-slate-500">
           Already verified?{' '}
           <a href="/signin" className="font-semibold text-slate-600 hover:underline">
             Sign in

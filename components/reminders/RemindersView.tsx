@@ -187,7 +187,7 @@ function TemplateCard({
           value={body}
           onChange={(e) => setBody(e.target.value)}
           rows={isSms ? 4 : 8}
-          className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-[12px] text-slate-800 focus:outline-none"
+          className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-[12px] text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1"
         />
         <div className="flex flex-wrap items-center gap-1">
           {PLACEHOLDER_KEYS.map((k) => (
@@ -326,42 +326,56 @@ function LogCard({ log }: { log: LogEntry[] }) {
           No reminders sent yet. Save a template and click Send now on an upcoming appointment.
         </p>
       ) : (
-        <table className="w-full text-left text-xs">
-          <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
-            <tr>
-              <th className="px-6 py-2 font-medium">When</th>
-              <th className="px-2 py-2 font-medium">Channel</th>
-              <th className="px-2 py-2 font-medium">Recipient</th>
-              <th className="px-2 py-2 font-medium">Customer</th>
-              <th className="px-2 py-2 font-medium">Provider msg id</th>
-              <th className="px-6 py-2 font-medium">State</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {log.map((row) => (
-              <tr key={row.id}>
-                <td className="px-6 py-2 font-mono text-[11px] text-slate-500">
-                  {(row.sentAt ?? row.createdAt).slice(11, 19)}
-                </td>
-                <td className="px-2 py-2 font-mono text-[11px]">{row.channel}</td>
-                <td className="px-2 py-2 font-mono text-[11px] text-slate-700">
-                  {row.toAddress || '—'}
-                </td>
-                <td className="px-2 py-2 text-slate-700">{row.customerName ?? '—'}</td>
-                <td className="px-2 py-2 font-mono text-[10px] text-slate-500">
-                  {row.providerMsgId ?? '—'}
-                </td>
-                <td className="px-6 py-2">
-                  <span
-                    className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${STATE_BADGE[row.state]}`}
-                  >
-                    {row.state}
-                  </span>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
+              <tr>
+                <th scope="col" className="px-6 py-2 font-medium">
+                  When
+                </th>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  Channel
+                </th>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  Recipient
+                </th>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  Customer
+                </th>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  Provider msg id
+                </th>
+                <th scope="col" className="px-6 py-2 font-medium">
+                  State
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {log.map((row) => (
+                <tr key={row.id}>
+                  <td className="px-6 py-2 font-mono text-[11px] text-slate-500">
+                    {(row.sentAt ?? row.createdAt).slice(11, 19)}
+                  </td>
+                  <td className="px-2 py-2 font-mono text-[11px]">{row.channel}</td>
+                  <td className="px-2 py-2 font-mono text-[11px] text-slate-700">
+                    {row.toAddress || '—'}
+                  </td>
+                  <td className="px-2 py-2 text-slate-700">{row.customerName ?? '—'}</td>
+                  <td className="px-2 py-2 font-mono text-[10px] text-slate-500">
+                    {row.providerMsgId ?? '—'}
+                  </td>
+                  <td className="px-6 py-2">
+                    <span
+                      className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${STATE_BADGE[row.state]}`}
+                    >
+                      {row.state}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

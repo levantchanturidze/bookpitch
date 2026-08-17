@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, useTransition } from 'react';
+import { useEffect, useMemo, useState, useTransition, useId } from 'react';
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -23,6 +23,7 @@ import {
 } from './actions';
 import { localToUtc, toLocalDate } from '@/lib/tz';
 import AssistantModal from './AssistantModal';
+import ModalShell from '@/components/ui/ModalShell';
 
 // -----------------------------------------------------------------------------
 // Types passed by the server component.
@@ -552,8 +553,9 @@ function DetailModal({
   onClose: () => void;
   onUpdate: (patch: { status?: AppointmentStatus; paymentStatus?: PaymentStatus }) => void;
 }) {
+  const dlgTitleId = useId();
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+    <ModalShell titleId={dlgTitleId} panelClassName={null} onDismiss={onClose}>
       <motion.div
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
@@ -565,7 +567,9 @@ function DetailModal({
             <span className="font-mono text-[10px] font-bold tracking-wide text-slate-400 uppercase">
               Booking Details
             </span>
-            <h3 className="text-base font-bold text-slate-800">{a.serviceName}</h3>
+            <h2 id={dlgTitleId} className="text-base font-bold text-slate-800">
+              {a.serviceName}
+            </h2>
           </div>
           <button
             onClick={onClose}
@@ -670,7 +674,7 @@ function DetailModal({
           </div>
         </div>
       </motion.div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -708,6 +712,7 @@ function BookingModal({
   onCancel: () => void;
   onSubmit: (v: BookingInput) => void;
 }) {
+  const dlgTitleId2 = useId();
   const [values, setValues] = useState<BookingInput>(
     prefill ?? {
       customerId: '',
@@ -761,7 +766,7 @@ function BookingModal({
     !!values.customerId && !!values.staffId && !!values.serviceId && !!values.date && !!values.time;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+    <ModalShell titleId={dlgTitleId2} panelClassName={null} onDismiss={onCancel}>
       <motion.div
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
@@ -769,9 +774,12 @@ function BookingModal({
         className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-lg"
       >
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="flex items-center gap-1.5 text-base font-bold text-slate-800">
+          <h2
+            id={dlgTitleId2}
+            className="flex items-center gap-1.5 text-base font-bold text-slate-800"
+          >
             <Plus className="h-4 w-4" /> Book Appointment
-          </h3>
+          </h2>
           <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-500">
             {date}
           </span>
@@ -913,7 +921,7 @@ function BookingModal({
           </div>
         </form>
       </motion.div>
-    </div>
+    </ModalShell>
   );
 }
 

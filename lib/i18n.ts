@@ -15,7 +15,11 @@
 
 export type Locale = 'ka' | 'en';
 
-export const DEFAULT_LOCALE: Locale = (process.env.LOCALE as Locale) ?? 'ka';
+// P14-001: default to the language the application actually renders. Every
+// page and component ships hardcoded English and this catalogue currently has
+// no consumers, so defaulting to 'ka' made <html lang> lie about the content.
+// Set LOCALE=ka once the UI is genuinely translated.
+export const DEFAULT_LOCALE: Locale = (process.env.LOCALE as Locale) ?? 'en';
 
 const CATALOG: Record<Locale, Record<string, string>> = {
   ka: {
