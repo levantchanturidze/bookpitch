@@ -52,7 +52,7 @@ export default function AuditView({ rows, initial }: Props) {
   return (
     <div className="space-y-6">
       <header className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-6">
-        <div className="rounded-xl bg-slate-100 p-3 text-slate-500">
+        <div className="rounded-xl bg-slate-100 p-3 text-slate-600">
           <ShieldCheck className="h-6 w-6" />
         </div>
         <div className="flex-1">
@@ -155,7 +155,7 @@ export default function AuditView({ rows, initial }: Props) {
           </h3>
         </header>
         {rows.length === 0 ? (
-          <p className="px-6 py-8 text-center text-xs text-slate-400">
+          <p className="px-6 py-8 text-center text-xs text-slate-500">
             No audit events match these filters.
           </p>
         ) : (
@@ -190,7 +190,7 @@ export default function AuditView({ rows, initial }: Props) {
                       {r.at.slice(0, 19).replace('T', ' ')}
                     </td>
                     <td className="px-2 py-2 text-[11px] text-slate-700">
-                      {r.actorEmail ?? <span className="text-slate-400 italic">system</span>}
+                      {r.actorEmail ?? <span className="text-slate-500 italic">system</span>}
                     </td>
                     <td className="px-2 py-2 font-mono text-[11px]">{r.action}</td>
                     <td className="px-2 py-2 font-mono text-[11px] text-slate-600">{r.entity}</td>
@@ -198,7 +198,7 @@ export default function AuditView({ rows, initial }: Props) {
                       {r.customerName ? (
                         <span className="text-slate-700">{r.customerName}</span>
                       ) : r.entityId ? (
-                        <span className="font-mono text-[10px] text-slate-400">
+                        <span className="font-mono text-[10px] text-slate-500">
                           {r.entityId.slice(0, 8)}
                         </span>
                       ) : (
@@ -222,7 +222,7 @@ export default function AuditView({ rows, initial }: Props) {
 function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1 block font-mono text-[9px] font-bold tracking-wider text-slate-400 uppercase">
+      <span className="mb-1 block font-mono text-[9px] font-bold tracking-wider text-slate-500 uppercase">
         {label}
       </span>
       {children}

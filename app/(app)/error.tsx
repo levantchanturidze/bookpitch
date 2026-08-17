@@ -56,7 +56,7 @@ export default function AppError({
         happening, contact your organisation owner.
       </p>
       {error.digest && (
-        <p className="font-mono text-[10px] text-slate-400">Reference: {error.digest}</p>
+        <p className="font-mono text-[10px] text-slate-500">Reference: {error.digest}</p>
       )}
       <button
         onClick={reset}

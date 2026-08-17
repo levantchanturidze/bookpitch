@@ -112,7 +112,7 @@ export default function BreakGlassForm({
         onSubmit={submit}
         className="space-y-3 rounded-lg border-2 border-red-500 bg-slate-900 p-6"
       >
-        <label className="block text-xs font-bold tracking-wider text-slate-500 uppercase">
+        <label className="block text-xs font-bold tracking-wider text-slate-400 uppercase">
           Password
           <input
             type="password"
@@ -125,7 +125,7 @@ export default function BreakGlassForm({
         </label>
 
         <div>
-          <p className="text-xs font-bold tracking-wider text-slate-500 uppercase">Second factor</p>
+          <p className="text-xs font-bold tracking-wider text-slate-400 uppercase">Second factor</p>
           <div className="mt-2 flex gap-3">
             <button
               type="button"
@@ -151,7 +151,7 @@ export default function BreakGlassForm({
             </button>
           </div>
           {authMode === 'totp' ? (
-            <label className="mt-2 block text-xs font-bold tracking-wider text-slate-500 uppercase">
+            <label className="mt-2 block text-xs font-bold tracking-wider text-slate-400 uppercase">
               6-digit TOTP code
               <input
                 type="text"
@@ -167,7 +167,7 @@ export default function BreakGlassForm({
               />
             </label>
           ) : (
-            <label className="mt-2 block text-xs font-bold tracking-wider text-slate-500 uppercase">
+            <label className="mt-2 block text-xs font-bold tracking-wider text-slate-400 uppercase">
               Recovery code (single-use)
               <input
                 type="text"
@@ -182,7 +182,7 @@ export default function BreakGlassForm({
           )}
         </div>
 
-        <label className="block text-xs font-bold tracking-wider text-slate-500 uppercase">
+        <label className="block text-xs font-bold tracking-wider text-slate-400 uppercase">
           Reason (min 5 chars)
           <textarea
             value={reason}
@@ -193,7 +193,7 @@ export default function BreakGlassForm({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-2 text-sm text-slate-100"
           />
         </label>
-        <label className="block text-xs font-bold tracking-wider text-slate-500 uppercase">
+        <label className="block text-xs font-bold tracking-wider text-slate-400 uppercase">
           Ticket ID
           <input
             value={ticketId}
@@ -202,7 +202,7 @@ export default function BreakGlassForm({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-2 font-mono text-sm text-slate-100"
           />
         </label>
-        <label className="block text-xs font-bold tracking-wider text-slate-500 uppercase">
+        <label className="block text-xs font-bold tracking-wider text-slate-400 uppercase">
           Target organization ID (optional)
           <input
             value={target}

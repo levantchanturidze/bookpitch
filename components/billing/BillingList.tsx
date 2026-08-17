@@ -48,12 +48,12 @@ export default function BillingList({
           </p>
         </div>
         <div className="hidden text-right sm:block">
-          <p className="font-mono text-[10px] tracking-wider text-slate-400 uppercase">
+          <p className="font-mono text-[10px] tracking-wider text-slate-500 uppercase">
             Outstanding
           </p>
           <p className="text-2xl font-extrabold text-slate-900">
             {unpaid.reduce((sum, r) => sum + r.price, 0).toFixed(2)}
-            <span className="ml-1 font-mono text-xs font-normal text-slate-400">
+            <span className="ml-1 font-mono text-xs font-normal text-slate-500">
               {location.currency}
             </span>
           </p>
@@ -94,7 +94,7 @@ function Section({
       {hasItems ? (
         <div className="divide-y divide-slate-100">{children}</div>
       ) : (
-        <p className="px-6 py-8 text-center text-xs text-slate-400">{empty}</p>
+        <p className="px-6 py-8 text-center text-xs text-slate-500">{empty}</p>
       )}
     </section>
   );

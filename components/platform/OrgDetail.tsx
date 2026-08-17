@@ -283,7 +283,7 @@ export default function OrgDetail({
         <h3 className="mb-2 text-xs font-bold tracking-wider text-slate-500 uppercase">Members</h3>
         <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900">
           <table className="w-full text-left text-xs">
-            <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
+            <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-400 uppercase">
               <tr>
                 <th scope="col" className="px-4 py-2">
                   Email
@@ -382,7 +382,7 @@ function BillingPanel({ org }: { org: Org }) {
               </span>
             </span>
           ) : (
-            <span className="font-mono text-slate-500">—</span>
+            <span className="font-mono text-slate-400">—</span>
           )
         }
       />
@@ -399,7 +399,7 @@ function BillingPanel({ org }: { org: Org }) {
               {org.stripeCustomerId} ↗
             </a>
           ) : (
-            <span className="font-mono text-slate-500">not linked</span>
+            <span className="font-mono text-slate-400">not linked</span>
           )
         }
       />
@@ -416,7 +416,7 @@ function BillingPanel({ org }: { org: Org }) {
               {org.stripeSubscriptionId} ↗
             </a>
           ) : (
-            <span className="font-mono text-slate-500">not linked</span>
+            <span className="font-mono text-slate-400">not linked</span>
           )
         }
       />
@@ -508,7 +508,7 @@ function OrgTogglesPanel({
           <div key={key} className="flex items-center justify-between gap-4">
             <div>
               <p className="text-xs font-semibold text-slate-200">{label}</p>
-              <p className="mt-0.5 text-[11px] text-slate-500">{hint}</p>
+              <p className="mt-0.5 text-[11px] text-slate-400">{hint}</p>
             </div>
             {canEdit ? (
               <button
@@ -535,7 +535,7 @@ function OrgTogglesPanel({
       <div className="flex items-center justify-between gap-4 pt-2">
         <div>
           <p className="text-xs font-semibold text-slate-200">Front-desk discount ceiling</p>
-          <p className="mt-0.5 text-[11px] text-slate-500">
+          <p className="mt-0.5 text-[11px] text-slate-400">
             Currency units. 0 = no discretionary discount for FRONT_DESK.
           </p>
         </div>
@@ -660,7 +660,7 @@ function EditOrgForm({
     <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <label className="block">
-          <span className="mb-1 block text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+          <span className="mb-1 block text-[10px] font-bold tracking-wider text-slate-400 uppercase">
             Name
           </span>
           <input
@@ -670,7 +670,7 @@ function EditOrgForm({
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+          <span className="mb-1 block text-[10px] font-bold tracking-wider text-slate-400 uppercase">
             Vertical
           </span>
           <select
@@ -700,7 +700,7 @@ function EditOrgForm({
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs font-semibold text-slate-200">Support impersonation</p>
-          <p className="mt-0.5 text-[11px] text-slate-500">
+          <p className="mt-0.5 text-[11px] text-slate-400">
             When enabled, PLATFORM_ADMIN can impersonate an org member for support. Some verticals
             (clinical) contractually require this to stay OFF.
           </p>

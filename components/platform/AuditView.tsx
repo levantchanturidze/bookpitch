@@ -59,7 +59,7 @@ export default function AuditView({
         onSubmit={submit}
         className="grid grid-cols-1 gap-3 rounded-lg border border-slate-800 bg-slate-900 p-4 md:grid-cols-6"
       >
-        <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+        <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
           Actor UUID
           <input
             value={f.actor}
@@ -67,7 +67,7 @@ export default function AuditView({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-100"
           />
         </label>
-        <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+        <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
           Org UUID
           <input
             value={f.org}
@@ -75,7 +75,7 @@ export default function AuditView({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-100"
           />
         </label>
-        <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+        <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
           Action prefix
           <input
             value={f.action}
@@ -83,7 +83,7 @@ export default function AuditView({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-100"
           />
         </label>
-        <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+        <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
           From
           <input
             type="date"
@@ -92,7 +92,7 @@ export default function AuditView({
             className="mt-1 w-full rounded bg-slate-950 px-2 py-1 font-mono text-xs text-slate-100"
           />
         </label>
-        <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
+        <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
           To
           <input
             type="date"
@@ -111,7 +111,7 @@ export default function AuditView({
 
       <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900">
         <table className="w-full text-left text-xs">
-          <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
+          <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-400 uppercase">
             <tr>
               <th scope="col" className="px-2 py-2">
                 When
@@ -142,11 +142,11 @@ export default function AuditView({
                 <td className="px-2 py-1 text-slate-400">{r.at.slice(0, 19).replace('T', ' ')}</td>
                 <td className="px-2 py-1">{r.action}</td>
                 <td className="px-2 py-1 text-slate-300">{r.actorEmail ?? '—'}</td>
-                <td className="px-2 py-1 text-slate-500">{r.onBehalfOfEmail ?? ''}</td>
+                <td className="px-2 py-1 text-slate-400">{r.onBehalfOfEmail ?? ''}</td>
                 <td className="px-2 py-1 text-slate-300">
                   {r.organizationName ?? r.organizationId ?? '—'}
                 </td>
-                <td className="px-2 py-1 text-slate-500">
+                <td className="px-2 py-1 text-slate-400">
                   {r.entity}
                   {r.entityId ? `:${r.entityId.slice(0, 8)}` : ''}
                 </td>

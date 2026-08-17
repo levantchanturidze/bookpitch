@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import type { UserRole } from '@prisma/client';
 import { Link2, Plus, Trash2 } from 'lucide-react';
 import { inviteMemberAction, removeMemberAction, updateMemberRoleAction } from './actions';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 export type MemberRow = {
   membershipId: string;
@@ -77,7 +78,7 @@ export default function MembersPanel({
           <Plus className="h-3.5 w-3.5" /> Invite member
         </button>
       </div>
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
+      {error && <StatusMessage tone="error">{error}</StatusMessage>}
       {inviteUrl && (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs text-emerald-900">
           <div className="flex items-start gap-2">
@@ -132,7 +133,7 @@ export default function MembersPanel({
                   <td className="px-6 py-2 font-mono text-[11px] text-slate-700">
                     {m.email}
                     {isSelf && (
-                      <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[9px] text-slate-500">
+                      <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[9px] text-slate-600">
                         you
                       </span>
                     )}

@@ -50,7 +50,7 @@ export default async function MockGatewayPage({
             <span>For</span>
             <span className="max-w-[60%] truncate text-right text-xs">{summary}</span>
           </div>
-          <div className="flex justify-between text-slate-500">
+          <div className="flex justify-between text-slate-400">
             <span>Txn id</span>
             <span className="font-mono text-[11px]">{gatewayTxnId}</span>
           </div>
