@@ -5,7 +5,7 @@ production soak with zero failures. Verdict and evidence in § 13.9.
 
 **Branch:** `agent/phase-13-production-reliability` (+ follow-ups #7, #8, #10, #11, #12)
 **Baseline SHA:** `f3f69135e0a7c50ece182b943d10f08a0f5f19e4` (= `origin/main` at start)
-**Final SHA:** `5cb390950a321fccca507cca39a0010a14f33cf7` (deployed, `dpl_uWPCvhmziPbnZKWePCq8sEHSAdZG`)
+**Final SHA:** `27d386bedc17b917b7f1cd2ea039492b7873be79` (deployed, `dpl_Cxnmj3X1vZZFpPtDLc99ai3HcS6M`)
 **Started:** 2026-08-16 · **Completed:** 2026-08-17
 **Production:** `https://bookpitch.ge` — Vercel project `padelebi-s-projects/bookpitch`
 **Database:** Supabase PostgreSQL 17.6, Free plan, `eu-central-1`
@@ -970,6 +970,66 @@ variables, `RESEND_API_KEY`/`RESEND_FROM`, `CRON_SECRET`, `AUTH_SECRET`,
 
 No value was read, printed or logged at any point.
 
+### Post-soak incident: a new advisory turned CI red (resolved)
+
+Recorded here because it happened *after* the soak window closed but *before*
+Phase 13 was signed off, and because the honest version of "all gates green" has
+to include the gate that briefly was not.
+
+**2026-08-17T20:14:39Z** — CI run
+[32064657850](https://github.com/levantchanturidze/bookpitch/actions/runs/32064657850),
+on the documentation-only soak-evidence PR, failed at
+`npm audit --audit-level=high`:
+
+```
+deepmerge-ts <8.0.0   Severity: high
+DeepmergeTS has stack exhaustion when merging recursive object graphs
+GHSA-ggr8-5vv4-36mx
+  @prisma/config >=6.13.0-dev.1  -> prisma
+3 high severity vulnerabilities
+```
+
+Nothing in the repository changed to cause it. The advisory was published
+during the soak and landed on an unchanged dependency tree — which is exactly
+the case the audit gate exists for. The previous CI run, roughly fifteen
+minutes earlier, was green on the same lockfile.
+
+That PR merged despite the red check, because this repository has **no branch
+protection** — GitHub's protection API returns
+`Upgrade to GitHub Pro or make this repository public`. Recorded as a real
+weakness in the release process, not glossed: on this plan the only thing
+stopping a red merge is the operator.
+
+**Diagnosis.** `prisma` is a devDependency; `@prisma/config@7.9.1` pins
+`deepmerge-ts@7.1.5` exactly; `prisma@7.9.1` was the latest release, so there
+was no upstream fix to take. `npm audit fix --force` proposed `prisma@6.12.0`,
+a breaking major downgrade.
+
+**Fix** — PR #13, `27d386b`: an npm `overrides` entry forcing
+`deepmerge-ts@^8.0.1`. `@prisma/config` uses one export from it, `deepmerge`,
+as a `c12` merger at two call sites; 7.1.5 and 8.0.1 declare the same exports
+map, `type: module` and `engines`.
+
+**Verified rather than assumed** — `prisma validate`, `prisma generate` and
+`prisma migrate status` against production all pass, and each of those loads
+`prisma.config.ts` through `@prisma/config`, so the overridden merger is
+actually executed. Plus 869 tests, lint, `tsc`, build, guards,
+orphan-permission scanner, and `npm audit --audit-level=high` back to
+**0 vulnerabilities**. CI green on `main`:
+[32065838899](https://github.com/levantchanturidze/bookpitch/actions/runs/32065838899).
+
+**Soak was not restarted.** The change is development-time only: `prisma` is
+the CLI and `@prisma/client` does not depend on `deepmerge-ts`, so no deployed
+application code changed. Production was redeployed anyway by the push
+(deployment `5950785089`, `dpl_Cxnmj3X1vZZFpPtDLc99ai3HcS6M`, sha `27d386b`)
+and re-verified: health `{"ok":true}`, `/api/health/ops` 401 without a bearer,
+signup page rendering, and monitor run
+[32066353190](https://github.com/levantchanturidze/bookpitch/actions/runs/32066353190)
+at **18/18**.
+
+The advisory, its reachability path, why the override is safe, and the exact
+condition for removing it are in `docs/operations.md` §16.
+
 ### Soak verdict
 
 Every mandatory gate held for the full 24-hour window with **zero failures,
@@ -993,3 +1053,4 @@ data**. Phase 13.9 passes.
 - 2026-08-16 21:06 UTC — real Turnstile token accepted by production; replay rejected.
 - 2026-08-16 21:15 UTC — stale issue #4 closed; soak begins.
 - 2026-08-17 20:04–20:09 UTC — 24h soak evidence collected; all gates green; Phase 13 marked COMPLETE.
+- 2026-08-17 20:14–20:33 UTC — GHSA-ggr8-5vv4-36mx published mid-soak, turned CI red; fixed via npm override (#13, `27d386b`), redeployed, monitor 18/18. Soak not restarted (dev-only dependency).
