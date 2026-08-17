@@ -5,6 +5,7 @@ import { AlertTriangle, Sparkles, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { draftAppointmentAction } from './actions';
 import ModalShell from '@/components/ui/ModalShell';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 type PrefillPayload = {
   customerId: string | null;
@@ -86,7 +87,7 @@ export default function AssistantModal({
       >
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="rounded-lg bg-slate-100 p-1.5 text-slate-500">
+            <div className="rounded-lg bg-slate-100 p-1.5 text-slate-600">
               <Sparkles className="h-4 w-4" />
             </div>
             <h2 id={dlgTitleId} className="text-base font-bold text-slate-800">
@@ -95,7 +96,7 @@ export default function AssistantModal({
           </div>
           <button
             onClick={onCancel}
-            className="rounded-lg p-1 text-slate-400 hover:bg-slate-50"
+            className="rounded-lg p-1 text-slate-500 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1"
             aria-label="Close"
           >
             <X className="h-5 w-5" />
@@ -146,7 +147,9 @@ export default function AssistantModal({
         </form>
 
         {error && (
-          <p className="mt-4 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
+          <StatusMessage tone="error" className="mt-4">
+            {error}
+          </StatusMessage>
         )}
 
         {clarify && (
@@ -158,7 +161,7 @@ export default function AssistantModal({
 
         {draft && (
           <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
-            <p className="font-mono text-[10px] tracking-wider text-slate-400 uppercase">Draft</p>
+            <p className="font-mono text-[10px] tracking-wider text-slate-500 uppercase">Draft</p>
             <dl className="grid grid-cols-2 gap-2 text-[11px]">
               <DraftField
                 label="Patient"

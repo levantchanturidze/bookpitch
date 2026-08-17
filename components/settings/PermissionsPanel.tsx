@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { Check, Info } from 'lucide-react';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 type Toggles = {
   providerFinancialReports: boolean;
@@ -77,7 +78,7 @@ export default function PermissionsPanel({ initial }: { initial: Toggles }) {
         </p>
       </div>
 
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
+      {error && <StatusMessage tone="error">{error}</StatusMessage>}
       {saved && (
         <p className="flex items-center gap-1 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
           <Check className="h-3 w-3" /> Saved. Changes take effect within 30 seconds.

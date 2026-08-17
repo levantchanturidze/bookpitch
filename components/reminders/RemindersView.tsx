@@ -177,7 +177,7 @@ function TemplateCard({
             {isSms ? 'SMS Template' : 'Email Template'}
           </h3>
         </div>
-        <div className="font-mono text-[10px] text-slate-400">{body.length} chars</div>
+        <div className="font-mono text-[10px] text-slate-500">{body.length} chars</div>
       </div>
 
       <form action={(fd) => startTransition(() => saveTemplateAction(fd))} className="space-y-3">
@@ -211,7 +211,7 @@ function TemplateCard({
       </form>
 
       <div className="mt-4 rounded-lg border border-slate-100 bg-slate-50 p-3">
-        <p className="mb-1 font-mono text-[10px] tracking-wider text-slate-400 uppercase">
+        <p className="mb-1 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
           Preview (sample data)
         </p>
         <pre className="font-sans text-[12px] whitespace-pre-wrap text-slate-700">{preview}</pre>
@@ -254,7 +254,7 @@ function UpcomingCard({
         )}
       </header>
       {upcoming.length === 0 ? (
-        <p className="px-6 py-8 text-center text-xs text-slate-400">
+        <p className="px-6 py-8 text-center text-xs text-slate-500">
           No appointments within the current lead-time window.
         </p>
       ) : (
@@ -277,7 +277,7 @@ function UpcomingRow({ appointment: a }: { appointment: UpcomingAppointment }) {
         <p className="mt-0.5 truncate text-[11px] text-slate-500">
           {a.serviceName} · {a.staffName}
         </p>
-        <p className="mt-0.5 font-mono text-[10px] text-slate-400">
+        <p className="mt-0.5 font-mono text-[10px] text-slate-500">
           {a.startsAt.slice(0, 10)} {a.startsAt.slice(11, 16)} UTC ·{' '}
           <span className={a.customerPhone ? 'text-slate-500' : 'text-rose-500'}>
             {a.customerPhone ?? 'no phone'}
@@ -322,7 +322,7 @@ function LogCard({ log }: { log: LogEntry[] }) {
         </h3>
       </header>
       {log.length === 0 ? (
-        <p className="px-6 py-8 text-center text-xs text-slate-400">
+        <p className="px-6 py-8 text-center text-xs text-slate-500">
           No reminders sent yet. Save a template and click Send now on an upcoming appointment.
         </p>
       ) : (
@@ -408,7 +408,7 @@ function RetentionCard({ initial }: { initial: number }) {
           action={(fd) => startSave(() => saveRetentionYearsAction(fd))}
           className="flex items-end gap-2"
         >
-          <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+          <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
             Retention
             <div className="mt-1 flex items-center gap-1">
               <input

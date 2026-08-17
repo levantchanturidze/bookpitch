@@ -24,6 +24,7 @@ import {
 import { localToUtc, toLocalDate } from '@/lib/tz';
 import AssistantModal from './AssistantModal';
 import ModalShell from '@/components/ui/ModalShell';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 // -----------------------------------------------------------------------------
 // Types passed by the server component.
@@ -168,7 +169,7 @@ export default function SchedulerView(props: Props) {
               <h2 className="font-sans text-xl font-bold text-slate-800">
                 {isClinic ? 'Medical Appointments' : 'Salon Appointments'}
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500">
                 Manage {isClinic ? 'patient visits' : 'styling sessions'} at {location.name}
               </p>
             </div>
@@ -220,7 +221,7 @@ export default function SchedulerView(props: Props) {
       <section className="flex flex-col gap-6 lg:col-span-5">
         <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4">
           <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1 text-xs font-bold tracking-wider text-slate-400">
+            <span className="flex items-center gap-1 text-xs font-bold tracking-wider text-slate-500">
               <Filter className="h-3 w-3" /> LIST FILTERS
             </span>
             <button
@@ -228,7 +229,7 @@ export default function SchedulerView(props: Props) {
                 setFilterStaff('all');
                 setFilterStatus('all');
               }}
-              className="text-[10px] text-slate-400 underline hover:text-slate-600"
+              className="text-[10px] text-slate-500 underline hover:text-slate-600"
             >
               Reset
             </button>
@@ -264,7 +265,7 @@ export default function SchedulerView(props: Props) {
               <h3 className="text-sm font-bold text-slate-800">
                 Bookings for {formatFriendly(selectedDate)}
               </h3>
-              <p className="text-[10px] text-slate-400">Total: {filtered.length} bookings</p>
+              <p className="text-[10px] text-slate-500">Total: {filtered.length} bookings</p>
             </div>
             <span className="rounded bg-slate-100 px-2 py-1 font-mono text-xs text-slate-600">
               {selectedDate}
@@ -272,14 +273,14 @@ export default function SchedulerView(props: Props) {
           </div>
 
           {error && (
-            <div className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+            <StatusMessage tone="error" className="mb-3">
               {error}
-            </div>
+            </StatusMessage>
           )}
 
           <div className="max-h-[380px] flex-1 space-y-3 overflow-y-auto pr-1">
             {filtered.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center py-12 text-center text-slate-400">
+              <div className="flex h-full flex-col items-center justify-center py-12 text-center text-slate-500">
                 <CalendarIcon className="mb-2 h-8 w-8 stroke-1 text-slate-300" />
                 <p className="text-xs font-medium">No appointments for this date</p>
               </div>
@@ -428,7 +429,7 @@ function MonthGrid({
 }) {
   return (
     <>
-      <div className="mb-2 grid grid-cols-7 gap-1 text-center font-mono text-[10px] font-bold tracking-wider text-slate-400">
+      <div className="mb-2 grid grid-cols-7 gap-1 text-center font-mono text-[10px] font-bold tracking-wider text-slate-500">
         {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map((d) => (
           <div key={d}>{d}</div>
         ))}
@@ -511,13 +512,13 @@ function AppointmentRow({ a, onSelect }: { a: AppointmentDto; onSelect: () => vo
       <div className="min-w-0 flex-1 pl-2">
         <div className="mb-0.5 flex items-center justify-between">
           <span className="block truncate text-xs font-bold text-slate-800">{a.customer.name}</span>
-          <span className="flex items-center gap-1 font-mono text-[10px] font-medium text-slate-400">
+          <span className="flex items-center gap-1 font-mono text-[10px] font-medium text-slate-500">
             <Clock className="h-2.5 w-2.5" /> {a.time} ({a.durationMinutes}m)
           </span>
         </div>
         <p className="truncate text-[10px] font-medium text-slate-500">{a.serviceName}</p>
         <div className="mt-2 flex items-center justify-between border-t border-slate-100/50 pt-2">
-          <span className="font-mono text-[9px] text-slate-400">
+          <span className="font-mono text-[9px] text-slate-500">
             Staff: <strong className="font-sans text-slate-600">{a.staff.name}</strong>
           </span>
           <div className="flex items-center gap-1.5">
@@ -564,7 +565,7 @@ function DetailModal({
       >
         <div className="mb-4 flex items-start justify-between">
           <div>
-            <span className="font-mono text-[10px] font-bold tracking-wide text-slate-400 uppercase">
+            <span className="font-mono text-[10px] font-bold tracking-wide text-slate-500 uppercase">
               Booking Details
             </span>
             <h2 id={dlgTitleId} className="text-base font-bold text-slate-800">
@@ -573,7 +574,7 @@ function DetailModal({
           </div>
           <button
             onClick={onClose}
-            className="p-1 text-sm font-semibold text-slate-400 hover:text-slate-600"
+            className="p-1 text-sm font-semibold text-slate-500 hover:text-slate-600"
           >
             ✕
           </button>
@@ -594,26 +595,26 @@ function DetailModal({
 
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div>
-              <span className="mb-0.5 block font-semibold text-slate-400">DATE & TIME</span>
+              <span className="mb-0.5 block font-semibold text-slate-500">DATE & TIME</span>
               <p className="font-mono font-medium text-slate-700">{a.date}</p>
               <p className="font-mono text-slate-500">
                 at {a.time} ({a.durationMinutes} mins)
               </p>
             </div>
             <div>
-              <span className="mb-0.5 block font-semibold text-slate-400">STAFF</span>
+              <span className="mb-0.5 block font-semibold text-slate-500">STAFF</span>
               <p className="font-medium text-slate-700">{a.staff.name}</p>
-              <p className="text-[10px] text-slate-400">{a.staff.roleTitle}</p>
+              <p className="text-[10px] text-slate-500">{a.staff.roleTitle}</p>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3 text-xs">
             <div>
-              <span className="mb-0.5 block font-semibold text-slate-400">COST</span>
+              <span className="mb-0.5 block font-semibold text-slate-500">COST</span>
               <p className="text-sm font-bold text-slate-800">${a.price.toFixed(2)}</p>
             </div>
             <div>
-              <span className="mb-0.5 block font-semibold text-slate-400">PAYMENT</span>
+              <span className="mb-0.5 block font-semibold text-slate-500">PAYMENT</span>
               <span
                 className={`rounded px-2 py-0.5 font-mono text-[10px] ${
                   a.paymentStatus === 'paid'
@@ -634,7 +635,7 @@ function DetailModal({
           )}
 
           <div className="space-y-2 border-t border-slate-100 pt-3">
-            <span className="block font-mono text-[10px] font-bold tracking-wide text-slate-400 uppercase">
+            <span className="block font-mono text-[10px] font-bold tracking-wide text-slate-500 uppercase">
               Update Status
             </span>
             <div className="flex flex-wrap gap-1.5">
@@ -780,7 +781,7 @@ function BookingModal({
           >
             <Plus className="h-4 w-4" /> Book Appointment
           </h2>
-          <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-500">
+          <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-600">
             {date}
           </span>
         </div>
@@ -849,11 +850,11 @@ function BookingModal({
             </Field>
             <Field label="Available Time">
               {slotsLoading ? (
-                <div className="flex h-[34px] items-center rounded-lg border border-slate-200 bg-slate-50 px-2 font-mono text-xs text-slate-400">
+                <div className="flex h-[34px] items-center rounded-lg border border-slate-200 bg-slate-50 px-2 font-mono text-xs text-slate-500">
                   Loading…
                 </div>
               ) : slots === null ? (
-                <div className="flex h-[34px] items-center rounded-lg border border-slate-100 bg-slate-50 px-2 text-xs text-slate-400">
+                <div className="flex h-[34px] items-center rounded-lg border border-slate-100 bg-slate-50 px-2 text-xs text-slate-500">
                   Choose staff, service &amp; date
                 </div>
               ) : slots.length === 0 ? (
@@ -895,9 +896,7 @@ function BookingModal({
             />
           </Field>
 
-          {error && (
-            <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-          )}
+          {error && <StatusMessage tone="error">{error}</StatusMessage>}
 
           <div className="flex items-center justify-end gap-2 pt-3">
             <button

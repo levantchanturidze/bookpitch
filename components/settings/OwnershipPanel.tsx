@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 type Incoming = {
   id: string;
@@ -83,7 +84,7 @@ export default function OwnershipPanel({
     <section className="space-y-6">
       <h3 className="text-sm font-bold text-slate-800">Ownership Transfer</h3>
 
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
+      {error && <StatusMessage tone="error">{error}</StatusMessage>}
 
       {!hasAnything && (
         <p className="rounded-2xl border border-slate-200 bg-white px-6 py-8 text-center text-xs text-slate-500">

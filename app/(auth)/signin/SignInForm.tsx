@@ -3,6 +3,8 @@
 import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { signInAction, type SignInState } from './actions';
+import StatusMessage from '@/components/ui/StatusMessage';
+import Field from '@/components/ui/Field';
 
 const initialState: SignInState = { error: null };
 
@@ -24,29 +26,46 @@ export default function SignInForm() {
 
   return (
     <form action={formAction} className="space-y-4">
-      <label className="block">
-        <span className="mb-1 block text-xs font-semibold text-slate-600">Email</span>
-        <input
-          name="email"
-          type="email"
-          required
-          autoComplete="email"
-          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
-        />
-      </label>
-      <label className="block">
-        <span className="mb-1 block text-xs font-semibold text-slate-600">Password</span>
-        <input
-          name="password"
-          type="password"
-          required
-          autoComplete="current-password"
-          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
-        />
-      </label>
-      {state.error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{state.error}</p>
-      )}
+      {/*
+        P14-004: these were bare <label><span>+<input> pairs. The label was
+        associated by nesting, which works, but nothing marked the field invalid
+        when sign-in failed and nothing pointed the field at the reason. Field
+        owns that wiring so it cannot be forgotten here or in the next form.
+
+        The sign-in error is deliberately NOT attached to a single field: the
+        server returns one enumeration-safe message for "wrong email" and "wrong
+        password" alike, and pinning it to the email input would tell an attacker
+        which half was wrong. It stays a form-level StatusMessage, and both
+        fields are marked invalid so a screen-reader user knows the submission
+        was rejected.
+      */}
+      <Field label="Email" invalid={!!state.error}>
+        {({ id, ...aria }) => (
+          <input
+            {...aria}
+            id={id}
+            name="email"
+            type="email"
+            required
+            autoComplete="email"
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
+          />
+        )}
+      </Field>
+      <Field label="Password" invalid={!!state.error}>
+        {({ id, ...aria }) => (
+          <input
+            {...aria}
+            id={id}
+            name="password"
+            type="password"
+            required
+            autoComplete="current-password"
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
+          />
+        )}
+      </Field>
+      {state.error && <StatusMessage tone="error">{state.error}</StatusMessage>}
       <SubmitButton />
       <p className="pt-1 text-center text-xs text-slate-500">
         <a href="/reset" className="font-semibold text-slate-700 hover:underline">

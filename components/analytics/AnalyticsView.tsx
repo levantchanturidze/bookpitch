@@ -27,7 +27,7 @@ export default function AnalyticsView({ metrics, roster, currency }: Props) {
   return (
     <div className="space-y-6">
       <header className="rounded-2xl border border-slate-200 bg-white p-6">
-        <p className="font-mono text-[10px] tracking-widest text-slate-400 uppercase">
+        <p className="font-mono text-[10px] tracking-widest text-slate-500 uppercase">
           Business Intelligence · {metrics.refDate}
         </p>
         <h2 className="mt-1 text-xl font-extrabold tracking-tight text-slate-900">
@@ -119,7 +119,7 @@ export default function AnalyticsView({ metrics, roster, currency }: Props) {
           <h3 className="mb-2 text-sm font-bold text-slate-800">Bookings per staff · 7d</h3>
           <div className="h-56 w-full">
             {metrics.bookingsPerStaff.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-xs text-slate-400">
+              <div className="flex h-full items-center justify-center text-xs text-slate-500">
                 No bookings in the last 7 days.
               </div>
             ) : (
@@ -191,7 +191,7 @@ export default function AnalyticsView({ metrics, roster, currency }: Props) {
                     {r.window ? (
                       `${r.window.start} – ${r.window.end}`
                     ) : (
-                      <span className="text-slate-400">off today</span>
+                      <span className="text-slate-500">off today</span>
                     )}
                   </td>
                   <td className="px-2 py-2 font-mono text-[11px] text-slate-600">
@@ -231,7 +231,7 @@ function KpiCard({
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5">
       <div className="flex items-start justify-between">
-        <span className="font-mono text-[10px] tracking-wider text-slate-400 uppercase">
+        <span className="font-mono text-[10px] tracking-wider text-slate-500 uppercase">
           {label}
         </span>
         <Icon className="h-4 w-4 text-slate-300" />
@@ -239,13 +239,13 @@ function KpiCard({
       <p className="mt-3 text-2xl font-extrabold text-slate-900">
         {value}
         {suffix && (
-          <span className="ml-1 font-mono text-xs font-normal text-slate-400">{suffix}</span>
+          <span className="ml-1 font-mono text-xs font-normal text-slate-500">{suffix}</span>
         )}
       </p>
       {delta !== undefined && (
         <div className="mt-2 flex items-center gap-1 text-[11px]">
           {delta == null ? (
-            <span className="text-slate-400">No comparable data</span>
+            <span className="text-slate-500">No comparable data</span>
           ) : delta === 0 ? (
             <span className="text-slate-500">= vs last {'week'}</span>
           ) : delta > 0 ? (
@@ -257,7 +257,7 @@ function KpiCard({
               <TrendingDown className="h-3 w-3" /> {delta.toFixed(0)}%
             </span>
           )}
-          {previous && <span className="text-slate-400">· prev {previous}</span>}
+          {previous && <span className="text-slate-500">· prev {previous}</span>}
         </div>
       )}
     </div>

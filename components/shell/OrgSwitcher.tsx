@@ -66,7 +66,7 @@ export default function OrgSwitcher({
       </button>
       {open && rows && (
         <div className="absolute right-0 z-40 mt-1 w-64 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
-          <p className="px-2 py-1.5 text-[10px] font-bold tracking-widest text-slate-400 uppercase">
+          <p className="px-2 py-1.5 text-[10px] font-bold tracking-widest text-slate-500 uppercase">
             Your organisations
           </p>
           {rows.map((m) => (
@@ -79,7 +79,7 @@ export default function OrgSwitcher({
             >
               <span>
                 <span className="block font-semibold">{m.organizationName}</span>
-                <span className="text-[10px] text-slate-400 uppercase">
+                <span className="text-[10px] text-slate-500 uppercase">
                   {m.roleKey ?? m.legacyRole}
                 </span>
               </span>

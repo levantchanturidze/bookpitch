@@ -87,7 +87,7 @@ export default function Shell({
           <div className="flex items-center gap-3">
             <button
               onClick={() => setMobileOpen(true)}
-              className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 lg:hidden"
+              className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 lg:hidden"
               aria-label="Open menu"
             >
               <Menu className="h-5 w-5" />
@@ -105,7 +105,7 @@ export default function Shell({
                 <h1 className="font-display text-sm font-extrabold tracking-tight text-slate-900">
                   {activeLocation.name}
                 </h1>
-                <p className="font-mono text-[10px] text-slate-400">
+                <p className="font-mono text-[10px] text-slate-500">
                   {organizationName} · Operations Portal
                 </p>
               </div>
@@ -136,7 +136,7 @@ export default function Shell({
       <div className="mx-auto grid max-w-7xl flex-1 grid-cols-1 gap-6 p-4 sm:p-6 lg:grid-cols-12">
         <aside className="hidden lg:col-span-3 lg:block">
           <div className="sticky top-24 rounded-xl border border-[#E2E8F0] bg-white p-5">
-            <span className="mb-2 block px-3 font-mono text-[10px] font-bold tracking-widest text-slate-400 uppercase">
+            <span className="mb-2 block px-3 font-mono text-[10px] font-bold tracking-widest text-slate-500 uppercase">
               Main Menu
             </span>
             <SidebarNav
@@ -274,7 +274,7 @@ function SidebarLink({
           <Icon className="h-4 w-4" />
           {label}
         </span>
-        <Lock className="h-3 w-3 text-slate-400" />
+        <Lock className="h-3 w-3 text-slate-500" />
       </div>
     );
   }
@@ -372,7 +372,7 @@ function NotificationBell({ open, onToggle }: { open: boolean; onToggle: () => v
                   </button>
                   <button
                     onClick={clear}
-                    className="text-[10px] text-slate-400 hover:text-slate-600"
+                    className="text-[10px] text-slate-500 hover:text-slate-600"
                   >
                     Clear
                   </button>
@@ -380,7 +380,7 @@ function NotificationBell({ open, onToggle }: { open: boolean; onToggle: () => v
               </div>
               <div className="max-h-[280px] space-y-2 overflow-y-auto pr-1">
                 {items.length === 0 ? (
-                  <div className="py-8 text-center text-xs text-slate-400">No recent activity.</div>
+                  <div className="py-8 text-center text-xs text-slate-500">No recent activity.</div>
                 ) : (
                   items.map((n) => (
                     <div
@@ -393,7 +393,7 @@ function NotificationBell({ open, onToggle }: { open: boolean; onToggle: () => v
                     >
                       <div className="flex items-start justify-between gap-1">
                         <span className="text-[11px] font-bold text-slate-800">{n.title}</span>
-                        <span className="font-mono text-[9px] text-slate-400">
+                        <span className="font-mono text-[9px] text-slate-500">
                           {formatRelative(n.createdAt)}
                         </span>
                       </div>
@@ -444,7 +444,7 @@ function UserMenu({
         <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 font-mono text-[10px] text-white">
           {initials}
         </span>
-        <span className="hidden font-mono text-[10px] tracking-wider text-slate-400 uppercase sm:inline">
+        <span className="hidden font-mono text-[10px] tracking-wider text-slate-500 uppercase sm:inline">
           {roleDisplay}
         </span>
       </button>
@@ -460,7 +460,7 @@ function UserMenu({
             >
               <div className="border-b border-slate-100 pb-3">
                 <p className="text-xs font-bold text-slate-800">{email}</p>
-                <p className="mt-0.5 font-mono text-[10px] tracking-wider text-slate-400 uppercase">
+                <p className="mt-0.5 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
                   {roleDisplay}
                 </p>
               </div>
