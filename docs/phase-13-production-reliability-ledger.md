@@ -737,7 +737,7 @@ else in Phase 13.
    Supabase Free. Reducing it requires PITR, which requires Supabase Pro.
 
 8. **Single-operator escalation.** There is no second responder. Recorded in
-   `docs/operations.md` §16 as a real risk.
+   `docs/operations.md` §17 as a real risk.
 
 
 ---

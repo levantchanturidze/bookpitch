@@ -620,7 +620,57 @@ Rules that are not negotiable (CLAUDE.md, F-12 incident):
 
 ---
 
-## 16. Escalation
+## 16. Dependency advisories and overrides
+
+CI runs `npm audit --audit-level=high` on the installed tree, after `npm ci`,
+and a high or critical finding fails the build. That gate is not optional and
+must never be softened to `--audit-level=critical` or wrapped in `|| true`: a
+new advisory can land on an unchanged dependency tree at any time, which is
+precisely what it exists to catch.
+
+### Active overrides
+
+`package.json` → `overrides`:
+
+| Package | Forced to | Why |
+| --- | --- | --- |
+| `deepmerge-ts` | `^8.0.1` | [GHSA-ggr8-5vv4-36mx](https://github.com/advisories/GHSA-ggr8-5vv4-36mx) — stack exhaustion on recursive object graphs, high severity, published 2026-08-17 |
+
+**How it reached us:** `prisma` (devDependency) → `@prisma/config@7.9.1` →
+`deepmerge-ts@7.1.5`, pinned exactly. `prisma@7.9.1` was the latest release and
+no upstream fix existed. `npm audit fix --force` wanted to downgrade to
+`prisma@6.12.0`, a breaking major change — not acceptable.
+
+**Why the override is safe here:** `@prisma/config` uses exactly one thing from
+the package, the `deepmerge` named export, as a merger passed to `c12`
+(`node_modules/@prisma/config/dist/index.js`, two call sites). Versions 7.1.5
+and 8.0.1 declare the same `exports` map, the same `type: module`, and the same
+`engines`. It is also a **development-time** dependency: `prisma` is the CLI,
+not the runtime — `@prisma/client` does not depend on `deepmerge-ts` — so
+nothing about the deployed application changed.
+
+**Verified after applying it:** `prisma validate`, `prisma generate` and
+`prisma migrate status` against production all succeed, which exercises the
+config loader and therefore the merger itself; plus the full test suite, lint,
+type-check, build, guard scanner and orphan-permission scanner.
+
+**Remove it when** `prisma` ships a release whose `@prisma/config` depends on
+`deepmerge-ts >= 8.0.0`:
+
+```bash
+npm view prisma version
+npm view prisma@latest dependencies                 # check @prisma/config
+npm ls deepmerge-ts                                 # confirm the resolved version
+# then delete the override, npm install, and confirm:
+npm audit --audit-level=high
+```
+
+An override that outlives its advisory is a small lie in the dependency tree.
+Check this one whenever Prisma is upgraded.
+
+---
+
+## 17. Escalation
 
 | Role | Contact | When |
 | --- | --- | --- |
