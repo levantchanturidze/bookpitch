@@ -36,9 +36,19 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // P14-001: this said `?? 'ka'`, and LOCALE is not set in production, so every
+  // page declared Georgian while rendering English. Not a cosmetic slip — WCAG
+  // 2.2 SC 3.1.1 (Language of Page, Level A): a screen reader reads the whole
+  // UI with Georgian phonetics, and browsers offer to "translate" text already
+  // in the reader's language.
+  //
+  // The honest default is the language the app actually ships: all 87
+  // component/page files render hardcoded English, and lib/i18n.ts has zero
+  // consumers. LOCALE still overrides, so setting LOCALE=ka once the UI is
+  // genuinely translated needs no code change.
   return (
     <html
-      lang={process.env.LOCALE ?? 'ka'}
+      lang={process.env.LOCALE ?? 'en'}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col">

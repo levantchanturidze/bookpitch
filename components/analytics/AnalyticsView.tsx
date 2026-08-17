@@ -161,38 +161,50 @@ export default function AnalyticsView({ metrics, roster, currency }: Props) {
             Daily staff roster — {roster.length}
           </h3>
         </header>
-        <table className="w-full text-left text-xs">
-          <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
-            <tr>
-              <th className="px-6 py-2 font-medium">Staff</th>
-              <th className="px-2 py-2 font-medium">Role</th>
-              <th className="px-2 py-2 font-medium">Today’s window</th>
-              <th className="px-2 py-2 font-medium">Booked / avail</th>
-              <th className="px-6 py-2 text-right font-medium">Appointments</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {roster.map((r) => (
-              <tr key={r.staffId}>
-                <td className="px-6 py-2 font-bold text-slate-800">{r.staffName}</td>
-                <td className="px-2 py-2 text-slate-500">{r.roleTitle}</td>
-                <td className="px-2 py-2 font-mono text-[11px] text-slate-600">
-                  {r.window ? (
-                    `${r.window.start} – ${r.window.end}`
-                  ) : (
-                    <span className="text-slate-400">off today</span>
-                  )}
-                </td>
-                <td className="px-2 py-2 font-mono text-[11px] text-slate-600">
-                  {r.bookedMinutes} / {r.availableMinutes} min
-                </td>
-                <td className="px-6 py-2 text-right font-mono font-bold text-slate-700">
-                  {r.appointmentCount}
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
+              <tr>
+                <th scope="col" className="px-6 py-2 font-medium">
+                  Staff
+                </th>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  Role
+                </th>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  Today’s window
+                </th>
+                <th scope="col" className="px-2 py-2 font-medium">
+                  Booked / avail
+                </th>
+                <th scope="col" className="px-6 py-2 text-right font-medium">
+                  Appointments
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {roster.map((r) => (
+                <tr key={r.staffId}>
+                  <td className="px-6 py-2 font-bold text-slate-800">{r.staffName}</td>
+                  <td className="px-2 py-2 text-slate-500">{r.roleTitle}</td>
+                  <td className="px-2 py-2 font-mono text-[11px] text-slate-600">
+                    {r.window ? (
+                      `${r.window.start} – ${r.window.end}`
+                    ) : (
+                      <span className="text-slate-400">off today</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-2 font-mono text-[11px] text-slate-600">
+                    {r.bookedMinutes} / {r.availableMinutes} min
+                  </td>
+                  <td className="px-6 py-2 text-right font-mono font-bold text-slate-700">
+                    {r.appointmentCount}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   );

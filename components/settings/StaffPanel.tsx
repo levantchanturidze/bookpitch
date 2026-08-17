@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useId, useState, useTransition } from 'react';
 import { CalendarClock, Plus, Trash2 } from 'lucide-react';
 import type { AvailabilityWindow } from '@/lib/admin';
+import ModalShell from '@/components/ui/ModalShell';
 import {
   createStaffAction,
   deleteStaffAction,
@@ -79,16 +80,28 @@ export default function StaffPanel({
         </button>
       </div>
       {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
             <tr>
-              <th className="px-6 py-2 font-medium">Name</th>
-              <th className="px-2 py-2 font-medium">Role</th>
-              <th className="px-2 py-2 font-medium">Location</th>
-              <th className="px-2 py-2 font-medium">Contact</th>
-              <th className="px-2 py-2 font-medium">Availability</th>
-              <th className="px-6 py-2 text-right font-medium">Actions</th>
+              <th scope="col" className="px-6 py-2 font-medium">
+                Name
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Role
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Location
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Contact
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Availability
+              </th>
+              <th scope="col" className="px-6 py-2 text-right font-medium">
+                Actions
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -290,6 +303,7 @@ function StaffForm({
 }
 
 function AvailabilityEditor({ staff, onClose }: { staff: StaffRow; onClose: () => void }) {
+  const titleId = useId();
   const initial: Array<{ start: string; end: string }> = WEEKDAYS.map((_, weekday) => {
     const w = staff.availability.find((a) => a.weekday === weekday);
     return { start: w?.startTime ?? '', end: w?.endTime ?? '' };
@@ -321,73 +335,73 @@ function AvailabilityEditor({ staff, onClose }: { staff: StaffRow; onClose: () =
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-lg">
-        <h3 className="mb-1 text-base font-bold text-slate-800">Availability · {staff.name}</h3>
-        <p className="mb-4 text-xs text-slate-500">
-          Times are in the location&apos;s local timezone. Leave both fields blank for a day off.
-          Split shifts aren&apos;t supported in this MVP editor — one window per day.
-        </p>
-        <div className="space-y-2">
-          {WEEKDAYS.map((day, i) => (
-            <div key={day} className="flex items-center gap-2">
-              <span className="w-10 font-mono text-[11px] tracking-wider text-slate-500 uppercase">
-                {day}
-              </span>
-              <input
-                type="time"
-                value={rows[i].start}
-                onChange={(e) => {
-                  const next = [...rows];
-                  next[i] = { ...next[i], start: e.target.value };
-                  setRows(next);
-                }}
-                className="w-28 rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-xs text-slate-700"
-              />
-              <span className="text-slate-400">–</span>
-              <input
-                type="time"
-                value={rows[i].end}
-                onChange={(e) => {
-                  const next = [...rows];
-                  next[i] = { ...next[i], end: e.target.value };
-                  setRows(next);
-                }}
-                className="w-28 rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-xs text-slate-700"
-              />
-              <button
-                onClick={() => {
-                  const next = [...rows];
-                  next[i] = { start: '', end: '' };
-                  setRows(next);
-                }}
-                className="ml-auto text-[10px] text-slate-400 hover:text-slate-600"
-              >
-                Off
-              </button>
-            </div>
-          ))}
-        </div>
-        {error && (
-          <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
-        )}
-        <div className="mt-5 flex items-center justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={save}
-            disabled={isPending}
-            className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-40"
-          >
-            {isPending ? 'Saving…' : 'Save availability'}
-          </button>
-        </div>
+    <ModalShell titleId={titleId} onDismiss={onClose} panelClassName="w-full max-w-md">
+      <h2 id={titleId} className="mb-1 text-base font-bold text-slate-800">
+        Availability · {staff.name}
+      </h2>
+      <p className="mb-4 text-xs text-slate-500">
+        Times are in the location&apos;s local timezone. Leave both fields blank for a day off.
+        Split shifts aren&apos;t supported in this MVP editor — one window per day.
+      </p>
+      <div className="space-y-2">
+        {WEEKDAYS.map((day, i) => (
+          <div key={day} className="flex items-center gap-2">
+            <span className="w-10 font-mono text-[11px] tracking-wider text-slate-500 uppercase">
+              {day}
+            </span>
+            <input
+              type="time"
+              value={rows[i].start}
+              onChange={(e) => {
+                const next = [...rows];
+                next[i] = { ...next[i], start: e.target.value };
+                setRows(next);
+              }}
+              className="w-28 rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-xs text-slate-700"
+            />
+            <span className="text-slate-400">–</span>
+            <input
+              type="time"
+              value={rows[i].end}
+              onChange={(e) => {
+                const next = [...rows];
+                next[i] = { ...next[i], end: e.target.value };
+                setRows(next);
+              }}
+              className="w-28 rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-xs text-slate-700"
+            />
+            <button
+              onClick={() => {
+                const next = [...rows];
+                next[i] = { start: '', end: '' };
+                setRows(next);
+              }}
+              className="ml-auto text-[10px] text-slate-400 hover:text-slate-600"
+            >
+              Off
+            </button>
+          </div>
+        ))}
       </div>
-    </div>
+      {error && (
+        <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
+      )}
+      <div className="mt-5 flex items-center justify-end gap-2">
+        <button
+          onClick={onClose}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={save}
+          disabled={isPending}
+          className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-40"
+        >
+          {isPending ? 'Saving…' : 'Save availability'}
+        </button>
+      </div>
+    </ModalShell>
   );
 }
 

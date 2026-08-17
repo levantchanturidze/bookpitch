@@ -66,14 +66,22 @@ export default function PlatformRolesPanel({
     <div>
       <h2 className="mb-4 text-lg font-bold">Platform roles</h2>
 
-      <div className="mb-6 overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
+      <div className="mb-6 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
             <tr>
-              <th className="px-4 py-2 font-medium">Email</th>
-              <th className="px-2 py-2 font-medium">Name</th>
-              <th className="px-2 py-2 font-medium">Role</th>
-              <th className="px-4 py-2 font-medium">Assigned</th>
+              <th scope="col" className="px-4 py-2 font-medium">
+                Email
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Name
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Role
+              </th>
+              <th scope="col" className="px-4 py-2 font-medium">
+                Assigned
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">

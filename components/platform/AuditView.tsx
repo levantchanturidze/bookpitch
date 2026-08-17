@@ -109,17 +109,31 @@ export default function AuditView({
         </button>
       </form>
 
-      <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
+      <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
             <tr>
-              <th className="px-2 py-2">When</th>
-              <th className="px-2 py-2">Action</th>
-              <th className="px-2 py-2">Actor</th>
-              <th className="px-2 py-2">On behalf of</th>
-              <th className="px-2 py-2">Org</th>
-              <th className="px-2 py-2">Entity</th>
-              <th className="px-2 py-2">Session tag</th>
+              <th scope="col" className="px-2 py-2">
+                When
+              </th>
+              <th scope="col" className="px-2 py-2">
+                Action
+              </th>
+              <th scope="col" className="px-2 py-2">
+                Actor
+              </th>
+              <th scope="col" className="px-2 py-2">
+                On behalf of
+              </th>
+              <th scope="col" className="px-2 py-2">
+                Org
+              </th>
+              <th scope="col" className="px-2 py-2">
+                Entity
+              </th>
+              <th scope="col" className="px-2 py-2">
+                Session tag
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800 font-mono text-[11px]">

@@ -58,16 +58,28 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
         </button>
       </div>
       {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
         <table className="w-full text-left text-xs">
           <thead className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
             <tr>
-              <th className="px-6 py-2 font-medium">Name</th>
-              <th className="px-2 py-2 font-medium">Type</th>
-              <th className="px-2 py-2 font-medium">Timezone</th>
-              <th className="px-2 py-2 font-medium">Staff · Appts · Services</th>
-              <th className="px-2 py-2 font-medium">Booking URL</th>
-              <th className="px-6 py-2 text-right font-medium">Actions</th>
+              <th scope="col" className="px-6 py-2 font-medium">
+                Name
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Type
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Timezone
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Staff · Appts · Services
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                Booking URL
+              </th>
+              <th scope="col" className="px-6 py-2 text-right font-medium">
+                Actions
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">

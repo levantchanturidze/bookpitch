@@ -71,3 +71,9 @@ scripts/*.sh
 .probe-super-creds.json
 FIX_CRONS.md
 VERCEL_SETUP.md
+
+# Playwright output — traces, screenshots and videos can contain rendered page
+# content, so they must never reach the repository.
+/test-results/
+/playwright-report/
+/blob-report/

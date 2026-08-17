@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useState, useTransition, useId } from 'react';
 import { AlertTriangle, Sparkles, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { draftAppointmentAction } from './actions';
+import ModalShell from '@/components/ui/ModalShell';
 
 type PrefillPayload = {
   customerId: string | null;
@@ -39,6 +40,7 @@ export default function AssistantModal({
   }) => void;
   onEdit: (prefill: PrefillPayload) => void;
 }) {
+  const dlgTitleId = useId();
   const [prompt, setPrompt] = useState('');
   const [draft, setDraft] = useState<null | {
     customerId: string | null;
@@ -75,7 +77,7 @@ export default function AssistantModal({
   const canEdit = !!draft;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+    <ModalShell titleId={dlgTitleId} panelClassName={null} onDismiss={onCancel}>
       <motion.div
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
@@ -87,7 +89,9 @@ export default function AssistantModal({
             <div className="rounded-lg bg-slate-100 p-1.5 text-slate-500">
               <Sparkles className="h-4 w-4" />
             </div>
-            <h3 className="text-base font-bold text-slate-800">Booking assistant</h3>
+            <h2 id={dlgTitleId} className="text-base font-bold text-slate-800">
+              Booking assistant
+            </h2>
           </div>
           <button
             onClick={onCancel}
@@ -114,7 +118,7 @@ export default function AssistantModal({
               onChange={(e) => setPrompt(e.target.value)}
               rows={3}
               placeholder='Try: "book Sarah Jenkins with Rachel Kross tomorrow at 3pm"'
-              className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800 focus:outline-none"
+              className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1"
               required
             />
           </label>
@@ -225,7 +229,7 @@ export default function AssistantModal({
           </div>
         )}
       </motion.div>
-    </div>
+    </ModalShell>
   );
 }
 

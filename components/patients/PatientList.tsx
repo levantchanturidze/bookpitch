@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useTransition } from 'react';
+import { useMemo, useState, useTransition, useId } from 'react';
 import {
   Calendar,
   Download,
@@ -19,6 +19,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 import type { CustomerDetailDto } from '@/lib/customers';
+import ModalShell from '@/components/ui/ModalShell';
 import {
   addTreatmentHistoryAction,
   anonymizeCustomerAction,
@@ -57,6 +58,7 @@ const EMPTY_FORM: FormState = {
 };
 
 export default function PatientList({ customers, locationType, isOwner }: Props) {
+  const dlgTitleId = useId();
   const isClinic = locationType === 'clinic';
   const accent = isClinic ? 'teal' : 'pink';
   const labelSingular = isClinic ? 'Patient' : 'Client';
@@ -278,16 +280,16 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
       {/* ----------------------- DELETE CONFIRM -------------------------- */}
       <AnimatePresence>
         {confirmDeleteId && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm">
+          <ModalShell titleId={dlgTitleId} panelClassName={null}>
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-6 shadow-lg"
             >
-              <h3 className="text-base font-bold text-slate-800">
+              <h2 id={dlgTitleId} className="text-base font-bold text-slate-800">
                 Delete {labelSingular} Profile?
-              </h3>
+              </h2>
               <p className="mt-2 text-xs text-slate-500">
                 This action is permanent. Profiles with existing appointments cannot be deleted
                 until soft-delete lands (P3.3).
@@ -308,7 +310,7 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
                 </button>
               </div>
             </motion.div>
-          </div>
+          </ModalShell>
         )}
       </AnimatePresence>
     </div>
@@ -465,7 +467,7 @@ function PatientDetail({
                 value={historyDraft}
                 onChange={(e) => setHistoryDraft(e.target.value)}
                 placeholder="e.g. Annual physical (Jan 2026)"
-                className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-700 focus:outline-none"
+                className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1"
               />
               <button
                 type="submit"
@@ -497,6 +499,7 @@ function PatientDetail({
 // GDPR panel (owner-only) — export PII as JSON, or anonymize the record.
 // -----------------------------------------------------------------------------
 function GdprPanel({ customerId, customerName }: { customerId: string; customerName: string }) {
+  const dlgTitleId2 = useId();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -564,14 +567,16 @@ function GdprPanel({ customerId, customerName }: { customerId: string; customerN
       )}
       <AnimatePresence>
         {confirming && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <ModalShell titleId={dlgTitleId2} panelClassName={null}>
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-6 shadow-lg"
             >
-              <h3 className="text-base font-bold text-slate-800">Anonymize {customerName}?</h3>
+              <h2 id={dlgTitleId2} className="text-base font-bold text-slate-800">
+                Anonymize {customerName}?
+              </h2>
               <p className="mt-2 text-xs text-slate-500">
                 This redacts name, contact fields, allergies, and clinical notes. Appointment and
                 payment history stays intact. The action is logged in the audit trail and cannot be
@@ -593,7 +598,7 @@ function GdprPanel({ customerId, customerName }: { customerId: string; customerN
                 </button>
               </div>
             </motion.div>
-          </div>
+          </ModalShell>
         )}
       </AnimatePresence>
     </div>
@@ -624,6 +629,7 @@ function PatientFormModal({
   onCancel: () => void;
   onSubmit: (values: FormState) => void;
 }) {
+  const dlgTitleId3 = useId();
   const [values, setValues] = useState<FormState>(() => {
     if (initial) {
       return {
@@ -645,7 +651,7 @@ function PatientFormModal({
     setValues((prev) => ({ ...prev, [k]: v }));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+    <ModalShell titleId={dlgTitleId3} panelClassName={null} onDismiss={onCancel}>
       <motion.div
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
@@ -653,14 +659,17 @@ function PatientFormModal({
         className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-lg"
       >
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="flex items-center gap-1.5 text-base font-bold text-slate-800">
+          <h2
+            id={dlgTitleId3}
+            className="flex items-center gap-1.5 text-base font-bold text-slate-800"
+          >
             <UserPlus
               className={`h-5 w-5 ${accent === 'teal' ? 'text-teal-600' : 'text-pink-600'}`}
             />
             {mode === 'create'
               ? `Create ${labelSingular} Profile`
               : `Edit ${labelSingular} Profile`}
-          </h3>
+          </h2>
           <button
             onClick={onCancel}
             className="rounded-lg p-1 text-slate-400 hover:bg-slate-50"
@@ -792,7 +801,7 @@ function PatientFormModal({
           </div>
         </form>
       </motion.div>
-    </div>
+    </ModalShell>
   );
 }
 

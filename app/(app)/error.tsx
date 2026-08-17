@@ -26,7 +26,7 @@ export default function AppError({
           <ShieldAlert className="h-8 w-8 stroke-[2.5]" />
         </div>
         <div>
-          <h3 className="text-base font-extrabold text-slate-800">Operational Access Lock</h3>
+          <h2 className="text-base font-extrabold text-slate-800">Operational Access Lock</h2>
           <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-slate-500">
             Your credential role is restricted from this module for compliance reasons. Contact the
             operations owner if you need elevated access.
@@ -39,13 +39,28 @@ export default function AppError({
     );
   }
 
+  // P14-008: this used to render `{error.message}` directly. Next.js redacts
+  // *server* errors in production, but an error thrown in a client component
+  // reaches the boundary with its real message intact — so a stray
+  // `TypeError: Cannot read properties of undefined (reading 'organizationId')`
+  // was user-facing text. Show a stable message instead, and surface only the
+  // digest, which is the identifier support can correlate with a server log.
   return (
-    <div className="flex flex-col items-center justify-center space-y-4 rounded-2xl border border-slate-100 bg-white p-12 py-20 text-center shadow-sm">
-      <h3 className="text-base font-extrabold text-slate-800">Something went wrong</h3>
-      <p className="mx-auto max-w-sm text-xs text-slate-500">{error.message}</p>
+    <div
+      role="alert"
+      className="flex flex-col items-center justify-center space-y-4 rounded-2xl border border-slate-100 bg-white p-12 py-20 text-center shadow-sm"
+    >
+      <h2 className="text-base font-extrabold text-slate-800">Something went wrong</h2>
+      <p className="mx-auto max-w-sm text-xs leading-relaxed text-slate-500">
+        We could not load this page. Your data has not been changed. Try again, and if it keeps
+        happening, contact your organisation owner.
+      </p>
+      {error.digest && (
+        <p className="font-mono text-[10px] text-slate-400">Reference: {error.digest}</p>
+      )}
       <button
         onClick={reset}
-        className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800"
+        className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 focus-visible:outline-none"
       >
         Try again
       </button>

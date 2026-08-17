@@ -310,11 +310,21 @@ export default function AnalyticsDashboard({ mode, appointments, staff }: Analyt
           <table className="w-full border-collapse text-left text-xs">
             <thead>
               <tr className="border-b border-slate-100 text-[10px] font-bold tracking-wider text-slate-400 uppercase">
-                <th className="px-4 py-3">Staff Member</th>
-                <th className="px-4 py-3">Role / Specialty</th>
-                <th className="px-4 py-3">Roster Days</th>
-                <th className="px-4 py-3">Operational Hours</th>
-                <th className="px-4 py-3 text-center">Satisfaction</th>
+                <th scope="col" className="px-4 py-3">
+                  Staff Member
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Role / Specialty
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Roster Days
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Operational Hours
+                </th>
+                <th scope="col" className="px-4 py-3 text-center">
+                  Satisfaction
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
