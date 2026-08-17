@@ -2,7 +2,8 @@
 
 **Branch:** `agent/phase-14-product-qa-ux`
 **Baseline SHA:** `5ae878c34bc5414a42581c0599a24db730edddf1` (= `origin/main` at start)
-**Started:** 2026-08-18
+**Started:** 2026-08-18 · **Completed:** 2026-08-18
+**Final SHA:** `5ce7317fe72ca848e6fffc8b75597d4373b92eb5` (deployed, `dpl_F95yW9mzLWUyLk1U44XuFEA4wz1t`)
 **Production:** `https://bookpitch.ge`
 
 Status vocabulary: `IMPLEMENTED AND PROVEN` · `PARTIALLY IMPLEMENTED` ·
@@ -107,10 +108,10 @@ sections below as it is resolved.
 | P14-007 | P2 | `focus:outline-none` with no `focus-visible` replacement | fixed |
 | P14-008 | P1 | Error boundary renders raw exception text to users | fixed |
 | P14-009 | P2 | No `not-found.tsx` / `global-error.tsx` | fixed |
-| P14-010 | P3 | Icon-only controls without accessible names | partially fixed |
+| P14-010 | P3 | Icon-only controls without accessible names | **fixed** (14.14) |
 | P14-011 | **P0** | Production sign-in page discloses dev account addresses | fixed |
-| P14-012 | P3 | Three modal-bearing components are imported nowhere | recorded |
-| P14-013 | P2 | `text-slate-400` on white is 2.58:1, below AA | partially fixed |
+| P14-012 | P3 | 7 components unreachable (import graph) | **classified** (14.14) |
+| P14-013 | P2 | 116 AA contrast failures across light and dark surfaces | **fixed** (14.14) |
 | P14-014 | — | WebKit excludes links from the Tab order (platform default) | not a defect |
 
 ---
@@ -323,3 +324,152 @@ reason: `color-contrast` (JSDOM has no computed colours — checked in the brows
 instead) and `region` (a page-level landmark rule that every isolated component
 fragment would fail by construction — checked on whole pages in the browser).
 Neither is disabled in the browser run, which is the one that counts.
+
+---
+
+## 14.13 — Release and post-deployment monitoring
+
+### Release 1 — `f5579f5` (PR #15)
+
+| | |
+| --- | --- |
+| CI | [32073514848](https://github.com/levantchanturidze/bookpitch/actions/runs/32073514848) — success |
+| Merged | `f5579f5554b7eac1fa40b7fd5fd4573c607593ef` |
+| Deployment | `dpl_65CmwtKpWxPYmNCWwkbUKbNyqUCQ` @ 2026-08-17T22:00:47Z, Ready |
+| Migration | none — 0 `prisma/` files touched; `migrate.yml` last ran 2026-08-16 on `f3f6913` |
+
+**30-minute monitoring window, 22:00:47Z → 22:30Z:**
+
+| Signal | Result |
+| --- | --- |
+| Monitor runs | [32074227240](https://github.com/levantchanturidze/bookpitch/actions/runs/32074227240), [32076247034](https://github.com/levantchanturidze/bookpitch/actions/runs/32076247034) — both **18/18** |
+| `cron.yml` | 12 runs in the window, **all success** |
+| Incidents opened | **0** (`ops-incident` open: 0; any issue created since deploy: none) |
+| Vercel runtime logs | 100 rows, 22:03:09Z→22:29:50Z — 74× `200`, 26× `307` (expected auth redirects), **0 5xx, 0 error-level, 0 app warn/error** |
+| Smoke test | 11/11 pass, including `Dev credentials` = 0 occurrences and `lang="en"` |
+
+### Release 2 — `5ce7317` (PR #17, deferred-findings follow-up)
+
+| | |
+| --- | --- |
+| CI | [32078153676](https://github.com/levantchanturidze/bookpitch/actions/runs/32078153676) — success |
+| Merged | `5ce7317fe72ca848e6fffc8b75597d4373b92eb5` |
+| Deployment | `dpl_F95yW9mzLWUyLk1U44XuFEA4wz1t` @ 2026-08-17T22:59:35Z, Ready |
+| Monitor | [32078734889](https://github.com/levantchanturidze/bookpitch/actions/runs/32078734889) — **18/18**, `deployment-reachable` reports `5ce7317` |
+| Smoke test | 10/10 pass |
+| Browser matrix vs **production** | **111 passed, 3 skipped, 0 failed** across all six projects |
+| Migration | none — 0 `prisma/` files touched |
+
+PR #16 was closed unmerged: it shared squash-merged history with #15 and reported
+`CONFLICTING`. The identical change set was cherry-picked onto a branch cut fresh
+from `main` and merged as #17. No history was rewritten and nothing was force-pushed.
+
+### No 24-hour soak is required
+
+Phase 14 contains **no backend, schema, authentication, authorization,
+security-control or infrastructure change**. It is UI markup and CSS classes,
+three new client components, tests, and documentation.
+
+Proof, not assertion:
+
+- `git diff --stat 5ae878c..5ce7317 -- prisma/` → empty. No migration exists,
+  and `migrate.yml` did not fire on either release.
+- No file under `lib/rbac/`, `lib/auth/`, `lib/platform/`, `auth.ts`,
+  `auth.config.ts` or `proxy.ts` changed behaviour. `auth.config.ts` was not
+  touched in Phase 14 at all.
+- No workflow, secret, or environment variable changed.
+- The security posture is asserted unchanged by the production smoke test on
+  both releases: bot protection still returns 400 without a Turnstile token, the
+  byte limit still returns 413, resend is still enumeration-safe, all four
+  protected surfaces still 307, and `/api/health/ops` still 401s without a bearer.
+- The one auth-adjacent change — routing the sign-in error through
+  `StatusMessage` and `Field` — deliberately keeps the message **form-level**
+  rather than attaching it to a field, precisely so it cannot reveal which half
+  of the credential was wrong. `Field.invalid` exists for that case.
+
+Phase 13's 24-hour soak requirement applied to a phase that replaced the backup
+system, added a database-reading endpoint and changed production configuration.
+None of that is true here.
+
+---
+
+## 14.14 — Deferred findings, closed
+
+The first pass left three groups open as "needs authenticated axe runs". That
+framing was wrong, and saying so is part of the record: contrast is a function
+of a foreground colour and the surface it renders on, both of which are in the
+source, and reachability is a property of the import graph. Neither needs a
+session. `scripts/analyze-ui.mjs` computes them; `tests/ui-surface-analysis.test.ts`
+makes them gates.
+
+### P14-013 — contrast · now **IMPLEMENTED AND PROVEN**
+
+116 genuine AA failures in reachable code → **0**. The fix is bidirectional,
+which is exactly why the blanket replacement was refused:
+
+| Surface | Was | Now | Before → after |
+| --- | --- | --- | --- |
+| `white`, `slate-50`, `amber-50` | `slate-400` | `slate-500` | 2.45–2.56 → 4.55–4.76 |
+| `rose-50` | `slate-400` | **`slate-600`** | 2.33 → 6.90 (`slate-500` is 4.33 and still fails) |
+| `slate-100` | `slate-500` | `slate-600` | 4.34 → 6.92 |
+| `slate-800`, `slate-900`, `slate-950` | `slate-500` | **`slate-400`** — lighter | 3.07–4.24 → 5.71–7.87 |
+
+Applied per occurrence by exact source offset. A search-and-replace of
+`slate-400` → `slate-500` would have left `rose-50` failing and would have made
+every dark platform-plane surface worse.
+
+### P14-010 — icon-only controls · now **IMPLEMENTED AND PROVEN**
+
+4 genuinely icon-only buttons in reachable routes. `PatientList.tsx:472` had no
+accessible name at all. All four now carry `aria-label` and a `focus-visible`
+ring; keyboard operability comes from being real `<button>` elements, and a new
+gate asserts no `div`/`span` with `onClick` is posing as a control anywhere
+reachable.
+
+The first inventory reported 7 unnamed. Six were the analyser's fault: it
+stripped `{isPending ? 'Running…' : 'Run tick'}` as an invisible expression when
+it renders a perfectly good label.
+
+### P14-012 — dead code · **classified, not deleted**
+
+The import graph from **126** Next.js router entry points across 359 files finds
+**7** unreachable components — not the 3 the earlier substring check reported:
+
+`AnalyticsDashboard` · `CalendarView` · `CheckoutPayment` · `ModulePlaceholder` ·
+`OfflineManager` · `PatientDatabase` · `RemindersSystem`
+
+They are enumerated **explicitly** in a test, so deleting one or wiring one up
+fails loudly rather than drifting. Deliberately not deleted: removing product
+components is a product decision, not a QA one, and nothing about them is
+user-facing. Every guard suite filters on reachability, and a test asserts that
+filter is load-bearing.
+
+### The finding this surfaced by accident — and it was the important one
+
+**`Field.tsx` and `StatusMessage.tsx` were themselves unreachable.** Both were
+written, unit-tested and green while being imported by nothing. P14-003 and
+P14-004 were therefore fixed *in the test suite* and not in the product.
+
+`StatusMessage` is now wired into **19 real error sites**, each of which was
+previously a bare `<p>` that no screen reader announced. `Field` is wired into
+the sign-in form. A test asserts all three primitives stay reachable.
+
+This is the same failure mode CLAUDE.md records from 2026-08-06 — a control that
+does not change observable behaviour does not exist — and the first Phase 14
+pass walked straight into it. The import graph caught it; the unit tests never
+could have, because they imported the primitives directly.
+
+### The analyser needed proof too
+
+Its first run produced **47 false positives**: 41 "white on white" (buttons with
+`bg-slate-900 text-white`, judged against the card behind them) and 6 inside
+template literals where the background comes from a sibling branch. It now reads
+the element's **own** background before walking ancestors, and refuses to judge
+conditional classNames — reporting 41 `indeterminate` occurrences, a bounded gap
+asserted by test and covered instead by the browser-level axe run.
+
+Its arithmetic is pinned against WCAG reference values from both sides of the
+threshold: `#767676` on white passes at 4.54:1, `#777777` fails at 4.48:1.
+
+An analyser that invents failures is worse than one with gaps, because it
+teaches you to ignore it.
