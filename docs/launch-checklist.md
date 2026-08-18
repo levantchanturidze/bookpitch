@@ -30,16 +30,26 @@ Three blockers remain, all email/DNS, all human.
 - [ ] Confirm by `POST /api/cron/audit-digest` returning 200
 - [ ] Confirm the monitor's `production-config-invalid` check is green
 
-## B. Email and DNS — **blocking**
+## B. Email and DNS
 
-- [ ] `bookpitch.ge` verified in Resend
-- [ ] DKIM published (`resend._domainkey.bookpitch.ge`)
-- [ ] SPF published for the sending subdomain
-- [ ] Bounce MX published for the sending subdomain
-- [ ] `RESEND_FROM` set to an address at the verified domain
+Already in place — verified 2026-08-18, correcting an earlier erroneous report:
+
+- [x] Sending domain `send.bookpitch.ge` verified in Resend
+- [x] DKIM published (`resend._domainkey.send.bookpitch.ge`)
+- [x] SPF published (`send.send.bookpitch.ge`)
+- [x] Bounce MX published (`send.send.bookpitch.ge`)
+- [x] `RESEND_FROM` at the verified domain (Phase 13)
+- [x] Provider delivery proven (Phase 13, `delivered@resend.dev`)
+
+**Blocking:**
+
+- [ ] One real message received in a designated mailbox; `spf=pass`,
+      `dkim=pass`, `dmarc=pass` read from the actual headers
+
+Hardening, not blocking:
+
 - [ ] `_dmarc.bookpitch.ge` published at `p=none`
 - [ ] `rua` points at a mailbox that can actually receive
-- [ ] One real message received; `spf=pass`, `dkim=pass`, `dmarc=pass` observed
 
 Detail and exact records: `docs/email-dns-readiness.md`.
 

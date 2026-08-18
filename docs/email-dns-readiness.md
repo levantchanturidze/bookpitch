@@ -1,147 +1,163 @@
 # Email deliverability and domain readiness (Phase 15.5)
 
-Status: **EXTERNAL VERIFICATION BLOCKED** — the changes below are DNS and
-Resend-dashboard actions. No DNS record was created, modified or deleted by
-this phase; doing so requires separate explicit authorisation.
+> **Correction, 2026-08-19.** An earlier revision of this document reported the
+> sending domain as unverified — no SPF, no DKIM, no bounce MX — and named that
+> a launch blocker. **That was wrong.** It queried apex-based hostnames
+> (`resend._domainkey.bookpitch.ge`, `bookpitch.ge`) after inferring the sender
+> from an illustrative example in a code comment, instead of the sending domain
+> actually configured. The real sending domain is **`send.bookpitch.ge`**, and
+> its DKIM, SPF and bounce-MX records are all present and correct. The genuine
+> gaps are narrower and are listed in §3.
 
 ## 1. Observed DNS state
 
-Captured 2026-08-18T19:22:15Z against resolver `8.8.8.8`. Reproduce with
+Captured 2026-08-18T22:07:24Z against resolver `8.8.8.8`. Reproduce with
 `dig @8.8.8.8 +short <TYPE> <NAME>`.
 
+### Sending domain — `send.bookpitch.ge`
+
+| Name | Type | Value | Verdict |
+|---|---|---|---|
+| `resend._domainkey.send.bookpitch.ge` | TXT | `p=MIGfMA0GCSqGSIb3DQEB…` (RSA public key) | **Present** |
+| `send.send.bookpitch.ge` | TXT | `v=spf1 include:amazonses.com ~all` | **Present** |
+| `send.send.bookpitch.ge` | MX | `10 feedback-smtp.eu-west-1.amazonses.com.` | **Present** |
+| `_dmarc.send.bookpitch.ge` | TXT | `v=DMARC1; p=none; rua=mailto:dmarc@bookpitch.ge` | Present, `p=none` |
+
+The doubled label in `send.send.bookpitch.ge` is not a typo: Resend publishes
+SPF and the bounce MX on a `send.` child of the sending domain, and the sending
+domain is itself `send.bookpitch.ge`.
+
+### Apex — `bookpitch.ge`
+
+| Name | Type | Value | Verdict |
+|---|---|---|---|
+| `bookpitch.ge` | A | `216.198.79.65`, `216.198.79.1` (Vercel) | Present |
+| `bookpitch.ge` | NS | `ns1.vercel-dns.com.`, `ns2.vercel-dns.com.` | Present |
+| `bookpitch.ge` | TXT | — | Absent (expected: apex does not send) |
+| `bookpitch.ge` | MX | — | **Absent — see §3.2** |
+| `_dmarc.bookpitch.ge` | TXT | — | **Absent — see §3.1** |
+| `resend._domainkey.bookpitch.ge` | TXT | — | Absent (expected: wrong name) |
+
+The apex is deliberately excluded from Resend; it is not a sending domain, so
+the absence of SPF/DKIM there is correct rather than a defect.
+
+## 2. Reconciliation with Phase 13
+
+Both phases were looking at the same DNS. They disagreed because they asked
+different questions.
+
+| | Phase 13 | Phase 15 (first pass) | Truth |
+|---|---|---|---|
+| Sending domain | `send.bookpitch.ge` | assumed apex | `send.bookpitch.ge` |
+| DKIM name queried | `resend._domainkey.send.bookpitch.ge` | `resend._domainkey.bookpitch.ge` | Phase 13 |
+| SPF name queried | `send.send.bookpitch.ge` | `bookpitch.ge` | Phase 13 |
+| Conclusion | verified | "not verified" | **verified** |
+
+Phase 13 also recorded provider-level delivery evidence:
+`RESEND_FROM = Bookpitch <no-reply@send.bookpitch.ge>`, and Resend reporting
+`delivered@resend.dev → last_event: delivered` and
+`bounced@resend.dev → last_event: bounced`. So the provider accepts mail from
+this domain and the bounce path resolves.
+
+Root cause of the error: the sender was inferred from
+`RESEND_FROM — verified sender, e.g. "Bookpitch <no-reply@bookpitch.ge>"`, an
+**illustrative comment** in `lib/messaging/email/resend.ts`, and the apex was
+then queried as if it were the configured value. `RESEND_FROM` is a Vercel
+environment variable whose value cannot be read back, so the configured domain
+had to come from Phase 13's record — and it did not.
+
+Lesson worth keeping: when a value cannot be read directly, take it from the
+phase that measured it, not from an example in a comment.
+
+## 3. Genuine remaining gaps
+
+### 3.1 No organisational DMARC record — hardening
+
+`_dmarc.bookpitch.ge` is absent. A subdomain policy exists at
+`_dmarc.send.bookpitch.ge`, but receivers evaluating DMARC for
+`send.bookpitch.ge` look up the subdomain record first and fall back to the
+organisational domain's `sp=` only if there is none. With the subdomain record
+present, mail from `send.bookpitch.ge` **is** covered by a published policy.
+
+What the missing apex record costs: the apex itself publishes no policy, so it
+is more attractive to spoof, and there is no single place to tighten policy
+across all present and future subdomains.
+
+Recommended:
+
 | Name | Type | Value |
 |---|---|---|
-| `bookpitch.ge` | A | `216.198.79.65`, `216.198.79.1` (Vercel) |
-| `bookpitch.ge` | NS | `ns1.vercel-dns.com.`, `ns2.vercel-dns.com.` |
-| `bookpitch.ge` | TXT | **absent** |
-| `bookpitch.ge` | MX | **absent** |
-| `_dmarc.bookpitch.ge` | TXT | **absent** |
-| `send.bookpitch.ge` | TXT | **absent** |
-| `send.bookpitch.ge` | MX | **absent** |
-| `_dmarc.send.bookpitch.ge` | TXT | `v=DMARC1; p=none; rua=mailto:dmarc@bookpitch.ge` |
-| `resend._domainkey.bookpitch.ge` | TXT | **absent** |
+| `_dmarc` | TXT | `v=DMARC1; p=none; sp=none; rua=mailto:<reportable-mailbox>; fo=1; adkim=s; aspf=s` |
 
-DNS is authoritative on Vercel, so every record below is added in the Vercel
-DNS panel for `bookpitch.ge`.
+Start at `p=none`, observe a full reporting cycle, then tighten to
+`quarantine` and `reject`. Phase 13 recommended going straight to
+`p=reject; sp=reject`; that is the correct destination but not the correct
+first step, because enforcing before reports confirm alignment risks rejecting
+your own mail.
 
-## 2. What this means
+### 3.2 The DMARC reporting address cannot receive mail — hardening
 
-Three findings, in order of severity.
+`_dmarc.send.bookpitch.ge` publishes `rua=mailto:dmarc@bookpitch.ge`, and
+`bookpitch.ge` has no MX record. Aggregate reports sent there bounce, so the
+monitoring that `p=none` exists to provide yields nothing.
 
-**The sending domain is not verified.** There is no DKIM key at
-`resend._domainkey.bookpitch.ge` and no SPF record anywhere on the domain.
-`lib/messaging/email/resend.ts` sends with whatever `RESEND_FROM` holds. If
-that is an `@bookpitch.ge` address, Resend will refuse to send from an
-unverified domain; if it is a `@resend.dev` sandbox address, mail sends but
-comes from someone else's domain and is unsuitable for production. Either way,
-**production email delivery is currently unproven**, and the production monitor
-confirms nothing has exercised it: `outbox pending=0, dead=0` and "no audit
-digest mail has ever been queued" as of run 32172833269.
+Options, cheapest first:
 
-This is not detected by the existing configuration contract.
-`REQUIRED_EMAIL_ENV` in `lib/ops-metrics.ts` checks that `EMAIL_PROVIDER`,
-`RESEND_API_KEY` and `RESEND_FROM` are *set*. A set-but-unverified sender
-passes that check, which is why `missingEmailEnv=0` while the domain is not
-actually able to send.
+1. Point `rua` at a mailbox you already own on another domain. DMARC allows
+   this, but the receiving domain must authorise it with
+   `send.bookpitch.ge._report._dmarc.<their-domain> TXT "v=DMARC1"` — without
+   that, conforming reporters refuse to send.
+2. Add MX for `bookpitch.ge` at a real mail provider and keep the current
+   address.
+3. A hosted DMARC reporting service (several have free tiers; enabling a paid
+   one is out of scope).
 
-**No organisational DMARC policy.** `_dmarc.bookpitch.ge` is absent, so the
-apex domain publishes no policy. A subdomain policy exists at
-`_dmarc.send.bookpitch.ge`, but a subdomain record does not substitute for the
-organisational one: receivers look up the policy at the organisational domain
-and only fall back to `sp=` from there.
+Leaving `rua` pointing at an unreachable address is worse than omitting it — it
+looks like monitoring while delivering nothing.
 
-**The DMARC reporting address cannot receive mail.** The existing record points
-`rua` at `dmarc@bookpitch.ge`, and `bookpitch.ge` publishes no MX record.
-Aggregate reports sent there will bounce, so the monitoring loop that `p=none`
-exists to provide produces nothing.
+### 3.3 No message has been received and inspected — external
 
-## 3. Records to add
+Phase 13 proved provider-level acceptance and delivery to Resend's own test
+addresses. Nothing has proved **inbox placement** or shown real
+`Authentication-Results` headers, because no test mailbox has been designated.
+The production monitor confirms nothing has been sent from the live system
+either: outbox `pending=0`, `dead=0`, and no audit digest has ever been queued.
 
-Do not apply these without authorisation. Values marked `<from Resend>` are
-issued by the Resend dashboard when the domain is added — they are
-account-specific and must be copied from there, not guessed.
-
-### 3a. Verify the sending domain (launch blocker)
-
-In Resend → Domains → Add `bookpitch.ge`, then publish exactly what it issues:
-
-| Name | Type | Value |
-|---|---|---|
-| `resend._domainkey` | TXT | `<from Resend — DKIM public key>` |
-| `send` | TXT | `<from Resend — usually v=spf1 include:amazonses.com ~all>` |
-| `send` | MX | `<from Resend — bounce handling, priority 10>` |
-
-Then set `RESEND_FROM` to an address at the verified domain, e.g.
-`Bookpitch <no-reply@bookpitch.ge>`. Confirm the domain shows **Verified** in
-Resend before treating email as working.
-
-### 3b. Organisational DMARC (launch blocker)
-
-| Name | Type | Value |
-|---|---|---|
-| `_dmarc` | TXT | `v=DMARC1; p=none; rua=mailto:<reportable-mailbox>; fo=1; adkim=s; aspf=s` |
-
-`<reportable-mailbox>` must be an address that actually receives mail. Options,
-cheapest first:
-
-1. An external mailbox you already own on a different domain. DMARC permits
-   this, but the receiving domain must authorise it with a record of the form
-   `bookpitch.ge._report._dmarc.<their-domain> TXT "v=DMARC1"` — without that,
-   conforming reporters refuse to send.
-2. Add MX for `bookpitch.ge` pointing at a real mail provider and use
-   `dmarc@bookpitch.ge` as it currently claims.
-3. A hosted DMARC reporting service. Several have free tiers; enabling a paid
-   one is out of scope for this phase.
-
-Leaving `rua` pointing at an unreachable address is worse than omitting it —
-it looks like monitoring while delivering nothing.
-
-### 3c. Fix the subdomain policy
-
-Once 3a and 3b are live and reports confirm alignment, the existing
-`_dmarc.send.bookpitch.ge` record should either be removed (letting the
-organisational `sp=` govern) or tightened in step with the apex policy. Leaving
-`p=none` there indefinitely means the subdomain that actually sends mail is the
-one with no enforcement.
+This is the one email item that genuinely blocks launch verification, and it
+needs a human with a mailbox — see `docs/production-uat-checklist.md` §B.
 
 ## 4. Rollout and TTL
 
-- Vercel DNS serves a 60-second TTL by default, so changes propagate in
-  minutes. Confirm with `dig @8.8.8.8 +short TXT _dmarc.bookpitch.ge` rather
-  than a browser.
-- Publish DKIM/SPF **before** DMARC enforcement. Enforcement against
-  unauthenticated mail rejects your own messages.
-- Stay at `p=none` for at least one full reporting cycle (reports arrive
-  daily). Only move to `p=quarantine`, and later `p=reject`, once aggregate
-  reports show your own mail passing alignment.
-- `adkim=s` / `aspf=s` (strict) are correct for a single-sender domain and
-  should be relaxed only if a legitimate sender fails alignment.
+- Vercel DNS serves a 60-second TTL, so changes propagate in minutes. Confirm
+  with `dig @8.8.8.8 +short TXT _dmarc.bookpitch.ge`, not a browser.
+- DKIM and SPF are already published, so DMARC can be added without the usual
+  "authenticate before you enforce" sequencing risk — provided it starts at
+  `p=none`.
+- `adkim=s` / `aspf=s` (strict) suit a single-sender domain. Relax only if a
+  legitimate sender fails alignment.
 
 ## 5. Syntactic validation
 
-The proposed records were checked against RFC 7489 §6.3 tag grammar:
-`v=` first and equal to `DMARC1`; `p=` second and one of
-`none|quarantine|reject`; `rua=` a comma-separated list of `mailto:` URIs;
-`fo=1` valid; `adkim`/`aspf` each `r` or `s`. The existing published record
-`v=DMARC1; p=none; rua=mailto:dmarc@bookpitch.ge` is syntactically valid — its
-defect is semantic (an unreachable destination), which no syntax check catches.
+Checked against RFC 7489 §6.3 tag grammar: `v=` first and equal to `DMARC1`;
+`p=` second and one of `none|quarantine|reject`; `rua=` a comma-separated list
+of `mailto:` URIs; `fo=1` valid; `adkim`/`aspf` each `r` or `s`; `sp=` valid
+where present. The published `_dmarc.send.bookpitch.ge` record is
+syntactically valid — its defect is semantic (an unreachable destination),
+which no syntax check catches.
 
 ## 6. Classification
 
-| Item | Launch blocker | Pilot blocker | Money required |
-|---|---|---|---|
-| Sending domain not verified (DKIM/SPF) | **Yes** | **Yes** | No |
-| `_dmarc.bookpitch.ge` absent | **Yes** | No | No |
-| `rua` destination unreachable | No — hardening | No | No, if using an owned mailbox |
-| Subdomain `p=none` | No — hardening | No | No |
-
-Verification email delivery is the first thing every new organisation depends
-on. Until 3a is done, self-service signup cannot be relied upon in production.
+| Item | Status | Launch blocker | Pilot blocker | Money |
+|---|---|---|---|---|
+| Sending domain verified (DKIM/SPF/bounce MX) | **Present** | No | No | No |
+| Provider accepts and delivers | **Proven (Phase 13)** | No | No | No |
+| `_dmarc.bookpitch.ge` absent | Gap | No — hardening | No | No |
+| `rua` destination unreachable | Gap | No — hardening | No | No, if using an owned mailbox |
+| Real inbox receipt + headers inspected | **Never done** | **Yes** | **Yes** | No |
 
 ## 7. What cannot be claimed
 
-No message has been sent, received or inspected, so there is no
-`Authentication-Results` evidence and no SPF, DKIM or DMARC pass has been
-observed. No test mailbox has been designated. **DMARC readiness is not
-claimed.** Proving it requires the human steps in
-`docs/production-uat-checklist.md` §B against a designated mailbox.
+No message has been received in a real mailbox and no `Authentication-Results`
+header has been inspected, so **SPF, DKIM and DMARC pass verdicts are not
+claimed**, and DMARC readiness is not claimed. The records being present in DNS
+is necessary, not sufficient.

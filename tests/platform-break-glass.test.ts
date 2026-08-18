@@ -722,7 +722,12 @@ describe('/api/platform/break-glass', () => {
         }),
       }),
     );
-    expect(res.status).toBe(200);
+    // P15-012: report WHY it failed. This assertion used to print only
+    // "expected 400 to be 200", which is why an intermittent failure here went
+    // un-diagnosed — the response names the cause (rate limit, replay fence,
+    // validation) and the bare status does not.
+    const failureBody = res.status === 200 ? null : await res.clone().text();
+    expect(res.status, `break-glass rejected: ${failureBody}`).toBe(200);
     const { sessionId } = await json<{ sessionId: string }>(res);
 
     // Grant must have been deleted atomically with session creation.

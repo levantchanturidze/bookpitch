@@ -107,6 +107,21 @@ describe('OD.2 — duplicate idempotency key raises unique constraint violation'
 
 describe('OD.3 — repeated drain sends nothing on second run (idempotent)', () => {
   it('second drain run reports outboxSent = 0 when no pending rows remain', async () => {
+    // P15-012: drain whatever earlier test files left pending BEFORE creating
+    // this test's row. The drain claims at most OUTBOX_BATCH_SIZE (10) rows per
+    // pass, so with a backlog of 10+ the first pass hits the cap and the second
+    // pass legitimately sends the remainder — and this assertion fails for a
+    // reason that has nothing to do with idempotency. Observed as
+    // "expected 3 to be +0" after a first drain reported 10.
+    //
+    // Bounded, and not a retry that hides the defect: it establishes the
+    // precondition the test already assumed ("no pending rows remain") instead
+    // of hoping the rest of the suite happened to leave the queue empty.
+    for (let i = 0; i < 20; i++) {
+      const pass = await runHousekeeping();
+      if (pass.outboxSent === 0 && pass.outboxFailed === 0) break;
+    }
+
     await unsafePrismaAdmin.emailOutbox.create({
       data: {
         toAddress: 'repeat@bookpitch-test.invalid',

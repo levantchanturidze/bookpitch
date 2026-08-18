@@ -75,6 +75,7 @@ describe('collectOpsMetrics against a real database', () => {
 
     expect(Object.keys(metrics).sort()).toEqual([
       'auditDigest',
+      'ciphertext',
       'config',
       'housekeeping',
       'outbox',
@@ -83,6 +84,21 @@ describe('collectOpsMetrics against a real database', () => {
     ]);
     // P15-003: the digest metric carries two numbers now. The monitor needs
     // both to tell "nothing due yet" apart from "the weekly job never ran".
+    // P15-010: counts of rows holding field-level ciphertext. Answers "is
+    // there anything at risk from the key-format correction" without exposing
+    // a single encrypted value.
+    expect(Object.keys(metrics.ciphertext).sort()).toEqual([
+      'customerFields',
+      'mfaSecrets',
+      'outboxRows',
+      'total',
+    ]);
+    expect(metrics.ciphertext.total).toBe(
+      metrics.ciphertext.customerFields +
+        metrics.ciphertext.outboxRows +
+        metrics.ciphertext.mfaSecrets,
+    );
+
     // P15-010: the config block gained a validity count alongside the
     // presence counts. Presence alone said production was configured while
     // FIELD_ENCRYPTION_KEY was unparseable.
@@ -94,9 +110,13 @@ describe('collectOpsMetrics against a real database', () => {
     ]);
 
     expect(Object.keys(metrics.auditDigest).sort()).toEqual([
+      'eligibleRecipients',
       'hoursSinceLastQueued',
       'oldestEligibleOrgAgeHours',
     ]);
+    // P15-004 put the digest on the hourly schedule, so the blast radius must
+    // be knowable before it fires. A count, never an address.
+    expect(metrics.auditDigest.eligibleRecipients).toBeGreaterThanOrEqual(0);
 
     expect(Object.keys(metrics.outbox).sort()).toEqual([
       'dead',
@@ -107,6 +127,34 @@ describe('collectOpsMetrics against a real database', () => {
       'processing',
       'staleClaims',
     ]);
+  });
+
+  it('ciphertext count moves when an encrypted outbox row appears — P15-010', async () => {
+    // A count that never changes is not a measurement. This is the number the
+    // owner will read before editing FIELD_ENCRYPTION_KEY, so it has to be
+    // demonstrably live rather than a constant zero.
+    //
+    // status 'sent', deliberately: a 'pending' row is drainable, and this one
+    // claims to be encrypted while holding a placeholder, so the drain would
+    // hand garbage to decryptField. It would also add to the backlog that
+    // OD.3 in tests/outbox-durable.test.ts is sensitive to. The ciphertext
+    // query does not filter on status, so 'sent' measures identically.
+    const before = await collectOpsMetrics();
+
+    await unsafePrismaAdmin.$executeRaw`
+      INSERT INTO email_outbox (to_address, subject, body, purpose, status, to_address_encrypted, body_encrypted)
+      VALUES ('ciphertext-placeholder', 'test', 'test', ${TEST_MARKER}, 'sent', true, true)
+    `;
+
+    const after = await collectOpsMetrics();
+    expect(after.ciphertext.outboxRows).toBe(before.ciphertext.outboxRows + 1);
+    expect(after.ciphertext.total).toBe(before.ciphertext.total + 1);
+
+    await unsafePrismaAdmin.$executeRaw`DELETE FROM email_outbox WHERE purpose = ${TEST_MARKER}`;
+
+    const restored = await collectOpsMetrics();
+    expect(restored.ciphertext.outboxRows).toBe(before.ciphertext.outboxRows);
+    expect(restored.ciphertext.total).toBe(before.ciphertext.total);
   });
 
   it('counts a dead-lettered row — the number moves when the condition appears', async () => {

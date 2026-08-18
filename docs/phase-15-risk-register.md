@@ -10,20 +10,23 @@ mitigation in place. **Accepted risk** = proceed, informed.
 
 ---
 
-## R-01 · Sending domain is not email-authenticated
+## R-01 · Sending domain email authentication — **RETRACTED, was reported in error**
 
-- **Evidence.** `dig @8.8.8.8` on 2026-08-18: no TXT at `bookpitch.ge` (no
-  SPF), no DKIM at `resend._domainkey.bookpitch.ge`, no MX. Full table in
-  `docs/email-dns-readiness.md`.
-- **Probability.** Certain — it is the present state.
-- **Impact.** New organisations never receive a verification email, or receive
-  one that fails authentication and is filed as spam. Self-service signup is
-  the only way in, so this blocks onboarding entirely.
-- **Mitigation.** Verify the domain in Resend and publish the DKIM/SPF/MX
-  records it issues. Roughly 15 minutes of work plus propagation.
-- **Residual.** None once done and proven by a real received message.
-- **Launch: Blocker. Pilot: Blocker. Money: no.**
-- **External action.** Resend dashboard + Vercel DNS.
+- **Earlier claim (wrong).** An earlier Phase 15 revision reported no SPF, no
+  DKIM and no bounce MX, and made this a launch blocker.
+- **Actual evidence** (`dig @8.8.8.8`, 2026-08-18T22:07:24Z):
+  `resend._domainkey.send.bookpitch.ge` holds an RSA DKIM key;
+  `send.send.bookpitch.ge` publishes `v=spf1 include:amazonses.com ~all` and
+  MX `10 feedback-smtp.eu-west-1.amazonses.com`. The sending domain
+  `send.bookpitch.ge` **is** verified, exactly as Phase 13 recorded.
+- **Why the error happened.** The sending domain was inferred from an
+  illustrative example in a comment in `lib/messaging/email/resend.ts`
+  (`e.g. "Bookpitch <no-reply@bookpitch.ge>"`) and the apex was queried as if it
+  were the configured value. `RESEND_FROM` cannot be read back from Vercel, so
+  the configured domain had to come from Phase 13's ledger — and was not taken
+  from it.
+- **Status.** **No action required. Not a blocker.** Full reconciliation in
+  `docs/email-dns-readiness.md` §2.
 
 ## R-02 · No organisational DMARC record
 
@@ -37,7 +40,10 @@ mitigation in place. **Accepted risk** = proceed, informed.
   a full reporting cycle, then tighten.
 - **Residual.** Spoofing remains possible while at `p=none` — that is inherent
   to the monitoring phase and is why it must not be left there permanently.
-- **Launch: Blocker. Pilot: Conditional. Money: no.**
+- **Launch: no — hardening. Pilot: no. Money: no.** (Downgraded from
+  "Blocker": with DKIM/SPF present and a subdomain policy published, mail from
+  `send.bookpitch.ge` is already covered by a DMARC policy. The missing apex
+  record costs spoofing resistance and central control, not deliverability.)
 
 ## R-03 · DMARC reporting address cannot receive mail
 
@@ -296,13 +302,17 @@ mitigation in place. **Accepted risk** = proceed, informed.
 |---|---|---|---|
 | R-01 … R-17 | repository owner | ☐ | |
 
-Launch blockers outstanding: **R-16, R-01, R-02, R-04.**
+Launch blockers outstanding: **R-16 and R-04.**
 
-**R-16 is the priority and is new.** Production's encryption key is malformed,
-so signup, patient clinical fields and MFA enrolment all return 500 today. It
-is a one-line configuration correction, but nothing can launch until it is
-made — and note that R-01's email work would not have surfaced it, because
+R-01 is retracted — the sending domain is verified and was reported broken in
+error. R-02 and R-03 are downgraded to hardening now that the subdomain policy
+is known to be published.
+
+**R-16 is the priority.** Production's encryption key is malformed, so signup,
+patient clinical fields and MFA enrolment all return 500 today. It is a
+one-line configuration correction, and nothing can launch until it is made.
+
+**R-04 follows it.** No message has ever been received in a real mailbox and no
+`Authentication-Results` header has been inspected. That needs a designated
+mailbox and a human, and it cannot even be attempted until R-16 is fixed —
 signup fails before any mail is queued.
-
-The remaining three are one piece of work: email cannot be trusted until the
-DNS records exist and one authenticated message has been received.
