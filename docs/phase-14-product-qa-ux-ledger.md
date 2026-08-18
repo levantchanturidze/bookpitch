@@ -3,7 +3,7 @@
 **Branch:** `agent/phase-14-product-qa-ux`
 **Baseline SHA:** `5ae878c34bc5414a42581c0599a24db730edddf1` (= `origin/main` at start)
 **Started:** 2026-08-18 · **Completed:** 2026-08-18
-**Final SHA:** `5ce7317fe72ca848e6fffc8b75597d4373b92eb5` (deployed, `dpl_F95yW9mzLWUyLk1U44XuFEA4wz1t`)
+**Final SHA:** `7ea494a538287a3d15816a4560703a2050b6a3f5` (deployed, `dpl_5GDYx5JtDd8S4YhpuNSXTN4mTRTf`)
 **Production:** `https://bookpitch.ge`
 
 Status vocabulary: `IMPLEMENTED AND PROVEN` · `PARTIALLY IMPLEMENTED` ·
@@ -111,7 +111,10 @@ sections below as it is resolved.
 | P14-010 | P3 | Icon-only controls without accessible names | **fixed** (14.14) |
 | P14-011 | **P0** | Production sign-in page discloses dev account addresses | fixed |
 | P14-012 | P3 | 7 components unreachable (import graph) | **classified** (14.14) |
-| P14-013 | P2 | 116 AA contrast failures across light and dark surfaces | **fixed** (14.14) |
+| P14-013 | P2 | 116 AA contrast failures across light and dark surfaces | **IMPLEMENTED AND PROVEN** (14.14, 14.15) |
+| P14-015 | P2 | White small text on the teal/emerald accents is 3.74–3.77:1 | **IMPLEMENTED AND PROVEN** (14.15) |
+| P14-016 | P3 | Decorative icons at 1.48:1 with no declared exemption | **IMPLEMENTED AND PROVEN** (14.15) |
+| P14-017 | P2 | Em-dash "no value" placeholders at 1.48:1 | **IMPLEMENTED AND PROVEN** (14.15) |
 | P14-014 | — | WebKit excludes links from the Tab order (platform default) | not a defect |
 
 ---
@@ -473,3 +476,129 @@ threshold: `#767676` on white passes at 4.54:1, `#777777` fails at 4.48:1.
 
 An analyser that invents failures is worse than one with gaps, because it
 teaches you to ignore it.
+
+---
+
+## 14.15 — Runtime accessibility proof and conditional-state closure
+
+The first pass deferred three groups; the second closed two of them statically
+and left 41 conditional `className` cases marked *indeterminate*. Indeterminate
+is not a status Phase 14 can close on, so every one was enumerated.
+
+### The 41 indeterminate cases — full disposition
+
+`scripts/analyze-ui.mjs :: analyzeConditionalStates()` extracts every literal
+branch of every conditional className, resolves the foreground and background
+each branch actually renders with, and computes the real ratio.
+
+| Disposition | Count | Evidence |
+| --- | --- | --- |
+| **Runtime/deterministically verified** — every branch enumerated and passing | 34 expressions → **47 states** | `tests/ui-surface-analysis.test.ts` § "every conditional class state is enumerated and judged" |
+| **Proven unreachable** | 28 further indeterminate occurrences | import graph; they sit in the 7 dead components |
+| Unknown colour (unjudgeable) | **0** | asserted by test |
+| Unexplained remainder | **0** | — |
+
+Three expressions resolve to no fg/bg pair and are dispositioned individually:
+
+| Location | Disposition |
+| --- | --- |
+| `components/patients/PatientList.tsx` avatar fallback | Effectively static (`slate-600` on `slate-100` = 6.92:1); judged by `analyzeContrast`, not the branch resolver |
+| `components/scheduler/AssistantModal.tsx` `<dd>` | Branches are `text-rose-600` (4.70:1) and `text-slate-800` (14.63:1) on the inherited white panel — both pass |
+| `components/shell/Shell.tsx` disabled nav item | `slate-300` on `slate-100`. **WCAG 1.4.3 exempts inactive components**; the element carries `aria-disabled` and `title="Locked by your role"`, which is what makes the exemption claimable rather than asserted |
+
+### Twelve further real failures found by that enumeration
+
+| ID | Sev | Finding | Fix | Ratio |
+| --- | --- | --- | --- | --- |
+| **P14-015** | P2 | `text-white` on `bg-teal-600` — the primary accent button — is **3.74:1**. 3:1 applies only to large text; these are 11–12px. | `bg-teal-700`, hover `teal-800`. 9 call sites | 3.74 → **5.47** |
+| **P14-015** | P2 | Same fault on the platform plane: `bg-emerald-600` | `emerald-700`, hover `emerald-600`. 3 call sites | 3.77 → **5.48** |
+| **P14-016** | P3 | 6 decorative icons at `slate-300` on white | `aria-hidden="true"` — declares the 1.4.3/1.4.11 decoration exemption instead of assuming it | exempt |
+| **P14-017** | P2 | 2 em-dash "no value" cells at `slate-300`. Not decoration — it conveys emptiness | `slate-500` | 1.48 → **4.76** |
+| P14-013 | P2 | allergy icon on `rose-50` | `slate-600` | 2.33 → **6.90** |
+| P14-013 | P2 | platform toggle OFF label on `slate-900` | `slate-400` — **lighter** | 3.75 → **6.96** |
+| P14-013 | P2 | payment chip + location chip on `slate-100` | `slate-600` | 4.34 → **6.92** |
+
+The brand identity is preserved: teal remains the accent, one step darker.
+`bg-teal-*` distribution after the change: `teal-50` ×13, `teal-700` ×14,
+`teal-800` ×7, and `teal-600` ×6 — the last six all inside dead components.
+
+### Runtime accessibility coverage
+
+**`e2e/accessibility.spec.ts`** — axe-core in a real browser against 6 public
+routes × 6 projects, tag set `wcag2a, wcag2aa, wcag21a, wcag21aa, wcag22aa`.
+No rule is disabled in the browser run. **0 violations.**
+
+**`e2e/component-a11y.spec.ts`** (new) — 5 tests × 6 projects. The public routes
+have no dialog, no validation-error state, no populated table and no empty
+state, so axe had never evaluated those surfaces with real computed styles.
+These render the **real** primitives and mount them in a **real** browser with
+the **real** compiled stylesheet, so `color-contrast` genuinely runs:
+
+| Test | Surface | Asserts |
+| --- | --- | --- |
+| `dialog state — real ModalShell` | modal | `role=dialog`, `aria-modal`, accessible name, 0 axe violations |
+| `validation-error state — real Field` | invalid form field | `aria-invalid`, every `aria-describedby` id resolves, 2 alerts, 0 violations |
+| `status messages` | 4 tones | 3 × `role=status`, 1 × `role=alert`, 0 violations |
+| `data table and empty state` | table + empty | 3 × `scope="col"`, 0 violations |
+| `brand accent button` | teal-700 / emerald-700 | 0 `color-contrast` violations at the real computed colour |
+
+Authenticating to reach these states was not required and was not done — that
+would mean entering a password.
+
+### The analyser was wrong three more times
+
+Each is pinned by a fixture in `tests/ui-surface-analysis.test.ts`
+§ "analyser self-validation — fixtures" (11 tests):
+
+1. `resolveSurface` carried a **narrower** background pattern than the branch
+   resolver, so teal and pink were invisible to ancestor resolution.
+2. ``String.raw`${SURFACE_RE}` `` stringified a RegExp **including its slashes**,
+   silently breaking every surface lookup.
+3. The ancestor search started **inside** the element's own tag, so TabsNav's
+   inactive tab was judged against the active tab's background.
+
+Fixtures cover: element-owned vs ancestor vs sibling backgrounds; variant
+prefixes (`hover:`); condition-only string literals; the decorative exemption
+requiring a declared `aria-hidden`; light, dark and tinted surfaces; and the AA
+threshold from both sides — `#767676` on white passes at 4.54:1, `#777777` fails
+at 4.48:1.
+
+### Final contrast state
+
+| Metric | Value |
+| --- | --- |
+| static occurrences analysed (reachable) | 555 |
+| static AA failures | **0** |
+| conditional expressions | 34 |
+| conditional states enumerated | 47 |
+| conditional AA failures | **0** |
+| unknown colours | **0** |
+
+### Icon-only control inventory (reachable)
+
+| Control | Accessible name | Keyboard | Focus |
+| --- | --- | --- | --- |
+| `PatientList.tsx` delete profile | `aria-label="Delete profile"` (+ title) | native `<button>` | focus-visible ring |
+| `PatientList.tsx` add history entry | `aria-label="Add history entry"` | native `<button>` | focus-visible ring |
+| `PatientList.tsx` close form modal | `aria-label="Close"` | native `<button>` | focus-visible ring |
+| `AssistantModal.tsx` close | `aria-label="Close"` | native `<button>` | focus-visible ring |
+
+Gates: 0 without `aria-label`, 0 without a focus style, and a separate test
+asserts **no `div`/`span` with `onClick`** poses as a control anywhere reachable
+(modal backdrops excluded — they are click-away targets, not controls).
+
+### Release
+
+| | |
+| --- | --- |
+| PR | #19 |
+| CI | [32105530439](https://github.com/levantchanturidze/bookpitch/actions/runs/32105530439) — success |
+| Merged | `7ea494a538287a3d15816a4560703a2050b6a3f5` |
+| Deployment | `dpl_5GDYx5JtDd8S4YhpuNSXTN4mTRTf` @ 2026-08-18T06:12:08Z, **READY** |
+| Migration | none — 0 `prisma/` files across all of Phase 14; `migrate.yml` last ran 2026-08-16 on `f3f6913` |
+| Smoke | 11/11 |
+| Browser matrix vs production | **141 passed, 3 skipped, 0 failed** |
+| Monitor | [32106159959](https://github.com/levantchanturidze/bookpitch/actions/runs/32106159959) — **18/18**, `deployment-reachable` reports `7ea494a` |
+
+Runtime code changed, so a fresh 30-minute monitoring window applies:
+**06:12:08Z → 06:42:08Z**. Its evidence is recorded in §14.16.
