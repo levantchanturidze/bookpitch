@@ -110,9 +110,13 @@ describe('collectOpsMetrics against a real database', () => {
     ]);
 
     expect(Object.keys(metrics.auditDigest).sort()).toEqual([
+      'eligibleRecipients',
       'hoursSinceLastQueued',
       'oldestEligibleOrgAgeHours',
     ]);
+    // P15-004 put the digest on the hourly schedule, so the blast radius must
+    // be knowable before it fires. A count, never an address.
+    expect(metrics.auditDigest.eligibleRecipients).toBeGreaterThanOrEqual(0);
 
     expect(Object.keys(metrics.outbox).sort()).toEqual([
       'dead',

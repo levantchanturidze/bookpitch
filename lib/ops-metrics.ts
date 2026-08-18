@@ -74,6 +74,16 @@ export type AuditDigestMetrics = {
    * "a digest has been due for N hours and none was ever queued" detectable.
    */
   oldestEligibleOrgAgeHours: number | null;
+  /**
+   * How many owner mailboxes would receive a digest on the next run.
+   *
+   * P15-004 put the digest on the hourly schedule, so once
+   * FIELD_ENCRYPTION_KEY is corrected it fires automatically rather than being
+   * manually triggered. This makes the blast radius knowable in advance —
+   * a count, never an address — so nobody discovers how many real people got
+   * mail by watching it arrive.
+   */
+  eligibleRecipients: number;
 };
 
 /**
@@ -303,7 +313,11 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       `,
 
       unsafePrismaAdmin.$queryRaw<
-        Array<{ hours_since: number | null; oldest_eligible_org_age_hours: number | null }>
+        Array<{
+          hours_since: number | null;
+          oldest_eligible_org_age_hours: number | null;
+          eligible_recipients: number;
+        }>
       >`
         -- float8, not numeric: Prisma maps PostgreSQL numeric to a Decimal
         -- object, which would survive the numeric-only assertion below as an
@@ -329,7 +343,15 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
                 AND m.role = 'owner'
                 AND u.email IS NOT NULL
             )
-          ) AS oldest_eligible_org_age_hours
+          ) AS oldest_eligible_org_age_hours,
+          -- Recipient COUNT only. Mirrors sendDigestToOwners(): owner
+          -- memberships with a non-null email. No address is selected.
+          (
+            SELECT count(*)
+            FROM memberships m
+            JOIN app_users u ON u.id = m.user_id
+            WHERE m.role = 'owner' AND u.email IS NOT NULL
+          )::int AS eligible_recipients
       `,
 
       // P15-010: counts only. No encrypted value, address or identifier is
@@ -399,6 +421,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       oldestEligibleOrgAgeHours: numOrNull(
         (d as Record<string, unknown>).oldest_eligible_org_age_hours,
       ),
+      eligibleRecipients: num((d as Record<string, unknown>).eligible_recipients),
     },
     ciphertext: (() => {
       const customerFields = num((c as Record<string, unknown>).customer_fields);
