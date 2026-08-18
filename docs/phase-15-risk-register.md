@@ -167,7 +167,9 @@ mitigation in place. **Accepted risk** = proceed, informed.
   unattended. Also a bus factor of one for every credential and procedure.
 - **Mitigation.** Runbooks are written down (`docs/support-runbook.md`) so a
   second person *could* act; automated monitoring every 30 minutes narrows
-  detection time. No second responder is invented here, because there isn't one.
+  detection time, and P15-011 made those alerts actually reach the operator's
+  inbox rather than sitting silently in the issue list. No second responder is
+  invented here, because there isn't one.
 - **Residual.** High and structural. Genuinely limits the safe size of a pilot,
   which is why the pilot plan caps organisations rather than assuming capacity.
 - **Launch: Accepted. Pilot: Accepted, with the cap. Money: yes, to remove.**
@@ -243,6 +245,21 @@ mitigation in place. **Accepted risk** = proceed, informed.
   200.
 - **Launch: BLOCKER. Pilot: BLOCKER. Money: no.**
 
+## R-17 · Monitor incidents were silent (resolved)
+
+- **Evidence.** P15-011. `scripts/production-monitor.mjs` opened incidents with
+  a label and no assignee. GitHub notifies on @mentions and assignments, not on
+  issue creation, so every incident the monitor raised was silent — including
+  the two open right now (#23, #26). `.github/workflows/migrate.yml` had
+  already fixed exactly this in SEC-007 after an incident went unnoticed; the
+  primary alerting path still had the gap.
+- **Status.** **Fixed and proven.** Incidents are assigned to the repository
+  owner on open and re-assigned on each still-failing comment, so a snoozed
+  notification pings again. Overridable via `INCIDENT_ASSIGNEES` if a rota ever
+  exists; degrades to unassigned rather than throwing.
+- **Residual.** Still one human receiving the ping (R-11).
+- **Launch: resolved. Pilot: resolved.**
+
 ## R-15 · Digest bypassed the outbox (resolved)
 
 - **Evidence.** P15-009. `sendDigestToOwners()` called the email provider
@@ -277,7 +294,7 @@ mitigation in place. **Accepted risk** = proceed, informed.
 
 | Risk | Owner | Accepted? | Date |
 |---|---|---|---|
-| R-01 … R-16 | repository owner | ☐ | |
+| R-01 … R-17 | repository owner | ☐ | |
 
 Launch blockers outstanding: **R-16, R-01, R-02, R-04.**
 

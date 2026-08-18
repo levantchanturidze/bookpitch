@@ -8,6 +8,7 @@ import {
   evaluateCronHealth,
   evaluateOpsMetrics,
   evaluateAuditDigest,
+  incidentAssignees,
   reconcileIncidents,
   incidentMarker,
   INCIDENT_LABEL,
@@ -484,5 +485,40 @@ describe('monitor constants are sane', () => {
   it('treats the restore drill as monthly, not annual', () => {
     expect(DEFAULTS.restoreDrillMaxAgeDays).toBeGreaterThanOrEqual(31);
     expect(DEFAULTS.restoreDrillMaxAgeDays).toBeLessThanOrEqual(62);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// P15-011 — an alert nobody is pinged about is not an alert.
+//
+// The monitor opened incidents with a label and no assignee. GitHub pushes to
+// a user's inbox, email and mobile app for @mentions and assignments, not for
+// issue creation, so every incident this raised was silent.
+// .github/workflows/migrate.yml already fixed exactly this in SEC-007 after an
+// incident sat unnoticed; the production monitor — the primary alerting path,
+// running every 30 minutes — still had the gap. With a single operator and no
+// second responder, that is the whole risk.
+// -----------------------------------------------------------------------------
+describe('P15-011 incident assignment', () => {
+  it('defaults to the repository owner', () => {
+    expect(incidentAssignees({ GITHUB_REPOSITORY: 'levantchanturidze/bookpitch' })).toEqual([
+      'levantchanturidze',
+    ]);
+  });
+
+  it('honours an explicit override for a future rota', () => {
+    expect(
+      incidentAssignees({ GITHUB_REPOSITORY: 'owner/repo', INCIDENT_ASSIGNEES: 'alice, bob' }),
+    ).toEqual(['alice', 'bob']);
+  });
+
+  it('ignores blank entries in the override', () => {
+    expect(incidentAssignees({ INCIDENT_ASSIGNEES: 'alice, , ,bob,' })).toEqual(['alice', 'bob']);
+  });
+
+  it('degrades to unassigned rather than throwing when it cannot tell', () => {
+    // An alert that throws is strictly worse than one that is merely quiet.
+    expect(incidentAssignees({})).toEqual([]);
+    expect(incidentAssignees({ GITHUB_REPOSITORY: '' })).toEqual([]);
   });
 });
