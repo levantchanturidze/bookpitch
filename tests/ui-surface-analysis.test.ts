@@ -36,6 +36,21 @@ type Finding = {
   passesAA: boolean;
   indeterminate?: boolean;
 };
+type CondState = {
+  fg: string;
+  bg: string;
+  ratio: number | null;
+  passesAA: boolean | null;
+  unknownColour?: boolean;
+};
+type CondResult = {
+  file: string;
+  line: number;
+  staticFg: string | null;
+  staticBg: string | null;
+  ancestorBg: string | null;
+  states: CondState[];
+};
 type IconButton = {
   file: string;
   line: number;
@@ -223,5 +238,140 @@ describe('P14-012 — reachability is proven from the import graph', () => {
     // They contain raw modal overlays and failing contrast. Both guard suites
     // filter on reachability, so this asserts the filter is actually load-bearing.
     expect(dead.length).toBeGreaterThan(0);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §2.3 — the analyser is validated against fixtures before its verdict is
+// trusted. Every false-positive class it produced during development is pinned
+// here, so a future "simplification" that reintroduces one fails loudly.
+// -----------------------------------------------------------------------------
+
+describe('analyser self-validation — fixtures', () => {
+  const fixture = (jsx: string) => jsx;
+
+  function surfaceOf(jsx: string, needle = 'text-slate-400') {
+    return A.resolveSurface(jsx, jsx.indexOf(needle));
+  }
+
+  it('an element’s OWN background wins over an ancestor’s', () => {
+    // The 41-false-positive bug: a dark button inside a white card.
+    const jsx = fixture(
+      `<div className="bg-white"><button className="bg-slate-900 text-white">Go</button></div>`,
+    );
+    expect(A.resolveSurface(jsx, jsx.indexOf('text-white'))).toBe('slate-900');
+  });
+
+  it('falls back to the nearest ancestor when the element sets no background', () => {
+    const jsx = fixture(
+      `<div className="bg-slate-900"><span className="text-slate-400">x</span></div>`,
+    );
+    expect(surfaceOf(jsx)).toBe('slate-900');
+  });
+
+  it('does not take a SIBLING’s background as the surface', () => {
+    const jsx = fixture(
+      `<div className="bg-white"><i className="bg-slate-900"/><span className="text-slate-400">x</span></div>`,
+    );
+    expect(surfaceOf(jsx)).toBe('white');
+  });
+
+  it('refuses to judge a class inside a conditional expression', () => {
+    const jsx = fixture(
+      "<div className={active ? 'bg-teal-700 text-white' : 'text-slate-400'}>x</div>",
+    );
+    expect(A.isIndeterminate(jsx, jsx.indexOf('text-slate-400'))).toBe(true);
+  });
+
+  it('a template literal cannot produce a false PASS', () => {
+    // The dangerous direction: a real failure hidden because the analyser
+    // guessed a flattering background. Indeterminate is never counted as pass.
+    const jsx = fixture(
+      "<div className={`text-slate-400 ${wide ? 'bg-white' : 'bg-slate-50'}`}>x</div>",
+    );
+    expect(A.isIndeterminate(jsx, jsx.indexOf('text-slate-400'))).toBe(true);
+    // …and analyzeConditionalStates then enumerates BOTH surfaces.
+    const { branches } = A.classBranches("{`text-slate-400 ${wide ? 'bg-white' : 'bg-slate-50'}`}");
+    expect(branches).toEqual(['bg-white', 'bg-slate-50']);
+  });
+
+  it('ignores string literals that belong to the condition, not the classes', () => {
+    // `accent === 'teal'` contributed a phantom branch with no background.
+    const { branches } = A.classBranches(
+      "{`text-white ${accent === 'teal' ? 'bg-teal-700' : 'bg-pink-600'}`}",
+    );
+    expect(branches).toEqual(['bg-teal-700', 'bg-pink-600']);
+    expect(branches).not.toContain('teal');
+  });
+
+  it('ignores variant-prefixed utilities when resolving the resting state', () => {
+    // `hover:bg-teal-800` is a state, not the resting background.
+    const jsx = fixture(`<button className="bg-teal-700 hover:bg-teal-800 text-white">x</button>`);
+    expect(A.resolveSurface(jsx, jsx.indexOf('text-white'))).toBe('teal-700');
+  });
+
+  it('honours the decorative exemption only when aria-hidden is declared', () => {
+    const hidden = `<Icon className="h-4 w-4 text-slate-300" aria-hidden="true" />`;
+    const shown = `<Icon className="h-4 w-4 text-slate-300" />`;
+    expect(A.isDecorative(hidden, hidden.indexOf('text-slate-300'))).toBe(true);
+    expect(A.isDecorative(shown, shown.indexOf('text-slate-300'))).toBe(false);
+  });
+
+  it('a known-failing pair fails and a known-passing pair passes', () => {
+    expect(A.contrastRatio(A.PALETTE['slate-300'], A.PALETTE.white)).toBeLessThan(4.5);
+    expect(A.contrastRatio(A.PALETTE['slate-600'], A.PALETTE.white)).toBeGreaterThan(4.5);
+    // dark surface, both directions
+    expect(A.contrastRatio(A.PALETTE['slate-600'], A.PALETTE['slate-900'])).toBeLessThan(4.5);
+    expect(A.contrastRatio(A.PALETTE['slate-200'], A.PALETTE['slate-900'])).toBeGreaterThan(4.5);
+    // tinted light surface
+    expect(A.contrastRatio(A.PALETTE['slate-400'], A.PALETTE['rose-50'])).toBeLessThan(4.5);
+    expect(A.contrastRatio(A.PALETTE['slate-600'], A.PALETTE['rose-50'])).toBeGreaterThan(4.5);
+  });
+
+  it('covers the brand accents that actually failed', () => {
+    expect(A.contrastRatio('#ffffff', A.PALETTE['teal-600'])).toBeLessThan(4.5);
+    expect(A.contrastRatio('#ffffff', A.PALETTE['teal-700'])).toBeGreaterThan(4.5);
+    expect(A.contrastRatio('#ffffff', A.PALETTE['emerald-600'])).toBeLessThan(4.5);
+    expect(A.contrastRatio('#ffffff', A.PALETTE['emerald-700'])).toBeGreaterThan(4.5);
+  });
+});
+
+describe('§2.2 — every conditional class state is enumerated and judged', () => {
+  const reachable = reachableFiles();
+  const results: CondResult[] = A.analyzeConditionalStates(ROOT).filter((r: CondResult) =>
+    reachable.has(r.file),
+  );
+
+  it('enumerates the conditional expressions rather than leaving them unexplained', () => {
+    expect(results.length).toBeGreaterThan(20);
+    const states = results.reduce((n: number, r: { states: unknown[] }) => n + r.states.length, 0);
+    expect(states).toBeGreaterThan(results.length);
+  });
+
+  it('has zero failing states across every branch', () => {
+    const failing = results.flatMap((r: CondResult) =>
+      r.states
+        .filter((s) => s.passesAA === false)
+        .map((s) => `${r.file}:${r.line} text-${s.fg} on bg-${s.bg} = ${s.ratio}:1`),
+    );
+    expect(failing, `\n  ${failing.join('\n  ')}\n`).toEqual([]);
+  });
+
+  it('resolves every state to a known colour — no unknown remainder', () => {
+    const unknown = results.flatMap((r: CondResult) =>
+      r.states.filter((s) => s.unknownColour).map((s) => `${r.file}:${r.line} ${s.fg}/${s.bg}`),
+    );
+    expect(unknown, 'add the colour to PALETTE rather than leaving it unjudged').toEqual([]);
+  });
+
+  it('the few expressions with no resolvable pair are individually accounted for', () => {
+    const noState = results
+      .filter((r: CondResult) => r.states.length === 0)
+      .map((r: CondResult) => `${r.file}:${r.line}`)
+      .sort();
+    // Each of these is dispositioned in docs/phase-14-product-qa-ux-ledger.md
+    // §14.16: an inherited-surface <dd> whose branches both pass on white, and
+    // a disabled nav item, which WCAG 1.4.3 exempts as an inactive component.
+    expect(noState.length).toBeLessThanOrEqual(3);
   });
 });

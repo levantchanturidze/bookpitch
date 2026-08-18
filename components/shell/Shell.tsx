@@ -96,7 +96,7 @@ export default function Shell({
             <div className="flex items-center gap-2">
               <div
                 className={`rounded-xl p-2 text-white shadow-md ${
-                  isClinic ? 'bg-teal-600 shadow-teal-100' : 'bg-pink-600 shadow-pink-100'
+                  isClinic ? 'bg-teal-700 shadow-teal-100' : 'bg-pink-600 shadow-pink-100'
                 }`}
               >
                 {isClinic ? <Stethoscope className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
@@ -318,7 +318,7 @@ function LocationSwitcher({
             <button
               type="submit"
               className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-bold transition ${
-                active ? activeColor : 'text-slate-500 hover:text-slate-700'
+                active ? activeColor : 'text-slate-600 hover:text-slate-800'
               }`}
               title={`Switch to ${loc.name}`}
             >

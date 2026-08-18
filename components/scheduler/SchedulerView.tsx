@@ -206,7 +206,7 @@ export default function SchedulerView(props: Props) {
               onClick={() => setBookOpen(true)}
               className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium text-white shadow-sm transition ${
                 accent === 'teal'
-                  ? 'bg-teal-600 hover:bg-teal-700 hover:shadow-teal-100'
+                  ? 'bg-teal-700 hover:bg-teal-800 hover:shadow-teal-100'
                   : 'bg-pink-600 hover:bg-pink-700 hover:shadow-pink-100'
               }`}
             >
@@ -281,7 +281,7 @@ export default function SchedulerView(props: Props) {
           <div className="max-h-[380px] flex-1 space-y-3 overflow-y-auto pr-1">
             {filtered.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center py-12 text-center text-slate-500">
-                <CalendarIcon className="mb-2 h-8 w-8 stroke-1 text-slate-300" />
+                <CalendarIcon className="mb-2 h-8 w-8 stroke-1 text-slate-300" aria-hidden="true" />
                 <p className="text-xs font-medium">No appointments for this date</p>
               </div>
             ) : (
@@ -451,7 +451,7 @@ function MonthGrid({
               className={`relative flex aspect-square flex-col justify-between rounded-xl border p-2 transition ${
                 isSelected
                   ? isClinic
-                    ? 'border-teal-600 bg-teal-600 text-white shadow-md shadow-teal-100'
+                    ? 'border-teal-700 bg-teal-700 text-white shadow-md shadow-teal-100'
                     : 'border-pink-600 bg-pink-600 text-white shadow-md shadow-pink-100'
                   : isToday
                     ? 'border-slate-300 bg-slate-50 font-bold text-slate-800'
@@ -531,7 +531,7 @@ function AppointmentRow({ a, onSelect }: { a: AppointmentDto; onSelect: () => vo
               className={`rounded px-1 font-mono text-[9px] ${
                 a.paymentStatus === 'paid'
                   ? 'bg-emerald-50 text-emerald-600'
-                  : 'bg-slate-100 text-slate-500'
+                  : 'bg-slate-100 text-slate-600'
               }`}
             >
               {a.paymentStatus}
@@ -911,7 +911,7 @@ function BookingModal({
               disabled={isPending || !canSubmit}
               className={`rounded-xl px-4 py-2 text-xs font-semibold text-white transition disabled:opacity-50 ${
                 accent === 'teal'
-                  ? 'bg-teal-600 hover:bg-teal-700'
+                  ? 'bg-teal-700 hover:bg-teal-800'
                   : 'bg-pink-600 hover:bg-pink-700'
               }`}
             >

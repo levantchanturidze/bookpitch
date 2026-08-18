@@ -139,7 +139,7 @@ export default function AssistantModal({
             type="submit"
             disabled={isPending || prompt.trim().length < 3}
             className={`mt-2 w-full rounded-lg px-4 py-2 text-xs font-bold text-white transition disabled:opacity-40 ${
-              accent === 'teal' ? 'bg-teal-600 hover:bg-teal-700' : 'bg-pink-600 hover:bg-pink-700'
+              accent === 'teal' ? 'bg-teal-700 hover:bg-teal-800' : 'bg-pink-600 hover:bg-pink-700'
             }`}
           >
             {isPending ? 'Drafting…' : 'Draft appointment'}
@@ -222,7 +222,7 @@ export default function AssistantModal({
                 disabled={!canConfirm}
                 className={`rounded-lg px-3 py-1.5 text-[11px] font-bold text-white transition disabled:opacity-40 ${
                   accent === 'teal'
-                    ? 'bg-teal-600 hover:bg-teal-700'
+                    ? 'bg-teal-700 hover:bg-teal-800'
                     : 'bg-pink-600 hover:bg-pink-700'
                 }`}
               >

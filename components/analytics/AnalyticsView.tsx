@@ -234,7 +234,7 @@ function KpiCard({
         <span className="font-mono text-[10px] tracking-wider text-slate-500 uppercase">
           {label}
         </span>
-        <Icon className="h-4 w-4 text-slate-300" />
+        <Icon className="h-4 w-4 text-slate-300" aria-hidden="true" />
       </div>
       <p className="mt-3 text-2xl font-extrabold text-slate-900">
         {value}
