@@ -63,7 +63,18 @@ jobs:
 
   audit-digest:
     # Mondays at 08:00 UTC. Emails a 7-day audit rollup to every owner.
-    if: github.event.schedule == '0 8 * * 1' || github.event_name == 'workflow_dispatch'
+    # P15-004: the weekly '0 8 * * 1' schedule has never fired — GitHub does not
+    # guarantee delivery of low-frequency crons and silently dropped it (see
+    # Monday 2026-08-17, where the */15 and hourly runs arrived and the weekly
+    # one did not). The hourly schedule is delivered reliably, so this job now
+    # rides on it as well; runDigestForAllOrgs() is idempotent per ISO week via
+    # a unique idempotency key on email_outbox, so extra invocations are no-ops
+    # rather than duplicate mail. The weekly entry is kept so the job still
+    # fires promptly on Monday morning when GitHub does deliver it.
+    if: >-
+      github.event.schedule == '0 8 * * 1' ||
+      github.event.schedule == '3 * * * *' ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

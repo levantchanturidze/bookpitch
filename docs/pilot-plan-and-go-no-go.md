@@ -94,7 +94,7 @@ the caps can safely rise.
 
 | Gate | Evidence | Owner | Status | Severity | Action | Consequence if unresolved |
 |---|---|---|---|---|---|---|
-| Unit/integration suite | 961 tests, 79 files, exit 0 | agent | **PASS** | — | — | — |
+| Unit/integration suite | 990 tests, 82 files, exit 0 | agent | **PASS** | — | — | — |
 | Browser/mobile/a11y suite | 177 passed, 3 skipped, 6 projects, exit 0 | agent | **PASS** | — | — | — |
 | Suite runs in CI | `e2e` job added (P15-006) | agent | **PASS** | — | — | Regressions invisible |
 | TypeScript / lint / format | exit 0 | agent | **PASS** | — | — | — |
@@ -118,7 +118,8 @@ the caps can safely rise.
 | PITR / 24h RPO | Supabase Free (R-09) | **owner** | **ACCEPTED** | Accepted | Disclosed in `/terms` | Up to ~24h loss |
 | Backup residency | Not EU-guaranteed (R-10) | **owner** | **ACCEPTED** | Conditional | Legal decision | Residency claim unsupportable |
 | Single operator | No second responder (R-11) | **owner** | **ACCEPTED** | Accepted | Caps + runbooks | Unattended incidents |
-| Weekly cron reliability | Dropped 2026-08-17 (R-08) | **owner** | **ACCEPTED** | Accepted | Monitor now detects it | Digest silently stops |
+| Weekly cron reliability | Dropped 2026-08-17; now hourly + idempotent (R-08) | agent | **PASS** | — | — | — |
+| Digest durability | Enqueued to the outbox; metric moves (R-15) | agent | **PASS** | — | — | — |
 
 ### The shortest path to `GO`
 

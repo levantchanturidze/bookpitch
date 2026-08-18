@@ -80,7 +80,7 @@ All five run from GitHub Actions (`.github/workflows/cron.yml`), not Vercel Cron
 | reminders | `*/15 * * * *` | Firing reliably |
 | housekeeping | `3 * * * *` | Firing reliably |
 | retention | `17 2 * * *` | Firing |
-| audit-digest | `0 8 * * 1` | **Has never fired** — see P15-004 |
+| audit-digest | `0 8 * * 1` **+ `3 * * * *`** | Weekly delivery never fired; now also hourly and idempotent (P15-004, P15-009) |
 | db-partitions | `30 1 1 * *` | Same exposure as audit-digest |
 
 ### External dependencies
@@ -98,11 +98,12 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
 | P15-001 | P1 | No public legal surface | **Fixed** |
 | P15-002 | P1 | Erasure leaves insurance PII; leaks via claims export | **Fixed** |
 | P15-003 | P2 | Audit-digest monitor check cannot fail | **Fixed** |
-| P15-004 | P2 | Weekly cron never fired | Documented; detection added |
+| P15-004 | P2 | Weekly cron never fired | **Fixed** — moved to the hourly schedule |
 | P15-005 | — | Treatment history survives erasure | **Deliberately not fixed** — legal decision |
 | P15-006 | P2 | Playwright suite never ran in CI | **Fixed** |
 | P15-007 | P2 | Load-test workflow could target production | **Fixed** |
 | P15-008 | P1 | Test suite had no DB identity guard | **Fixed** |
+| P15-009 | P1 | Digest bypassed the outbox; its metric could never be non-null | **Fixed** |
 
 ### P15-001 · No public Privacy Policy, Terms, or consent surface — P1
 
@@ -173,15 +174,47 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
   outlives the window”*. `tests/ops-metrics.test.ts` asserts the new metric
   shape against a real database, so the SQL is executed, not mocked.
 
-### P15-004 · The weekly cron has never fired — P2
+### P15-004 · The weekly cron has never fired — P2 — **fixed**
 
 - **Evidence.** On Monday 2026-08-17, runs at 07:52, 08:06 and 08:41 carry the
   `*/15` and hourly schedules with `audit-digest=skipped`. No run carries
   `0 8 * * 1`. GitHub dropped the weekly schedule.
-- **Not fixed, deliberately.** A durable fix moves due-tracking into the
-  reliable hourly job, but `runDigestForAllOrgs()` has no idempotency — two
-  calls send two digests — so that is a behavioural change needing its own
-  design. What this phase did is make the failure *visible* (P15-003).
+- **Confirmed in production.** After deploying the P15-003 check, the monitor
+  reported: *“no audit digest has EVER been queued, but an eligible
+  organization has existed for 477.8h (limit 240h)”*. Twenty days, zero
+  digests. The old check had been reporting PASS throughout.
+- **Fix.** The job now also runs on the reliable hourly schedule
+  (`3 * * * *`) in `.github/workflows/cron.yml`. That is only safe because
+  P15-009 made `runDigestForAllOrgs()` idempotent per ISO week, enforced by a
+  unique index rather than by trusting the caller's timing. The weekly entry is
+  kept so it still fires promptly on Monday when GitHub does deliver it.
+- **Proof.** `tests/phase15-digest-delivery.test.ts` —
+  *“is idempotent within an ISO week — a second run queues nothing”*, plus four
+  `isoWeekKey` cases covering week boundaries and the year rollover.
+
+### P15-009 · The digest bypassed the outbox, so its metric could never move — P1
+
+- **Found while deploying the P15-003 fix**, which is the only reason it
+  surfaced: the new check went red in production and could not have gone green.
+- **Root cause, two halves.** `sendDigestToOwners()` called
+  `getEmailProvider().send()` directly. (a) A provider failure was caught,
+  logged at warn, and discarded — the digest was lost, with none of the claim
+  locking, backoff, dead-lettering or encryption that every other transactional
+  message gets. (b) `lib/ops-metrics.ts` measures freshness with
+  `max(created_at) FROM email_outbox WHERE purpose = 'audit_digest'`, and
+  **nothing in the codebase ever wrote that purpose**. `hoursSinceLastQueued`
+  was structurally pinned at `null`.
+- **Why this matters beyond the digest.** It made the P15-003 fix a permanent
+  red rather than a working control. A monitor that can only fail is not much
+  better than one that can only pass.
+- **Fix.** The digest is enqueued to `email_outbox` with
+  `purpose: 'audit_digest'`, an encrypted recipient and body, and an
+  idempotency key of `audit_digest:{orgId}:{addressHash}:{isoWeek}` against the
+  existing sparse unique index. No migration required.
+- **Proof.** `tests/phase15-digest-delivery.test.ts` (8 tests). The decisive
+  one is *“moves the ops metric off null — the signal the monitor reads”*:
+  `collectOpsMetrics()` returns a real number as a consequence of running the
+  digest, which was impossible before.
 - **Recorded as** R-08 in `docs/phase-15-risk-register.md`.
 
 ### P15-005 · Treatment history survives erasure — undecided, not a defect call
@@ -347,7 +380,7 @@ All commands run at the final Phase 15 tree.
 | TypeScript | `npx tsc --noEmit` | clean | 0 |
 | ESLint | `npm run lint` | clean | 0 |
 | Format | `npm run format:check` | clean | 0 |
-| Unit + integration | `npm test` | **81 files / 982 tests passed** | 0 |
+| Unit + integration | `npm test` | **82 files / 990 tests passed** | 0 |
 | Guards | `npm run test:guards` | ok | 0 |
 | Orphan permissions | `npm run check:orphan-perms` | 19 marked, 0 unmarked | 0 |
 | Playwright, all 6 projects | `npx playwright test --grep "@a11y\|@responsive"` | **177 passed, 3 skipped** | 0 |
@@ -358,7 +391,7 @@ All commands run at the final Phase 15 tree.
 | Dependency audit | `npm audit --audit-level=high` | 0 vulnerabilities | 0 |
 | Secret scan | `gitleaks detect` (229 commits) | no leaks | 0 |
 
-Test count: **935 → 982** (+47). Playwright: **141 → 177** (+36).
+Test count: **935 → 990** (+55). Playwright: **141 → 177** (+36).
 
 Also verified:
 

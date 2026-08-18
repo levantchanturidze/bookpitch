@@ -1,6 +1,6 @@
 import { withoutRls } from '@/lib/db';
-import { getEmailProvider } from '@/lib/messaging';
-import { log, sanitizeErrorMessage } from '@/lib/logger';
+import { log } from '@/lib/logger';
+import { encryptField, hashEmailForIndex } from '@/lib/crypto';
 
 // -----------------------------------------------------------------------------
 // Weekly audit digest. For each org, counts customer surface reads +
@@ -96,8 +96,49 @@ export function renderDigestText(d: OrgDigest): string {
   return lines.join('\n');
 }
 
-// Emails the digest to every owner of the org. Uses the current
-// EMAIL_PROVIDER — mock in dev just logs the provider-msg-id.
+// -----------------------------------------------------------------------------
+// P15-009: this used to call getEmailProvider().send() directly, which had two
+// consequences.
+//
+// Durability: a provider failure was caught, logged at warn level, and
+// discarded. The digest was simply lost. Every other transactional message in
+// this codebase goes through email_outbox, which gives it claim locking,
+// exponential backoff, dead-lettering and encryption at rest; the digest was
+// the one path that opted out.
+//
+// Observability: lib/ops-metrics.ts measures digest freshness with
+// `SELECT max(created_at) FROM email_outbox WHERE purpose = 'audit_digest'`,
+// and nothing in the codebase ever wrote a row with that purpose. The metric
+// could never be anything but null, so the monitor check built on it could
+// never turn green — it measured a table this function never touched.
+//
+// Enqueuing fixes both, and the unique idempotency key makes the whole job
+// safe to invoke repeatedly (see runDigestForAllOrgs).
+// -----------------------------------------------------------------------------
+
+/**
+ * ISO-8601 week identifier, e.g. `2026-W34`. Used in the idempotency key so a
+ * given organization gets at most one digest per calendar week no matter how
+ * often the job runs.
+ */
+export function isoWeekKey(date: Date): string {
+  // Copy to UTC midnight so the calculation is timezone-independent.
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  // ISO weeks run Monday–Sunday; shift Sunday (0) to 7.
+  const day = d.getUTCDay() || 7;
+  // Move to the Thursday of this week — the year that Thursday falls in is,
+  // by definition, the ISO week-numbering year.
+  d.setUTCDate(d.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+/**
+ * Queues the digest for every owner of the org. Returns how many messages were
+ * newly enqueued — `0` means a digest for this week already exists, which is
+ * the normal outcome on every run after the first in a given week.
+ */
 export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }> {
   const owners = await withoutRls((tx) =>
     tx.membership.findMany({
@@ -105,25 +146,58 @@ export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }
       include: { user: { select: { email: true } } },
     }),
   );
-  const provider = getEmailProvider();
+
   const subject = `Weekly audit digest · ${d.organizationName}`;
   const body = renderDigestText(d);
+  const encryptedBody = encryptField(body) ?? body;
+  const bodyEncrypted = encryptedBody !== body;
+  const week = isoWeekKey(new Date(d.windowEnd));
+
   let sent = 0;
   for (const m of owners) {
-    if (!m.user.email) continue;
+    const email = m.user.email;
+    if (!email) continue;
+
+    const encryptedTo = encryptField(email) ?? email;
+    const toAddressHash = hashEmailForIndex(email);
+
     try {
-      await provider.send(m.user.email, subject, body);
+      await withoutRls((tx) =>
+        tx.emailOutbox.create({
+          data: {
+            // UNIQUE (sparse index, migration 20260813000005). Two runs in the
+            // same ISO week collide here and the second is a no-op, which is
+            // what makes an hourly schedule safe.
+            idempotencyKey: `audit_digest:${d.organizationId}:${toAddressHash.slice(0, 16)}:${week}`,
+            toAddress: encryptedTo,
+            toAddressEncrypted: encryptedTo !== email,
+            toAddressHash,
+            subject,
+            body: encryptedBody,
+            bodyEncrypted,
+            purpose: 'audit_digest',
+          },
+        }),
+      );
       sent += 1;
-    } catch (err) {
-      log.warn('audit_digest.email_failed', {
-        organizationId: d.organizationId,
-        error: sanitizeErrorMessage(err),
-      });
+    } catch {
+      // Unique violation = already queued this week. Any other failure is also
+      // non-fatal for the remaining owners; the outbox drain owns delivery, and
+      // a stuck queue surfaces through the outbox-backlog monitor check rather
+      // than here. No address or body is logged.
     }
   }
   return { sent };
 }
 
+/**
+ * Builds and queues a digest for every organization.
+ *
+ * P15-004: safe to call as often as you like. The weekly `0 8 * * 1` schedule
+ * in .github/workflows/cron.yml was silently dropped by GitHub — it has never
+ * fired — so this also runs on the reliable hourly schedule. Idempotency is
+ * enforced by the database, not by trusting the caller's timing.
+ */
 export async function runDigestForAllOrgs(): Promise<{ orgs: number; emails: number }> {
   const orgs = await withoutRls((tx) => tx.organization.findMany({ select: { id: true } }));
   let emails = 0;
