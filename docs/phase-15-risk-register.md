@@ -119,13 +119,18 @@ mitigation in place. **Accepted risk** = proceed, informed.
   delivery, and drops are most likely on low-frequency crons.
 - **Impact.** Owners silently stop receiving audit digests; partition
   maintenance could silently lapse.
-- **Mitigation applied this phase.** The monitor can now *see* it: P15-003
-  replaced a check that passed unconditionally when the digest had never run
-  with one that fails when a digest has been due longer than the window
-  (`evaluateAuditDigest` in `scripts/production-monitor.mjs`).
-- **Residual.** Detection only — the schedule can still be dropped. A durable
-  fix moves due-tracking into the hourly job, which needs idempotency in
-  `runDigestForAllOrgs()` (it has none today: two calls send two digests).
+- **Confirmed in production.** After the P15-003 check deployed, the monitor
+  reported *“no audit digest has EVER been queued, but an eligible organization
+  has existed for 477.8h (limit 240h)”* — twenty days, zero digests, while the
+  old check reported PASS throughout.
+- **Mitigation applied this phase — detection and cure.** P15-003 made the
+  failure visible. P15-009 then made `runDigestForAllOrgs()` idempotent per ISO
+  week (unique index on `email_outbox.idempotency_key`), which made it safe to
+  put the job on the reliable hourly schedule as well as the weekly one.
+- **Residual.** Low. The weekly schedule can still be dropped, but the hourly
+  one carries the job, and duplicate invocations are database-enforced no-ops.
+  The monthly `30 1 1 * *` partition job retains the original exposure — it has
+  not been made idempotent and still relies on a low-frequency schedule.
 - **Launch: Accepted. Pilot: Accepted. Money: no.**
 
 ## R-09 · No point-in-time recovery; ~24h backup RPO
@@ -193,6 +198,18 @@ mitigation in place. **Accepted risk** = proceed, informed.
   `docs/legal-review-checklist.md`.
 - **Launch: Conditional (legal). Pilot: Conditional. Money: no.**
 
+## R-15 · Digest bypassed the outbox (resolved)
+
+- **Evidence.** P15-009. `sendDigestToOwners()` called the email provider
+  directly, so a failed digest was logged and dropped, and the freshness metric
+  read a table nothing wrote.
+- **Status.** **Fixed and proven.** Enqueued to `email_outbox` with encryption
+  and a per-ISO-week idempotency key; `tests/phase15-digest-delivery.test.ts`
+  asserts the ops metric moves off null as a consequence.
+- **Residual.** None known. Delivery now depends on the outbox drain, which is
+  already monitored by the outbox-backlog and dead-letter checks.
+- **Launch: resolved. Pilot: resolved.**
+
 ## R-14 · Browser and accessibility suite did not run in CI
 
 - **Evidence.** P15-006. `.github/workflows/ci.yml` had two jobs
@@ -215,7 +232,7 @@ mitigation in place. **Accepted risk** = proceed, informed.
 
 | Risk | Owner | Accepted? | Date |
 |---|---|---|---|
-| R-01 … R-14 | repository owner | ☐ | |
+| R-01 … R-15 | repository owner | ☐ | |
 
 Launch blockers outstanding: **R-01, R-02, R-04.** All three are the same
 underlying gap — email cannot yet be trusted — and all three are resolved by

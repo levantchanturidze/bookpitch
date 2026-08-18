@@ -8,7 +8,7 @@ Three blockers remain, all email/DNS, all human.
 
 ## A. Engineering — done
 
-- [x] Unit + integration suite green (961 tests, 79 files)
+- [x] Unit + integration suite green (990 tests, 82 files)
 - [x] Browser, mobile and accessibility suite green (177 passed, 6 projects)
 - [x] That suite actually runs in CI (`e2e` job) — P15-006
 - [x] TypeScript, ESLint, Prettier clean
@@ -18,6 +18,7 @@ Three blockers remain, all email/DNS, all human.
 - [x] Migrations applied and no drift (62)
 - [x] Erasure clears every identifying field — P15-002
 - [x] Audit-digest monitoring can actually fail — P15-003
+- [x] Digest queued durably via the outbox; runs hourly and idempotently — P15-004, P15-009
 - [x] Public legal surface exists and is reachable — P15-001
 - [x] Production monitor 18/18
 
@@ -64,7 +65,6 @@ drafts. Detail: `docs/legal-review-checklist.md`.
 - [ ] Dependabot alerts enabled (free, two clicks — R-06)
 - [ ] Decide on branch protection (needs a paid plan or public repo — R-07)
 - [ ] Reconcile the `ARCHITECTURE.md` EU-backup claim with reality (R-10)
-- [ ] Consider moving digest due-tracking into the hourly cron (R-08)
 - [ ] Consider Turnstile test keys so the full signup journey runs in CI (R-14)
 
 ## F. Pilot readiness
