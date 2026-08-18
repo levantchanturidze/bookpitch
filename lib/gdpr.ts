@@ -146,7 +146,44 @@ export async function exportCustomerData(
 // -----------------------------------------------------------------------------
 // Anonymize — redact PII in place. FK-linked appointments/payments still
 // resolve; audit trail preserves the operational history.
+//
+// P15-002: the redaction field set lives here, in one place, because it was
+// previously duplicated between anonymizeCustomer() and runRetentionTick().
+// The two copies drifted: both cleared name/email/phone/dob/gender/avatar/
+// allergies/clinicalNotes but neither cleared insurerName or
+// insurancePolicyNumber. A policy number is directly identifying, and
+// buildClaimsExport() in lib/insurance.ts selects on
+// `insurancePolicyNumber: { not: null }` — so an erased customer kept
+// reappearing in insurance claim exports under their real policy number.
+// One shared constant means the two paths cannot drift again.
+//
+// Deliberately NOT cleared here: treatment_history rows. Those are clinical
+// records and may carry a statutory retention duty that outlives an erasure
+// request; removing them is a legal decision, not an engineering one. Tracked
+// as P15-005 in docs/phase-15-launch-readiness-uat-ledger.md and flagged for
+// the legal review in docs/legal-review-checklist.md. Do not "fix" this
+// without that decision.
 // -----------------------------------------------------------------------------
+
+/**
+ * Every customer column that holds directly-identifying or special-category
+ * personal data and must be cleared by both erasure paths.
+ *
+ * Exported so tests can assert the set is actually applied rather than
+ * re-listing the fields (a test that restates the constant proves nothing).
+ */
+export const CUSTOMER_REDACTION_FIELDS = {
+  email: null,
+  phone: null,
+  dob: null,
+  gender: null,
+  avatarUrl: null,
+  allergies: null,
+  clinicalNotes: null,
+  insurerName: null,
+  insurancePolicyNumber: null,
+} as const;
+
 export async function anonymizeCustomer(
   session: ActiveSession,
   customerId: string,
@@ -168,13 +205,7 @@ export async function anonymizeCustomer(
       where: { id: customerId },
       data: {
         name: `Redacted Customer #${suffix}`,
-        email: null,
-        phone: null,
-        dob: null,
-        gender: null,
-        avatarUrl: null,
-        allergies: null,
-        clinicalNotes: null,
+        ...CUSTOMER_REDACTION_FIELDS,
       },
     });
     await writeAudit(tx, session, 'delete', 'customer', customerId, {
@@ -241,13 +272,7 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
         where: { id: c.id },
         data: {
           name: `Redacted Customer #${suffix}`,
-          email: null,
-          phone: null,
-          dob: null,
-          gender: null,
-          avatarUrl: null,
-          allergies: null,
-          clinicalNotes: null,
+          ...CUSTOMER_REDACTION_FIELDS,
         },
       });
       await tx.auditLog.create({
