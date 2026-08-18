@@ -83,6 +83,16 @@ describe('collectOpsMetrics against a real database', () => {
     ]);
     // P15-003: the digest metric carries two numbers now. The monitor needs
     // both to tell "nothing due yet" apart from "the weekly job never ran".
+    // P15-010: the config block gained a validity count alongside the
+    // presence counts. Presence alone said production was configured while
+    // FIELD_ENCRYPTION_KEY was unparseable.
+    expect(Object.keys(metrics.config).sort()).toEqual([
+      'invalidSecurityEnv',
+      'missingEmailEnv',
+      'missingSecurityEnv',
+      'missingSignupEnv',
+    ]);
+
     expect(Object.keys(metrics.auditDigest).sort()).toEqual([
       'hoursSinceLastQueued',
       'oldestEligibleOrgAgeHours',

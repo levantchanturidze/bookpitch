@@ -2,11 +2,19 @@
 
 ## Recommendation
 
-# CONDITIONAL GO
+# NO-GO (until R-16 is corrected), then CONDITIONAL GO
 
-Conditional on the three email blockers below. The software itself is in good
-shape; what is not ready is the delivery path every new organisation depends
-on, and the legal surface they are asked to trust.
+**A P0 configuration defect was found in production during this phase
+(R-16).** `FIELD_ENCRYPTION_KEY` is set without its `<key-id>:` prefix, so
+every `encryptField()` call throws — signup, patient clinical fields and MFA
+enrolment all return 500 right now. While that stands, the answer is `NO-GO`,
+because no organisation can be onboarded at all.
+
+It is a one-line configuration correction. Once made and verified, the
+recommendation becomes **CONDITIONAL GO**, conditional on the three email
+blockers below. The software itself is in good shape; what is not ready is the
+delivery path every new organisation depends on, and the legal surface they are
+asked to trust.
 
 **`GO` is not available** while R-01, R-02 and R-04 are open — signup cannot
 complete without a verification email, and no message has ever been received
@@ -94,7 +102,8 @@ the caps can safely rise.
 
 | Gate | Evidence | Owner | Status | Severity | Action | Consequence if unresolved |
 |---|---|---|---|---|---|---|
-| Unit/integration suite | 990 tests, 82 files, exit 0 | agent | **PASS** | — | — | — |
+| **Production encryption key parses** | Malformed; `/api/cron/audit-digest` → 500 (R-16) | **owner** | **FAIL** | **P0 Blocker** | Prefix with `<key-id>:` | **Signup, clinical fields and MFA all 500** |
+| Unit/integration suite | 1003 tests, 83 files, exit 0 | agent | **PASS** | — | — | — |
 | Browser/mobile/a11y suite | 177 passed, 3 skipped, 6 projects, exit 0 | agent | **PASS** | — | — | — |
 | Suite runs in CI | `e2e` job added (P15-006) | agent | **PASS** | — | — | Regressions invisible |
 | TypeScript / lint / format | exit 0 | agent | **PASS** | — | — | — |
@@ -123,6 +132,9 @@ the caps can safely rise.
 
 ### The shortest path to `GO`
 
+0. **Correct `FIELD_ENCRYPTION_KEY`** to `<key-id>:<64-hex-chars>` and confirm
+   `POST /api/cron/audit-digest` returns 200. Nothing else matters until this
+   is done.
 1. Verify `bookpitch.ge` in Resend; publish the DKIM/SPF/MX records it issues.
 2. Publish `_dmarc.bookpitch.ge` at `p=none` with a reachable `rua`.
 3. Run `docs/production-uat-checklist.md` §A–B against a designated mailbox and
