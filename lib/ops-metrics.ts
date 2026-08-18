@@ -185,7 +185,7 @@ export const SECURITY_ENV_VALIDATORS: Readonly<Record<string, (value: string) =>
  */
 export function invalidEnv(
   validators: Readonly<Record<string, (value: string) => boolean>> = SECURITY_ENV_VALIDATORS,
-  env: NodeJS.ProcessEnv = process.env,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): string[] {
   return Object.entries(validators)
     .filter(([name, isValid]) => {
