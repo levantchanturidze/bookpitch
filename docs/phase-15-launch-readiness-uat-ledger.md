@@ -110,7 +110,8 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
 | P15-009 | P1 | Digest bypassed the outbox; its metric could never be non-null | **Fixed** |
 | P15-010 | **P0** | `FIELD_ENCRYPTION_KEY` malformed in production — signup, clinical fields and MFA all 500 | **Detected**; correction is human-only |
 | P15-011 | P2 | Monitor incidents opened unassigned, so nobody was ever notified | **Fixed** |
-| P15-012 | P3 | `platform-break-glass` has an intermittent, order-dependent failure | **Observed, not root-caused** |
+| P15-013 | P2 | Phase 15 reported the sending domain unverified — wrong hostnames queried | **Retracted and corrected** |
+| P15-012 | P3 | Concurrent test runs on one database corrupt each other's fixtures | **Root-caused and fixed** |
 
 ### P15-001 · No public Privacy Policy, Terms, or consent surface — P1
 
@@ -320,35 +321,72 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
   the parser it stands in for, so the two cannot drift and start lying about
   production.
 
-### P15-012 · An intermittent, order-dependent test — observed, not fixed
+### P15-012 · Concurrent test runs corrupt each other — P3 — **root-caused and fixed**
 
-- **Evidence.** `tests/platform-break-glass.test.ts > Phase 11 Row 9: reauth
-  grants are invalidated on TOTP path` failed once with
-  `expected 400 to be 200`, inside a full `npm test` run. It passes in
-  isolation, passes at the baseline commit in isolation, and passed in four of
-  the five full-suite runs made during this phase.
-- **Not caused by Phase 15.** Nothing in this phase touches break-glass, TOTP
-  or reauth grants.
-- **Two candidate causes, neither confirmed.** (a) The fixture plants a grant
-  with `expiresAt: new Date(Date.now() + 60_000)` — a **Node** clock value,
-  while the server validates expiry against the **database** clock. That is the
-  precise hazard recorded for this project after an earlier incident, and a
-  slow run or any clock skew would expire the grant before it is used.
-  (b) TOTP replay: the server keeps a monotonic `mfa_last_totp_window` fence,
-  and two tests consuming a code inside one 30-second step would collide.
-  (b) is the less likely of the two, because the file's `beforeEach` already
-  resets `mfaLastTotpWindow` to `null`.
-- **Deliberately not "fixed".** A first attempt at (b) — waiting for the next
-  TOTP step before reissuing a code — was written, found to be both slow and
-  based on the wrong diagnosis, and reverted rather than shipped. Guessing at
-  an intermittent failure risks papering over a real control; the honest state
-  is that it is reproducible only occasionally and has not been root-caused.
-- **Consequence for Phase 15.12.** The claim "no test depends on execution
-  order" is therefore **not** made unconditionally: this one appears to. Every
-  other gate result in §7 stands.
-- **Next step.** Make the fixture derive `expiresAt` from the database clock,
-  the same correction applied to production reauth grants, then run the full
-  suite repeatedly to confirm.
+- **Symptom.** `tests/platform-break-glass.test.ts > Phase 11 Row 9: reauth
+  grants are invalidated on TOTP path` failed with `expected 400 to be 200`,
+  roughly one full run in five. Passed with the file alone (0/10 failures),
+  passed at the baseline commit, and never failed in CI.
+- **Root cause.** Two vitest processes running against the same local database
+  at once. The suite shares one database and runs files serially for exactly
+  that reason (`fileParallelism: false`), but nothing prevented a *second*
+  process. When two runs overlap, one run's `beforeEach` resets
+  `mfa_last_totp_window` and the rate-limit buckets for the shared seeded
+  super-admin while the other run is mid-request — and that request gets a 400
+  from a control doing precisely its job.
+- **It was self-inflicted.** A background run of the break-glass file
+  (task `b5g292eww`) was still executing when a full `npm test` was started.
+  CI never saw it because CI runs exactly one process. `vitest.config.ts`
+  already carried a warning about "two concurrent test processes sharing a
+  connection pool" from an earlier incident.
+- **Two wrong theories were tried and discarded**, both recorded because the
+  discarding is the evidence: (a) TOTP replay — ruled out, `beforeEach` already
+  resets `mfaLastTotpWindow` to `null`; (b) a TOTP step-boundary race — ruled
+  out by measurement, the verifier tolerates ±1 step
+  (probe: previous-, current- and next-step codes all accepted).
+- **Fix.** `tests/global-setup.ts` takes a run-scoped PostgreSQL advisory lock
+  (key `7698234762`, distinct from `HOUSEKEEPING_LOCK_KEY`). A second
+  concurrent run now fails immediately with an explanation instead of producing
+  a misleading red.
+- **Why globalSetup and not setupFiles.** Measured, not assumed: vitest forks a
+  process per test file, so a session lock taken in `setupFiles` is released
+  when each file's process exits, leaving gaps a second run slips through. A
+  first attempt at that level was built and observed to fail to refuse a
+  concurrent run.
+- **Proof.** `tests/phase15-suite-lock.test.ts` (5 tests), the decisive one
+  asserting the lock is *actually held right now from a different database
+  session* — a content check of the setup file would pass even if the lock were
+  never taken. Plus a live demonstration with timestamps: run A 22:04:43→22:06:05,
+  run B started 22:04:51 and exited **1** with
+  `[suite lock] another test run already holds this database`, while A completed
+  cleanly.
+- **Also improved.** The assertion that failed now prints the response body, so
+  a future failure here names its cause instead of saying only
+  "expected 400 to be 200".
+
+### P15-013 · Phase 15 reported the sending domain unverified — that was wrong
+
+- **The error.** An earlier Phase 15 revision reported no SPF, no DKIM and no
+  bounce MX for the sending domain, and made it the top launch blocker across
+  the risk register, go/no-go matrix and launch checklist.
+- **Reality** (`dig @8.8.8.8`, 2026-08-18T22:07:24Z):
+  `resend._domainkey.send.bookpitch.ge` holds an RSA DKIM key;
+  `send.send.bookpitch.ge` publishes `v=spf1 include:amazonses.com ~all` and
+  MX `10 feedback-smtp.eu-west-1.amazonses.com`. The sending domain
+  `send.bookpitch.ge` is verified, exactly as Phase 13 recorded.
+- **Root cause.** The sending domain was inferred from an illustrative example
+  in a comment in `lib/messaging/email/resend.ts`
+  (`e.g. "Bookpitch <no-reply@bookpitch.ge>"`) and the apex was queried as if it
+  were the configured value. `RESEND_FROM` is a Vercel variable that cannot be
+  read back, so the true domain had to come from Phase 13's ledger — and was
+  not taken from it.
+- **Corrected in.** `docs/email-dns-readiness.md` (rewritten, with the
+  reconciliation table), `docs/phase-15-risk-register.md` (R-01 retracted, R-02
+  and R-03 downgraded to hardening), `docs/pilot-plan-and-go-no-go.md`,
+  `docs/launch-checklist.md`.
+- **Net effect on launch.** Two claimed email blockers disappear. One remains
+  and is genuine: no message has ever been received in a real mailbox and no
+  `Authentication-Results` header has been inspected (R-04).
 
 ## 4. Requirement reconciliation
 
@@ -468,10 +506,10 @@ Also verified:
 
 - No `.only`, no newly skipped test. The 3 Playwright skips are pre-existing
   project/viewport exclusions, not quarantines.
-- **Execution-order independence is NOT claimed.** P15-012 records one
-  pre-existing test that appears to depend on timing/order. It was observed
-  once in five full runs, is unrelated to Phase 15, and has not been
-  root-caused; it is recorded rather than hidden.
+- **Execution-order independence: claimed, with evidence.** P15-012 was
+  root-caused to concurrent test processes sharing one database, not to an
+  order dependency within a run. A run-scoped advisory lock now makes that
+  state unreachable, and consecutive sequential full-suite runs pass — see §7.
 - No snapshot updated.
 - No Playwright artifact committed.
 - No production identifier or customer data in any fixture.

@@ -11,10 +11,13 @@ enrolment all return 500 right now. While that stands, the answer is `NO-GO`,
 because no organisation can be onboarded at all.
 
 It is a one-line configuration correction. Once made and verified, the
-recommendation becomes **CONDITIONAL GO**, conditional on the three email
-blockers below. The software itself is in good shape; what is not ready is the
-delivery path every new organisation depends on, and the legal surface they are
-asked to trust.
+recommendation becomes **CONDITIONAL GO**, conditional on one email item —
+receiving and inspecting a real message (R-04) — plus legal review.
+
+**Correction:** an earlier revision listed three email blockers on the basis
+that the sending domain was unverified. That was wrong; the domain is verified
+(DKIM, SPF and bounce MX are all published under `send.bookpitch.ge`). See
+`docs/email-dns-readiness.md` §2. Only inbox verification remains.
 
 **`GO` is not available** while R-01, R-02 and R-04 are open — signup cannot
 complete without a verification email, and no message has ever been received
@@ -115,9 +118,10 @@ the caps can safely rise.
 | Backup + restore drill | backup 16.1h, drill 47h — both inside limits | agent | **PASS** | — | — | — |
 | Tenant isolation | RLS + role/grant suites green | agent | **PASS** | — | — | — |
 | Erasure completeness | P15-002 fixed, complement-proven | agent | **PASS** | — | — | — |
-| **Sending domain verified** | No DKIM, no SPF (R-01) | **owner** | **FAIL** | **Blocker** | Verify domain in Resend, publish records | **Signup cannot complete** |
-| **Organisational DMARC** | `_dmarc.bookpitch.ge` absent (R-02) | **owner** | **FAIL** | **Blocker** | Publish `_dmarc` at `p=none` | Mail filed as spam |
-| **Real message received** | Never exercised (R-04) | **owner** | **FAIL** | **Blocker** | UAT checklist §A–B | Delivery unproven |
+| Sending domain verified | DKIM/SPF/bounce MX present under `send.bookpitch.ge` (R-01 retracted) | agent | **PASS** | — | — | — |
+| Provider accepts and delivers | Phase 13: `delivered@resend.dev → delivered` | agent | **PASS** | — | — | — |
+| Organisational DMARC | `_dmarc.bookpitch.ge` absent (R-02) | **owner** | **OPEN** | Hardening | Publish `_dmarc` at `p=none` | Reduced spoofing resistance |
+| **Real message received and headers inspected** | Never done (R-04) | **owner** | **FAIL** | **Blocker** | UAT checklist §A–B | **Inbox delivery unproven** |
 | Production signup by a human | Not performed (R-05) | **owner** | **OPEN** | Conditional | UAT checklist | Primary journey unproven in prod |
 | Legal review | Drafts; operator identity absent | **owner + adviser** | **OPEN** | Conditional | `docs/legal-review-checklist.md` | Users trust unreviewed text |
 | Treatment-history erasure | Undecided (R-13) | **owner + adviser** | **OPEN** | Conditional | Legal decision | Erasure may be incomplete |
@@ -134,12 +138,11 @@ the caps can safely rise.
 
 0. **Correct `FIELD_ENCRYPTION_KEY`** to `<key-id>:<64-hex-chars>` and confirm
    `POST /api/cron/audit-digest` returns 200. Nothing else matters until this
-   is done.
-1. Verify `bookpitch.ge` in Resend; publish the DKIM/SPF/MX records it issues.
-2. Publish `_dmarc.bookpitch.ge` at `p=none` with a reachable `rua`.
-3. Run `docs/production-uat-checklist.md` §A–B against a designated mailbox and
-   confirm `spf=pass`, `dkim=pass`, `dmarc=pass`.
+   is done — signup fails before any mail is queued.
+1. **Designate a test mailbox** and run `docs/production-uat-checklist.md`
+   §A–B, confirming `spf=pass`, `dkim=pass`, `dmarc=pass` from the real
+   headers.
 
-That clears all three blockers. The remaining `OPEN` items are conditional, not
-blocking, provided the pilot organisation is told in writing that the legal
-documents are drafts.
+That clears both blockers. `_dmarc.bookpitch.ge` and the unreachable `rua` are
+hardening, not blocking. The remaining `OPEN` items are conditional, provided
+the pilot organisation is told in writing that the legal documents are drafts.
