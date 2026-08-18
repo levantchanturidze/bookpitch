@@ -103,7 +103,7 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
                       /book/{l.publicSlug}
                     </a>
                   ) : (
-                    <span className="text-slate-300">—</span>
+                    <span className="text-slate-500">—</span>
                   )}
                 </td>
                 <td className="px-6 py-2 text-right">

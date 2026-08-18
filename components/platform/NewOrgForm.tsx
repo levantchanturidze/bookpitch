@@ -192,7 +192,7 @@ export default function NewOrgForm() {
           <button
             type="submit"
             disabled={busy || name.trim().length < 2}
-            className="rounded-md bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-md bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? 'Creating…' : 'Create organization'}
           </button>

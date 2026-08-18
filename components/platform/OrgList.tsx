@@ -122,7 +122,7 @@ export default function OrgList({ orgs }: { orgs: OrgRow[] }) {
         <h2 className="text-lg font-bold">Organizations</h2>
         <Link
           href="/platform/orgs/new"
-          className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+          className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600"
         >
           + New organization
         </Link>

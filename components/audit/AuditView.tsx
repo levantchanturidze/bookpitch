@@ -202,7 +202,7 @@ export default function AuditView({ rows, initial }: Props) {
                           {r.entityId.slice(0, 8)}
                         </span>
                       ) : (
-                        <span className="text-slate-300">—</span>
+                        <span className="text-slate-500">—</span>
                       )}
                     </td>
                     <td className="px-6 py-2 font-mono text-[10px] text-slate-500">

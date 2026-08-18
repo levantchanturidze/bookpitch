@@ -524,7 +524,7 @@ function OrgTogglesPanel({
                 {val ? 'ON' : 'OFF'}
               </button>
             ) : (
-              <span className={`font-mono text-xs ${val ? 'text-emerald-300' : 'text-slate-500'}`}>
+              <span className={`font-mono text-xs ${val ? 'text-emerald-300' : 'text-slate-400'}`}>
                 {val ? 'ON' : 'OFF'}
               </span>
             )}

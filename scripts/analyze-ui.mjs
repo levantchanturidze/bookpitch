@@ -137,6 +137,7 @@ export const PALETTE = {
   'slate-50': '#f8fafc',
   'slate-100': '#f1f5f9',
   'slate-200': '#e2e8f0',
+  'slate-300': '#cbd5e1',
   'slate-400': '#94a3b8',
   'slate-500': '#64748b',
   'slate-600': '#475569',
@@ -147,7 +148,28 @@ export const PALETTE = {
   'rose-50': '#fff1f2',
   'amber-50': '#fffbeb',
   'emerald-50': '#ecfdf5',
+  'emerald-950': '#022c22',
+  // The Bookpitch accent. Present because conditional "active" states use it as
+  // a background, and omitting it made every such state report as unknown.
+  'teal-50': '#f0fdfa',
+  'teal-600': '#0d9488',
+  'teal-700': '#0f766e',
+  // The salon accent. Omitting it made every salon-branch state fall back to
+  // the ancestor surface and report a false white-on-white failure.
+  'pink-50': '#fdf2f8',
+  'pink-600': '#db2777',
+  'pink-700': '#be185d',
+  'rose-600': '#e11d48',
+  'emerald-600': '#059669',
+  'emerald-700': '#047857',
+  'emerald-800': '#065f46',
+  'emerald-300': '#6ee7b7',
+  'teal-800': '#115e59',
+  'amber-600': '#d97706',
 };
+
+const SURFACE_SRC = String.raw`bg-(white|slate-\d{2,3}|rose-\d{2,3}|amber-\d{2,3}|emerald-\d{2,3}|teal-\d{2,3}|pink-\d{2,3})`;
+const SURFACE_RE = new RegExp(SURFACE_SRC);
 
 function srgbToLinear(c) {
   const v = c / 255;
@@ -200,6 +222,15 @@ export function isIndeterminate(src, index) {
   return between.includes('`') || between.includes('?') || between.includes('&&');
 }
 
+/** True when the element carrying this class is declared decorative. */
+export function isDecorative(src, index) {
+  const tagStart = src.lastIndexOf('<', index);
+  if (tagStart === -1) return false;
+  let tagEnd = src.indexOf('>', index);
+  if (tagEnd === -1) tagEnd = src.length;
+  return /aria-hidden=(?:"true"|\{true\})/.test(src.slice(tagStart, tagEnd));
+}
+
 export function resolveSurface(src, index) {
   // FIRST: the element the class is actually on. A button written as
   // `className="bg-slate-900 text-white"` carries its own surface, and looking
@@ -209,9 +240,7 @@ export function resolveSurface(src, index) {
   if (tagStart !== -1) {
     const tagEnd = src.indexOf('>', index);
     const ownTag = src.slice(tagStart, tagEnd === -1 ? index : tagEnd);
-    const own = /\bbg-(white|slate-\d{2,3}|rose-\d{2,3}|amber-\d{2,3}|emerald-\d{2,3})\b/.exec(
-      ownTag,
-    );
+    const own = SURFACE_RE.exec(ownTag);
     if (own) return own[1];
   }
 
@@ -238,9 +267,7 @@ export function resolveSurface(src, index) {
       continue;
     }
     // This is an enclosing ancestor.
-    const bg = /\bbg-(white|slate-\d{2,3}|rose-\d{2,3}|amber-\d{2,3}|emerald-\d{2,3})\b/.exec(
-      t.attrs,
-    );
+    const bg = SURFACE_RE.exec(t.attrs);
     if (bg) return bg[1];
   }
   return null;
@@ -258,6 +285,14 @@ export function analyzeContrast(root) {
       const fgKey = m[1];
       const fg = PALETTE[fgKey];
       if (!fg) continue;
+      // WCAG 1.4.3 applies to TEXT. An icon marked aria-hidden="true" is
+      // decorative by declaration — it is removed from the accessibility tree
+      // and always accompanied by real text — so it carries no contrast
+      // requirement under 1.4.3, and 1.4.11 exempts decoration explicitly.
+      // The aria-hidden attribute is what makes that claim checkable rather
+      // than an assertion: a decorative icon that is NOT hidden is still judged.
+      if (isDecorative(src, m.index)) continue;
+
       if (isIndeterminate(src, m.index)) {
         findings.push({
           file: path.relative(root, file),
@@ -331,6 +366,141 @@ export function analyzeIconButtons(root) {
         hasTitle: /\btitle=/.test(attrs),
         hasFocusStyle: /focus-visible:|focus:ring|focus:outline/.test(attrs),
         snippet: m[0].slice(0, 70).replace(/\s+/g, ' '),
+      });
+    }
+  }
+  return results;
+}
+
+// -----------------------------------------------------------------------------
+// Conditional-class branch resolution.
+//
+// analyzeContrast() deliberately refuses to judge a class inside a template
+// literal or ternary, because the background can come from a sibling branch:
+//
+//   className={active ? 'bg-teal-600 text-white' : 'text-slate-500'}
+//
+// Reporting those as failures produced 47 false positives. But "indeterminate"
+// must not quietly mean "fine" either. This resolver enumerates EVERY branch of
+// the expression and computes the contrast of every state the element can
+// actually render in, which is what makes the remainder explainable rather than
+// unexplained.
+//
+// For each branch the foreground is: the branch's own text-* if it sets one,
+// otherwise the static text-* on the element, otherwise inherited (skipped).
+// The background is: the branch's own bg-*, otherwise the element's static bg-*,
+// otherwise the nearest ancestor surface.
+// -----------------------------------------------------------------------------
+
+// (?<![:-]) rejects variant-prefixed utilities: `hover:bg-teal-700` and
+// `disabled:text-slate-400` describe a STATE, not the resting appearance, and
+// resolving the resting state against them picked the wrong colour.
+const CLASS_TEXT = /(?<![:-])\btext-(slate-\d{3}|white)\b/g;
+const CLASS_BG =
+  /(?<![:-])\bbg-(white|slate-\d{2,3}|rose-\d{2,3}|amber-\d{2,3}|emerald-\d{2,3}|teal-\d{2,3}|pink-\d{2,3})\b/g;
+
+function tokensIn(text, re) {
+  re.lastIndex = 0;
+  const out = [];
+  let m;
+  while ((m = re.exec(text))) out.push(m[1]);
+  return out;
+}
+
+/** Extract the full className={...} expression that contains `index`. */
+function classExpressionAt(src, index) {
+  const tagStart = src.lastIndexOf('<', index);
+  if (tagStart === -1) return null;
+  const attrStart = src.lastIndexOf('className={', index);
+  if (attrStart === -1 || attrStart < tagStart) return null;
+  // Balance braces from the opening `{`.
+  let i = attrStart + 'className='.length;
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') {
+      depth--;
+      if (depth === 0) break;
+    }
+  }
+  return { start: attrStart, end: i + 1, text: src.slice(attrStart, i + 1) };
+}
+
+/**
+ * Split a className expression into its literal branches. Template-literal
+ * chunks outside `${}` are "static"; quoted strings inside are "branches".
+ */
+export function classBranches(expr) {
+  const staticParts = [];
+  const branches = [];
+  // Template literal chunks that are not inside ${...}
+  const tpl = /`([^`]*)`/g;
+  let m;
+  while ((m = tpl.exec(expr))) {
+    const body = m[1];
+    // remove ${...} interpolations; what is left is static
+    staticParts.push(body.replace(/\$\{[\s\S]*?\}/g, ' '));
+  }
+  // Quoted string literals (branch values, including those inside ${})
+  const quoted = /'([^']*)'|"([^"]*)"/g;
+  while ((m = quoted.exec(expr))) {
+    const value = m[1] ?? m[2] ?? '';
+    // Skip string literals that belong to the CONDITION rather than the class
+    // list — `accent === 'teal'` contributes 'teal', which has no utility
+    // classes at all and previously resolved to a phantom white-on-white state.
+    if (!/\b(?:text|bg|border|ring)-[a-z]+(?:-\d{2,3})?\b/.test(value)) continue;
+    branches.push(value);
+  }
+  return { staticParts, branches };
+}
+
+export function analyzeConditionalStates(root) {
+  const results = [];
+  for (const file of sourceFiles(root, ['.tsx'])) {
+    const src = readFileSync(file, 'utf8');
+    const seen = new Set();
+    CLASS_TEXT.lastIndex = 0;
+    let m;
+    while ((m = CLASS_TEXT.exec(src))) {
+      if (!isIndeterminate(src, m.index)) continue;
+      const expr = classExpressionAt(src, m.index);
+      if (!expr || seen.has(expr.start)) continue;
+      seen.add(expr.start);
+
+      const { staticParts, branches } = classBranches(expr.text);
+      const staticText = staticParts.join(' ');
+      const staticFg = tokensIn(staticText, CLASS_TEXT).at(-1) ?? null;
+      const staticBg = tokensIn(staticText, CLASS_BG).at(-1) ?? null;
+      // Ancestor surface — resolved from BEFORE this element's own opening tag.
+      // Using expr.start put the search inside the element's own attributes,
+      // where resolveSurface then found a background belonging to a *sibling
+      // branch* of the very ternary being analysed (TabsNav's inactive tab was
+      // judged against the active tab's bg-slate-900). The enclosing surface
+      // has to be looked up outside this tag entirely.
+      const ownTagStart = src.lastIndexOf('<', expr.start);
+      const ancestorBg = resolveSurface(src, ownTagStart > 0 ? ownTagStart - 1 : 0);
+
+      const states = [];
+      for (const branch of branches) {
+        const fg = tokensIn(branch, CLASS_TEXT).at(-1) ?? staticFg;
+        const bg = tokensIn(branch, CLASS_BG).at(-1) ?? staticBg ?? ancestorBg;
+        if (!fg || !bg) continue;
+        const fgHex = PALETTE[fg];
+        const bgHex = PALETTE[bg];
+        if (!fgHex || !bgHex) {
+          states.push({ fg, bg, ratio: null, passesAA: null, unknownColour: true });
+          continue;
+        }
+        const ratio = contrastRatio(fgHex, bgHex);
+        states.push({ fg, bg, ratio: Number(ratio.toFixed(2)), passesAA: ratio >= 4.5 });
+      }
+      results.push({
+        file: path.relative(root, file),
+        line: src.slice(0, expr.start).split('\n').length,
+        staticFg,
+        staticBg,
+        ancestorBg,
+        states,
       });
     }
   }
