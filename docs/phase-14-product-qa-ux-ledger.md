@@ -2,6 +2,8 @@
 
 **Branch:** `agent/phase-14-product-qa-ux`
 **Baseline SHA:** `5ae878c34bc5414a42581c0599a24db730edddf1` (= `origin/main` at start)
+**Status: PHASE 14 COMPLETE** — 2026-08-18T07:40Z. Verdict and evidence in §14.16.
+
 **Started:** 2026-08-18 · **Completed:** 2026-08-18
 **Final SHA:** `7ea494a538287a3d15816a4560703a2050b6a3f5` (deployed, `dpl_5GDYx5JtDd8S4YhpuNSXTN4mTRTf`)
 **Production:** `https://bookpitch.ge`
@@ -602,3 +604,112 @@ asserts **no `div`/`span` with `onClick`** poses as a control anywhere reachable
 
 Runtime code changed, so a fresh 30-minute monitoring window applies:
 **06:12:08Z → 06:42:08Z**. Its evidence is recorded in §14.16.
+
+---
+
+## 14.16 — Runtime monitoring window
+
+**Window: 2026-08-18T06:12:08Z → 06:42:08Z**, measured from deployment
+`dpl_5GDYx5JtDd8S4YhpuNSXTN4mTRTf` (`7ea494a`) reaching READY. The later
+docs-only release (`be6ffd9`, `dpl_GZG3t23YaVgfJtmshSrwhKuhYyh1`, READY
+06:23:09Z) changed one markdown file and therefore does not restart the clock;
+its deployment still reached READY and was smoke-checked.
+
+### Monitor runs — and an honest note about scheduling
+
+| Run | Time | Event | Result |
+| --- | --- | --- | --- |
+| [32106159959](https://github.com/levantchanturidze/bookpitch/actions/runs/32106159959) | 06:15:30Z — **in window** | `workflow_dispatch` | **18/18** |
+| [32108845143](https://github.com/levantchanturidze/bookpitch/actions/runs/32108845143) | 06:52:57Z — post-window | `schedule` | success |
+| [32112603927](https://github.com/levantchanturidze/bookpitch/actions/runs/32112603927) | 07:40Z — post-window manual | `workflow_dispatch` | **18/18**, `deployment-reachable` reports `be6ffd9` |
+
+**GitHub skipped the 06:35Z scheduled slot.** The workflow is scheduled
+`5,35 * * * *`; between 05:58:23Z and 06:52:57Z no scheduled run fired — a
+54-minute gap spanning the window. This is the same best-effort behaviour
+recorded in the Phase 13 soak (33 of 48 expected runs, largest gap 113 min) and
+is documented in `docs/operations.md` §8 rather than presented as a 30-minute
+guarantee.
+
+Per the closure requirement, a manual monitor was run **after** the window
+closed: run `32112603927`, 18/18. In-window coverage is the 06:15:30Z dispatch;
+post-window confirmation is the 06:52:57Z scheduled run and the manual run.
+The window was not shortened.
+
+### Everything else in the window
+
+| Signal | Result |
+| --- | --- |
+| `cron.yml` runs | 12 sampled across 03:24Z–07:37Z, **all success**, including 06:40:53Z inside the window |
+| `ops-incident` issues opened during the window | **0** |
+| Any issue opened during the window | **0** |
+| Open issues now | **0** (only #9 ever existed; closed 2026-08-16) |
+| Vercel runtime logs 06:40:58Z–07:37:10Z | 9 rows, **all 200**, **0 5xx**, **0 error-level**, **0 application warn/error** |
+| Distinct app log messages | `db.prismaLogin.init`, `housekeeping.ok` |
+| Production smoke | **11/11** |
+| Browser matrix vs production | **141 passed, 3 skipped, 0 failed** across 6 projects |
+| TLS | `CN=*.bookpitch.ge`, valid to 2026-11-10 (83 days) |
+| Unattended daily backup | run `32092671097`, 5.0h before the final monitor — still green |
+
+Production smoke detail: `{"ok":true}` byte-exact, 0 redirects, TLS verified;
+`Dev credentials` and `@bookpitch.dev` both **0 occurrences**; `lang="en"`;
+no-token signup `400`; 200 KB body `413`; unknown-address resend `{"ok":true}`;
+`/dashboard` `/platform` `/api/customers` `/api/health/ready` all `307`;
+`/api/health/ops` `401`.
+
+### Repository state
+
+`git status --short` empty; `origin/main` = `be6ffd96f0e8e3c00de6596992542f804cbe61db`
+before this documentation change.
+
+---
+
+# Phase 14 — COMPLETE
+
+2026-08-18T07:40Z. Every mandatory item is `IMPLEMENTED AND PROVEN`; nothing
+remains `PARTIALLY IMPLEMENTED` or `NOT IMPLEMENTED`.
+
+| Finding | Severity | Status |
+| --- | --- | --- |
+| P14-001 `<html lang="ka">` on an English UI | P1 | `IMPLEMENTED AND PROVEN` |
+| P14-002 11 modals without dialog semantics | P1 | `IMPLEMENTED AND PROVEN` |
+| P14-003 no live regions anywhere | P1 | `IMPLEMENTED AND PROVEN` |
+| P14-004 96 inputs without error association | P1 | `IMPLEMENTED AND PROVEN` |
+| P14-005 79 `<th>` without `scope` | P2 | `IMPLEMENTED AND PROVEN` |
+| P14-006 tables clipped on narrow viewports | P2 | `IMPLEMENTED AND PROVEN` |
+| P14-007 focus removed with no replacement | P2 | `IMPLEMENTED AND PROVEN` |
+| P14-008 error boundary leaked raw exceptions | P1 | `IMPLEMENTED AND PROVEN` |
+| P14-009 no not-found / global-error boundary | P2 | `IMPLEMENTED AND PROVEN` |
+| P14-010 icon-only controls without names | P3 | `IMPLEMENTED AND PROVEN` |
+| P14-011 production sign-in disclosed accounts | **P0** | `IMPLEMENTED AND PROVEN` |
+| P14-012 7 unreachable components | P3 | `IMPLEMENTED AND PROVEN` (classified, not deleted) |
+| P14-013 116 contrast failures | P2 | `IMPLEMENTED AND PROVEN` |
+| P14-014 WebKit excludes links from Tab order | — | not a defect; engine-aware test |
+| P14-015 white on teal-600 / emerald-600 at 3.74–3.77:1 | P2 | `IMPLEMENTED AND PROVEN` |
+| P14-016 decorative icons at 1.48:1 | P3 | `IMPLEMENTED AND PROVEN` |
+| P14-017 em-dash placeholders at 1.48:1 | P2 | `IMPLEMENTED AND PROVEN` |
+
+Contrast: **116 → 0**, then a further **12 → 0** found by branch enumeration.
+All **41** indeterminate conditional cases dispositioned with no unexplained
+remainder. 935 unit tests, 141 Playwright across 6 projects, 0 failures.
+
+External-only blockers remain external and are listed in §14.17.
+
+---
+
+## 14.17 — External-only blockers and accepted risks
+
+| # | Item | Why it is external |
+| --- | --- | --- |
+| 1 | No designated test mailbox | Inbox receipt and SPF/DKIM/DMARC *header* verification need a real mailbox. Provider acceptance and final delivery status are proven via Resend sandbox recipients. Nothing was guessed. |
+| 2 | `_dmarc.bookpitch.ge` missing | DNS change, not authorised. Recommended: `TXT "v=DMARC1; p=reject; sp=reject; rua=mailto:<a-mailbox-that-exists>"` |
+| 3 | Subdomain DMARC is `p=none` | DNS change. Tighten to `quarantine`, then `reject`, once `rua` reports are clean. |
+| 4 | `rua=mailto:dmarc@bookpitch.ge` undeliverable | `dig MX bookpitch.ge` returns nothing, so aggregate reports go nowhere. DNS change. |
+| 5 | Dependabot alerts disabled (API 403) | Repository/plan setting. `npm audit --audit-level=high` remains a mandatory CI gate and is what caught GHSA-ggr8-5vv4-36mx. |
+| 6 | Scheduled-monitor latency ~2h worst case | GitHub fires scheduled workflows best-effort; the 06:35Z slot in this very window was skipped. Tightening needs an external scheduler — a spending decision. Documented, never claimed as 30 minutes. |
+| 7 | No branch protection | GitHub returns "Upgrade to GitHub Pro". A red PR *can* merge, and once did (#12). Every merge in Phase 14 was gated by a manual check of the PR head SHA against local HEAD. |
+| 8 | Production account creation | Completing the signup form means creating an account and entering a password — a boundary held throughout. One human submission would close E2E items 7 and 13–15. |
+
+Accepted risks: 7 unreachable components remain in the tree (classified, gated
+by test, deletion is a product decision); 6 `bg-teal-600` occurrences remain
+inside those dead components; `prototype/` is excluded from `tsconfig` and from
+every analyser sweep.
