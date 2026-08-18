@@ -242,11 +242,23 @@ mitigation in place. **Accepted risk** = proceed, informed.
   the existing 64 hex characters. **Do not generate a new key** without first
   confirming whether any ciphertext exists; see below. Rotating or reading
   secrets is outside what an agent may do here, so no attempt was made.
-- **Data-safety note.** Because `encryptField()` has never once succeeded in
-  production, there should be no ciphertext to lose, and simply prefixing the
-  existing value is the least invasive fix. Confirm before acting: the
-  monitor's retention check reports 0 customers holding PII and the outbox is
-  empty, which is consistent with no encrypted rows existing.
+- **Data-safety note — now measured, not inferred.** Production monitor run
+  against deployment `dpl_72PCBTQXT5ZkxUhV2ptczuuWE9NE` (`27ef60d`) reports:
+  `ciphertext rows — customers=0, outbox=0, mfa=0, total=0`. **There is no
+  encrypted data in production at all.** The format correction therefore cannot
+  put existing data at risk, and prefixing the existing value is provably the
+  least invasive fix. This upgrades the compatibility argument from "the
+  mechanism is safe" (proven by
+  `tests/phase15-key-format-correction.test.ts`) to "and there is nothing for
+  it to damage".
+- **Consequence to know BEFORE correcting the key.** The same monitor line
+  reports `digest recipients=7`. P15-004 put the audit digest on the hourly
+  schedule, so within roughly an hour of the correction the digest will queue
+  mail to **seven real owner mailboxes**, automatically and without anyone
+  triggering it. That is a legitimate transactional security notification
+  rather than marketing, but it should not be a surprise. If those seven should
+  not receive it yet, revert the hourly entry in
+  `.github/workflows/cron.yml` before correcting the key.
 - **Residual.** None once corrected and a `POST /api/cron/audit-digest` returns
   200.
 - **Launch: BLOCKER. Pilot: BLOCKER. Money: no.**
