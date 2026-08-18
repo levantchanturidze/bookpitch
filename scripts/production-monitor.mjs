@@ -380,6 +380,30 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
 export const INCIDENT_LABEL = 'ops-incident';
 
 /** Stable, greppable marker so an incident issue is matched by body, not title. */
+/**
+ * Who to assign an incident to.
+ *
+ * P15-011: defaults to the repository owner derived from GITHUB_REPOSITORY,
+ * overridable with INCIDENT_ASSIGNEES (comma-separated) if a rota ever exists.
+ * Returns [] when it cannot be determined, so a missing value degrades to the
+ * previous unassigned behaviour rather than failing the alert — an alert that
+ * throws is strictly worse than one that is merely quiet.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string[]}
+ */
+export function incidentAssignees(
+  env = /** @type {Record<string, string | undefined>} */ (process.env),
+) {
+  const explicit = (env.INCIDENT_ASSIGNEES ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (explicit.length) return explicit;
+  const owner = (env.GITHUB_REPOSITORY ?? '').split('/')[0]?.trim();
+  return owner ? [owner] : [];
+}
+
 export function incidentMarker(id) {
   return `<!-- bookpitch-ops-incident:${id} -->`;
 }
@@ -827,12 +851,21 @@ async function syncIncidents(repo, token, results, now) {
       '',
       'See `docs/operations.md` § Monitoring and alert handling for the runbook.',
     ].join('\n');
+    // P15-011: assign the repository owner. A labelled issue alone produces no
+    // notification — GitHub pushes to a user's inbox, email and mobile app for
+    // @mentions and assignments, not for issue creation. .github/workflows/
+    // migrate.yml learned this the hard way in SEC-007 (an incident sat
+    // unnoticed until someone read it out of a report); the production
+    // monitor, which is the primary alerting path and runs every 30 minutes,
+    // had the same gap. With a single operator and no second responder, an
+    // alert nobody is pinged about is not an alert.
     const issue = await gh(`/repos/${repo}/issues`, token, {
       method: 'POST',
       body: JSON.stringify({
         title: `[ops] ${result.title}`,
         body,
         labels: [INCIDENT_LABEL],
+        ...(incidentAssignees().length ? { assignees: incidentAssignees() } : {}),
       }),
     });
     console.log(`alert: opened incident #${issue.number} for ${result.id}`);
@@ -855,6 +888,15 @@ async function syncIncidents(repo, token, results, now) {
         body: `Still failing at ${now.toISOString()}.\n\n**Detail:** ${result.detail}`,
       }),
     });
+    // Re-assign alongside the comment so a snoozed or dismissed notification
+    // pings again on a still-failing incident. Idempotent: assigning an
+    // already-assigned user is a no-op.
+    if (incidentAssignees().length) {
+      await gh(`/repos/${repo}/issues/${issue.number}/assignees`, token, {
+        method: 'POST',
+        body: JSON.stringify({ assignees: incidentAssignees() }),
+      }).catch(() => null);
+    }
     console.log(`alert: updated incident #${issue.number} for ${result.id}`);
   }
 

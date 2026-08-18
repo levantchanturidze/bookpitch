@@ -109,6 +109,8 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
 | P15-008 | P1 | Test suite had no DB identity guard | **Fixed** |
 | P15-009 | P1 | Digest bypassed the outbox; its metric could never be non-null | **Fixed** |
 | P15-010 | **P0** | `FIELD_ENCRYPTION_KEY` malformed in production — signup, clinical fields and MFA all 500 | **Detected**; correction is human-only |
+| P15-011 | P2 | Monitor incidents opened unassigned, so nobody was ever notified | **Fixed** |
+| P15-012 | P3 | `platform-break-glass` has an intermittent, order-dependent failure | **Observed, not root-caused** |
 
 ### P15-001 · No public Privacy Policy, Terms, or consent surface — P1
 
@@ -318,6 +320,36 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
   the parser it stands in for, so the two cannot drift and start lying about
   production.
 
+### P15-012 · An intermittent, order-dependent test — observed, not fixed
+
+- **Evidence.** `tests/platform-break-glass.test.ts > Phase 11 Row 9: reauth
+  grants are invalidated on TOTP path` failed once with
+  `expected 400 to be 200`, inside a full `npm test` run. It passes in
+  isolation, passes at the baseline commit in isolation, and passed in four of
+  the five full-suite runs made during this phase.
+- **Not caused by Phase 15.** Nothing in this phase touches break-glass, TOTP
+  or reauth grants.
+- **Two candidate causes, neither confirmed.** (a) The fixture plants a grant
+  with `expiresAt: new Date(Date.now() + 60_000)` — a **Node** clock value,
+  while the server validates expiry against the **database** clock. That is the
+  precise hazard recorded for this project after an earlier incident, and a
+  slow run or any clock skew would expire the grant before it is used.
+  (b) TOTP replay: the server keeps a monotonic `mfa_last_totp_window` fence,
+  and two tests consuming a code inside one 30-second step would collide.
+  (b) is the less likely of the two, because the file's `beforeEach` already
+  resets `mfaLastTotpWindow` to `null`.
+- **Deliberately not "fixed".** A first attempt at (b) — waiting for the next
+  TOTP step before reissuing a code — was written, found to be both slow and
+  based on the wrong diagnosis, and reverted rather than shipped. Guessing at
+  an intermittent failure risks papering over a real control; the honest state
+  is that it is reproducible only occasionally and has not been root-caused.
+- **Consequence for Phase 15.12.** The claim "no test depends on execution
+  order" is therefore **not** made unconditionally: this one appears to. Every
+  other gate result in §7 stands.
+- **Next step.** Make the fixture derive `expiresAt` from the database clock,
+  the same correction applied to production reauth grants, then run the full
+  suite repeatedly to confirm.
+
 ## 4. Requirement reconciliation
 
 | Phase | Requirement | Status | Evidence |
@@ -419,7 +451,7 @@ All commands run at the final Phase 15 tree.
 | TypeScript | `npx tsc --noEmit` | clean | 0 |
 | ESLint | `npm run lint` | clean | 0 |
 | Format | `npm run format:check` | clean | 0 |
-| Unit + integration | `npm test` | **83 files / 1003 tests passed** | 0 |
+| Unit + integration | `npm test` | **83 files / 1007 tests passed** | 0 |
 | Guards | `npm run test:guards` | ok | 0 |
 | Orphan permissions | `npm run check:orphan-perms` | 19 marked, 0 unmarked | 0 |
 | Playwright, all 6 projects | `npx playwright test --grep "@a11y\|@responsive"` | **177 passed, 3 skipped** | 0 |
@@ -430,12 +462,16 @@ All commands run at the final Phase 15 tree.
 | Dependency audit | `npm audit --audit-level=high` | 0 vulnerabilities | 0 |
 | Secret scan | `gitleaks detect` (229 commits) | no leaks | 0 |
 
-Test count: **935 → 1003** (+68). Playwright: **141 → 177** (+36).
+Test count: **935 → 1007** (+72). Playwright: **141 → 177** (+36).
 
 Also verified:
 
 - No `.only`, no newly skipped test. The 3 Playwright skips are pre-existing
   project/viewport exclusions, not quarantines.
+- **Execution-order independence is NOT claimed.** P15-012 records one
+  pre-existing test that appears to depend on timing/order. It was observed
+  once in five full runs, is unrelated to Phase 15, and has not been
+  root-caused; it is recorded rather than hidden.
 - No snapshot updated.
 - No Playwright artifact committed.
 - No production identifier or customer data in any fixture.
