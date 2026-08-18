@@ -722,12 +722,24 @@ async function main() {
         );
       } else {
         const payload = await res.json();
+        // P15-010/P15-004: surface the two counts an operator needs BEFORE
+        // acting, rather than after. `ciphertext` answers "would correcting
+        // FIELD_ENCRYPTION_KEY put existing encrypted data at risk?" and
+        // `recipients` answers "how many real mailboxes does the next digest
+        // reach?". Both are counts; assertMetricsAreNumericOnly guarantees no
+        // address or identifier can travel this path into a CI log.
+        const ct = payload?.metrics?.ciphertext ?? {};
+        const dg = payload?.metrics?.auditDigest ?? {};
+        const inventory =
+          `ciphertext rows — customers=${ct.customerFields ?? '?'}, ` +
+          `outbox=${ct.outboxRows ?? '?'}, mfa=${ct.mfaSecrets ?? '?'}, ` +
+          `total=${ct.total ?? '?'}; digest recipients=${dg.eligibleRecipients ?? '?'}`;
         results.push(
           check(
             'ops-metrics',
             'Operational metrics endpoint is failing',
             true,
-            '/api/health/ops returned 200',
+            `/api/health/ops returned 200 — ${inventory}`,
           ),
         );
         results.push(...evaluateOpsMetrics(payload.metrics));

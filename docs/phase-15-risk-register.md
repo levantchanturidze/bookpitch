@@ -266,6 +266,31 @@ mitigation in place. **Accepted risk** = proceed, informed.
 - **Residual.** Still one human receiving the ping (R-11).
 - **Launch: resolved. Pilot: resolved.**
 
+## R-18 · Three open incidents, one root cause
+
+- **Evidence.** Production monitor at deployment `dpl_HAqSrW7z2NzfHf8EviyMNW2xRJeJ`
+  (`83fbf99`) reports 16/19 with three failures:
+  `production-config-invalid`, `audit-digest-stalled`, and `cron-failures`
+  (3/10 recent cron runs failed — verified as all three being the
+  `audit-digest` job, runs 32192351453, 32187409311, 32182837917).
+- **They are not three problems.** All three descend from R-16: the malformed
+  `FIELD_ENCRYPTION_KEY` makes `encryptField()` throw, so the digest endpoint
+  500s. P15-004 put that endpoint on the hourly schedule, which converted one
+  weekly failure into an hourly one and tripped `cron-failures` as well.
+- **Foreseeable consequence of a deliberate change.** Moving the digest to the
+  hourly cron was correct — it fixed a job that had never once run — but doing
+  so while the endpoint was broken made the noise hourly. That is honest rather
+  than harmful: every failure is real.
+- **Deliberately not silenced.** A "skip when encryption is unavailable" path
+  was considered and rejected: it would keep `cron-failures` clean at the cost
+  of a branch that could later mask a genuine digest failure, and the condition
+  is already named precisely by `production-config-invalid`.
+- **Resolution.** All three clear together the moment the key is corrected. If
+  the correction is delayed for days, note that `cron-failures` being red
+  reduces its sensitivity to an unrelated cron regression — that is the one
+  real cost of leaving it.
+- **Launch: covered by R-16. Pilot: covered by R-16. Money: no.**
+
 ## R-15 · Digest bypassed the outbox (resolved)
 
 - **Evidence.** P15-009. `sendDigestToOwners()` called the email provider
@@ -300,7 +325,7 @@ mitigation in place. **Accepted risk** = proceed, informed.
 
 | Risk | Owner | Accepted? | Date |
 |---|---|---|---|
-| R-01 … R-17 | repository owner | ☐ | |
+| R-01 … R-18 | repository owner | ☐ | |
 
 Launch blockers outstanding: **R-16 and R-04.**
 
