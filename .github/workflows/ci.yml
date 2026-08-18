@@ -202,3 +202,89 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # P15-006. Phase 14 built 141 Playwright checks across three engines, two
+  # mobile viewports and a 320px viewport — and no workflow ever ran them. CI
+  # stopped at `npm run build`, so every browser, mobile and runtime
+  # accessibility regression was invisible to the merge gate by construction.
+  #
+  # Scope note, deliberately narrow: this runs the @a11y and @responsive tags.
+  # The full signup → sign-in → scheduler journey in
+  # e2e/signup-scheduler.spec.ts is NOT included, because `next start` sets
+  # NODE_ENV=production, where SignupForm correctly fails closed without a
+  # Turnstile site key and the submit button never enables. Running it here
+  # would need Cloudflare's public always-pass test keys plus matching
+  # TURNSTILE_EXPECTED_ACTION / TURNSTILE_ALLOWED_HOSTNAMES values. That is
+  # tracked as a follow-up rather than faked, since disabling the CAPTCHA to
+  # make the suite green would delete the control the test exists to protect.
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: Browser, mobile, and accessibility suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bookpitch_ci
+          POSTGRES_PASSWORD: ci_password_not_a_secret
+          POSTGRES_DB: bookpitch_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bookpitch_ci -d bookpitch_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
+      DATABASE_URL_SUPERUSER_SESSION: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
+      DATABASE_URL_APP_NOBYPASSRLS: 'postgresql://bookpitch_ci:ci_password_not_a_secret@localhost:5432/bookpitch_ci'
+      AUTH_SECRET: 'ci-test-secret-32-chars-minimum!!'
+      FIELD_ENCRYPTION_KEY: 'ci0:0000000000000000000000000000000000000000000000000000000000000000'
+      RATE_LIMIT_HMAC_KEY: '0000000000000000000000000000000000000000000000000000000000000001'
+      EMAIL_PRIVACY_HMAC_KEY: '0000000000000000000000000000000000000000000000000000000000000002'
+      NEXTAUTH_URL: 'http://localhost:3210'
+      APP_URL: 'http://localhost:3210'
+      RBAC_ENFORCE_MODULES: '*'
+      PAYMENT_MOCK_SECRET: 'ci-mock-payment-secret-not-real'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Seed database
+        run: npm run db:seed
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Build
+        run: npm run build
+
+      - name: Run accessibility, browser and responsive suite
+        # Playwright's own webServer block starts `next start -p 3210`.
+        run: npx playwright test --grep "@a11y|@responsive"
+
+      - name: Upload report on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

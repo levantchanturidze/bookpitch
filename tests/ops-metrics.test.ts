@@ -81,6 +81,13 @@ describe('collectOpsMetrics against a real database', () => {
       'partitions',
       'retention',
     ]);
+    // P15-003: the digest metric carries two numbers now. The monitor needs
+    // both to tell "nothing due yet" apart from "the weekly job never ran".
+    expect(Object.keys(metrics.auditDigest).sort()).toEqual([
+      'hoursSinceLastQueued',
+      'oldestEligibleOrgAgeHours',
+    ]);
+
     expect(Object.keys(metrics.outbox).sort()).toEqual([
       'dead',
       'deadLast24h',

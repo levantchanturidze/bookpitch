@@ -40,6 +40,11 @@ const PUBLIC_ROUTES = [
   { path: '/onboard/pending', name: 'verification pending' },
   { path: '/onboard/expired', name: 'verification expired' },
   { path: '/onboard/error', name: 'verification error' },
+  // P15-001: the public legal surface. These are the pages a prospective user
+  // reads before handing over an email address, so they get the same axe and
+  // horizontal-scroll coverage as the auth pages across every project.
+  { path: '/privacy', name: 'privacy notice' },
+  { path: '/terms', name: 'terms of service' },
 ];
 
 async function runAxe(page: Page): Promise<AxeViolation[]> {
@@ -241,4 +246,39 @@ test('@responsive form controls meet a usable touch height', async ({ page }, te
     // practical floor for a primary form control on a phone.
     expect(box.height, `control ${i} is only ${box.height}px tall`).toBeGreaterThanOrEqual(32);
   }
+});
+
+// -----------------------------------------------------------------------------
+// P15-001 — the legal surface has to be reachable and linked, in a real
+// browser, without a session. The unit test asserts isPublicPath(); this
+// asserts that the deployed routing actually honours it, which is the part
+// that was broken (both URLs 307'd to /signin in production).
+// -----------------------------------------------------------------------------
+
+test('@a11y the legal documents render for a signed-out visitor', async ({ page }) => {
+  for (const path of ['/privacy', '/terms']) {
+    const response = await page.goto(path);
+    expect(response?.status(), `${path} should render, not redirect`).toBe(200);
+    await expect(page).toHaveURL(new RegExp(`${path}$`));
+    // The draft banner is the thing a reader must not miss.
+    await expect(page.getByRole('heading', { name: /Draft — not legally reviewed/ })).toBeVisible();
+  }
+});
+
+test('@a11y the signup form links to both legal documents before collecting data', async ({
+  page,
+}) => {
+  await page.goto('/signup');
+  // Scoped to the consent sentence, not the footer, so this proves the notice
+  // is present at the point of collection.
+  const consent = page.getByText(/By creating a workspace you agree to the/);
+  await expect(consent).toBeVisible();
+  await expect(consent.getByRole('link', { name: 'terms of service' })).toHaveAttribute(
+    'href',
+    '/terms',
+  );
+  await expect(consent.getByRole('link', { name: 'privacy notice' })).toHaveAttribute(
+    'href',
+    '/privacy',
+  );
 });

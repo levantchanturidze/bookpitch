@@ -1,0 +1,26 @@
+# Gitleaks configuration.
+#
+# This file EXTENDS the upstream default ruleset and adds one allowlist entry.
+# It disables no rule. Anything not matching the literal below is still scanned
+# and still fails the scan.
+#
+# Why this exists: a full-history scan reported `devpass123` in
+# tests/onboard-activation.test.ts as a generic-api-key. It is the synthetic
+# dev/test account password used throughout the suite — committed deliberately
+# so tests are reproducible, accepted only by a local throwaway Postgres, and
+# valid nowhere deployed. Left unsuppressed it is permanent noise, and noise is
+# how a real leak gets scrolled past.
+#
+# NARROWNESS IS THE POINT. This allowlists one literal string, not a path, not
+# a rule, and not a directory. An earlier draft paired `regexes` with `paths`;
+# gitleaks ORs those two by default, which silently allowlisted every secret in
+# every test file. That was caught by probing a real-shaped Stripe key into
+# tests/ and finding it was no longer reported. Verified with the current
+# config: a `sk_live_…` key in tests/ IS still reported, while `devpass123` is
+# not. Re-run that probe if you change this file.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic dev/test account password literal. One string, nothing else."
+regexes = ['''devpass123''']

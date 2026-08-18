@@ -7,6 +7,7 @@ import {
   evaluateWorkflowFreshness,
   evaluateCronHealth,
   evaluateOpsMetrics,
+  evaluateAuditDigest,
   reconcileIncidents,
   incidentMarker,
   INCIDENT_LABEL,
@@ -289,14 +290,64 @@ describe('operational metrics judgement', () => {
     expect(results.find((r) => r.id === 'production-config-incomplete')!.ok).toBe(true);
   });
 
-  it('treats a never-run audit digest as reportable, not an incident', () => {
+  // ---------------------------------------------------------------------------
+  // P15-003. The old behaviour was `hoursSinceLastQueued === null → ok`, full
+  // stop, which meant a weekly job that never fired even once reported PASS
+  // forever. These four cases pin the two inputs against each other so the
+  // "never ran at all" state is actually reachable as a failure.
+  // ---------------------------------------------------------------------------
+
+  it('accepts a never-run digest while no organization can receive one', () => {
     const results = evaluateOpsMetrics({
       ...healthy,
-      auditDigest: { hoursSinceLastQueued: null },
+      auditDigest: { hoursSinceLastQueued: null, oldestEligibleOrgAgeHours: null },
     });
     const digest = results.find((r) => r.id === 'audit-digest-stalled')!;
     expect(digest.ok).toBe(true);
-    expect(digest.detail).toContain('has ever been queued');
+    expect(digest.detail).toContain('no organization has an emailable owner');
+  });
+
+  it('accepts a never-run digest while the oldest eligible org is still inside the window', () => {
+    const results = evaluateOpsMetrics({
+      ...healthy,
+      auditDigest: {
+        hoursSinceLastQueued: null,
+        oldestEligibleOrgAgeHours: DEFAULTS.auditDigestMaxAgeHours - 1,
+      },
+    });
+    expect(results.find((r) => r.id === 'audit-digest-stalled')!.ok).toBe(true);
+  });
+
+  it('FAILS a digest that has never run once an eligible org outlives the window', () => {
+    // This is the regression that mattered: GitHub dropped the `0 8 * * 1`
+    // schedule on Monday 2026-08-17 and nothing observed it.
+    const results = evaluateOpsMetrics({
+      ...healthy,
+      auditDigest: {
+        hoursSinceLastQueued: null,
+        oldestEligibleOrgAgeHours: DEFAULTS.auditDigestMaxAgeHours + 1,
+      },
+    });
+    const digest = results.find((r) => r.id === 'audit-digest-stalled')!;
+    expect(digest.ok).toBe(false);
+    expect(digest.detail).toContain('EVER been queued');
+  });
+
+  it('exposes evaluateAuditDigest directly so the branches are unit-testable', () => {
+    expect(
+      evaluateAuditDigest({
+        hoursSinceLastQueued: null,
+        oldestEligibleOrgAgeHours: 10_000,
+        maxAgeHours: 240,
+      }).ok,
+    ).toBe(false);
+    expect(
+      evaluateAuditDigest({
+        hoursSinceLastQueued: 1,
+        oldestEligibleOrgAgeHours: 10_000,
+        maxAgeHours: 240,
+      }).ok,
+    ).toBe(true);
   });
 
   it('fails a digest that used to run and then stopped', () => {

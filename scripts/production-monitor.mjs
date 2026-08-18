@@ -192,6 +192,71 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
   return results;
 }
 
+/**
+ * Weekly audit digest freshness.
+ *
+ * P15-003: the previous version treated `hoursSinceLastQueued === null` as
+ * healthy unconditionally, so a digest job that never ran once — which is
+ * exactly what happens when GitHub silently drops a low-frequency cron
+ * schedule, observed for `0 8 * * 1` on Monday 2026-08-17 — reported PASS
+ * forever. "Never queued" is only benign while there is nothing to digest.
+ *
+ * The second input makes it falsifiable: `oldestEligibleOrgAgeHours` is the age
+ * of the oldest organization that actually has an emailable owner. Once that
+ * exceeds the digest window, a digest was genuinely due, and never having
+ * queued one is an incident rather than a young-deployment artefact.
+ */
+export function evaluateAuditDigest({
+  hoursSinceLastQueued,
+  oldestEligibleOrgAgeHours,
+  maxAgeHours,
+}) {
+  const id = 'audit-digest-stalled';
+  const title = 'Weekly audit digest has stopped queueing mail';
+  const age = hoursSinceLastQueued ?? null;
+  const eligibleAge = oldestEligibleOrgAgeHours ?? null;
+
+  if (age !== null) {
+    return {
+      id,
+      title,
+      ok: age <= maxAgeHours,
+      detail: `last queued ${age.toFixed(1)}h ago (limit ${maxAgeHours}h)`,
+    };
+  }
+
+  if (eligibleAge === null) {
+    return {
+      id,
+      title,
+      ok: true,
+      detail: 'no digest queued yet, and no organization has an emailable owner',
+    };
+  }
+
+  if (eligibleAge > maxAgeHours) {
+    return {
+      id,
+      title,
+      ok: false,
+      detail:
+        `no audit digest has EVER been queued, but an eligible organization has ` +
+        `existed for ${eligibleAge.toFixed(1)}h (limit ${maxAgeHours}h) — the weekly ` +
+        `job has never run. Check that the '0 8 * * 1' schedule in ` +
+        `.github/workflows/cron.yml is still being delivered.`,
+    };
+  }
+
+  return {
+    id,
+    title,
+    ok: true,
+    detail:
+      `no digest queued yet; oldest eligible organization is ${eligibleAge.toFixed(1)}h old ` +
+      `(within the ${maxAgeHours}h window)`,
+  };
+}
+
 export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
   const results = [];
   const outbox = metrics?.outbox ?? {};
@@ -251,19 +316,13 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
     }`,
   });
 
-  const digestAge = digest.hoursSinceLastQueued;
-  results.push({
-    id: 'audit-digest-stalled',
-    title: 'Weekly audit digest has stopped queueing mail',
-    // Null means the digest has never queued anything. That is the state on a
-    // young deployment with no owners subscribed, so it is reported but not an
-    // incident — a digest that ran and then stopped is what matters.
-    ok: digestAge === null || digestAge === undefined || digestAge <= opts.auditDigestMaxAgeHours,
-    detail:
-      digestAge === null || digestAge === undefined
-        ? 'no audit digest mail has ever been queued (expected on a new deployment)'
-        : `last queued ${digestAge.toFixed(1)}h ago (limit ${opts.auditDigestMaxAgeHours}h)`,
-  });
+  results.push(
+    evaluateAuditDigest({
+      hoursSinceLastQueued: digest.hoursSinceLastQueued,
+      oldestEligibleOrgAgeHours: digest.oldestEligibleOrgAgeHours,
+      maxAgeHours: opts.auditDigestMaxAgeHours,
+    }),
+  );
 
   results.push({
     id: 'partition-maintenance',

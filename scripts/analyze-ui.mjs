@@ -166,6 +166,10 @@ export const PALETTE = {
   'emerald-300': '#6ee7b7',
   'teal-800': '#115e59',
   'amber-600': '#d97706',
+  // P15-001: the legal draft banner writes amber-900 on amber-50. Without the
+  // foreground in this table the pair resolved to "unknown" and the contrast
+  // gate silently skipped the one banner a reader must not miss.
+  'amber-900': '#78350f',
 };
 
 const SURFACE_SRC = String.raw`bg-(white|slate-\d{2,3}|rose-\d{2,3}|amber-\d{2,3}|emerald-\d{2,3}|teal-\d{2,3}|pink-\d{2,3})`;

@@ -63,6 +63,11 @@ export function isPublicPath(path: string): boolean {
     // Public booking widget — customer has no session.
     path.startsWith('/book/') ||
     path === '/api/public/book' ||
+    // P15-001: the public legal surface. A privacy notice that redirects an
+    // unauthenticated reader to /signin is not a published privacy notice —
+    // the people most entitled to read it are the ones without an account.
+    path === '/privacy' ||
+    path === '/terms' ||
     // Offline page must load without auth so the SW can serve it when
     // the browser is offline (session cookies wouldn't reach us anyway).
     path === '/offline' ||

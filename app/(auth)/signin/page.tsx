@@ -1,4 +1,5 @@
 import SignInForm from './SignInForm';
+import LegalFooter from '@/components/legal/LegalFooter';
 
 export const metadata = { title: 'Sign in · Bookpitch' };
 
@@ -11,6 +12,7 @@ export default function SignInPage() {
           <p className="mt-1 text-xs text-slate-500">Sign in to your operations portal.</p>
         </div>
         <SignInForm />
+        <LegalFooter />
         {/*
           P14-011: this hint used to render unconditionally and was live on
           production, advertising two valid account addresses

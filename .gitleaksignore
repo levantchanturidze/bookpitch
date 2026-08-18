@@ -1,0 +1,13 @@
+# Accepted gitleaks findings, by exact fingerprint (commit:file:rule:line).
+#
+# One line per accepted finding. A fingerprint pins a single occurrence in a
+# single historical commit, so nothing new is ever suppressed by this file —
+# any other match, including the same rule in the same file at a different
+# line, is still reported.
+#
+# a4a58fa8 (2026-08-09) — a synthetic test-account password passed to
+# createPendingRegistration() in a test fixture. Never a real credential, valid
+# only against a local throwaway Postgres, and already replaced at HEAD. The
+# commit stays in history, so the finding needs an explicit acceptance rather
+# than a rule change.
+a4a58fa85639c3f2f2c01b9f485c12f075ecd99a:tests/onboard-activation.test.ts:generic-api-key:149

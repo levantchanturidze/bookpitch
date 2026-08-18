@@ -1,4 +1,5 @@
 import SignupForm from './SignupForm';
+import LegalFooter from '@/components/legal/LegalFooter';
 
 export const metadata = { title: 'Create account · Bookpitch' };
 
@@ -15,7 +16,8 @@ export default function SignupPage() {
           </p>
         </div>
         <SignupForm />
-        <p className="mt-6 border-t border-slate-100 pt-4 text-center text-xs text-slate-500">
+        <LegalFooter notice />
+        <p className="mt-4 text-center text-xs text-slate-500">
           Already have an account?{' '}
           <a href="/signin" className="font-semibold text-slate-700 hover:underline">
             Sign in

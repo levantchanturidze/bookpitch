@@ -30,6 +30,34 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # P15-007. The gate above only asks whether STAGING_URL is non-empty. If
+      # that secret were ever set to the production URL — a one-character
+      # mistake in a settings page — this weekly job would generate sustained
+      # load against the live service, and nothing here would stop it. This
+      # step fails the run instead. It reads the host only; the URL itself is
+      # never echoed, so a secret cannot leak into the log.
+      - name: Refuse to load-test production
+        if: steps.gate.outputs.run == 'true'
+        env:
+          TARGET_URL: ${{ secrets.STAGING_URL }}
+        run: |
+          set -euo pipefail
+          host="$(printf '%s' "$TARGET_URL" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##; s#:[0-9]+$##' | tr 'A-Z' 'a-z')"
+          # vercel.app is included because a Preview deployment inherits
+          # production environment variables unless they are explicitly
+          # overridden per-environment — so load against a preview URL can
+          # land on the production database. Refuse unless the target is
+          # demonstrably separate infrastructure.
+          for marker in bookpitch.ge vercel.app supabase.co; do
+            case "$host" in
+              "$marker"|*".$marker")
+                echo "::error::STAGING_URL points at a production host. Refusing to generate load."
+                exit 1
+                ;;
+            esac
+          done
+          echo "target host is not production — proceeding"
+
       - uses: grafana/setup-k6-action@v1
         if: steps.gate.outputs.run == 'true'
 
