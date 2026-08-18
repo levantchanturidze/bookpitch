@@ -2,6 +2,10 @@
 
 **Status: ENGINEERING COMPLETE — EXTERNAL LAUNCH VERIFICATION BLOCKED**
 
+> **Read R-16 first.** Production's `FIELD_ENCRYPTION_KEY` is malformed, so
+> signup, patient clinical fields and MFA enrolment all return 500 today. It is
+> a one-line configuration fix and it blocks everything else.
+
 Every safely implementable requirement is implemented and proven. The three
 remaining blockers are DNS records and a human reading a mailbox; none is an
 engineering task, and none can be completed by an agent without authorisation.
@@ -104,6 +108,7 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
 | P15-007 | P2 | Load-test workflow could target production | **Fixed** |
 | P15-008 | P1 | Test suite had no DB identity guard | **Fixed** |
 | P15-009 | P1 | Digest bypassed the outbox; its metric could never be non-null | **Fixed** |
+| P15-010 | **P0** | `FIELD_ENCRYPTION_KEY` malformed in production — signup, clinical fields and MFA all 500 | **Detected**; correction is human-only |
 
 ### P15-001 · No public Privacy Policy, Terms, or consent surface — P1
 
@@ -279,6 +284,40 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
 
 ---
 
+### P15-010 · The production encryption key is malformed — P0
+
+- **Evidence.** Vercel runtime log, `dpl_AnCxShtJ4zagx87dYhJiG1ZFANUE`,
+  `POST /api/cron/audit-digest` → 500:
+  `Error: FIELD_ENCRYPTION_KEY must be "<key-id>:<64-hex-chars>"`. Thrown from
+  `parseKeySpec()` on the `colon < 1` branch, so the variable is set and simply
+  lacks its `<key-id>:` prefix.
+- **Impact.** Every `encryptField()` call throws: self-service signup
+  (`lib/onboarding.ts`), patient allergies and clinical notes
+  (`lib/customers.ts`), MFA enrolment (`lib/platform/mfa.ts:89`), the
+  security alert mails, and the audit digest. Production cannot onboard a
+  single organisation today.
+- **Why nothing caught it.** No signup, no customer and no MFA enrolment had
+  ever happened in production, so the encryption layer had never been asked to
+  do anything. `REQUIRED_SECURITY_ENV` checked that the variable was *present*,
+  and it is. The monitor had been reporting `security=0` — configuration
+  complete — the whole time.
+- **How it surfaced.** Deploying P15-003 and then P15-009 made the digest the
+  first production code path to call `encryptField()`. Neither change caused
+  the defect. This is the phase's clearest illustration of its own premise:
+  a green suite and a green monitor proved nothing about a path that had never
+  run.
+- **Fixed here: detection.** `SECURITY_ENV_VALIDATORS` / `invalidEnv()` in
+  `lib/ops-metrics.ts` validate format, and `production-config-invalid` in
+  `scripts/production-monitor.mjs` fails on it.
+- **Not fixed here: the value.** Correcting a production secret is a human
+  action and explicitly outside what may be done autonomously. No attempt was
+  made to read, write or rotate it.
+- **Proof.** `tests/phase15-config-validity.test.ts` (13 tests). The first uses
+  the exact shape of the real production value — a bare 64-hex string — and
+  asserts it is reported invalid. One test cross-checks the validator against
+  the parser it stands in for, so the two cannot drift and start lying about
+  production.
+
 ## 4. Requirement reconciliation
 
 | Phase | Requirement | Status | Evidence |
@@ -380,7 +419,7 @@ All commands run at the final Phase 15 tree.
 | TypeScript | `npx tsc --noEmit` | clean | 0 |
 | ESLint | `npm run lint` | clean | 0 |
 | Format | `npm run format:check` | clean | 0 |
-| Unit + integration | `npm test` | **82 files / 990 tests passed** | 0 |
+| Unit + integration | `npm test` | **83 files / 1003 tests passed** | 0 |
 | Guards | `npm run test:guards` | ok | 0 |
 | Orphan permissions | `npm run check:orphan-perms` | 19 marked, 0 unmarked | 0 |
 | Playwright, all 6 projects | `npx playwright test --grep "@a11y\|@responsive"` | **177 passed, 3 skipped** | 0 |
@@ -391,7 +430,7 @@ All commands run at the final Phase 15 tree.
 | Dependency audit | `npm audit --audit-level=high` | 0 vulnerabilities | 0 |
 | Secret scan | `gitleaks detect` (229 commits) | no leaks | 0 |
 
-Test count: **935 → 990** (+55). Playwright: **141 → 177** (+36).
+Test count: **935 → 1003** (+68). Playwright: **141 → 177** (+36).
 
 Also verified:
 
@@ -429,6 +468,10 @@ Also verified:
 
 ## 9. Remaining external blockers
 
+0. **Correct `FIELD_ENCRYPTION_KEY` in production** (R-16) — set it to
+   `<key-id>:<64-hex-chars>`, e.g. prefix the existing 64 hex characters with
+   `k1:`. **This blocks everything else**, including the email UAT, because
+   signup fails before any mail is queued.
 1. **Verify `bookpitch.ge` in Resend and publish DKIM/SPF/MX** (R-01).
 2. **Publish `_dmarc.bookpitch.ge`** at `p=none` with a reachable `rua`
    (R-02, R-03).
@@ -438,4 +481,4 @@ Also verified:
    decision.
 5. **Enable Dependabot alerts** — free, two clicks (R-06).
 
-Items 1–3 are the only launch blockers, and they are one piece of work.
+Item 0 is the priority. Items 1–3 are the remaining launch blockers and are one piece of work.

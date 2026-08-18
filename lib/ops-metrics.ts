@@ -90,6 +90,20 @@ export type ConfigMetrics = {
   missingEmailEnv: number;
   /** Required-but-unset environment variables for auth/crypto/cron. */
   missingSecurityEnv: number;
+  /**
+   * Environment variables that are SET but structurally unusable.
+   *
+   * P15-010: production had FIELD_ENCRYPTION_KEY set without its `<key-id>:`
+   * prefix. `missingSecurityEnv` was 0 and the monitor reported the
+   * configuration complete, while every call to encryptField() threw
+   * `FIELD_ENCRYPTION_KEY must be "<key-id>:<64-hex-chars>"` — which is to say
+   * signup, patient clinical fields and MFA enrolment were all broken in
+   * production. Nothing noticed for weeks because none of those paths had ever
+   * run there.
+   *
+   * Presence is not validity. This counts the difference.
+   */
+  invalidSecurityEnv: number;
 };
 
 export type OpsMetrics = {
@@ -140,11 +154,54 @@ export function missingEnv(names: readonly string[]): string[] {
   return names.filter((name) => !(process.env[name] ?? '').trim());
 }
 
+/**
+ * Structural validators for secrets whose FORMAT is knowable without knowing
+ * the value. Each returns true when the value is usable.
+ *
+ * Deliberately format-only: nothing here can confirm a key is the *correct*
+ * key, only that the code which parses it will not throw. That is exactly the
+ * failure P15-010 was — a well-formed-looking value that every consumer
+ * rejected at the first byte.
+ */
+export const SECURITY_ENV_VALIDATORS: Readonly<Record<string, (value: string) => boolean>> = {
+  // lib/crypto.ts parseKeySpec: "<key-id>:<64-hex-chars>", key-id non-empty.
+  FIELD_ENCRYPTION_KEY: (v) => {
+    const colon = v.indexOf(':');
+    if (colon < 1) return false;
+    return /^[0-9a-fA-F]{64}$/.test(v.slice(colon + 1));
+  },
+  // lib/crypto.ts: 32 bytes as 64 hex chars, no key-id prefix.
+  EMAIL_PRIVACY_HMAC_KEY: (v) => /^[0-9a-fA-F]{64}$/.test(v),
+  RATE_LIMIT_HMAC_KEY: (v) => /^[0-9a-fA-F]{64}$/.test(v),
+  // Auth.js refuses anything trivially short.
+  AUTH_SECRET: (v) => v.length >= 32,
+};
+
+/**
+ * Names of variables that are set but fail their structural validator.
+ *
+ * A variable that is absent is reported by missingEnv(), not here, so the two
+ * counts do not double-report the same problem.
+ */
+export function invalidEnv(
+  validators: Readonly<Record<string, (value: string) => boolean>> = SECURITY_ENV_VALIDATORS,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return Object.entries(validators)
+    .filter(([name, isValid]) => {
+      const raw = (env[name] ?? '').trim();
+      if (!raw) return false; // absent — missingEnv's job
+      return !isValid(raw);
+    })
+    .map(([name]) => name);
+}
+
 export function collectConfigMetrics(): ConfigMetrics {
   return {
     missingSignupEnv: missingEnv(REQUIRED_SIGNUP_ENV).length,
     missingEmailEnv: missingEnv(REQUIRED_EMAIL_ENV).length,
     missingSecurityEnv: missingEnv(REQUIRED_SECURITY_ENV).length,
+    invalidSecurityEnv: invalidEnv().length,
   };
 }
 

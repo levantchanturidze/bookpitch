@@ -351,6 +351,24 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
     }, security=${config.missingSecurityEnv ?? 0} (names in docs/operations.md § Required production environment)`,
   });
 
+  // P15-010. The check above counts variables that are UNSET. Production had
+  // FIELD_ENCRYPTION_KEY set without its "<key-id>:" prefix, so that count was
+  // 0 and the configuration looked complete — while every encryptField() call
+  // threw, breaking signup, patient clinical fields and MFA enrolment. None of
+  // those paths had ever run in production, so nothing surfaced it for weeks.
+  // Presence is not validity; this is the difference.
+  const invalidConfig = (metrics?.config ?? {}).invalidSecurityEnv;
+  results.push({
+    id: 'production-config-invalid',
+    title: 'A required secret is set but structurally unusable',
+    ok: (invalidConfig ?? 0) === 0,
+    detail:
+      invalidConfig === undefined
+        ? 'deployment predates the invalid-env metric — redeploy to enable this check'
+        : `security env vars set but malformed: ${invalidConfig} ` +
+          `(validators in lib/ops-metrics.ts SECURITY_ENV_VALIDATORS; names never leave the server)`,
+  });
+
   return results;
 }
 

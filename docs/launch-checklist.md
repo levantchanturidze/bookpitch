@@ -8,7 +8,7 @@ Three blockers remain, all email/DNS, all human.
 
 ## A. Engineering — done
 
-- [x] Unit + integration suite green (990 tests, 82 files)
+- [x] Unit + integration suite green (1003 tests, 83 files)
 - [x] Browser, mobile and accessibility suite green (177 passed, 6 projects)
 - [x] That suite actually runs in CI (`e2e` job) — P15-006
 - [x] TypeScript, ESLint, Prettier clean
@@ -21,6 +21,14 @@ Three blockers remain, all email/DNS, all human.
 - [x] Digest queued durably via the outbox; runs hourly and idempotently — P15-004, P15-009
 - [x] Public legal surface exists and is reachable — P15-001
 - [x] Production monitor 18/18
+
+## A0. Production configuration — **blocking, do this first**
+
+- [ ] `FIELD_ENCRYPTION_KEY` set to `<key-id>:<64-hex-chars>` (R-16). Today it
+      has no key-id prefix, so signup, patient clinical fields and MFA
+      enrolment all return 500.
+- [ ] Confirm by `POST /api/cron/audit-digest` returning 200
+- [ ] Confirm the monitor's `production-config-invalid` check is green
 
 ## B. Email and DNS — **blocking**
 

@@ -198,6 +198,51 @@ mitigation in place. **Accepted risk** = proceed, informed.
   `docs/legal-review-checklist.md`.
 - **Launch: Conditional (legal). Pilot: Conditional. Money: no.**
 
+## R-16 · FIELD_ENCRYPTION_KEY is malformed in production — **P0, LAUNCH BLOCKER**
+
+- **Evidence.** Vercel runtime log, deployment `dpl_AnCxShtJ4zagx87dYhJiG1ZFANUE`,
+  `POST /api/cron/audit-digest` → **500**:
+  `Error: FIELD_ENCRYPTION_KEY must be "<key-id>:<64-hex-chars>"`.
+  That message comes from `parseKeySpec()` in `lib/crypto.ts` on the
+  `colon < 1` branch, so the variable **is set** — it simply has no
+  `<key-id>:` prefix. Consistent with the monitor reporting
+  `missingSecurityEnv=0` for weeks.
+- **Probability.** Certain — it is the present state of production.
+- **Impact.** **Every** call to `encryptField()` throws. That is not one
+  feature; it is:
+  - `lib/onboarding.ts:137,144` — **self-service signup returns 500**;
+  - `lib/customers.ts:216-217,242-243` — creating or editing a patient with
+    allergies or clinical notes returns 500;
+  - `lib/platform/mfa.ts:89` — **MFA enrolment returns 500**;
+  - break-glass, impersonation and MFA recovery alerts;
+  - the weekly audit digest (how it was found).
+- **Why it was invisible.** None of those paths had ever executed in
+  production. There are no signups, no customers, and no MFA enrolments, so
+  nothing had ever asked the encryption layer to do anything. The
+  configuration contract checked that the variable was *present*, which it is.
+  Presence is not validity.
+- **Found by** deploying the P15-003 monitor fix and then the P15-009 outbox
+  change, which made the digest the first production code path to call
+  `encryptField()`. Neither change caused the defect; they revealed it.
+- **Mitigation applied this phase — detection only.** `invalidSecurityEnv` in
+  `lib/ops-metrics.ts` validates the *format* of `FIELD_ENCRYPTION_KEY`,
+  `AUTH_SECRET`, `RATE_LIMIT_HMAC_KEY` and `EMAIL_PRIVACY_HMAC_KEY`, and the
+  monitor's new `production-config-invalid` check fails on it. This would have
+  caught it before any user did.
+- **Required external action — human only.** Set the production
+  `FIELD_ENCRYPTION_KEY` to `<key-id>:<64-hex-chars>`, e.g. `k1:` followed by
+  the existing 64 hex characters. **Do not generate a new key** without first
+  confirming whether any ciphertext exists; see below. Rotating or reading
+  secrets is outside what an agent may do here, so no attempt was made.
+- **Data-safety note.** Because `encryptField()` has never once succeeded in
+  production, there should be no ciphertext to lose, and simply prefixing the
+  existing value is the least invasive fix. Confirm before acting: the
+  monitor's retention check reports 0 customers holding PII and the outbox is
+  empty, which is consistent with no encrypted rows existing.
+- **Residual.** None once corrected and a `POST /api/cron/audit-digest` returns
+  200.
+- **Launch: BLOCKER. Pilot: BLOCKER. Money: no.**
+
 ## R-15 · Digest bypassed the outbox (resolved)
 
 - **Evidence.** P15-009. `sendDigestToOwners()` called the email provider
@@ -232,8 +277,15 @@ mitigation in place. **Accepted risk** = proceed, informed.
 
 | Risk | Owner | Accepted? | Date |
 |---|---|---|---|
-| R-01 … R-15 | repository owner | ☐ | |
+| R-01 … R-16 | repository owner | ☐ | |
 
-Launch blockers outstanding: **R-01, R-02, R-04.** All three are the same
-underlying gap — email cannot yet be trusted — and all three are resolved by
-publishing DNS records and receiving one authenticated message.
+Launch blockers outstanding: **R-16, R-01, R-02, R-04.**
+
+**R-16 is the priority and is new.** Production's encryption key is malformed,
+so signup, patient clinical fields and MFA enrolment all return 500 today. It
+is a one-line configuration correction, but nothing can launch until it is
+made — and note that R-01's email work would not have surfaced it, because
+signup fails before any mail is queued.
+
+The remaining three are one piece of work: email cannot be trusted until the
+DNS records exist and one authenticated message has been received.
