@@ -9,6 +9,10 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     environment: 'node',
     setupFiles: ['tests/setup.ts'],
+    // P15-012: one advisory lock for the whole run, held in the main process.
+    // setupFiles cannot do this — vitest forks a process per file, so a
+    // session lock taken there is released between files.
+    globalSetup: ['tests/global-setup.ts'],
     // Serial: shared DB state, prevents flake.
     fileParallelism: false,
     // Hard per-test ceiling: prevents a stalled DB connection from silently
