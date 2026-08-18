@@ -62,6 +62,18 @@ export type RetentionMetrics = {
 export type AuditDigestMetrics = {
   /** Hours since the weekly digest last queued mail. Null if never queued. */
   hoursSinceLastQueued: number | null;
+  /**
+   * Age, in hours, of the oldest organization that is actually eligible for a
+   * digest (has at least one owner membership with an email address). Null
+   * when no such organization exists.
+   *
+   * P15-003: without this, `hoursSinceLastQueued === null` was indistinguishable
+   * between "brand new deployment, nothing due yet" and "the weekly job has
+   * never once fired". The monitor treated both as healthy, so a digest that
+   * never ran at all was invisible forever. Pairing the two numbers makes
+   * "a digest has been due for N hours and none was ever queued" detectable.
+   */
+  oldestEligibleOrgAgeHours: number | null;
 };
 
 export type PartitionMetrics = {
@@ -211,13 +223,34 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           )
       `,
 
-      unsafePrismaAdmin.$queryRaw<Array<{ hours_since: number | null }>>`
+      unsafePrismaAdmin.$queryRaw<
+        Array<{ hours_since: number | null; oldest_eligible_org_age_hours: number | null }>
+      >`
         -- float8, not numeric: Prisma maps PostgreSQL numeric to a Decimal
         -- object, which would survive the numeric-only assertion below as an
         -- object and then serialise to something the monitor cannot compare.
-        SELECT (EXTRACT(EPOCH FROM (NOW() - max(created_at))) / 3600.0)::float8 AS hours_since
-        FROM email_outbox
-        WHERE purpose = 'audit_digest'
+        SELECT
+          (
+            SELECT (EXTRACT(EPOCH FROM (NOW() - max(created_at))) / 3600.0)::float8
+            FROM email_outbox
+            WHERE purpose = 'audit_digest'
+          ) AS hours_since,
+          -- Oldest organization that would actually receive a digest. Mirrors
+          -- sendDigestToOwners() in lib/audit-digest.ts: an owner membership
+          -- whose user has a non-null email. Counted as an age, never selected
+          -- as an identifier.
+          (
+            SELECT (EXTRACT(EPOCH FROM (NOW() - min(o.created_at))) / 3600.0)::float8
+            FROM organizations o
+            WHERE EXISTS (
+              SELECT 1
+              FROM memberships m
+              JOIN app_users u ON u.id = m.user_id
+              WHERE m.organization_id = o.id
+                AND m.role = 'owner'
+                AND u.email IS NOT NULL
+            )
+          ) AS oldest_eligible_org_age_hours
       `,
 
       unsafePrismaAdmin.$queryRaw<Array<{ months_ahead: bigint; default_rows: bigint }>>`
@@ -263,6 +296,9 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
     },
     auditDigest: {
       hoursSinceLastQueued: numOrNull((d as Record<string, unknown>).hours_since),
+      oldestEligibleOrgAgeHours: numOrNull(
+        (d as Record<string, unknown>).oldest_eligible_org_age_hours,
+      ),
     },
     partitions: {
       monthsAhead: num((p as Record<string, unknown>).months_ahead),
