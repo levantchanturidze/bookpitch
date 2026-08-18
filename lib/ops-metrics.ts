@@ -76,6 +76,27 @@ export type AuditDigestMetrics = {
   oldestEligibleOrgAgeHours: number | null;
 };
 
+/**
+ * How many rows currently hold field-level ciphertext.
+ *
+ * P15-010: prefixing FIELD_ENCRYPTION_KEY with a key id preserves the AES key
+ * bytes, so existing ciphertext keeps decrypting — but only if that ciphertext
+ * was written with the SAME bytes. If any ciphertext predates the present
+ * value, the correction could make it unreadable. Counts only, never values,
+ * so "is there anything at risk?" is answerable before a human edits the
+ * secret.
+ */
+export type CiphertextMetrics = {
+  /** customers.allergies / clinical_notes holding a non-null value. */
+  customerFields: number;
+  /** email_outbox rows with an encrypted recipient or body. */
+  outboxRows: number;
+  /** app_users rows with a stored or pending TOTP secret. */
+  mfaSecrets: number;
+  /** Sum of the three — zero means the format correction risks nothing. */
+  total: number;
+};
+
 export type PartitionMetrics = {
   /** Whole months of audit_log partitions that exist beyond the current one. */
   monthsAhead: number;
@@ -111,6 +132,7 @@ export type OpsMetrics = {
   housekeeping: HousekeepingMetrics;
   retention: RetentionMetrics;
   auditDigest: AuditDigestMetrics;
+  ciphertext: CiphertextMetrics;
   partitions: PartitionMetrics;
   config: ConfigMetrics;
 };
@@ -224,7 +246,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
   // authoritative for anything time-based in this project (see CLAUDE.md and
   // the reauth-expiry memory): a skewed runner must not be able to invent a
   // healthy-looking age.
-  const [outboxRows, housekeepingRows, retentionRows, digestRows, partitionRows] =
+  const [outboxRows, housekeepingRows, retentionRows, digestRows, ciphertextRows, partitionRows] =
     await Promise.all([
       unsafePrismaAdmin.$queryRaw<
         Array<{
@@ -310,6 +332,26 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           ) AS oldest_eligible_org_age_hours
       `,
 
+      // P15-010: counts only. No encrypted value, address or identifier is
+      // selected — the question is "does any ciphertext exist", nothing more.
+      unsafePrismaAdmin.$queryRaw<
+        Array<{ customer_fields: bigint; outbox_rows: bigint; mfa_secrets: bigint }>
+      >`
+        SELECT
+          (
+            SELECT count(*) FROM customers
+            WHERE allergies IS NOT NULL OR clinical_notes IS NOT NULL
+          ) AS customer_fields,
+          (
+            SELECT count(*) FROM email_outbox
+            WHERE to_address_encrypted OR body_encrypted
+          ) AS outbox_rows,
+          (
+            SELECT count(*) FROM app_users
+            WHERE mfa_totp IS NOT NULL OR mfa_totp_pending IS NOT NULL
+          ) AS mfa_secrets
+      `,
+
       unsafePrismaAdmin.$queryRaw<Array<{ months_ahead: bigint; default_rows: bigint }>>`
         SELECT
           (
@@ -331,6 +373,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
   const h = housekeepingRows[0] ?? {};
   const r = retentionRows[0] ?? {};
   const d = digestRows[0] ?? {};
+  const c = ciphertextRows[0] ?? {};
   const p = partitionRows[0] ?? {};
 
   return {
@@ -357,6 +400,17 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         (d as Record<string, unknown>).oldest_eligible_org_age_hours,
       ),
     },
+    ciphertext: (() => {
+      const customerFields = num((c as Record<string, unknown>).customer_fields);
+      const outboxRows2 = num((c as Record<string, unknown>).outbox_rows);
+      const mfaSecrets = num((c as Record<string, unknown>).mfa_secrets);
+      return {
+        customerFields,
+        outboxRows: outboxRows2,
+        mfaSecrets,
+        total: customerFields + outboxRows2 + mfaSecrets,
+      };
+    })(),
     partitions: {
       monthsAhead: num((p as Record<string, unknown>).months_ahead),
       defaultPartitionRows: num((p as Record<string, unknown>).default_rows),
