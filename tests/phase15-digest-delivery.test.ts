@@ -38,7 +38,15 @@ describe('P15-009 the weekly digest is queued durably and is idempotent', () => 
   let hash = '';
   const cleanup: Array<() => Promise<void>> = [];
 
+  // Delivery is gated OFF by default before launch (see
+  // tests/phase15-digest-delivery-gate.test.ts). This file asserts the ENABLED
+  // path, so it turns the gate on explicitly and shuts it again afterwards —
+  // leaving it on would silently arm delivery for every test file that runs
+  // after this one.
+  const originalGate = process.env.AUDIT_DIGEST_ENABLED;
+
   beforeAll(async () => {
+    Object.assign(process.env, { AUDIT_DIGEST_ENABLED: 'true' });
     const stamp = Date.now();
     ownerEmail = `e2e-phase15-digest-${stamp}@example.dev`;
     hash = hashEmailForIndex(ownerEmail);
@@ -75,6 +83,8 @@ describe('P15-009 the weekly digest is queued durably and is idempotent', () => 
 
   afterAll(async () => {
     for (const step of cleanup.reverse()) await step().catch(() => null);
+    if (originalGate === undefined) delete process.env.AUDIT_DIGEST_ENABLED;
+    else Object.assign(process.env, { AUDIT_DIGEST_ENABLED: originalGate });
   });
 
   it('writes an email_outbox row with purpose audit_digest', async () => {

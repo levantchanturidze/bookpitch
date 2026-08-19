@@ -278,6 +278,29 @@ mitigation in place. **Accepted risk** = proceed, informed.
 - **Residual.** Still one human receiving the ping (R-11).
 - **Launch: resolved. Pilot: resolved.**
 
+## R-19 · Seven unreconciled digest recipients (mitigated by a delivery gate)
+
+- **Evidence.** Production monitor reports `digest recipients=7` while the
+  service has not been sold, so those mailboxes are unreconciled — they may be
+  seed, fixture, demo or internal records rather than customers expecting mail.
+- **Why it became urgent.** P15-009 made the digest actually deliver (via the
+  outbox) and P15-004 put it on the hourly schedule. Correcting
+  `FIELD_ENCRYPTION_KEY` would therefore have queued mail to all seven within
+  the hour, automatically.
+- **Mitigation — implemented.** `AUDIT_DIGEST_ENABLED` gates delivery and is
+  OFF by default, failing closed on any ambiguous value. Enforced in
+  `runDigestForAllOrgs()`, `sendDigestToOwners()` and the cron route. The
+  monitor reports a distinct `PAUSE` state rather than a false PASS, and never
+  opens a repeating incident. See `docs/audit-digest-delivery-gate.md`.
+- **Reconciliation path.** `/api/health/ops` now classifies eligible recipients
+  by address shape — fixture domain, reserved TLD, other — as counts only.
+  `recipientsOther` is the number that decides whether any real person is
+  involved.
+- **Residual.** Until the classification is read from production and the owner
+  approves, digests stay off. No mail can be sent by accident.
+- **Launch: pre-launch gate, not a blocker to engineering. Pilot: must be
+  resolved before enabling. Money: no.**
+
 ## R-18 · Three open incidents, one root cause
 
 - **Evidence.** Production monitor at deployment `dpl_HAqSrW7z2NzfHf8EviyMNW2xRJeJ`
@@ -337,7 +360,7 @@ mitigation in place. **Accepted risk** = proceed, informed.
 
 | Risk | Owner | Accepted? | Date |
 |---|---|---|---|
-| R-01 … R-18 | repository owner | ☐ | |
+| R-01 … R-19 | repository owner | ☐ | |
 
 Launch blockers outstanding: **R-16 and R-04.**
 

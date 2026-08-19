@@ -206,15 +206,50 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
  * exceeds the digest window, a digest was genuinely due, and never having
  * queued one is an incident rather than a young-deployment artefact.
  */
+/**
+ * @param {{
+ *   hoursSinceLastQueued: number | null | undefined,
+ *   oldestEligibleOrgAgeHours: number | null | undefined,
+ *   maxAgeHours: number,
+ *   deliveryEnabled?: number | undefined,
+ *   deliveryConfigMalformed?: number | undefined,
+ * }} input
+ * @returns {{ id: string, title: string, ok: boolean, detail: string, paused?: boolean }}
+ */
 export function evaluateAuditDigest({
   hoursSinceLastQueued,
   oldestEligibleOrgAgeHours,
   maxAgeHours,
+  // Optional: a deployment predating the delivery gate reports neither field,
+  // and must keep its previous behaviour rather than being read as paused.
+  deliveryEnabled,
+  deliveryConfigMalformed,
 }) {
   const id = 'audit-digest-stalled';
   const title = 'Weekly audit digest has stopped queueing mail';
   const age = hoursSinceLastQueued ?? null;
   const eligibleAge = oldestEligibleOrgAgeHours ?? null;
+
+  // Delivery is gated off before launch. A paused job is neither healthy nor
+  // broken, so it gets its own state: `paused` renders as PAUSE, is excluded
+  // from the passed count, and never opens an incident. Reporting PASS here
+  // would be a lie (no digest is being delivered); reporting FAIL would page
+  // someone about a deliberate decision, every 30 minutes, forever.
+  if (deliveryEnabled !== undefined && deliveryEnabled !== 1) {
+    const malformed = deliveryConfigMalformed === 1;
+    return {
+      id,
+      title,
+      ok: true,
+      paused: true,
+      detail: malformed
+        ? 'DISABLED BY CONFIGURATION — AUDIT_DIGEST_ENABLED holds an unrecognised ' +
+          'value, so delivery fails closed. Set it to exactly "true" to enable, ' +
+          'or "false" to state the intent explicitly.'
+        : 'DISABLED BY CONFIGURATION — AUDIT_DIGEST_ENABLED is not "true". No ' +
+          'digest is queued or sent. This is a deliberate pre-launch gate, not a fault.',
+    };
+  }
 
   if (age !== null) {
     return {
@@ -321,6 +356,8 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
       hoursSinceLastQueued: digest.hoursSinceLastQueued,
       oldestEligibleOrgAgeHours: digest.oldestEligibleOrgAgeHours,
       maxAgeHours: opts.auditDigestMaxAgeHours,
+      deliveryEnabled: digest.deliveryEnabled,
+      deliveryConfigMalformed: digest.deliveryConfigMalformed,
     }),
   );
 
@@ -783,10 +820,16 @@ async function main() {
   console.log(`target: ${productionUrl}`);
   console.log('');
   for (const r of results) {
-    console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.id.padEnd(24)} ${r.detail}`);
+    const label = r.paused ? 'PAUSE' : r.ok ? 'PASS' : 'FAIL';
+    console.log(`${label}  ${r.id.padEnd(24)} ${r.detail}`);
   }
   console.log('');
-  console.log(`${results.length - failing.length}/${results.length} checks passed`);
+  const pausedCount = results.filter((r) => r.paused).length;
+  const passedCount = results.length - failing.length - pausedCount;
+  console.log(
+    `${passedCount}/${results.length} checks passed` +
+      (pausedCount ? `, ${pausedCount} paused by configuration` : ''),
+  );
 
   if (process.env.GITHUB_STEP_SUMMARY) {
     const { appendFileSync } = await import('node:fs');
@@ -797,7 +840,9 @@ async function main() {
       '',
       '| | check | detail |',
       '| --- | --- | --- |',
-      ...results.map((r) => `| ${r.ok ? '✅' : '❌'} | \`${r.id}\` | ${r.detail} |`),
+      ...results.map(
+        (r) => `| ${r.paused ? '⏸️' : r.ok ? '✅' : '❌'} | \`${r.id}\` | ${r.detail} |`,
+      ),
     ];
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
   }
@@ -916,9 +961,15 @@ async function syncIncidents(repo, token, results, now) {
     // Two different closings, said honestly. A recovery means the check ran and
     // passed. An orphan means the check is gone — claiming "recovered" there
     // would be a small lie in the audit trail.
+    // Three different closings, each said honestly. A recovery means the check
+    // ran and passed. An orphan means the check no longer exists. A pause means
+    // the thing was deliberately switched off — claiming "recovered" there
+    // would put a false statement in the audit trail of an incident.
     const body = orphaned
       ? `Closed at ${now.toISOString()} because ${result.detail}.\n\nThe check that opened this incident is no longer part of the monitor, so its state can no longer be observed. If the underlying condition still matters, re-add a check for it.`
-      : `Recovered at ${now.toISOString()}.\n\n**Detail:** ${result.detail}\n\nClosing automatically.`;
+      : result.paused
+        ? `Closed at ${now.toISOString()} because the check is now PAUSED BY CONFIGURATION, not because it recovered.\n\n**Detail:** ${result.detail}\n\nRe-enabling the feature will put this check back into service; if the underlying condition is still true at that point, a new incident will open.`
+        : `Recovered at ${now.toISOString()}.\n\n**Detail:** ${result.detail}\n\nClosing automatically.`;
     await gh(`/repos/${repo}/issues/${issue.number}/comments`, token, {
       method: 'POST',
       body: JSON.stringify({ body }),
@@ -928,7 +979,7 @@ async function syncIncidents(repo, token, results, now) {
       body: JSON.stringify({ state: 'closed', state_reason: 'completed' }),
     });
     console.log(
-      `alert: closed ${orphaned ? 'orphaned' : 'recovered'} incident #${issue.number} for ${result.id}`,
+      `alert: closed ${orphaned ? 'orphaned' : result.paused ? 'paused' : 'recovered'} incident #${issue.number} for ${result.id}`,
     );
   }
 }

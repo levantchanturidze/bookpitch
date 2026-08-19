@@ -110,10 +110,22 @@ describe('collectOpsMetrics against a real database', () => {
     ]);
 
     expect(Object.keys(metrics.auditDigest).sort()).toEqual([
+      'deliveryConfigMalformed',
+      'deliveryEnabled',
       'eligibleRecipients',
       'hoursSinceLastQueued',
       'oldestEligibleOrgAgeHours',
+      'recipientsFixtureDomain',
+      'recipientsOther',
+      'recipientsReservedTld',
     ]);
+    // The classification must account for every eligible recipient, or the
+    // reconciliation it exists for would be reading an incomplete picture.
+    expect(
+      metrics.auditDigest.recipientsFixtureDomain +
+        metrics.auditDigest.recipientsReservedTld +
+        metrics.auditDigest.recipientsOther,
+    ).toBeGreaterThanOrEqual(metrics.auditDigest.eligibleRecipients);
     // P15-004 put the digest on the hourly schedule, so the blast radius must
     // be knowable before it fires. A count, never an address.
     expect(metrics.auditDigest.eligibleRecipients).toBeGreaterThanOrEqual(0);

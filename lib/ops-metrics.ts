@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- Group C: operational probe, no session, cross-tenant counts only
 import { unsafePrismaAdmin } from '@/lib/db';
+import { auditDigestDeliveryMode, isAuditDigestDeliveryEnabled } from '@/lib/audit-digest';
 
 // -----------------------------------------------------------------------------
 // Operational metrics for the production monitor.
@@ -84,6 +85,36 @@ export type AuditDigestMetrics = {
    * mail by watching it arrive.
    */
   eligibleRecipients: number;
+  /**
+   * 1 when AUDIT_DIGEST_ENABLED is exactly "true", else 0.
+   *
+   * Delivery is gated off until the seven production recipients are
+   * reconciled. The monitor needs this to report PAUSE rather than a
+   * misleading PASS or a FAIL for a job that is deliberately stopped.
+   */
+  deliveryEnabled: number;
+  /**
+   * 1 when AUDIT_DIGEST_ENABLED holds a value that is neither the enable
+   * literal nor a recognised off value. Delivery stays off either way; this
+   * makes a failed attempt to enable it visible instead of silent.
+   */
+  deliveryConfigMalformed: number;
+  /**
+   * Eligible recipients whose address is at a domain used by this
+   * repository's seed/fixture data (bp.test, bookpitch.dev, isolation.dev).
+   */
+  recipientsFixtureDomain: number;
+  /**
+   * Eligible recipients at an RFC 2606 / RFC 6761 reserved TLD
+   * (.test, .invalid, .example, .localhost). These cannot receive mail.
+   */
+  recipientsReservedTld: number;
+  /**
+   * Eligible recipients at neither of the above — the ones that could belong
+   * to a real person and therefore need reconciling before delivery is
+   * enabled. Counts only; no address ever leaves the server.
+   */
+  recipientsOther: number;
 };
 
 /**
@@ -317,6 +348,9 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           hours_since: number | null;
           oldest_eligible_org_age_hours: number | null;
           eligible_recipients: number;
+          recipients_fixture_domain: number;
+          recipients_reserved_tld: number;
+          recipients_other: number;
         }>
       >`
         -- float8, not numeric: Prisma maps PostgreSQL numeric to a Decimal
@@ -351,7 +385,26 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
             FROM memberships m
             JOIN app_users u ON u.id = m.user_id
             WHERE m.role = 'owner' AND u.email IS NOT NULL
-          )::int AS eligible_recipients
+          )::int AS eligible_recipients,
+          -- Classification by address SHAPE only, for reconciling who the
+          -- eligible recipients actually are. Counts leave the server; no
+          -- address, name or identifier does.
+          (
+            SELECT count(*) FROM memberships m JOIN app_users u ON u.id = m.user_id
+            WHERE m.role = 'owner' AND u.email IS NOT NULL
+              AND lower(split_part(u.email, '@', 2)) IN ('bp.test','bookpitch.dev','isolation.dev')
+          )::int AS recipients_fixture_domain,
+          (
+            SELECT count(*) FROM memberships m JOIN app_users u ON u.id = m.user_id
+            WHERE m.role = 'owner' AND u.email IS NOT NULL
+              AND lower(split_part(u.email, '@', 2)) ~ '\.(test|invalid|example|localhost)$'
+          )::int AS recipients_reserved_tld,
+          (
+            SELECT count(*) FROM memberships m JOIN app_users u ON u.id = m.user_id
+            WHERE m.role = 'owner' AND u.email IS NOT NULL
+              AND lower(split_part(u.email, '@', 2)) NOT IN ('bp.test','bookpitch.dev','isolation.dev')
+              AND lower(split_part(u.email, '@', 2)) !~ '\.(test|invalid|example|localhost)$'
+          )::int AS recipients_other
       `,
 
       // P15-010: counts only. No encrypted value, address or identifier is
@@ -422,6 +475,11 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         (d as Record<string, unknown>).oldest_eligible_org_age_hours,
       ),
       eligibleRecipients: num((d as Record<string, unknown>).eligible_recipients),
+      deliveryEnabled: isAuditDigestDeliveryEnabled() ? 1 : 0,
+      deliveryConfigMalformed: auditDigestDeliveryMode() === 'disabled_malformed' ? 1 : 0,
+      recipientsFixtureDomain: num((d as Record<string, unknown>).recipients_fixture_domain),
+      recipientsReservedTld: num((d as Record<string, unknown>).recipients_reserved_tld),
+      recipientsOther: num((d as Record<string, unknown>).recipients_other),
     },
     ciphertext: (() => {
       const customerFields = num((c as Record<string, unknown>).customer_fields);
