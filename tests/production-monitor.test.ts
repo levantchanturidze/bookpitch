@@ -522,3 +522,113 @@ describe('P15-011 incident assignment', () => {
     expect(incidentAssignees({ GITHUB_REPOSITORY: '' })).toEqual([]);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Pre-launch delivery gate — monitor side.
+//
+// A paused job is neither healthy nor broken. Reporting PASS would claim
+// digests are being delivered when none are; reporting FAIL would page someone
+// about a deliberate decision every 30 minutes forever. It gets its own state.
+// -----------------------------------------------------------------------------
+describe('audit digest paused state', () => {
+  const paused = (over = {}) =>
+    evaluateAuditDigest({
+      hoursSinceLastQueued: null,
+      oldestEligibleOrgAgeHours: 10_000, // would FAIL if delivery were enabled
+      maxAgeHours: 240,
+      deliveryEnabled: 0,
+      deliveryConfigMalformed: 0,
+      ...over,
+    });
+
+  it('reports paused rather than a false PASS', () => {
+    const r = paused();
+    expect(r.paused).toBe(true);
+    expect(r.detail).toContain('DISABLED BY CONFIGURATION');
+  });
+
+  it('does NOT fail, so it cannot open a repeating incident', () => {
+    // reconcileIncidents opens on !ok. Paused results are ok, so a paused check
+    // never opens an incident no matter how many times the monitor runs.
+    const r = paused();
+    expect(r.ok).toBe(true);
+    const { toOpen } = reconcileIncidents([r], []);
+    expect(toOpen).toHaveLength(0);
+  });
+
+  it('closes an existing incident as paused, not as recovered', () => {
+    const r = paused();
+    const issue = { number: 23, body: incidentMarker('audit-digest-stalled') };
+    const { toClose, toOpen } = reconcileIncidents([r], [issue]);
+    expect(toOpen).toHaveLength(0);
+    expect(toClose).toHaveLength(1);
+    expect(toClose[0].result.paused).toBe(true);
+  });
+
+  it('distinguishes a malformed value from an absent one', () => {
+    expect(paused({ deliveryConfigMalformed: 1 }).detail).toMatch(/unrecognised value/i);
+    expect(paused({ deliveryConfigMalformed: 0 }).detail).toMatch(/is not "true"/);
+  });
+
+  it('returns to real evaluation the moment delivery is enabled', () => {
+    // The gate must not permanently silence the check. With delivery on and a
+    // digest overdue, it fails exactly as before.
+    const r = evaluateAuditDigest({
+      hoursSinceLastQueued: null,
+      oldestEligibleOrgAgeHours: 10_000,
+      maxAgeHours: 240,
+      deliveryEnabled: 1,
+      deliveryConfigMalformed: 0,
+    });
+    expect(r.paused).toBeUndefined();
+    expect(r.ok).toBe(false);
+  });
+
+  it('a deployment predating the gate keeps its previous behaviour', () => {
+    // Neither field present -> not paused, evaluated as before.
+    const r = evaluateAuditDigest({
+      hoursSinceLastQueued: null,
+      oldestEligibleOrgAgeHours: 10_000,
+      maxAgeHours: 240,
+    });
+    expect(r.paused).toBeUndefined();
+    expect(r.ok).toBe(false);
+  });
+
+  it('pausing the digest does not hide unrelated failures', () => {
+    // The point of a scoped pause: everything else still reports normally.
+    const results = evaluateOpsMetrics(
+      {
+        outbox: {
+          pending: 0,
+          processing: 0,
+          dead: 4,
+          staleClaims: 0,
+          oldestPendingAgeSeconds: null,
+        },
+        housekeeping: { overdueRateLimitRows: 0, overdueExpiredTokens: 0, overdueReauthGrants: 0 },
+        retention: { overdueCustomers: 0 },
+        auditDigest: {
+          hoursSinceLastQueued: null,
+          oldestEligibleOrgAgeHours: 10_000,
+          deliveryEnabled: 0,
+          deliveryConfigMalformed: 0,
+        },
+        partitions: { monthsAhead: 3, defaultPartitionRows: 0 },
+        config: {
+          missingSignupEnv: 0,
+          missingEmailEnv: 0,
+          missingSecurityEnv: 0,
+          invalidSecurityEnv: 1,
+        },
+      },
+      DEFAULTS,
+    );
+
+    const byId = (id: string) => results.find((c: { id: string }) => c.id === id)!;
+    expect(byId('audit-digest-stalled').paused).toBe(true);
+    // ...while genuine problems still fail.
+    expect(byId('outbox-dead-letters').ok).toBe(false);
+    expect(byId('production-config-invalid').ok).toBe(false);
+  });
+});

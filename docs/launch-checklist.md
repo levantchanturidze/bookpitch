@@ -24,6 +24,10 @@ Three blockers remain, all email/DNS, all human.
 
 ## A0. Production configuration — **blocking, do this first**
 
+- [ ] Reconcile the 7 eligible digest recipients (R-19) — read
+      `recipientsOther` from `/api/health/ops`; digests stay OFF until then
+- [ ] Decide whether to enable `AUDIT_DIGEST_ENABLED=true` (default: leave off)
+
 - [ ] `FIELD_ENCRYPTION_KEY` set to `<key-id>:<64-hex-chars>` (R-16). Today it
       has no key-id prefix, so signup, patient clinical fields and MFA
       enrolment all return 500.

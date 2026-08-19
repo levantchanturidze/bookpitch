@@ -116,6 +116,57 @@ export function renderDigestText(d: OrgDigest): string {
 // safe to invoke repeatedly (see runDigestForAllOrgs).
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Pre-launch delivery gate.
+//
+// The audit digest reaches real owner mailboxes. Production reports seven
+// eligible recipients while the service has not been sold, so nothing may be
+// queued or sent until those recipients are reconciled and delivery is turned
+// on deliberately.
+//
+// The gate is OFF unless AUDIT_DIGEST_ENABLED is exactly "true". Everything
+// else — unset, empty, "1", "yes", "TRUE", or any typo — leaves it off. That
+// strictness is the point: an ambiguous value must never be the thing that
+// starts sending mail to people.
+//
+// A malformed value is reported separately from an absent one. Both block
+// delivery identically; the distinction exists so "someone tried to enable
+// this and got it wrong" is visible rather than silent.
+// -----------------------------------------------------------------------------
+
+export type DigestDeliveryMode = 'enabled' | 'disabled' | 'disabled_malformed';
+
+/** Exact literal that enables delivery. Nothing else does. */
+const DIGEST_ENABLE_LITERAL = 'true';
+
+/** Values accepted as a deliberate "off" rather than a mistake. */
+const DIGEST_EXPLICIT_OFF = new Set(['false', '']);
+
+/**
+ * Resolve whether digest delivery is permitted.
+ *
+ * Exported and env-injectable so every branch can be exercised directly — a
+ * gate nobody has watched refuse is not a gate.
+ */
+export function auditDigestDeliveryMode(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): DigestDeliveryMode {
+  const raw = env.AUDIT_DIGEST_ENABLED;
+  if (raw === undefined) return 'disabled';
+  const value = raw.trim();
+  if (value === DIGEST_ENABLE_LITERAL) return 'enabled';
+  if (DIGEST_EXPLICIT_OFF.has(value.toLowerCase())) return 'disabled';
+  // Set to something that is neither the enable literal nor a recognised off
+  // value. Fail closed, and say so.
+  return 'disabled_malformed';
+}
+
+export function isAuditDigestDeliveryEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return auditDigestDeliveryMode(env) === 'enabled';
+}
+
 /**
  * ISO-8601 week identifier, e.g. `2026-W34`. Used in the idempotency key so a
  * given organization gets at most one digest per calendar week no matter how
@@ -140,6 +191,11 @@ export function isoWeekKey(date: Date): string {
  * the normal outcome on every run after the first in a given week.
  */
 export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }> {
+  // Gate checked here as well as in runDigestForAllOrgs(): this function is
+  // exported and called directly by tests and could be called by future code.
+  // A gate that only guards one caller is a gate with a hole in it.
+  if (!isAuditDigestDeliveryEnabled()) return { sent: 0 };
+
   const owners = await withoutRls((tx) =>
     tx.membership.findMany({
       where: { organizationId: d.organizationId, role: 'owner' },
@@ -198,7 +254,21 @@ export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }
  * fired — so this also runs on the reliable hourly schedule. Idempotency is
  * enforced by the database, not by trusting the caller's timing.
  */
-export async function runDigestForAllOrgs(): Promise<{ orgs: number; emails: number }> {
+export async function runDigestForAllOrgs(): Promise<{
+  orgs: number;
+  emails: number;
+  mode: DigestDeliveryMode;
+  skipped: boolean;
+}> {
+  const mode = auditDigestDeliveryMode();
+  if (mode !== 'enabled') {
+    // Return BEFORE touching the database or building anything. No org query,
+    // no digest construction, no encryption, no outbox row. Being paused must
+    // cost nothing and leave no trace beyond this log line.
+    log.info('audit_digest.skipped', { mode });
+    return { orgs: 0, emails: 0, mode, skipped: true };
+  }
+
   const orgs = await withoutRls((tx) => tx.organization.findMany({ select: { id: true } }));
   let emails = 0;
   for (const org of orgs) {
@@ -207,5 +277,5 @@ export async function runDigestForAllOrgs(): Promise<{ orgs: number; emails: num
     emails += r.sent;
   }
   log.info('audit_digest.run', { orgs: orgs.length, emails });
-  return { orgs: orgs.length, emails };
+  return { orgs: orgs.length, emails, mode, skipped: false };
 }
