@@ -782,7 +782,11 @@ async function main() {
           // Mutually exclusive partition of distinctAddresses.
           `addressClass — fixture=${dg.knownFixtureDomain ?? '?'}, ` +
           `reservedTld=${dg.reservedTldNonFixture ?? '?'}, ` +
-          `other=${dg.otherUnclassified ?? '?'}`;
+          `other=${dg.otherUnclassified ?? '?'}` +
+          // Second pass: "other" alone does not establish a real customer.
+          ` [other: operatorDomain=${dg.otherAtOperatorDomain ?? '?'}, ` +
+          `distinctDomains=${dg.otherDistinctDomains ?? '?'}]; ` +
+          `dormantOrgs=${dg.eligibleOrganizationsWithNoCustomers ?? '?'}`;
         results.push(
           check(
             'ops-metrics',
