@@ -19,10 +19,16 @@ support records. Write it down here before starting:
 If you have not designated one, stop: sections A and B cannot be completed, and
 they are the ones that prove email delivery works.
 
-**Blocking prerequisite.** `docs/email-dns-readiness.md` shows the sending
-domain has no DKIM and no SPF record, so it is not verified with Resend.
-Section B will almost certainly fail until those records are published. Do that
-first, or expect to be diagnosing a known problem.
+**Blocking prerequisite 1 — the encryption key.** Production's
+`FIELD_ENCRYPTION_KEY` lacks its `<key-id>:` prefix, so `encryptField()` throws
+and **signup returns 500**. Section A cannot pass until it is corrected. See
+R-16 in `docs/phase-15-risk-register.md`.
+
+**Blocking prerequisite 2 — nothing.** An earlier revision claimed the sending
+domain was unverified. That was wrong: `send.bookpitch.ge` has DKIM, SPF and a
+bounce MX published, and Phase 13 proved provider-level delivery. Section B is
+expected to work once prerequisite 1 is fixed. See
+`docs/email-dns-readiness.md` §2.
 
 Redaction rule for anything you record: no passwords, no recovery codes, no MFA
 secrets, no verification-token URLs, no full email addresses in screenshots.

@@ -315,6 +315,16 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
 - **Not fixed here: the value.** Correcting a production secret is a human
   action and explicitly outside what may be done autonomously. No attempt was
   made to read, write or rotate it.
+- **Safety of the correction — measured against production.** Monitor run at
+  `dpl_72PCBTQXT5ZkxUhV2ptczuuWE9NE` (`27ef60d`):
+  `ciphertext rows — customers=0, outbox=0, mfa=0, total=0`. No encrypted data
+  exists in production, so the correction cannot damage anything. Combined with
+  the 19 compatibility tests, the mechanism is proven safe *and* there is
+  nothing for it to affect.
+- **Known consequence.** The same line reports `digest recipients=7`. Once the
+  key is corrected, the hourly cron will queue an audit digest to seven real
+  owner mailboxes automatically. Reported here rather than discovered by
+  watching mail arrive; not manually triggered, per Phase 15.6.
 - **Proof.** `tests/phase15-config-validity.test.ts` (13 tests). The first uses
   the exact shape of the real production value — a bare 64-hex string — and
   asserts it is reported invalid. One test cross-checks the validator against
