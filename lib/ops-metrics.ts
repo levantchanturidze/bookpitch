@@ -84,37 +84,57 @@ export type AuditDigestMetrics = {
    * a count, never an address — so nobody discovers how many real people got
    * mail by watching it arrive.
    */
-  eligibleRecipients: number;
+  /**
+   * Eligible organization-owner MEMBERSHIP rows: role='owner' with a non-null
+   * email. One person owning three organizations contributes three.
+   */
+  eligibleOwnerMemberships: number;
+  /**
+   * Organizations that would actually produce at least one message — i.e.
+   * those with at least one emailable owner. runDigestForAllOrgs() builds a
+   * digest for every organization, but only these generate an intent.
+   */
+  eligibleOrganizations: number;
+  /**
+   * Distinct normalized (lower-cased, trimmed) recipient addresses. This is
+   * the number of human inboxes involved, regardless of how many memberships
+   * or organizations they hold.
+   */
+  distinctNormalizedRecipientAddresses: number;
+  /**
+   * Outbox intents a single enabled run would create.
+   *
+   * sendDigestToOwners() writes one row per (organization, address) pair, and
+   * the unique idempotency key collapses duplicates within an ISO week. So
+   * this is COUNT(DISTINCT (organization_id, normalized address)) — not the
+   * membership count and not the address count.
+   */
+  expectedDigestMessagesPerRun: number;
   /**
    * 1 when AUDIT_DIGEST_ENABLED is exactly "true", else 0.
    *
-   * Delivery is gated off until the seven production recipients are
-   * reconciled. The monitor needs this to report PAUSE rather than a
-   * misleading PASS or a FAIL for a job that is deliberately stopped.
+   * Delivery is gated off until the production recipients are reconciled. The
+   * monitor needs this to report PAUSE rather than a misleading PASS or a FAIL
+   * for a job that is deliberately stopped.
    */
   deliveryEnabled: number;
   /**
    * 1 when AUDIT_DIGEST_ENABLED holds a value that is neither the enable
-   * literal nor a recognised off value. Delivery stays off either way; this
-   * makes a failed attempt to enable it visible instead of silent.
+   * literal nor a recognised off value. Delivery stays off either way.
    */
   deliveryConfigMalformed: number;
-  /**
-   * Eligible recipients whose address is at a domain used by this
-   * repository's seed/fixture data (bp.test, bookpitch.dev, isolation.dev).
-   */
-  recipientsFixtureDomain: number;
-  /**
-   * Eligible recipients at an RFC 2606 / RFC 6761 reserved TLD
-   * (.test, .invalid, .example, .localhost). These cannot receive mail.
-   */
-  recipientsReservedTld: number;
-  /**
-   * Eligible recipients at neither of the above — the ones that could belong
-   * to a real person and therefore need reconciling before delivery is
-   * enabled. Counts only; no address ever leaves the server.
-   */
-  recipientsOther: number;
+  // ---------------------------------------------------------------------
+  // Classification of the DISTINCT normalized addresses. Mutually exclusive
+  // by precedence — fixture domain wins, then reserved TLD, then the rest —
+  // so the three sum exactly to distinctNormalizedRecipientAddresses and can
+  // be reasoned about as a partition rather than overlapping tags.
+  // ---------------------------------------------------------------------
+  /** Addresses at this repository's seed/fixture domains. */
+  knownFixtureDomain: number;
+  /** Not a fixture domain, but at an RFC 2606 / RFC 6761 reserved TLD. */
+  reservedTldNonFixture: number;
+  /** Neither. These are the addresses that could belong to a real person. */
+  otherUnclassified: number;
 };
 
 /**
@@ -347,15 +367,41 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         Array<{
           hours_since: number | null;
           oldest_eligible_org_age_hours: number | null;
-          eligible_recipients: number;
-          recipients_fixture_domain: number;
-          recipients_reserved_tld: number;
-          recipients_other: number;
+          eligible_owner_memberships: number;
+          eligible_organizations: number;
+          distinct_normalized_recipient_addresses: number;
+          expected_digest_messages_per_run: number;
+          known_fixture_domain: number;
+          reserved_tld_non_fixture: number;
+          other_unclassified: number;
         }>
       >`
         -- float8, not numeric: Prisma maps PostgreSQL numeric to a Decimal
         -- object, which would survive the numeric-only assertion below as an
         -- object and then serialise to something the monitor cannot compare.
+        --
+        -- The two CTEs give the classification a single source of truth: one
+        -- row per distinct normalized address, assigned exactly one bucket by
+        -- precedence. That is what makes the three category counts a true
+        -- partition rather than overlapping tags.
+        WITH distinct_addresses AS (
+          SELECT DISTINCT lower(btrim(u.email)) AS addr
+          FROM memberships m
+          JOIN app_users u ON u.id = m.user_id
+          WHERE m.role = 'owner' AND u.email IS NOT NULL AND btrim(u.email) <> ''
+        ),
+        classified AS (
+          SELECT
+            addr,
+            CASE
+              WHEN split_part(addr, '@', 2) IN ('bp.test', 'bookpitch.dev', 'isolation.dev')
+                THEN 'fixture'
+              WHEN split_part(addr, '@', 2) ~ '\\.(test|invalid|example|localhost)$'
+                THEN 'reserved'
+              ELSE 'other'
+            END AS bucket
+          FROM distinct_addresses
+        )
         SELECT
           (
             SELECT (EXTRACT(EPOCH FROM (NOW() - max(created_at))) / 3600.0)::float8
@@ -385,26 +431,35 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
             FROM memberships m
             JOIN app_users u ON u.id = m.user_id
             WHERE m.role = 'owner' AND u.email IS NOT NULL
-          )::int AS eligible_recipients,
-          -- Classification by address SHAPE only, for reconciling who the
-          -- eligible recipients actually are. Counts leave the server; no
-          -- address, name or identifier does.
+          )::int AS eligible_owner_memberships,
           (
-            SELECT count(*) FROM memberships m JOIN app_users u ON u.id = m.user_id
-            WHERE m.role = 'owner' AND u.email IS NOT NULL
-              AND lower(split_part(u.email, '@', 2)) IN ('bp.test','bookpitch.dev','isolation.dev')
-          )::int AS recipients_fixture_domain,
+            SELECT count(DISTINCT o.id)
+            FROM organizations o
+            WHERE EXISTS (
+              SELECT 1 FROM memberships m JOIN app_users u ON u.id = m.user_id
+              WHERE m.organization_id = o.id AND m.role = 'owner' AND u.email IS NOT NULL
+            )
+          )::int AS eligible_organizations,
+          (SELECT count(*) FROM distinct_addresses)::int
+            AS distinct_normalized_recipient_addresses,
+          -- One outbox row per (organization, address): exactly what
+          -- sendDigestToOwners() writes, with the unique idempotency key
+          -- collapsing duplicates inside an ISO week.
           (
-            SELECT count(*) FROM memberships m JOIN app_users u ON u.id = m.user_id
-            WHERE m.role = 'owner' AND u.email IS NOT NULL
-              AND lower(split_part(u.email, '@', 2)) ~ '\.(test|invalid|example|localhost)$'
-          )::int AS recipients_reserved_tld,
-          (
-            SELECT count(*) FROM memberships m JOIN app_users u ON u.id = m.user_id
-            WHERE m.role = 'owner' AND u.email IS NOT NULL
-              AND lower(split_part(u.email, '@', 2)) NOT IN ('bp.test','bookpitch.dev','isolation.dev')
-              AND lower(split_part(u.email, '@', 2)) !~ '\.(test|invalid|example|localhost)$'
-          )::int AS recipients_other
+            SELECT count(*) FROM (
+              SELECT DISTINCT m.organization_id, lower(btrim(u.email)) AS addr
+              FROM memberships m JOIN app_users u ON u.id = m.user_id
+              WHERE m.role = 'owner' AND u.email IS NOT NULL AND btrim(u.email) <> ''
+            ) pairs
+          )::int AS expected_digest_messages_per_run,
+          -- Mutually exclusive by precedence, so the three sum exactly to
+          -- distinct_normalized_recipient_addresses.
+          (SELECT count(*) FROM classified WHERE bucket = 'fixture')::int
+            AS known_fixture_domain,
+          (SELECT count(*) FROM classified WHERE bucket = 'reserved')::int
+            AS reserved_tld_non_fixture,
+          (SELECT count(*) FROM classified WHERE bucket = 'other')::int
+            AS other_unclassified
       `,
 
       // P15-010: counts only. No encrypted value, address or identifier is
@@ -428,6 +483,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       `,
 
       unsafePrismaAdmin.$queryRaw<Array<{ months_ahead: bigint; default_rows: bigint }>>`
+
         SELECT
           (
             SELECT count(*)
@@ -474,12 +530,19 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       oldestEligibleOrgAgeHours: numOrNull(
         (d as Record<string, unknown>).oldest_eligible_org_age_hours,
       ),
-      eligibleRecipients: num((d as Record<string, unknown>).eligible_recipients),
+      eligibleOwnerMemberships: num((d as Record<string, unknown>).eligible_owner_memberships),
+      eligibleOrganizations: num((d as Record<string, unknown>).eligible_organizations),
+      distinctNormalizedRecipientAddresses: num(
+        (d as Record<string, unknown>).distinct_normalized_recipient_addresses,
+      ),
+      expectedDigestMessagesPerRun: num(
+        (d as Record<string, unknown>).expected_digest_messages_per_run,
+      ),
       deliveryEnabled: isAuditDigestDeliveryEnabled() ? 1 : 0,
       deliveryConfigMalformed: auditDigestDeliveryMode() === 'disabled_malformed' ? 1 : 0,
-      recipientsFixtureDomain: num((d as Record<string, unknown>).recipients_fixture_domain),
-      recipientsReservedTld: num((d as Record<string, unknown>).recipients_reserved_tld),
-      recipientsOther: num((d as Record<string, unknown>).recipients_other),
+      knownFixtureDomain: num((d as Record<string, unknown>).known_fixture_domain),
+      reservedTldNonFixture: num((d as Record<string, unknown>).reserved_tld_non_fixture),
+      otherUnclassified: num((d as Record<string, unknown>).other_unclassified),
     },
     ciphertext: (() => {
       const customerFields = num((c as Record<string, unknown>).customer_fields);

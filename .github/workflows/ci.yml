@@ -222,7 +222,10 @@ jobs:
   e2e:
     name: Browser, mobile, and accessibility suite
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Sized for: cold browser download (~3 min) + bounded apt step (<=8 min) +
+    # build + the six-project suite (~4 min). Not raised speculatively — the
+    # apt step that was consuming the job is now bounded at its own level.
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -271,8 +274,54 @@ jobs:
       - name: Seed database
         run: npm run db:seed
 
+      # Downloading three browser engines on every run took >18 minutes on a
+      # slow runner and timed out the job twice (runs 32271431230, 32288636949,
+      # both killed at the 25-minute ceiling during this exact step). Cache the
+      # binaries and install the apt system libraries separately, since only
+      # the binaries are cacheable.
+      - name: Resolve Playwright version for the cache key
+        id: pw
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      # ROOT CAUSE of three cancelled runs, found by reading the apt log rather
+      # than by guessing: this runner's Azure package mirror is unreachable.
+      #
+      #   Ign:6 http://azure.archive.ubuntu.com/ubuntu noble-backports InRelease
+      #   Hit:2 https://archive.ubuntu.com/ubuntu noble InRelease
+      #
+      # Every `Ign:` is apt retrying a dead mirror with a long timeout, which is
+      # why `playwright install-deps` ran for 34m19s (run 32291853553) and
+      # 8min+ (run 32295327588) instead of seconds. Pointing apt at the mirror
+      # that actually answers fixes the cause; raising the job timeout again
+      # would only have paid the same cost for longer.
+      - name: Point apt at a reachable mirror
+        run: |
+          set -eux
+          sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          sudo apt-get update -qq
+
+      # WebKit is the engine that actually needs these (libgtk-4, libgraphene,
+      # the gstreamer set, libopus); Chromium and Firefox run on what the image
+      # already ships. Required, not optional — without it browserType.launch
+      # fails with "Host system is missing dependencies to run browsers".
+      - name: Install Playwright system dependencies
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: npx playwright install-deps chromium firefox webkit
+
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium firefox webkit
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium firefox webkit
 
       - name: Build
         run: npm run build
