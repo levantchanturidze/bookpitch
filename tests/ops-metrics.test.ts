@@ -112,6 +112,7 @@ describe('collectOpsMetrics against a real database', () => {
     expect(Object.keys(metrics.auditDigest).sort()).toEqual([
       'deliveryConfigMalformed',
       'deliveryEnabled',
+      'distinctEligibleRecipients',
       'eligibleRecipients',
       'hoursSinceLastQueued',
       'oldestEligibleOrgAgeHours',
@@ -126,6 +127,11 @@ describe('collectOpsMetrics against a real database', () => {
         metrics.auditDigest.recipientsReservedTld +
         metrics.auditDigest.recipientsOther,
     ).toBeGreaterThanOrEqual(metrics.auditDigest.eligibleRecipients);
+    // Distinct mailboxes can never exceed memberships: one person owning three
+    // organizations is three memberships but one inbox.
+    expect(metrics.auditDigest.distinctEligibleRecipients).toBeLessThanOrEqual(
+      metrics.auditDigest.eligibleRecipients,
+    );
     // P15-004 put the digest on the hourly schedule, so the blast radius must
     // be knowable before it fires. A count, never an address.
     expect(metrics.auditDigest.eligibleRecipients).toBeGreaterThanOrEqual(0);
@@ -301,5 +307,51 @@ describe('the ops endpoint is reachable without a session but not by a browser u
 
   it('does not open the whole /api/health subtree', () => {
     expect(isPublicPath('/api/health/anything-else')).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Diagnostics boundary.
+//
+// The recipient classification and ciphertext inventory are operational
+// intelligence about production. They belong on the CRON_SECRET-protected
+// diagnostics endpoint and nowhere else. /api/health is unauthenticated and
+// world-readable, so anything that leaks into it is public.
+// -----------------------------------------------------------------------------
+describe('public health endpoint stays minimal', () => {
+  it('returns exactly {"ok":true} and nothing else', async () => {
+    const route = await import('@/app/api/health/route');
+    const res = await route.GET();
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(Object.keys(body)).toEqual(['ok']);
+    expect(body.ok).toBe(true);
+  });
+
+  it('exposes no recipient, ciphertext or config intelligence', async () => {
+    const route = await import('@/app/api/health/route');
+    const text = await (await route.GET()).text();
+
+    for (const leaked of [
+      'recipient',
+      'ciphertext',
+      'eligible',
+      'mfa',
+      'outbox',
+      'customer',
+      'deliveryEnabled',
+      'invalidSecurityEnv',
+      '@',
+    ]) {
+      expect(text.toLowerCase()).not.toContain(leaked.toLowerCase());
+    }
+  });
+
+  it('the diagnostics endpoint requires the bearer secret', async () => {
+    // The complement: the data exists, but only behind auth.
+    const route = await import('@/app/api/health/ops/route');
+    const res = await route.GET(new Request('http://x/api/health/ops') as never);
+    expect(res.status).toBe(401);
   });
 });

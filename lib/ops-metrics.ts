@@ -86,6 +86,15 @@ export type AuditDigestMetrics = {
    */
   eligibleRecipients: number;
   /**
+   * Distinct mailboxes among the eligible recipients.
+   *
+   * `eligibleRecipients` counts owner MEMBERSHIPS, so one person owning three
+   * organizations is counted three times. The number of actual human inboxes
+   * that would receive mail is this one, and the gap between the two is the
+   * difference between "seven people" and "one person, seven times".
+   */
+  distinctEligibleRecipients: number;
+  /**
    * 1 when AUDIT_DIGEST_ENABLED is exactly "true", else 0.
    *
    * Delivery is gated off until the seven production recipients are
@@ -348,6 +357,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           hours_since: number | null;
           oldest_eligible_org_age_hours: number | null;
           eligible_recipients: number;
+          distinct_eligible_recipients: number;
           recipients_fixture_domain: number;
           recipients_reserved_tld: number;
           recipients_other: number;
@@ -386,6 +396,11 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
             JOIN app_users u ON u.id = m.user_id
             WHERE m.role = 'owner' AND u.email IS NOT NULL
           )::int AS eligible_recipients,
+          (
+            SELECT count(DISTINCT lower(u.email))
+            FROM memberships m JOIN app_users u ON u.id = m.user_id
+            WHERE m.role = 'owner' AND u.email IS NOT NULL
+          )::int AS distinct_eligible_recipients,
           -- Classification by address SHAPE only, for reconciling who the
           -- eligible recipients actually are. Counts leave the server; no
           -- address, name or identifier does.
@@ -475,6 +490,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         (d as Record<string, unknown>).oldest_eligible_org_age_hours,
       ),
       eligibleRecipients: num((d as Record<string, unknown>).eligible_recipients),
+      distinctEligibleRecipients: num((d as Record<string, unknown>).distinct_eligible_recipients),
       deliveryEnabled: isAuditDigestDeliveryEnabled() ? 1 : 0,
       deliveryConfigMalformed: auditDigestDeliveryMode() === 'disabled_malformed' ? 1 : 0,
       recipientsFixtureDomain: num((d as Record<string, unknown>).recipients_fixture_domain),

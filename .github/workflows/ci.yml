@@ -222,7 +222,9 @@ jobs:
   e2e:
     name: Browser, mobile, and accessibility suite
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 25 was not enough headroom when the browser download ran slowly; the
+    # cache above should make this moot, but a cold cache still has to fit.
+    timeout-minutes: 35
     permissions:
       contents: read
 
@@ -271,8 +273,28 @@ jobs:
       - name: Seed database
         run: npm run db:seed
 
+      # Downloading three browser engines on every run took >18 minutes on a
+      # slow runner and timed out the job twice (runs 32271431230, 32288636949,
+      # both killed at the 25-minute ceiling during this exact step). Cache the
+      # binaries and install the apt system libraries separately, since only
+      # the binaries are cacheable.
+      - name: Resolve Playwright version for the cache key
+        id: pw
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      - name: Install Playwright system dependencies
+        run: npx playwright install-deps chromium firefox webkit
+
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium firefox webkit
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium firefox webkit
 
       - name: Build
         run: npm run build

@@ -771,6 +771,7 @@ async function main() {
           `ciphertext rows — customers=${ct.customerFields ?? '?'}, ` +
           `outbox=${ct.outboxRows ?? '?'}, mfa=${ct.mfaSecrets ?? '?'}, ` +
           `total=${ct.total ?? '?'}; digest recipients=${dg.eligibleRecipients ?? '?'} ` +
+          `(distinct-mailboxes=${dg.distinctEligibleRecipients ?? '?'}) ` +
           // R-19: the classification is the whole point of the count. Printing
           // only the total leaves "are any of these real people?" unanswered,
           // which is the question that decides whether delivery may be enabled.
