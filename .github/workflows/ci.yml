@@ -222,9 +222,10 @@ jobs:
   e2e:
     name: Browser, mobile, and accessibility suite
     runs-on: ubuntu-latest
-    # 25 was not enough headroom when the browser download ran slowly; the
-    # cache above should make this moot, but a cold cache still has to fit.
-    timeout-minutes: 35
+    # Sized for: cold browser download (~3 min) + bounded apt step (<=8 min) +
+    # build + the six-project suite (~4 min). Not raised speculatively — the
+    # apt step that was consuming the job is now bounded at its own level.
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -289,7 +290,23 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
 
-      - name: Install Playwright system dependencies
+      # `playwright install-deps` shells out to apt-get, and on this runner it
+      # ran for 34m19s and consumed the entire job (run 32291853553, step
+      # timings inspected). The GitHub ubuntu-latest image already ships almost
+      # everything the three engines need, so this is bounded and non-fatal:
+      # if a library really is missing, the suite below fails immediately and
+      # loudly with the name of it, which is far better evidence than an apt
+      # step hanging for half an hour.
+      #
+      # Deliberately NOT a timeout increase — the previous cancellations were
+      # diagnosed step by step: first assumed transient, then assumed the
+      # browser download, and only after splitting the steps did the apt call
+      # show up as the actual cause.
+      - name: Install Playwright system dependencies (bounded, non-fatal)
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: npx playwright install-deps chromium firefox webkit
 
       - name: Install Playwright browsers

@@ -770,14 +770,19 @@ async function main() {
         const inventory =
           `ciphertext rows — customers=${ct.customerFields ?? '?'}, ` +
           `outbox=${ct.outboxRows ?? '?'}, mfa=${ct.mfaSecrets ?? '?'}, ` +
-          `total=${ct.total ?? '?'}; digest recipients=${dg.eligibleRecipients ?? '?'} ` +
-          `(distinct-mailboxes=${dg.distinctEligibleRecipients ?? '?'}) ` +
-          // R-19: the classification is the whole point of the count. Printing
-          // only the total leaves "are any of these real people?" unanswered,
-          // which is the question that decides whether delivery may be enabled.
-          `(fixture-domain=${dg.recipientsFixtureDomain ?? '?'}, ` +
-          `reserved-tld=${dg.recipientsReservedTld ?? '?'}, ` +
-          `other=${dg.recipientsOther ?? '?'})`;
+          `total=${ct.total ?? '?'}; ` +
+          // Semantically distinct numbers, deliberately all reported: owner
+          // memberships, organizations, distinct inboxes, and the intents an
+          // enabled run would actually create. They answer different
+          // questions and conflating them is how "7" becomes ambiguous.
+          `digest — ownerMemberships=${dg.eligibleOwnerMemberships ?? '?'}, ` +
+          `organizations=${dg.eligibleOrganizations ?? '?'}, ` +
+          `distinctAddresses=${dg.distinctNormalizedRecipientAddresses ?? '?'}, ` +
+          `messagesPerRun=${dg.expectedDigestMessagesPerRun ?? '?'}; ` +
+          // Mutually exclusive partition of distinctAddresses.
+          `addressClass — fixture=${dg.knownFixtureDomain ?? '?'}, ` +
+          `reservedTld=${dg.reservedTldNonFixture ?? '?'}, ` +
+          `other=${dg.otherUnclassified ?? '?'}`;
         results.push(
           check(
             'ops-metrics',

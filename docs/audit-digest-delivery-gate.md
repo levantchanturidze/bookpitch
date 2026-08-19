@@ -87,23 +87,50 @@ will receive mail.
 `/api/health/ops` reports the eligible owner mailboxes classified **by address
 shape only**. Counts leave the server; no address, name or identifier does.
 
+### Volume — four different questions, four different numbers
+
 | Field | Meaning |
 |---|---|
-| `eligibleRecipients` | Owner memberships with a non-null email |
-| `recipientsFixtureDomain` | At `bp.test`, `bookpitch.dev` or `isolation.dev` — this repository's seed/fixture domains |
-| `recipientsReservedTld` | At `.test`, `.invalid`, `.example` or `.localhost` — RFC 2606 / RFC 6761 reserved, cannot receive mail |
-| `recipientsOther` | Neither of the above — **these are the ones that could belong to a real person** |
+| `eligibleOwnerMemberships` | Owner rows with an email. One person owning three organisations counts three times. |
+| `eligibleOrganizations` | Organisations that would produce at least one message. |
+| `distinctNormalizedRecipientAddresses` | Distinct lower-cased, trimmed addresses — **the number of human inboxes**. |
+| `expectedDigestMessagesPerRun` | Outbox intents a single enabled run creates: one per (organisation, address) pair, matching what `sendDigestToOwners()` writes and the idempotency key collapses. |
 
-The categories deliberately overlap: `bp.test` is both a fixture domain and a
-reserved TLD, while `bookpitch.dev` is a fixture domain on a **real** TLD and is
-therefore theoretically deliverable. `recipientsOther` is the number that
-matters for the reconciliation.
+Conflating these is how a single number becomes ambiguous. Seven memberships
+could be seven people, or one person with seven organisations.
+
+### Address classification — a partition, not tags
+
+Each **distinct normalized address** falls into exactly one category, assigned
+by precedence:
+
+| # | Field | Rule |
+|---|---|---|
+| 1 | `knownFixtureDomain` | Domain is `bp.test`, `bookpitch.dev` or `isolation.dev` |
+| 2 | `reservedTldNonFixture` | Not the above, and at an RFC 2606 / 6761 reserved TLD (`.test`, `.invalid`, `.example`, `.localhost`) |
+| 3 | `otherUnclassified` | Neither |
+
+Guaranteed, and asserted against a real database in
+`tests/ops-metrics.test.ts`:
+
+```
+knownFixtureDomain + reservedTldNonFixture + otherUnclassified
+  == distinctNormalizedRecipientAddresses
+```
+
+No overlapping diagnostic categories are retained, so no sum of them can be
+mistaken for a recipient total.
 
 Interpretation:
 
-- `recipientsOther = 0` → every eligible recipient is fixture or unroutable, so
-  the 7 are an artefact of seeding rather than real customers.
-- `recipientsOther > 0` → identify those records before enabling delivery.
+- `otherUnclassified = 0` → every distinct address is a fixture domain or an
+  unroutable reserved TLD, so the recipients are an artefact of seeding rather
+  than real customers.
+- `otherUnclassified > 0` → **this does not prove a real customer exists.** It
+  means only that the address was not matched by the current fixture rules. A
+  staff address, a personal test account, or a demo record all land here.
+  Classify further with non-sensitive read-only evidence before concluding
+  anything, and never by reading the addresses themselves.
 
 **No production record has been read, printed, deleted, anonymised or modified
 to produce these numbers**, and none will be without explicit approval.

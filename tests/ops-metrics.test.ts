@@ -112,29 +112,43 @@ describe('collectOpsMetrics against a real database', () => {
     expect(Object.keys(metrics.auditDigest).sort()).toEqual([
       'deliveryConfigMalformed',
       'deliveryEnabled',
-      'distinctEligibleRecipients',
-      'eligibleRecipients',
+      'distinctNormalizedRecipientAddresses',
+      'eligibleOrganizations',
+      'eligibleOwnerMemberships',
+      'expectedDigestMessagesPerRun',
       'hoursSinceLastQueued',
+      'knownFixtureDomain',
       'oldestEligibleOrgAgeHours',
-      'recipientsFixtureDomain',
-      'recipientsOther',
-      'recipientsReservedTld',
+      'otherUnclassified',
+      'reservedTldNonFixture',
     ]);
-    // The classification must account for every eligible recipient, or the
-    // reconciliation it exists for would be reading an incomplete picture.
-    expect(
-      metrics.auditDigest.recipientsFixtureDomain +
-        metrics.auditDigest.recipientsReservedTld +
-        metrics.auditDigest.recipientsOther,
-    ).toBeGreaterThanOrEqual(metrics.auditDigest.eligibleRecipients);
-    // Distinct mailboxes can never exceed memberships: one person owning three
+
+    const dg = metrics.auditDigest;
+
+    // The three categories are a PARTITION of the distinct addresses, not
+    // overlapping tags. If this ever fails, a classification bucket has been
+    // added or reordered without precedence and the totals stop meaning
+    // anything.
+    expect(dg.knownFixtureDomain + dg.reservedTldNonFixture + dg.otherUnclassified).toBe(
+      dg.distinctNormalizedRecipientAddresses,
+    );
+
+    // Distinct inboxes can never exceed memberships: one person owning three
     // organizations is three memberships but one inbox.
-    expect(metrics.auditDigest.distinctEligibleRecipients).toBeLessThanOrEqual(
-      metrics.auditDigest.eligibleRecipients,
+    expect(dg.distinctNormalizedRecipientAddresses).toBeLessThanOrEqual(
+      dg.eligibleOwnerMemberships,
+    );
+
+    // One intent per (organization, address) pair, so it is bounded above by
+    // memberships and below by both the org count and the address count.
+    expect(dg.expectedDigestMessagesPerRun).toBeLessThanOrEqual(dg.eligibleOwnerMemberships);
+    expect(dg.expectedDigestMessagesPerRun).toBeGreaterThanOrEqual(dg.eligibleOrganizations);
+    expect(dg.expectedDigestMessagesPerRun).toBeGreaterThanOrEqual(
+      dg.distinctNormalizedRecipientAddresses > 0 ? 1 : 0,
     );
     // P15-004 put the digest on the hourly schedule, so the blast radius must
     // be knowable before it fires. A count, never an address.
-    expect(metrics.auditDigest.eligibleRecipients).toBeGreaterThanOrEqual(0);
+    expect(dg.expectedDigestMessagesPerRun).toBeGreaterThanOrEqual(0);
 
     expect(Object.keys(metrics.outbox).sort()).toEqual([
       'dead',
