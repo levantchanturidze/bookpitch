@@ -135,6 +135,24 @@ export type AuditDigestMetrics = {
   reservedTldNonFixture: number;
   /** Neither. These are the addresses that could belong to a real person. */
   otherUnclassified: number;
+  // ---------------------------------------------------------------------
+  // Second-pass classification of otherUnclassified.
+  //
+  // otherUnclassified > 0 does NOT establish that a real customer exists — it
+  // only means the address was not matched by the fixture-domain rules. An
+  // operator's own mailbox, a personal test account and a genuine customer all
+  // land there. These narrow it further, still with counts only.
+  // ---------------------------------------------------------------------
+  /** `otherUnclassified` addresses at the operator's own domain (bookpitch.ge). */
+  otherAtOperatorDomain: number;
+  /** Distinct domains across the `otherUnclassified` addresses. */
+  otherDistinctDomains: number;
+  /**
+   * Eligible organizations holding zero customer records. A dormant
+   * organization is evidence the account is not in real use, independent of
+   * what its owner's address looks like.
+   */
+  eligibleOrganizationsWithNoCustomers: number;
 };
 
 /**
@@ -374,6 +392,9 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           known_fixture_domain: number;
           reserved_tld_non_fixture: number;
           other_unclassified: number;
+          other_at_operator_domain: number;
+          other_distinct_domains: number;
+          eligible_organizations_with_no_customers: number;
         }>
       >`
         -- float8, not numeric: Prisma maps PostgreSQL numeric to a Decimal
@@ -459,7 +480,25 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           (SELECT count(*) FROM classified WHERE bucket = 'reserved')::int
             AS reserved_tld_non_fixture,
           (SELECT count(*) FROM classified WHERE bucket = 'other')::int
-            AS other_unclassified
+            AS other_unclassified,
+          -- Second pass over the 'other' bucket only.
+          (
+            SELECT count(*) FROM classified
+            WHERE bucket = 'other' AND split_part(addr, '@', 2) = 'bookpitch.ge'
+          )::int AS other_at_operator_domain,
+          (
+            SELECT count(DISTINCT split_part(addr, '@', 2))
+            FROM classified WHERE bucket = 'other'
+          )::int AS other_distinct_domains,
+          (
+            SELECT count(*)
+            FROM organizations o
+            WHERE EXISTS (
+              SELECT 1 FROM memberships m JOIN app_users u ON u.id = m.user_id
+              WHERE m.organization_id = o.id AND m.role = 'owner' AND u.email IS NOT NULL
+            )
+            AND NOT EXISTS (SELECT 1 FROM customers c WHERE c.organization_id = o.id)
+          )::int AS eligible_organizations_with_no_customers
       `,
 
       // P15-010: counts only. No encrypted value, address or identifier is
@@ -543,6 +582,11 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       knownFixtureDomain: num((d as Record<string, unknown>).known_fixture_domain),
       reservedTldNonFixture: num((d as Record<string, unknown>).reserved_tld_non_fixture),
       otherUnclassified: num((d as Record<string, unknown>).other_unclassified),
+      otherAtOperatorDomain: num((d as Record<string, unknown>).other_at_operator_domain),
+      otherDistinctDomains: num((d as Record<string, unknown>).other_distinct_domains),
+      eligibleOrganizationsWithNoCustomers: num(
+        (d as Record<string, unknown>).eligible_organizations_with_no_customers,
+      ),
     },
     ciphertext: (() => {
       const customerFields = num((c as Record<string, unknown>).customer_fields);

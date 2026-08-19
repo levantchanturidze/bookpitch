@@ -114,11 +114,14 @@ describe('collectOpsMetrics against a real database', () => {
       'deliveryEnabled',
       'distinctNormalizedRecipientAddresses',
       'eligibleOrganizations',
+      'eligibleOrganizationsWithNoCustomers',
       'eligibleOwnerMemberships',
       'expectedDigestMessagesPerRun',
       'hoursSinceLastQueued',
       'knownFixtureDomain',
       'oldestEligibleOrgAgeHours',
+      'otherAtOperatorDomain',
+      'otherDistinctDomains',
       'otherUnclassified',
       'reservedTldNonFixture',
     ]);
@@ -132,6 +135,11 @@ describe('collectOpsMetrics against a real database', () => {
     expect(dg.knownFixtureDomain + dg.reservedTldNonFixture + dg.otherUnclassified).toBe(
       dg.distinctNormalizedRecipientAddresses,
     );
+
+    // The second pass narrows the 'other' bucket; it can never exceed it.
+    expect(dg.otherAtOperatorDomain).toBeLessThanOrEqual(dg.otherUnclassified);
+    expect(dg.otherDistinctDomains).toBeLessThanOrEqual(dg.otherUnclassified);
+    expect(dg.eligibleOrganizationsWithNoCustomers).toBeLessThanOrEqual(dg.eligibleOrganizations);
 
     // Distinct inboxes can never exceed memberships: one person owning three
     // organizations is three memberships but one inbox.
