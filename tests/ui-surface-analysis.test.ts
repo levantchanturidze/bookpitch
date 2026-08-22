@@ -207,18 +207,12 @@ describe('P14-012 — reachability is proven from the import graph', () => {
     expect(roots.length).toBeGreaterThan(50);
   });
 
-  it('records exactly the known-dead component set', () => {
-    // Explicit rather than "some components are dead": if one is deleted or
-    // wired up, this test says so instead of quietly drifting.
-    expect(dead).toEqual([
-      'components/AnalyticsDashboard.tsx',
-      'components/CalendarView.tsx',
-      'components/CheckoutPayment.tsx',
-      'components/ModulePlaceholder.tsx',
-      'components/OfflineManager.tsx',
-      'components/PatientDatabase.tsx',
-      'components/RemindersSystem.tsx',
-    ]);
+  it('records exactly the known-dead component set — now empty', () => {
+    // Phase 14 recorded seven unreachable prototype components here. F16-004
+    // deleted them (git history and prototype/ are the reference copies), so the
+    // expected set is empty. Explicit rather than "some are dead": if one comes
+    // back, this says so instead of quietly drifting.
+    expect(dead).toEqual([]);
   });
 
   it('keeps the accessibility primitives reachable — they were not, at first', () => {
@@ -234,10 +228,15 @@ describe('P14-012 — reachability is proven from the import graph', () => {
     }
   });
 
-  it('the dead components are not counted as user-facing defects anywhere', () => {
-    // They contain raw modal overlays and failing contrast. Both guard suites
-    // filter on reachability, so this asserts the filter is actually load-bearing.
-    expect(dead.length).toBeGreaterThan(0);
+  it('the reachability filter is load-bearing, not a no-op', () => {
+    // This used to be proved by there being dead components to exclude. With
+    // none left, prove it directly: the graph is a genuine subset of the
+    // repository, and it never counts a test file as a rendered surface.
+    expect(reachable.size).toBeGreaterThan(roots.length);
+    const reachablePaths = [...reachable].map((f: string) => path.relative(ROOT, f));
+    expect(reachablePaths.some((f) => f.startsWith('tests/'))).toBe(false);
+    expect(reachablePaths.some((f) => f.startsWith('e2e/'))).toBe(false);
+    expect(reachablePaths.some((f) => f.startsWith('prototype/'))).toBe(false);
   });
 });
 

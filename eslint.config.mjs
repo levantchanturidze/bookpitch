@@ -137,8 +137,12 @@ const eslintConfig = defineConfig([
     // Reference-only prototype (not part of the Next.js app):
     'prototype/**',
   ]),
-  // Ported prototype code lives here verbatim until P1.3 wires it in.
-  // Downgrade rules that only fire because of that not-yet-refactored code.
+  // Historically these were downgraded because components/ held prototype code
+  // ported verbatim. F16-004 deleted the last seven of those files, so the
+  // original justification is gone; the ~20 warnings that remain are ordinary
+  // cleanups in real product components. Promoting these back to errors is a
+  // deliberate follow-up, not a side effect of the deletion — see
+  // docs/phase-16-reconciliation-ledger.md (F16-011).
   {
     files: ['components/**/*.{ts,tsx}', 'lib/types.ts'],
     rules: {
