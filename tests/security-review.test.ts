@@ -206,7 +206,7 @@ describe('SEC § cross-tenant isolation', () => {
 
   it('P1.4: GET /api/customers returns only the caller org rows', async () => {
     authMock.mockResolvedValue(await mockJwt(H.isoOwnerId, H.isoOrgId));
-    const res = await routeCustomers.GET();
+    const res = await routeCustomers.GET(req('http://localhost/api/customers'));
     const body = await json<{ customers: Array<{ name: string }> }>(res);
     // Isolation Corp seeded with one customer ("Do Not Leak"). The DTO
     // deliberately omits organizationId (correct behavior — no need to

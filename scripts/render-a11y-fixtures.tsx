@@ -15,6 +15,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ModalShell from '../components/ui/ModalShell';
 import Field from '../components/ui/Field';
 import StatusMessage from '../components/ui/StatusMessage';
+import {
+  DetailEmpty,
+  DetailError,
+  DetailLoading,
+  ListEmpty,
+} from '../components/patients/DetailStates';
 
 const fixtures: Record<string, string> = {
   dialog: renderToStaticMarkup(
@@ -81,6 +87,29 @@ const fixtures: Record<string, string> = {
           />
         )}
       </Field>
+    </div>,
+  ),
+  // F16-008 — the states a per-selection fetch introduces. Rendered here so the
+  // Playwright spec checks the real markup in six real browsers, including at
+  // 320px where the retry button and the message have to coexist.
+  patientsDetailLoading: renderToStaticMarkup(
+    <div className="flex h-64 flex-col rounded-xl border border-slate-200 bg-white p-6">
+      <DetailLoading label="patient" />
+    </div>,
+  ),
+  patientsDetailError: renderToStaticMarkup(
+    <div className="flex h-64 flex-col rounded-xl border border-slate-200 bg-white p-6">
+      <DetailError message="Could not load this record." />
+    </div>,
+  ),
+  patientsDetailEmpty: renderToStaticMarkup(
+    <div className="flex h-64 flex-col rounded-xl border border-slate-200 bg-white p-6">
+      <DetailEmpty label="patient" />
+    </div>,
+  ),
+  patientsListEmpty: renderToStaticMarkup(
+    <div className="flex h-64 flex-col rounded-xl border border-slate-200 bg-white p-5">
+      <ListEmpty searching label="patients" />
     </div>,
   ),
 };

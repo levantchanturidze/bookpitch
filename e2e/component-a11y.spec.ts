@@ -70,7 +70,13 @@ function appStylesheet(): string {
 
 async function mount(page: Page, bodyHtml: string, bodyClass = 'bg-white') {
   await page.setContent(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>harness</title></head>` +
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+      // Without this, an emulated mobile browser lays out at its ~980px default
+      // and scales the result down, so measurements bear no relation to the
+      // device width. The real app sets it in app/layout.tsx; the harness has to
+      // as well or its responsive assertions measure the wrong thing.
+      `<meta name="viewport" content="width=device-width, initial-scale=1">` +
+      `<title>harness</title></head>` +
       `<body class="${bodyClass}"><main id="main">${bodyHtml}</main></body></html>`,
   );
   await page.addStyleTag({ content: appStylesheet() });
@@ -195,4 +201,81 @@ test('@a11y the brand accent button meets AA at its real computed colour', async
   const v = await axeViolations(page);
   const contrast = v.filter((x) => x.id === 'color-contrast');
   expect(contrast, `\n  ${describeViolations(contrast)}\n`).toEqual([]);
+});
+
+// -----------------------------------------------------------------------------
+// F16-008 — states introduced by fetching patient detail per selection.
+//
+// The patients screen used to have every record in props, so it had no loading
+// state, no error state and nothing to retry. Fetching per selection creates
+// all three, and each has to be announced and operable — including at 320px,
+// where a centred message and a retry button have the least room.
+// -----------------------------------------------------------------------------
+
+test('@a11y patients detail — loading state is announced, not just spun', async ({ page }) => {
+  await mount(page, FIXTURES.patientsDetailLoading);
+
+  const status = page.getByRole('status');
+  await expect(status).toHaveAttribute('aria-busy', 'true');
+  await expect(status).toContainText(/loading/i);
+
+  const v = await axeViolations(page);
+  expect(v, `\n  ${describeViolations(v)}\n`).toEqual([]);
+});
+
+test('@a11y patients detail — error state is an alert with a working retry', async ({ page }) => {
+  await mount(page, FIXTURES.patientsDetailError);
+
+  await expect(page.getByRole('alert')).toContainText(/could not load/i);
+  const retry = page.getByRole('button', { name: /try again/i });
+  await expect(retry).toBeVisible();
+  await expect(retry).toBeEnabled();
+
+  // Focusable, not only clickable. Asserted with .focus() rather than Tab:
+  // WebKit follows the macOS "full keyboard access" setting and will not tab to
+  // a button by default, which is a platform policy, not a defect in this markup.
+  await retry.focus();
+  await expect(retry).toBeFocused();
+
+  const v = await axeViolations(page);
+  expect(v, `\n  ${describeViolations(v)}\n`).toEqual([]);
+});
+
+test('@a11y patients empty states carry text, not just an icon', async ({ page }) => {
+  await mount(page, FIXTURES.patientsDetailEmpty);
+  await expect(page.getByText(/select a patient/i)).toBeVisible();
+  let v = await axeViolations(page);
+  expect(v, `\n  ${describeViolations(v)}\n`).toEqual([]);
+
+  await mount(page, FIXTURES.patientsListEmpty);
+  await expect(page.getByText(/no records match/i)).toBeVisible();
+  v = await axeViolations(page);
+  expect(v, `\n  ${describeViolations(v)}\n`).toEqual([]);
+});
+
+test('@responsive patients states stay inside the viewport', async ({ page }) => {
+  // Measured against each project's own viewport rather than a hardcoded 320:
+  // the device-emulated projects ignore setViewportSize, and the mobile-320
+  // project already runs at exactly 320. This way all six projects assert
+  // something true of themselves.
+  const width = page.viewportSize()?.width ?? 320;
+
+  for (const html of [FIXTURES.patientsDetailError, FIXTURES.patientsListEmpty]) {
+    await mount(page, html);
+    // Nothing may push the document into horizontal scrolling at the narrowest
+    // supported width.
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    );
+    expect(overflow, `content overflows horizontally at ${width}px`).toBe(false);
+  }
+
+  await mount(page, FIXTURES.patientsDetailError);
+  const retry = page.getByRole('button', { name: /try again/i });
+  const box = await retry.boundingBox();
+  expect(box).not.toBeNull();
+  // Comfortably inside the viewport, and a real tap target.
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(width + 1);
+  expect(box!.height).toBeGreaterThanOrEqual(24);
 });

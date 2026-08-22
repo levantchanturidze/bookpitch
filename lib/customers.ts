@@ -250,3 +250,175 @@ export function buildUpdateData(input: CustomerUpdateInput): {
   }
   return { data, fields };
 }
+
+// -----------------------------------------------------------------------------
+// F16-008 — bounded list loading.
+//
+// The patients screen used to load every customer in the organization together
+// with every treatment-history row for each of them, then decrypt allergies and
+// clinical notes per row — to render a left-hand list that shows a name, a
+// phone number and an avatar. Cost grew with tenant size on the busiest
+// clinical screen in the product.
+//
+// Two separations fix it:
+//
+//   1. The list surface gets its own DTO. No allergies, no clinical notes, no
+//      insurance, no treatment history — the list does not render any of them,
+//      so they are not fetched, not decrypted, and not sent.
+//   2. Detail is fetched per selection from GET /api/customers/[id], which
+//      already returns the full record with history and enforces the same
+//      permission.
+//
+// Ordering is `createdAt DESC, id DESC`. The id is not decoration: createdAt is
+// not unique, and a cursor on a non-unique key silently drops or repeats rows
+// at the page boundary.
+// -----------------------------------------------------------------------------
+
+/** Rows per page when the caller does not ask. */
+export const CUSTOMER_PAGE_DEFAULT = 50;
+/** Hard ceiling. A caller asking for more gets an error, not a silent clamp. */
+export const CUSTOMER_PAGE_MAX = 100;
+
+export type CustomerListItemDto = {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  avatarUrl: string | null;
+  joinedDate: string;
+  consentAt: string | null;
+  consentVersion: string | null;
+  createdAt: string;
+  /**
+   * Whether the row carries an allergy warning — a boolean, never the text.
+   *
+   * The list renders a red dot for this; dropping it would remove a clinical
+   * safety affordance to save bytes. Gated on the same client.read:full check
+   * as the plaintext, so a contact-only caller sees `false` exactly as they
+   * previously saw no dot. Decryption is now bounded by page size rather than
+   * by tenant size.
+   */
+  hasAllergies: boolean;
+};
+
+/** Columns the list DTO needs — the projection is the enforcement. */
+export const CUSTOMER_LIST_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  phone: true,
+  avatarUrl: true,
+  joinedDate: true,
+  consentAt: true,
+  consentVersion: true,
+  createdAt: true,
+  // Ciphertext, read only to derive hasAllergies. Never serialised.
+  allergies: true,
+} as const;
+
+type CustomerListRow = {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  avatarUrl: string | null;
+  joinedDate: Date;
+  consentAt: Date | null;
+  consentVersion: string | null;
+  createdAt: Date;
+  allergies: string | null;
+};
+
+export function toCustomerListItemDto(
+  row: CustomerListRow,
+  v: CustomerVisibility,
+): CustomerListItemDto {
+  const full = decideFullAccess(v);
+  const allergyText = full ? decryptField(row.allergies) : null;
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone,
+    avatarUrl: row.avatarUrl,
+    joinedDate: row.joinedDate.toISOString().slice(0, 10),
+    consentAt: row.consentAt?.toISOString() ?? null,
+    consentVersion: row.consentVersion,
+    createdAt: row.createdAt.toISOString(),
+    hasAllergies: !!allergyText && allergyText.trim().toLowerCase() !== 'none',
+  };
+}
+
+export type CustomerPage = {
+  items: CustomerListItemDto[];
+  /** Opaque; pass back verbatim as `cursor`. Null when the page is the last. */
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
+/** `<createdAt ISO>|<uuid>` — opaque to the client, checked on the way in. */
+export function encodeCustomerCursor(row: { createdAt: Date; id: string }): string {
+  return `${row.createdAt.toISOString()}|${row.id}`;
+}
+
+export function decodeCustomerCursor(raw: string): { createdAt: Date; id: string } {
+  const sep = raw.indexOf('|');
+  if (sep < 1) throw new InvalidInputError('cursor is malformed');
+  const createdAt = new Date(raw.slice(0, sep));
+  const id = raw.slice(sep + 1);
+  if (Number.isNaN(createdAt.getTime())) throw new InvalidInputError('cursor is malformed');
+  if (!/^[0-9a-fA-F-]{36}$/.test(id)) throw new InvalidInputError('cursor is malformed');
+  return { createdAt, id };
+}
+
+export function parsePageSize(raw: string | null): number {
+  if (raw === null || raw === '') return CUSTOMER_PAGE_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1)
+    throw new InvalidInputError('limit must be a positive integer');
+  if (n > CUSTOMER_PAGE_MAX) {
+    throw new InvalidInputError(`limit must not exceed ${CUSTOMER_PAGE_MAX}`);
+  }
+  return n;
+}
+
+/**
+ * Prisma `where` for one page of an organization's customers.
+ *
+ * `organizationId` is passed explicitly even though every caller runs inside
+ * withOrg() and RLS already constrains the rows. CLAUDE.md invariant 1 asks for
+ * the predicate, not for a reason it could be omitted.
+ */
+export function buildCustomerListWhere(input: {
+  organizationId: string;
+  search?: string | null;
+  cursor?: { createdAt: Date; id: string } | null;
+}) {
+  const q = (input.search ?? '').trim();
+  const search =
+    q.length > 0
+      ? {
+          OR: [
+            { name: { contains: q, mode: 'insensitive' as const } },
+            { email: { contains: q, mode: 'insensitive' as const } },
+            { phone: { contains: q } },
+          ],
+        }
+      : {};
+
+  // Keyset, not offset: "older than this createdAt, or the same createdAt with
+  // a smaller id". Offset pagination would shift under concurrent inserts and
+  // repeat or skip rows between pages.
+  const after = input.cursor
+    ? {
+        OR: [
+          { createdAt: { lt: input.cursor.createdAt } },
+          { createdAt: input.cursor.createdAt, id: { lt: input.cursor.id } },
+        ],
+      }
+    : {};
+
+  return { AND: [{ organizationId: input.organizationId }, search, after] };
+}
+
+export const CUSTOMER_LIST_ORDER = [{ createdAt: 'desc' as const }, { id: 'desc' as const }];

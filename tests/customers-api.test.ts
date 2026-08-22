@@ -14,6 +14,7 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
 const { withoutRls } = await import('@/lib/db');
 const routeList = await import('@/app/api/customers/route');
+const routeOne = await import('@/app/api/customers/[id]/route');
 const routeItem = await import('@/app/api/customers/[id]/route');
 const routeHistory = await import('@/app/api/customers/[id]/history/route');
 const { mockJwt } = await import('./helpers/session');
@@ -121,24 +122,69 @@ describe('/api/customers CRUD + encryption + audit', () => {
     expect(res.status).toBe(400);
   });
 
-  it('GET list returns decrypted customers + writes a single list audit row', async () => {
+  it('GET list omits clinical fields and writes a single list audit row', async () => {
+    // F16-008 contract change. The list surface renders a name, a phone number
+    // and an avatar; it does not render allergies, clinical notes, insurance or
+    // treatment history, so the projection no longer fetches, decrypts or sends
+    // them. The capability moved to GET /api/customers/[id] — see the
+    // complement immediately below, which proves it did not simply disappear.
     authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
 
     const before = await withoutRls((tx) =>
       tx.auditLog.count({ where: { entity: 'customer', action: 'list' } }),
     );
-    const res = await routeList.GET();
-    const body = await jsonBody<{ customers: Array<{ allergies: string | null }> }>(res);
+    const res = await routeList.GET(req('http://localhost/api/customers'));
+    const body = await jsonBody<{
+      customers: Array<Record<string, unknown>>;
+      nextCursor: string | null;
+      hasMore: boolean;
+    }>(res);
     const after = await withoutRls((tx) =>
       tx.auditLog.count({ where: { entity: 'customer', action: 'list' } }),
     );
 
     expect(res.status).toBe(200);
     expect(body.customers.length).toBeGreaterThan(0);
-    // At least one seeded customer had allergies — should be plaintext now.
-    const withAllergies = body.customers.find((c) => c.allergies);
-    expect(withAllergies?.allergies).toMatch(/[A-Za-z]/);
+    for (const c of body.customers) {
+      for (const hidden of [
+        'allergies',
+        'clinicalNotes',
+        'treatmentHistory',
+        'insurerName',
+        'insurancePolicyNumber',
+        'dob',
+      ]) {
+        expect(c, `list item still carries ${hidden}`).not.toHaveProperty(hidden);
+      }
+      expect(c).toHaveProperty('name');
+      expect(c).toHaveProperty('phone');
+    }
+    expect(typeof body.hasMore).toBe('boolean');
+    // Still exactly one audit row per list call, as before.
     expect(after - before).toBe(1);
+  });
+
+  it('GET /api/customers/[id] still returns decrypted clinical fields', async () => {
+    // The complement of the test above: the list got leaner, the detail
+    // endpoint did not get weaker.
+    authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
+    const withAllergy = await withoutRls((tx) =>
+      tx.customer.findFirst({
+        where: { organizationId: primaryOrgId, allergies: { not: null } },
+        select: { id: true },
+      }),
+    );
+    expect(withAllergy, 'fixture needs a customer with allergies').not.toBeNull();
+
+    const res = await routeOne.GET(req(`http://localhost/api/customers/${withAllergy!.id}`), {
+      params: Promise.resolve({ id: withAllergy!.id }),
+    });
+    const body = await jsonBody<{
+      customer: { allergies: string | null; treatmentHistory: unknown[] };
+    }>(res);
+    expect(res.status).toBe(200);
+    expect(body.customer.allergies).toMatch(/[A-Za-z]/);
+    expect(Array.isArray(body.customer.treatmentHistory)).toBe(true);
   });
 
   it('PATCH re-encrypts changed sensitive fields and logs update with fields list', async () => {
@@ -237,7 +283,7 @@ describe('/api/customers CRUD + encryption + audit', () => {
       }),
     );
     authMock.mockResolvedValue(await mkSession(isolationOrgId, isoOwner.id));
-    const res = await routeList.GET();
+    const res = await routeList.GET(req('http://localhost/api/customers'));
     const body = await jsonBody<{ customers: Array<{ name: string }> }>(res);
     // Isolation Corp only has "Do Not Leak" seeded.
     expect(body.customers.length).toBe(1);
@@ -246,7 +292,7 @@ describe('/api/customers CRUD + encryption + audit', () => {
 
   it('receptionist has full access to customers (allowedRoles)', async () => {
     authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
-    const res = await routeList.GET();
+    const res = await routeList.GET(req('http://localhost/api/customers'));
     expect(res.status).toBe(200);
   });
 });
