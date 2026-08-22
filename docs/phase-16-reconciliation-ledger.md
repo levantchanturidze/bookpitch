@@ -1,0 +1,191 @@
+# Phase 16 — pre-pilot product reconciliation
+
+**Branch:** `agent/phase-16-prepilot-product-refinement`
+**Baseline:** `5c8fb77353869d29cc8378f7a83e6d23a75e55ef` (frozen Phase 15 `main`)
+**Status:** `LOCAL VERIFICATION PASSED — GITHUB CI PENDING`
+
+Phase 15 is in a holding pattern: GitHub Actions is suspended for an account
+billing condition until approximately 2026-09-01, so no CI run and no official
+24-hour soak is possible. Nothing here is merged, pushed or deployed. Production
+stays exactly as Phase 15 left it.
+
+---
+
+## 1. Surface inventory (derived from the repository, not from docs)
+
+Counted at the baseline tree.
+
+| Surface | Count | Notes |
+|---|---|---|
+| Pages (`page.tsx`) | 39 | 9 public/auth/legal, 18 app-plane, 6 platform, plus book/dev/offline/root |
+| API routes (`route.ts`) | 77 | 5 cron, 3 health, 2 webhook, 2 public |
+| Components | 38 | 31 reachable, **7 unreferenced** (see F16-004) |
+| Roles | 13 | DB-backed, ranks 0–1000 |
+| Permissions | 67 | 41 enforced at a call site, 19 marked `notYetImplemented`, 7 role bundles |
+| Migrations | 62 | unchanged by this phase |
+
+**Roles, by rank.** `SUPER_ADMIN` 1000 · `PLATFORM_ADMIN` 900 ·
+`BILLING_MANAGER` 850 · `SUPPORT_AGENT` 800 · `ORG_OWNER` 100 · `ORG_ADMIN` 80 ·
+`BRANCH_MANAGER` 60 · `SENIOR_PROVIDER` 50 · `FRONT_DESK` 40 · `PROVIDER` 40 ·
+`ACCOUNTANT` 30 · `MARKETING` 30 · `CLIENT` 0.
+
+`FRONT_DESK` and `PROVIDER` share rank 40 deliberately — `canManageRoleAssignment`
+requires *both* a strict rank win and an explicit `role_can_manage` lattice edge,
+so peers cannot manage each other even at equal rank.
+
+---
+
+## 2. Reconciliation
+
+Each row: what the surface should do, what it does, where, what proves it, and
+what was missing.
+
+### F16-001 · The mock payment gateway was reachable in production — **P1, fixed**
+
+| | |
+|---|---|
+| **Surface** | Payments: gateway selection, mock hosted-payment page, payment webhook |
+| **Expected** | Production uses a real gateway. The mock adapter and its approve/decline page exist only outside production. |
+| **Was** | `getGateway()` resolved `PAYMENT_GATEWAY ?? 'mock'`, so an **unset** variable selected `MockGateway` — which signs its own webhooks and reports every payment as paid. The mock page's server actions had **no environment gate at all**, and `postWebhook()` fetched a **caller-supplied URL** with a valid `PAYMENT_MOCK_SECRET` signature attached. |
+| **Implementation** | `lib/payments/gateway.ts`, `app/dev/mock-gateway/pay/actions.ts`, `app/dev/mock-gateway/pay/page.tsx` |
+| **Proof** | `tests/phase16-payment-gateway-failclosed.test.ts` — 14 tests |
+| **Missing proof before** | `getGateway()` had **no test at all**. Every existing payment test constructed an adapter directly, so the resolution path that runs in production was never exercised. |
+| **Severity** | P1. Money, and an unauthenticated signed-request primitive. |
+| **External dependency** | None. |
+
+Two separable defects sharing a root:
+
+1. **Fail-open default.** `PAYMENT_GATEWAY` is not in any `REQUIRED_*_ENV` list,
+   so its absence is not counted either — the fallback was silent in both the
+   code and the monitor.
+2. **Ungated server actions.** Next.js server actions are addressable by id.
+   `notFound()` in the page component does not unregister the action, so the
+   page's gate never protected them. `postWebhook()` then POSTed to any host the
+   caller named.
+
+Fixed with three gates, each where the decision is actually made: `getGateway()`
+throws in production when the variable is unset or `mock`; the actions assert
+their own environment; the webhook URL is pinned to `APP_URL`'s origin and the
+`/api/webhooks/payment` path — the only value `lib/payments/service.ts` ever
+passes.
+
+**Complement proven.** Reverting the source fails 10 of 14. The SSRF case fails
+with `fetch failed` — unfixed, it really does attempt the request to
+`169.254.169.254`. The 4 that still pass are the preserved-behaviour cases
+(mock outside production, real gateway in production, unknown-name throw).
+
+### F16-002 · Messaging providers failed open to a silent mock — **P1, fixed**
+
+| | |
+|---|---|
+| **Surface** | Outbound email and SMS: verification, reminders, alerts, digest |
+| **Expected** | Production sends through a real provider, or fails loudly. |
+| **Was** | `getSmsProvider()` / `getEmailProvider()` resolved `<VAR> ?? 'mock'`. The mock adapters return a `providerMsgId` without contacting anyone. |
+| **Implementation** | `lib/messaging/index.ts` |
+| **Proof** | `tests/phase16-messaging-provider-failclosed.test.ts` — 12 tests |
+| **Missing proof before** | No test covered provider resolution by environment. |
+| **Severity** | P1 for a product whose top launch risk is already email deliverability. |
+| **External dependency** | None to fix. Real delivery still gated on mailbox UAT. |
+
+The consequence is worse than an outage: an unset variable would mark every
+verification email and every reminder **delivered**. The outbox row reaches
+`sent`, `message_log` gets an id, and the monitor stays green while nothing
+leaves the building.
+
+`EMAIL_PROVIDER` is already in `REQUIRED_EMAIL_ENV`, so its absence *is*
+counted — and that never stopped the fallback. A count is a report, not a
+control. This is the same lesson as CLAUDE.md's "verify behaviour, not wiring",
+reached from the configuration side.
+
+**Complement proven.** Reverting fails 8 of 12; the 4 survivors are the
+development-fallback cases that must not change.
+
+### F16-003 · Sidebar/route permission parity was unguarded — **P3, guarded**
+
+| | |
+|---|---|
+| **Surface** | App-plane navigation, all 8 sidebar entries |
+| **Expected** | A sidebar entry appears exactly when its destination will admit the caller. |
+| **Is** | **Correct.** All 8 pairs agree — verified pair by pair. |
+| **Implementation** | `components/shell/nav-items.ts`, `app/(app)/layout.tsx`, per-page `requirePermission()` |
+| **Proof** | `tests/phase16-nav-permission-parity.test.ts` — 9 tests |
+| **Missing proof before** | Nothing kept the two lists in step. |
+| **Severity** | P3 — no defect today, silent drift tomorrow. |
+
+| nav id | requires | page enforces |
+|---|---|---|
+| scheduler | `booking.read` | `booking.read` |
+| patients | `client.read:contact` | `client.read:contact` |
+| reminders | `booking.update` | `booking.update` |
+| waitlist | `booking.read` | `booking.read` |
+| billing | `payment.charge` | `payment.charge` |
+| analytics | `report.branch` | `report.branch` |
+| audit | `audit.read` | `audit.read` |
+| settings | `org.settings.update:org` | `org.settings.update:org` |
+
+No product change. Drift would surface as a visible link that 403s on click, or
+a working page nobody can find. Injecting a one-word drift (audit nav asking for
+`booking.read`) fails the guard with the mismatch named on both sides.
+
+Structural, not behavioural: it proves the two sources name the same key.
+Enforcement stays covered by `scripts/check-guards.ts` and the route-access tests.
+
+### F16-004 · Seven unreferenced prototype components — **P4, reported not removed**
+
+| | |
+|---|---|
+| **Surface** | `components/` root |
+| **Files** | `AnalyticsDashboard.tsx`, `CalendarView.tsx`, `CheckoutPayment.tsx`, `ModulePlaceholder.tsx`, `OfflineManager.tsx`, `PatientDatabase.tsx`, `RemindersSystem.tsx` |
+| **Status** | Imported by nothing in `app/`, `components/` or `lib/`. Every component in a `components/<area>/` subdirectory *is* reachable — the split is exactly prototype vs product. |
+| **Severity** | P4. Not shipped to users: unimported modules are not in the client bundle. |
+| **Proposed** | Delete, or move under `docs/prototype/`. **Not done here** — the working rules forbid removing product components without proving intent, and these plausibly remain design reference. |
+
+Worth knowing while they stay: `CheckoutPayment.tsx:471` renders
+`Authorization token: STRIPE_TX_{Math.floor(100000 + Math.random() * 900000)}`
+on a "Checkout Complete!" screen — a fabricated authorization token that changes
+on every re-render. Harmless while unreachable; it must never become reachable.
+These seven files also account for most of the 57 lint warnings.
+
+### F16-005 · `ASSISTANT_MODEL` fallback — **reviewed, deliberately unchanged**
+
+`lib/assistant/model.ts:51` resolves `ASSISTANT_MODEL ?? 'mock'`, the same shape
+as F16-001/002. Left alone on purpose: `MockAssistant` returns a *draft* a human
+reviews before anything is created. It claims no delivery and moves no money,
+and a mock draft is visible as such. The working rules say not to blanket-replace
+without surface-specific proof, and the proof of harm is absent here.
+
+Revisit if the assistant ever writes without human confirmation.
+
+---
+
+## 3. Verified-correct surfaces (no change made)
+
+Checked while hunting; recorded so the next pass does not re-derive them.
+
+| Surface | Finding |
+|---|---|
+| Double-booking | GiST `EXCLUDE USING gist (tstzrange(starts_at, ends_at) WITH &&)` in the initial migration, **plus** app-level handling of `no_staff_double_booking`. DB is the authority; app is defence in depth. |
+| Route guards | `scripts/check-guards.ts` scans 105 entry points, 18 allow-listed with a documented alternate mechanism each. All guarded. |
+| `app/api/dev/whoami-owner` | Despite the path, correctly guarded by `requireAuthContext()` + `requirePermission('org.settings.update:org')`. |
+| Recovery codes | `app_user_recovery_codes.code_hash` is SHA-256, not ciphertext — correctly outside the encryption-key blast radius. |
+| Ciphertext accounting | `lib/ops-metrics.ts` counts exactly the six columns that `encryptField()` writes. Static inventory and diagnostic agree. |
+| `useNotifications` | React Compiler flags "setState synchronously within an effect" at line 59. False positive: `fetchOnce` is async, so `setState` lands after the await. Not changed. |
+
+---
+
+## 4. Deliberately not done
+
+- **No push, no PR, no merge, no deploy.** Required CI cannot run.
+- **No migration.** Nothing here needs a schema change; the 62-migration
+  baseline is untouched.
+- **No production mutation of any kind.**
+- **No deletion of the seven prototype components** (F16-004) — needs owner intent.
+- **Hydration-risk lint warnings** in `platform/OrgList.tsx:31` and
+  `platform/OrgDetail.tsx:346` (`Date.now()` during render). Real but low
+  severity, and every available fix changes SSR output — which is not
+  behaviour-preserving, so it does not belong in a holding period that cannot be
+  verified against a browser in production. Recorded for the post-restoration pass.
+- **`PAYMENT_GATEWAY` in the production config contract.** Adding it to
+  `REQUIRED_*_ENV` / `SECURITY_ENV_VALIDATORS` would be the natural completion of
+  F16-001, and it changes what the production monitor reports. That change should
+  land when the monitor can confirm its own effect. Proposed, not written.

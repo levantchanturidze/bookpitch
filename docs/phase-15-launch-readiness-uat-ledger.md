@@ -552,17 +552,68 @@ Also verified:
 
 ## 9. Remaining external blockers
 
-0. **Correct `FIELD_ENCRYPTION_KEY` in production** (R-16) — set it to
-   `<key-id>:<64-hex-chars>`, e.g. prefix the existing 64 hex characters with
-   `k1:`. **This blocks everything else**, including the email UAT, because
-   signup fails before any mail is queued.
-1. **Verify `bookpitch.ge` in Resend and publish DKIM/SPF/MX** (R-01).
-2. **Publish `_dmarc.bookpitch.ge`** at `p=none` with a reachable `rua`
-   (R-02, R-03).
-3. **Designate a test mailbox and run `docs/production-uat-checklist.md`
-   §A–B**, confirming `spf=pass`, `dkim=pass`, `dmarc=pass` (R-04, R-05).
-4. **Legal review** — `docs/legal-review-checklist.md`, including the P15-005
-   decision.
-5. **Enable Dependabot alerts** — free, two clicks (R-06).
+Revised 2026-08-22, after the `FIELD_ENCRYPTION_KEY` correction and a direct
+DNS measurement. Supersedes the original list.
 
-Item 0 is the priority. Items 1–3 are the remaining launch blockers and are one piece of work.
+### Resolved
+
+0. ~~**Correct `FIELD_ENCRYPTION_KEY` in production** (R-16)~~ — **done**
+   2026-08-22. The old value could not be read back (Vercel `sensitive` vars are
+   write-only), so the "prefix the existing hex" fix was impossible. With
+   ciphertext proven exhaustively zero, the key was provisioned fresh as
+   `prod-v1:<64 hex>` — initial provisioning, not a data-bearing rotation.
+   Escrowed per `docs/field-key-escrow.md`. Deployment
+   `dpl_je5rKC33RkPs9MuRfFzq6xYLL5aG`, SHA `5c8fb77`, Ready 2026-08-22T18:32:42Z.
+   **Not yet confirmed by the monitor** — see the new blocker below.
+
+### Blocking, in order
+
+1. **GitHub Actions is billing-suspended** (new, ~2026-08-22T16:30Z → ~2026-09-01).
+   Jobs report `steps=0` and never start. No CI, no scheduled monitor, and the
+   mandatory 24-hour soak cannot begin. This now blocks everything else.
+   Runbook: `docs/phase-15-actions-restoration-runbook.md`.
+
+2. **Confirm `production-config-invalid` reaches PASS** and let incident **#26**
+   close through automation. The key is proven correct against the real
+   `lib/crypto.ts` parser, but no monitor has observed the deployed runtime
+   accepting it. Unobserved is not verified.
+
+3. **Email: SPF and bounce MX are absent from DNS.** Measured 2026-08-22 against
+   both `8.8.8.8` and `1.1.1.1`:
+
+   | Record | State |
+   |---|---|
+   | `resend._domainkey.send.bookpitch.ge` (DKIM) | **present**, valid RSA key |
+   | `_dmarc.send.bookpitch.ge` | **present** — `p=none; rua=mailto:dmarc@bookpitch.ge` |
+   | SPF TXT on `bookpitch.ge` **and** `send.bookpitch.ge` | **absent** |
+   | Bounce MX on `bookpitch.ge` **and** `send.bookpitch.ge` | **absent** |
+   | `_dmarc.bookpitch.ge` (apex) | **absent** |
+
+   Resend domain verification can legitimately pass on DKIM alone, so "verified
+   in Resend" and "SPF/MX published" are not the same claim. DKIM alone can
+   achieve DMARC alignment, so mail may well authenticate — but with no bounce
+   MX, bounces and complaints are not collected, and with no apex MX the DMARC
+   `rua` address `dmarc@bookpitch.ge` **cannot receive the reports it asks for**.
+
+   Reconcile against the Resend dashboard before the mailbox UAT, and treat the
+   dashboard's own state as authoritative for verification status.
+
+4. **Designated-mailbox receipt/header UAT** — `docs/production-uat-checklist.md`
+   §A–B, confirming `spf=`, `dkim=` and `dmarc=` results on a real received
+   message (R-04, R-05). Cannot start until a mailbox is designated.
+
+5. **Audit-digest delivery** — `AUDIT_DIGEST_ENABLED` is absent and must stay
+   absent until recipients are approved. 7 messages per run to 6 distinct
+   addresses; 4 reserved/non-deliverable, **2 unclassified and unresolved**.
+
+6. **Legal review** — `docs/legal-review-checklist.md`, including the P15-005
+   treatment-history retention decision, and operating-entity details.
+
+7. **Enable Dependabot alerts** (R-06) — disabled at the repository level;
+   enabling needs `admin:repo_hook`.
+
+8. **Production signup/UAT** — requires an approved human test account. No
+   production account may be created by automation.
+
+Item 1 gates items 2 and 4. Items 3, 5, 6, 7 and 8 are independent of it and can
+progress in parallel.
