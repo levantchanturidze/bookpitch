@@ -49,6 +49,16 @@ beforeAll(async () => {
   await seedRbacFixtures();
   __clearAuthContextCache();
 
+  // Self-healing: a run that failed before its teardown leaves an active user
+  // with no membership behind, which another suite's invariant check
+  // legitimately reports. Deleting is not always possible — an audited action
+  // leaves append-only audit_log rows that hold the foreign key — so residue is
+  // marked 'deleted', which is what the invariant actually cares about.
+  await unsafePrismaAdmin.appUser.updateMany({
+    where: { email: { startsWith: `${PREFIX.toLowerCase()}-` } },
+    data: { status: 'deleted' },
+  });
+
   const owner = await unsafePrismaAdmin.appUser.findUniqueOrThrow({
     where: { email: 'split-owner@bp.test' },
     select: { id: true },
@@ -103,10 +113,24 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (mktMembershipId) {
-    await unsafePrismaAdmin.membership.deleteMany({ where: { id: mktMembershipId } });
+  // One transaction. Vitest forks share this database, so a membership deleted
+  // a moment before its user leaves an active user with no membership — which
+  // another suite's invariant check will legitimately catch. Removing both
+  // together means that state is never observable.
+  if (mktUserId || mktMembershipId) {
+    await unsafePrismaAdmin.$transaction(async (tx) => {
+      if (mktMembershipId) {
+        await tx.membership.deleteMany({ where: { id: mktMembershipId } });
+      }
+      if (mktUserId) {
+        // Mark first, then try to remove. If this user performed an audited
+        // action the append-only audit_log holds the FK and the delete fails —
+        // by then it is already 'deleted', so no invariant is left violated.
+        await tx.appUser.updateMany({ where: { id: mktUserId }, data: { status: 'deleted' } });
+        await tx.appUser.deleteMany({ where: { id: mktUserId } }).catch(() => undefined);
+      }
+    });
   }
-  if (mktUserId) await unsafePrismaAdmin.appUser.deleteMany({ where: { id: mktUserId } });
   __clearAuthContextCache();
 });
 

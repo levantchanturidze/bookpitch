@@ -847,11 +847,20 @@ const ROLE_PERMISSIONS: Record<string, ReadonlyArray<string>> = {
 
   MARKETING: [
     // Not fully spec'd — spec §4.2 leaves this as a placeholder ("campaigns,
-    // promo codes, segments"). Minimum viable seed for now:
-    'client.read:contact', // to see segments
+    // promo codes, segments").
+    //
+    // F16-012: 'client.read:contact' was removed. It reached the patients
+    // surface and, through it, every patient's name, email, phone and date of
+    // birth — a marketing role reading identifiable patient contact data in a
+    // clinical product, granted by default and never separately justified.
+    //
+    // Aggregate, non-identifying reporting is what the role is for and is left
+    // intact. A campaign that genuinely needs contact data needs its OWN
+    // permission with a stated purpose, consent and opt-out handling,
+    // minimum-necessary fields and auditability — not this one back.
     'report.own',
     'report.branch',
-    // No financial, no clinical.
+    // No contact, no financial, no clinical.
   ],
 
   // CONSUMER PLANE — CLIENT has no RBAC permissions. Access resolved by
