@@ -26,8 +26,9 @@ export default async function MockGatewayPage({
   const currency = s('currency');
   const summary = s('summary');
   const callback = s('callback');
-  const webhook = s('webhook');
-  if (!paymentId || !gatewayTxnId || !webhook) notFound();
+  // No webhook URL is read any more: the actions call the shared applier
+  // in-process, so there is no destination for the client to supply.
+  if (!paymentId || !gatewayTxnId) notFound();
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-900 px-4">
@@ -68,12 +69,7 @@ export default async function MockGatewayPage({
 
         <div className="grid grid-cols-2 gap-3">
           <form action={declineAction}>
-            <HiddenFields
-              paymentId={paymentId}
-              gatewayTxnId={gatewayTxnId}
-              callback={callback}
-              webhook={webhook}
-            />
+            <HiddenFields paymentId={paymentId} gatewayTxnId={gatewayTxnId} callback={callback} />
             <button
               type="submit"
               className="w-full rounded-xl border border-slate-600 bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-600"
@@ -82,12 +78,7 @@ export default async function MockGatewayPage({
             </button>
           </form>
           <form action={approveAction}>
-            <HiddenFields
-              paymentId={paymentId}
-              gatewayTxnId={gatewayTxnId}
-              callback={callback}
-              webhook={webhook}
-            />
+            <HiddenFields paymentId={paymentId} gatewayTxnId={gatewayTxnId} callback={callback} />
             <button
               type="submit"
               className="w-full rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-900 hover:bg-emerald-400"
@@ -105,19 +96,16 @@ function HiddenFields({
   paymentId,
   gatewayTxnId,
   callback,
-  webhook,
 }: {
   paymentId: string;
   gatewayTxnId: string;
   callback: string;
-  webhook: string;
 }) {
   return (
     <>
       <input type="hidden" name="paymentId" value={paymentId} />
       <input type="hidden" name="gatewayTxnId" value={gatewayTxnId} />
       <input type="hidden" name="callback" value={callback} />
-      <input type="hidden" name="webhook" value={webhook} />
     </>
   );
 }

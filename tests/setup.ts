@@ -99,6 +99,68 @@ export function assertDisposableDatabase(
 
 assertDisposableDatabase();
 
+// -----------------------------------------------------------------------------
+// Network guard — no test may contact a metadata, link-local or otherwise
+// non-approved address.
+//
+// A Phase 16 complement test asserted an SSRF defect by letting the unfixed
+// action really call http://169.254.169.254/. It could not succeed here (this
+// host has no link-local route and no metadata service, and the attempt timed
+// out), but proving a request-forgery bug by attempting the forgery is the
+// wrong method: on a cloud runner the same test would have reached a real
+// metadata endpoint.
+//
+// Outbound requests to loopback stay allowed, because Playwright and the
+// local disposable server legitimately use them. Everything on this list is
+// refused before a socket is opened, so a future test cannot reintroduce the
+// mistake by accident.
+// -----------------------------------------------------------------------------
+const BLOCKED_HOSTS = new Set([
+  '169.254.169.254', // AWS / Azure / GCP / DO IMDS
+  '169.254.170.2', // ECS task metadata
+  'metadata.google.internal',
+  'metadata.goog',
+  '100.100.100.200', // Alibaba Cloud
+  'fd00:ec2::254', // AWS IMDSv6
+]);
+
+const BLOCKED_SCHEMES = new Set(['file:', 'gopher:', 'ftp:', 'data:']);
+
+function refuseUnsafeTarget(raw: string): void {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return; // relative URL — no host to reach
+  }
+
+  if (BLOCKED_SCHEMES.has(url.protocol)) {
+    throw new Error(`[net guard] refusing ${url.protocol} request in tests: ${url.protocol}//…`);
+  }
+
+  const host = url.hostname.toLowerCase().replace(/^\[(.+)\]$/, '$1');
+  if (BLOCKED_HOSTS.has(host) || host.startsWith('169.254.') || host.startsWith('fe80:')) {
+    throw new Error(
+      `[net guard] refusing a request to "${host}". Metadata and link-local ` +
+        `addresses are never a valid test target — stub fetch instead.`,
+    );
+  }
+}
+
+const realFetch = globalThis.fetch;
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  const target =
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : (input as Request).url;
+  refuseUnsafeTarget(target);
+  return realFetch(input as RequestInfo, init);
+}) as typeof globalThis.fetch;
+
+export { refuseUnsafeTarget as __assertSafeFetchTarget };
+
 // Phase 4: tests always run in enforcing mode. The env var is set here
 // (not in .env.local) so a developer can override it for a shadow-mode
 // dry-run: `RBAC_ENFORCE_MODULES= npm test` disables enforcement.

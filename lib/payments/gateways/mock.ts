@@ -22,8 +22,10 @@ export class MockGateway implements PaymentGateway {
 
   async initiate(input: InitiateInput): Promise<InitiateResult> {
     const gatewayTxnId = `mock_${randomBytes(6).toString('hex')}`;
-    // Redirect the payer to our own /dev/mock-gateway page which will POST
-    // the signed payload to `webhookUrl` when they click Approve.
+    // Redirect the payer to our own /dev/mock-gateway page. It no longer
+    // carries `webhookUrl`: the page's server actions call the shared applier
+    // directly, so handing the destination to the browser would only create a
+    // parameter worth tampering with.
     const params = new URLSearchParams({
       paymentId: input.paymentId,
       gatewayTxnId,
@@ -31,7 +33,6 @@ export class MockGateway implements PaymentGateway {
       currency: input.currency,
       summary: input.appointmentSummary,
       callback: input.callbackUrl,
-      webhook: input.webhookUrl,
     });
     const appOrigin = process.env.APP_URL ?? 'http://localhost:3000';
     return {
