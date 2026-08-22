@@ -194,6 +194,111 @@ details. Defensible for campaigns, but it is a marketing role reading patient
 contact data in a clinical product — worth an explicit GDPR decision rather than
 an inherited default.
 
+### F16-008 · The patients screen loads the whole tenant — **P2, reported not fixed**
+
+| | |
+|---|---|
+| **Surface** | `/patients`, `/scheduler`, `GET /api/customers` |
+| **Expected** | A list screen fetches a bounded page. |
+| **Is** | `app/(app)/patients/page.tsx:30` runs `customer.findMany({ orderBy, include: { treatmentHistory } })` with **no `take`** — every customer in the org, plus every treatment-history row for every customer, then `toCustomerDetailDto()` decrypts allergies and clinical notes per row. `app/(app)/scheduler/page.tsx:51` loads every customer for a dropdown. |
+| **Severity** | P2 — grows linearly with tenant size on the two busiest clinical screens. |
+
+`PatientList.tsx:448` renders `treatmentHistory` for the **selected** patient
+only, and `/api/customers/[id]/history` already exists for the on-demand path.
+So the expensive part of the query feeds a panel that shows one patient at a
+time.
+
+`GET /api/customers` has the same unbounded shape and, separately, **no caller**
+anywhere in `app/`, `components/` or `lib/`.
+
+Query-plan evidence (local, 7 customers): plain `Seq Scan` + sort, 0.05 ms. Both
+relevant indexes already exist — `idx_customers_org` and `idx_history_customer`.
+**No index is proposed**: at this volume there is no plan evidence to justify
+one, and the working rules forbid speculative indexes.
+
+**Not fixed here — it is a product decision.** Every real fix (paginate, bound
+the history include, fetch history on selection) changes what a user sees, and a
+holding period with no CI and no browser against production is the wrong place
+to make that call. `audit-query.ts` already shows the intended pattern
+(`take: filter.limit ?? 200`).
+
+### F16-009 · Privileged-session expiry is read on the process clock — **P3, reported not fixed**
+
+| | |
+|---|---|
+| **Surface** | `lib/rbac/context.ts` — `loadActiveImpersonation`, `loadActiveBreakGlass` |
+| **Expected** | A deadline written against the database clock is evaluated against the database clock. |
+| **Is** | Both loaders compare `expiresAt` to `new Date()`. |
+
+The write side is explicit about why this matters —
+`lib/platform/break-glass.ts:84` says *"expiresAt uses DB clock to prevent Node
+clock-skew pre-expiry"* — and `tests/helpers/db-time.ts` states the convention:
+*"Security-sensitive code (startBreakGlass, conflict checks, expiry guards) uses
+`SELECT now()` … not the Node process."* The two loaders are expiry guards that
+do not follow it.
+
+Harm direction: a runtime clock behind the database keeps an already-expired
+session active, so break-glass access to client PII outlives the 60-minute
+ceiling in rbac-spec §7.2. Measured skew between this host and its database:
+**0 ms**, so nothing is wrong today — this is defence, not an incident.
+
+**Attempted and reverted.** See F16-010: correcting the read alone is not
+possible, because the database-time helper it would depend on is itself wrong
+off-UTC, and the two errors currently cancel.
+
+### F16-010 · `SELECT now()` through Prisma is timezone-fragile — **P2, reported not fixed**
+
+| | |
+|---|---|
+| **Surface** | `lib/platform/break-glass.ts:105`, `lib/platform/impersonation.ts:80`, `lib/housekeeping.ts:78`, `tests/helpers/db-time.ts:35` |
+| **Expected** | `SELECT now()` yields the current instant. |
+| **Is** | Postgres renders a `timestamptz` in the session `TimeZone`; Prisma's raw path parses that rendering **as UTC**. Off-UTC, the Date is wrong by exactly the zone offset — silently, with no error. |
+
+Measured on this machine, same connection, same moment:
+
+```
+node Date.now()                  = 2026-08-22T20:31:49.462Z
+prisma SELECT now()              = 2026-08-23T00:31:49.524Z   (+4h)
+prisma extract(epoch from now()) = 2026-08-22T20:31:49.526Z   (+64ms)
+server TimeZone                  = Asia/Tbilisi
+```
+
+Server `TimeZone`: **production Supabase = `UTC`**, local Postgres =
+`Asia/Tbilisi`. So production behaviour is correct today and this is latent, not
+an incident. Off-UTC it is not subtle:
+
+- `startBreakGlass` / `startImpersonation` set `expiresAt = dbNow + TTL`, so a
+  60-minute break-glass ceiling silently becomes **five hours**;
+- `housekeeping` sweeps `expires < now`, so it deletes tokens, rate-limit rows
+  and reauth grants that are **still live**;
+- `tests/helpers/db-time.ts` inherits the same offset, which is why the suite
+  never noticed — fixtures and assertions are wrong together.
+
+**Attempted, then reverted deliberately.** A `dbNow()` helper built on
+`extract(epoch from now())` fixed the clock and made the new expiry tests pass,
+but broke two break-glass tests: *"TOTP replay fence is NOT advanced when the
+transaction rolls back"* and *"concurrent activations: exactly one session
+created"*. Reproduced twice; baseline is 25/25.
+
+The cause is instructive and is the finding's real teeth: **the read error and a
+matching write error currently cancel.** `startBreakGlass`'s in-transaction sweep
+binds a JS `Date` **into** raw SQL (`expires_at <= ${dbNow}`), which is
+timezone-sensitive in the opposite direction. Correct one side and the pair stops
+agreeing. Any fix must change read and write together and re-verify the
+break-glass concurrency tests.
+
+Reverted rather than shipped: this is security-critical concurrency code, GitHub
+CI cannot run during the holding period, and a partially-understood change there
+is worse than a well-documented finding. Recommended follow-up, as its own PR
+with CI green:
+
+1. add `dbNow()` on `extract(epoch from now())`;
+2. move every raw comparison to SQL-side `now()` rather than binding a Date;
+3. route `break-glass`, `impersonation`, `housekeeping`, `rbac/context` and
+   `tests/helpers/db-time.ts` through it in one change;
+4. prove it by setting the local server `TimeZone` to something off-UTC and
+   showing the break-glass TTL is still 60 minutes.
+
 ### F16-004 · Seven unreferenced prototype components — **P4, reported not removed**
 
 | | |
