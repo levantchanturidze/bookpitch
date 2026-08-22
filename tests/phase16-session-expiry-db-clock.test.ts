@@ -3,9 +3,8 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest
 vi.mock('@/auth', () => ({ auth: vi.fn(), handlers: {}, signIn: vi.fn(), signOut: vi.fn() }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
-const { unsafePrismaAdmin, dbNowMs } = await import('@/lib/db');
+const { unsafePrismaAdmin } = await import('@/lib/db');
 const { buildAuthContext, __clearAuthContextCache } = await import('@/lib/rbac/context');
-const { dbTime } = await import('./helpers/db-time');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { withTimeZone } = await import('./helpers/tz-session');
 

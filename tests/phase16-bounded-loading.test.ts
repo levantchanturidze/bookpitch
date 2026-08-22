@@ -35,7 +35,7 @@ const TOTAL = 7; // > one page at pageSize 3, so paging is exercised for real
 let orgId: string;
 let otherOrgId: string;
 let ownerId: string;
-let created: string[] = [];
+const created: string[] = [];
 
 function req(url: string): NextRequest {
   return new Request(url) as unknown as NextRequest;
