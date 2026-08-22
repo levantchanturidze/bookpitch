@@ -11,7 +11,7 @@
 //
 // -----------------------------------------------------------------------------
 
-import { unsafePrismaAdmin } from '@/lib/db';
+import { dbNowMs, unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError, ConflictError, ForbiddenError } from '@/lib/auth';
 import { Prisma } from '@prisma/client';
 import type { AuthContext } from '@/lib/rbac';
@@ -102,28 +102,45 @@ export async function startBreakGlass(input: StartBreakGlassInput) {
   // ConflictError without leaking Prisma internals.
   async function runBreakGlassTx() {
     return unsafePrismaAdmin.$transaction(async (tx) => {
-      const [dbNow] = await tx.$queryRaw<[{ now: Date }]>`SELECT now() AS now`;
-      const expiresAt = new Date(dbNow.now.getTime() + BREAK_GLASS_TTL_MS);
+      // F16-010: one instant for the whole transaction, obtained as a number so
+      // no timezone rendering is involved. Every comparison below either uses
+      // transaction_timestamp() inside SQL, or this value through Prisma's model
+      // API — never a JS Date bound into raw SQL, which is rendered and
+      // re-parsed and was skewed the opposite way to the read.
+      const dbNowAt = new Date(await dbNowMs(tx));
+      const expiresAt = new Date(dbNowAt.getTime() + BREAK_GLASS_TTL_MS);
 
       // Atomically sweep DB-expired sessions (ended_at IS NULL but expires_at <= now())
       // for this actor before the uniqueness check. The partial unique index covers
       // ended_at IS NULL, so an unswept expired row would block a legitimate new
       // session even without a concurrent housekeeping worker. Sweeping inside this
       // transaction removes the housekeeping dependency for correctness.
+      //
+      // Both sides of the comparison stay in SQL: transaction_timestamp() is the
+      // same instant dbNowAt reports, so the sweep and the conflict check that
+      // follows cannot disagree about whether a row had expired.
       await tx.$executeRaw`
         UPDATE break_glass_sessions
-        SET ended_at = ${dbNow.now}, ended_reason = 'auto_expired'
+        SET ended_at = transaction_timestamp(), ended_reason = 'auto_expired'
         WHERE actor_user_id = ${input.actor.userId}::uuid
           AND ended_at IS NULL
-          AND expires_at <= ${dbNow.now}
+          AND expires_at <= transaction_timestamp()
       `;
 
-      // One active (not expired) session at a time (inside tx for snapshot consistency).
-      const existing = await tx.breakGlassSession.findFirst({
-        where: { actorUserId: input.actor.userId, endedAt: null, expiresAt: { gt: dbNow.now } },
-        select: { id: true },
-      });
-      if (existing) throw new ConflictError('you already have an active break-glass session');
+      // One active (not expired) session at a time (inside tx for snapshot
+      // consistency). Compared in SQL, like the sweep above: a bound JS Date is
+      // re-interpreted in the session TimeZone and off-UTC would let an expired
+      // session block a legitimate new one (F16-010).
+      const existing = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM break_glass_sessions
+        WHERE actor_user_id = ${input.actor.userId}::uuid
+          AND ended_at IS NULL
+          AND expires_at > transaction_timestamp()
+        LIMIT 1
+      `;
+      if (existing.length > 0) {
+        throw new ConflictError('you already have an active break-glass session');
+      }
 
       // Target org validation inside tx.
       if (input.targetOrganizationId) {
@@ -295,10 +312,13 @@ export async function endBreakGlass(actor: AuthContext, reason: string = 'user_e
   const targetOrganizationId = actor.breakGlass.targetOrganizationId;
 
   await unsafePrismaAdmin.$transaction(async (tx) => {
-    await tx.breakGlassSession.update({
-      where: { id: sessionId },
-      data: { endedAt: new Date(), endedReason: reason },
-    });
+    // ended_at is written by the database, like expires_at. Ordering between
+    // the two has to hold for the sweep and the audit trail to agree.
+    await tx.$executeRaw`
+      UPDATE break_glass_sessions
+      SET ended_at = transaction_timestamp(), ended_reason = ${reason}
+      WHERE id = ${sessionId}::uuid
+    `;
 
     await tx.auditLog.create({
       data: {

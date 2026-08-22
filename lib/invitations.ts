@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { hash } from '@node-rs/argon2';
 import type { UserRole } from '@prisma/client';
-import { withOrg, withoutRls } from '@/lib/db';
+import { dbNowMs, withOrg, withoutRls } from '@/lib/db';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
@@ -81,7 +81,8 @@ export async function createInvitation(
         email,
         role,
         tokenHash,
-        expiresAt: new Date(Date.now() + TOKEN_TTL_MS),
+        // F16-010: database clock, so the deadline cannot drift with the runtime.
+        expiresAt: new Date((await dbNowMs(tx)) + TOKEN_TTL_MS),
         invitedBy: session.userId,
       },
     });
@@ -129,10 +130,17 @@ export async function acceptInvitation(
   if (invite.status !== 'pending') {
     throw new InvalidInputError('invitation is no longer pending');
   }
-  if (invite.expiresAt.getTime() < Date.now()) {
-    await withoutRls((tx) =>
-      tx.invitation.update({ where: { id: invite.id }, data: { status: 'expired' } }),
-    );
+  // Expiry decided by the database, and marked in the same statement (F16-010).
+  const lapsed = await withoutRls(
+    (tx) => tx.$executeRaw`
+      UPDATE invitations
+      SET status = 'expired'
+      WHERE id = ${invite.id}::uuid
+        AND status = 'pending'
+        AND expires_at <= transaction_timestamp()
+    `,
+  );
+  if (lapsed > 0) {
     throw new InvalidInputError('invalid or expired invitation');
   }
 
