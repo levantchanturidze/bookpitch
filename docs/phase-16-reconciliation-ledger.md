@@ -315,6 +315,58 @@ on a "Checkout Complete!" screen — a fabricated authorization token that chang
 on every re-render. Harmless while unreachable; it must never become reachable.
 These seven files also account for most of the 57 lint warnings.
 
+### F16-011 · Lint warnings, all 57 classified — **partially cleaned**
+
+| Class | Count | Action |
+|---|---|---|
+| Dead / unreachable prototype | 33 | **None.** All inside the seven unreferenced components (F16-004). |
+| Safe mechanical cleanup | 19 | 5 removed (57 → 52). The rest reclassified below. |
+| Live reachable correctness | 2 | Attempted, **reverted** — see below. |
+| Analyzer false positive | 2 | None needed. |
+| Unattributed (summary line) | 1 | — |
+
+**Reclassified from "mechanical" to deliberate.** `const { invalidSecurityEnv:
+_drop, ...older }` is an omit-key idiom; `_outerTx` is an intentionally unused
+callback parameter; `opts` and `fkMsg` belong to exported signatures. There is
+no `varsIgnorePattern` in the ESLint config, so the `_` prefix does not silence
+them — deleting any of these would change meaning rather than tidy it.
+
+**"Never used" is not "safe to delete."** `tests/insurance.test.ts` declares
+`customerInsured` / `customerUninsured`, which eslint reports as never used
+because they are only ever *assigned*. Removing them broke `tsc`. Restored.
+
+**False positives.** `components/shell/useNotifications.ts:59` and
+`components/scheduler/SchedulerView.tsx:735` are flagged as "setState
+synchronously within an effect". Both call an **async** function, so the
+`setState` runs after the first await, not synchronously. Not changed.
+
+**Live correctness — attempted and reverted.** `platform/OrgList.tsx:31` and
+`platform/OrgDetail.tsx:346` call `Date.now()` during render, so server HTML and
+client hydration can disagree about a day-boundary count. Passing the instant
+down from the server page fixes the client components — and moves the same
+`Date.now()` into the async server component, where the identical rule fires as
+an **error**. Net result was 0 errors → 2 errors, so it was reverted. A real fix
+needs the reference instant to come from the data layer, not from the render
+path; that is a follow-up, not a holding-period change.
+
+### F16-004 addendum · exact import-graph status
+
+Verified by resolving every `from '…<name>'` specifier across `app/`,
+`components/` and `lib/`. All seven have **zero importers**; every component
+under a `components/<area>/` subdirectory has at least one. The split is exactly
+prototype vs product.
+
+Misleading prototype behaviour they contain, while they remain:
+
+| File | Behaviour |
+|---|---|
+| `CheckoutPayment.tsx:471` | Renders `Authorization token: STRIPE_TX_{Math.floor(100000 + Math.random() * 900000)}` on a "Checkout Complete!" screen — a fabricated authorization token that changes on every re-render |
+| `RemindersSystem.tsx:79` | `id: Math.random().toString()` as a record identifier |
+| `OfflineManager.tsx:33` | Synchronous `setState` in an effect — a genuine cascading-render warning, unlike the two false positives above |
+
+Unimported modules are not in the client bundle, so none of this ships. It must
+not become reachable without being rewritten first.
+
 ### F16-005 · `ASSISTANT_MODEL` fallback — **reviewed, deliberately unchanged**
 
 `lib/assistant/model.ts:51` resolves `ASSISTANT_MODEL ?? 'mock'`, the same shape
