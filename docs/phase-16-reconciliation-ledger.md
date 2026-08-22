@@ -130,6 +130,70 @@ a working page nobody can find. Injecting a one-word drift (audit nav asking for
 Structural, not behavioural: it proves the two sources name the same key.
 Enforcement stays covered by `scripts/check-guards.ts` and the route-access tests.
 
+### F16-006 · A mocked provider was invisible to the config contract — **P2, fixed**
+
+| | |
+|---|---|
+| **Surface** | Production configuration diagnostics |
+| **Was** | F16-001/002 made the resolvers refuse `mock` in production, but only at the call site — the first real payment or reminder. Until then the monitor reported a complete, valid configuration. |
+| **Implementation** | `lib/ops-metrics.ts` (`SECURITY_ENV_VALIDATORS`, `isRealProvider`) |
+| **Proof** | `tests/phase16-provider-config-contract.test.ts` — 18 tests |
+| **Severity** | P2 — turns a latent misconfiguration into a visible one before it costs a payment. |
+
+`invalidEnv()` already existed for "set but structurally unusable" (P15-010). A
+provider pinned to `mock` is exactly that, as is a typo'd name the resolver would
+throw on. Absence stays with `missingEnv()`, so nothing is counted twice.
+
+`.env.example` and `docs/operations.md` now state which providers production
+requires and what happens when they are absent.
+
+### F16-007 · Role coverage was a spot check — **P3, evidence added**
+
+| | |
+|---|---|
+| **Surface** | All 13 authoritative roles × all 8 app-plane surfaces |
+| **Was** | `tests/route-access.test.ts` instantiates a handful of fixture users. That is a spot check; it says nothing about the nine roles it never builds. |
+| **Implementation** | none — no product change |
+| **Proof** | `tests/phase16-role-surface-matrix.test.ts` — 9 tests, 104 measured cells |
+| **Severity** | P3 — no defect found; the gap was evidence. |
+
+Every cell below is **measured** by running the real `can()` against an
+`AuthContext` built from the authoritative `role_permissions` rows:
+
+```
+role            scheduler patients  reminders waitlist  billing   analytics audit     settings  
+------------------------------------------------------------------------------------------------
+SUPER_ADMIN     deny      deny      deny      deny      deny      deny      deny      deny      
+PLATFORM_ADMIN  deny      deny      deny      deny      deny      deny      deny      deny      
+BILLING_MANAGER deny      deny      deny      deny      deny      deny      deny      deny      
+SUPPORT_AGENT   deny      deny      deny      deny      deny      deny      deny      deny      
+ORG_OWNER       ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     
+ORG_ADMIN       ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     
+BRANCH_MANAGER  ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     deny      deny      
+SENIOR_PROVIDER ALLOW     ALLOW     ALLOW     ALLOW     deny      ALLOW     deny      deny      
+FRONT_DESK      ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     deny      deny      deny      
+PROVIDER        ALLOW     ALLOW     ALLOW     ALLOW     deny      deny      deny      deny      
+ACCOUNTANT      deny      deny      deny      deny      deny      ALLOW     deny      deny      
+MARKETING       deny      ALLOW     deny      deny      deny      ALLOW     deny      deny      
+CLIENT          deny      deny      deny      deny      deny      deny      deny      deny
+```
+
+Invariants now asserted: `CLIENT` (zero grants) reaches nothing; platform-plane
+roles reach no app surface, because they hold no membership; every ALLOW is
+justified by a grant the role actually holds; an empty bundle is denied in an
+otherwise valid context; and a valid `ORG_OWNER` is denied against a different
+organization.
+
+The toggle is asserted in **both** directions — `providerFinancialReports` off
+denies `PROVIDER` the analytics surface, on grants it. A toggle that does not
+change an observable decision would not have been proven by the grant alone.
+
+**Product decision surfaced, not taken:** `MARKETING` holds
+`client.read:contact`, so it reaches the patients surface and patient contact
+details. Defensible for campaigns, but it is a marketing role reading patient
+contact data in a clinical product — worth an explicit GDPR decision rather than
+an inherited default.
+
 ### F16-004 · Seven unreferenced prototype components — **P4, reported not removed**
 
 | | |
