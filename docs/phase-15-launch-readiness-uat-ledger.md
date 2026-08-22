@@ -580,41 +580,46 @@ DNS measurement. Supersedes the original list.
 
 3. **Email DNS is correct. One real gap: the DMARC `rua` mailbox.**
 
-   *Corrected 2026-08-23.* An earlier revision of this section claimed SPF and
-   the bounce MX were absent. That was wrong: it queried `send.bookpitch.ge`
-   and, finding nothing, concluded the records did not exist. They do — at the
-   SES custom MAIL FROM subdomain, which is where SPF and the feedback MX
-   belong. Resend's own dashboard specifies exactly those names.
+   Verified 2026-08-23 against `8.8.8.8` and `1.1.1.1`, plus the Resend API
+   read-only. **No DNS or provider change has been made or is authorized.**
 
-   Resend API, read-only: domain **`send.bookpitch.ge`**, status
-   **`verified`**, region `eu-west-1`, all three required records `verified`.
+   | Claim | State |
+   |---|---|
+   | Resend domain verification | **verified** — `send.bookpitch.ge`, region `eu-west-1` |
+   | DKIM | **verified** — `resend._domainkey.send.bookpitch.ge` |
+   | SPF | **verified** — `send.send.bookpitch.ge` TXT `v=spf1 include:amazonses.com ~all` |
+   | Bounce MX | **verified** — `send.send.bookpitch.ge` MX `10 feedback-smtp.eu-west-1.amazonses.com.` |
+   | Subdomain DMARC policy | **exists** — `_dmarc.send.bookpitch.ge` `v=DMARC1; p=none; rua=mailto:dmarc@bookpitch.ge` |
+   | DMARC `rua` reporting | **not operational** — the destination mailbox is not deliverable |
+   | Apex DMARC | **absent** — a separate, unresolved policy decision |
 
-   Measured against `8.8.8.8` and `1.1.1.1`:
+   `send.send.bookpitch.ge` is not a typo: it is the SES custom MAIL FROM
+   subdomain of the sending domain, which is where SPF and the feedback MX
+   belong, and it is the name Resend's own dashboard specifies. An earlier
+   revision of this section queried `send.bookpitch.ge`, found nothing, and
+   wrongly reported both as absent.
 
-   | FQDN | Type | Result |
-   |---|---|---|
-   | `resend._domainkey.send.bookpitch.ge` | TXT | DKIM public key — **present** |
-   | `send.send.bookpitch.ge` | TXT | `v=spf1 include:amazonses.com ~all` — **present** |
-   | `send.send.bookpitch.ge` | MX | `10 feedback-smtp.eu-west-1.amazonses.com.` — **present** |
-   | `_dmarc.send.bookpitch.ge` | TXT | `v=DMARC1; p=none; rua=mailto:dmarc@bookpitch.ge` — **present** |
-   | `_dmarc.bookpitch.ge` | TXT | (no record) |
-   | `bookpitch.ge` | MX | (no record) |
-   | `bookpitch.ge` | TXT | (no record) |
+   The `rua` gap is narrow and real: aggregate reports are requested but cannot
+   arrive, because `bookpitch.ge` publishes no MX and so `dmarc@bookpitch.ge`
+   cannot receive mail. Sending itself is unaffected — DKIM alignment carries
+   DMARC.
 
-   Separated as they should be:
+   Two options, **prepared and deliberately not executed** (no DNS or provider
+   mutation is authorized):
 
-   - **Resend domain verification** — verified.
-   - **DKIM** — available and correctly placed for `send.bookpitch.ge`.
-   - **SPF** — available at the MAIL FROM domain `send.send.bookpitch.ge`.
-   - **Bounce MX** — available, pointing at `feedback-smtp.eu-west-1.amazonses.com`.
-   - **DMARC policy** — `p=none` on the sending domain.
-   - **rua mailbox deliverability** — **the one genuine gap.** `bookpitch.ge`
-     has no MX, so `dmarc@bookpitch.ge` cannot receive the aggregate reports the
-     policy asks for. Point `rua` at a mailbox that exists, or publish an apex MX.
+   1. **Same-domain mailbox or forwarder.** Publish an apex MX and make
+      `dmarc@bookpitch.ge` deliver somewhere a human reads, or forward it.
+      Keeps reporting inside the domain and needs no third party. Costs an apex
+      MX, which is also what any future `@bookpitch.ge` mail would need.
+   2. **An approved DMARC reporting provider.** Point `rua` at the provider's
+      address and publish the external-report authorization record the DMARC
+      spec requires — a report receiver outside the domain is ignored without
+      `bookpitch.ge._report._dmarc.<provider>` on the provider's side. Gives
+      parsing and dashboards; adds a processor to the privacy review, since
+      aggregate reports carry sending-IP metadata.
 
-   Not blocking, worth doing: there is no DMARC record at the apex, so
-   `@bookpitch.ge` itself is unprotected against spoofing even though the
-   sending subdomain is covered.
+   Decide before raising `p=none` to `quarantine` or `reject`: a policy with no
+   readable reports is a policy with no feedback loop.
 
 4. **Designated-mailbox receipt/header UAT** — `docs/production-uat-checklist.md`
    §A–B, confirming `spf=`, `dkim=` and `dmarc=` results on a real received

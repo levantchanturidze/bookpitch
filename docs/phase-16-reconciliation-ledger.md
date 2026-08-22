@@ -174,7 +174,7 @@ SENIOR_PROVIDER ALLOW     ALLOW     ALLOW     ALLOW     deny      ALLOW     deny
 FRONT_DESK      ALLOW     ALLOW     ALLOW     ALLOW     ALLOW     deny      deny      deny      
 PROVIDER        ALLOW     ALLOW     ALLOW     ALLOW     deny      deny      deny      deny      
 ACCOUNTANT      deny      deny      deny      deny      deny      ALLOW     deny      deny      
-MARKETING       deny      ALLOW     deny      deny      deny      ALLOW     deny      deny      
+MARKETING       deny      deny      deny      deny      deny      ALLOW     deny      deny      
 CLIENT          deny      deny      deny      deny      deny      deny      deny      deny
 ```
 
@@ -188,13 +188,11 @@ The toggle is asserted in **both** directions — `providerFinancialReports` off
 denies `PROVIDER` the analytics surface, on grants it. A toggle that does not
 change an observable decision would not have been proven by the grant alone.
 
-**Product decision surfaced, not taken:** `MARKETING` holds
-`client.read:contact`, so it reaches the patients surface and patient contact
-details. Defensible for campaigns, but it is a marketing role reading patient
-contact data in a clinical product — worth an explicit GDPR decision rather than
-an inherited default.
+**The product decision this surfaced was taken.** MARKETING's `patients` cell
+now reads `deny` — see F16-012. Its `analytics` cell is unchanged, which is the
+point: least privilege, not an outage.
 
-### F16-008 · The patients screen loads the whole tenant — **P2, reported not fixed**
+### F16-008 · The patients screen loaded the whole tenant — **P2, FIXED**
 
 | | |
 |---|---|
@@ -216,13 +214,40 @@ relevant indexes already exist — `idx_customers_org` and `idx_history_customer
 **No index is proposed**: at this volume there is no plan evidence to justify
 one, and the working rules forbid speculative indexes.
 
-**Not fixed here — it is a product decision.** Every real fix (paginate, bound
-the history include, fetch history on selection) changes what a user sees, and a
-holding period with no CI and no browser against production is the wrong place
-to make that call. `audit-query.ts` already shows the intended pattern
-(`take: filter.limit ?? 200`).
+**Fixed under Decision 1.** The list has its own projection — no allergies,
+clinical notes, insurance, history or date of birth, because the list renders
+none of them. The allergy warning survives as a **boolean**, gated on the same
+`client.read:full` check as the plaintext: dropping it would have removed a
+clinical safety affordance to save bytes.
 
-### F16-009 · Privileged-session expiry is read on the process clock — **P3, reported not fixed**
+Keyset pagination on `(createdAt DESC, id DESC)`. The id is not decoration —
+`createdAt` is not unique, and a cursor on a non-unique key silently drops or
+repeats rows at the page boundary. `limit` and `cursor` are validated, never
+clamped: a silently narrowed page is a list with records missing from it.
+
+Search runs in the database across the whole organization. A test searches for a
+row on the **last** page with `limit=1`, which a client-side filter over page one
+could not find.
+
+Detail and history come from `GET /api/customers/[id]` per selection. That
+introduced a race the old design could not have — click A, click B, A answers
+last, A's clinical record renders under B's name — so `createSequencer()` gives
+every request a ticket and drops superseded results. Extracted from the
+component so the rule is tested directly.
+
+Scheduler: `parseAppointmentRange` enforces ordered, non-empty, half-open
+`[from, to)` with a 62-day ceiling, throwing rather than clamping. Half-open is
+asserted at the seam: an appointment at midnight on the 1st belongs to April,
+not to both March and April.
+
+Still no index. At the local data volume the plan is a 0.05 ms sequential scan
+and both relevant indexes exist, so there remains no evidence to justify one.
+
+*Proof:* `tests/phase16-bounded-loading.test.ts` (14),
+`tests/phase16-stale-selection.test.ts` (6), contract tests in
+`tests/customers-api.test.ts`, and four Playwright states across six projects.
+
+### F16-009 · Privileged-session expiry read on the process clock — **P3, FIXED**
 
 | | |
 |---|---|
@@ -242,11 +267,11 @@ session active, so break-glass access to client PII outlives the 60-minute
 ceiling in rbac-spec §7.2. Measured skew between this host and its database:
 **0 ms**, so nothing is wrong today — this is defence, not an incident.
 
-**Attempted and reverted.** See F16-010: correcting the read alone is not
-possible, because the database-time helper it would depend on is itself wrong
-off-UTC, and the two errors currently cancel.
+**Fixed as part of F16-010** — correcting the read alone was impossible, because
+the helper it depended on was itself wrong off-UTC and the two errors cancelled.
+Both loaders now compare with `transaction_timestamp()` inside SQL.
 
-### F16-010 · `SELECT now()` through Prisma is timezone-fragile — **P2, reported not fixed**
+### F16-010 · Prisma and SQL disagreed about what instant a column held — **P2, FIXED**
 
 | | |
 |---|---|
@@ -274,46 +299,84 @@ an incident. Off-UTC it is not subtle:
 - `tests/helpers/db-time.ts` inherits the same offset, which is why the suite
   never noticed — fixtures and assertions are wrong together.
 
-**Attempted, then reverted deliberately.** A `dbNow()` helper built on
-`extract(epoch from now())` fixed the clock and made the new expiry tests pass,
-but broke two break-glass tests: *"TOTP replay fence is NOT advanced when the
-transaction rolls back"* and *"concurrent activations: exactly one session
-created"*. Reproduced twice; baseline is 25/25.
+**Root cause, one layer deeper than first recorded.** The driver sends a
+`timestamptz` parameter *without an offset*, so PostgreSQL interprets it in the
+**session** TimeZone. Writing `00:11Z` on an `Asia/Tbilisi` session stores
+`20:11Z`. Prisma reads it back through the same shift, so a Prisma-only
+round-trip looks perfect — and disagrees with any SQL predicate by exactly the
+zone offset. Measured on one connection, one moment:
 
-The cause is instructive and is the finding's real teeth: **the read error and a
-matching write error currently cancel.** `startBreakGlass`'s in-transaction sweep
-binds a JS `Date` **into** raw SQL (`expires_at <= ${dbNow}`), which is
-timezone-sensitive in the opposite direction. Correct one side and the pair stops
-agreeing. Any fix must change read and write together and re-verify the
-break-glass concurrency tests.
+```
+node target      = 2026-08-23T00:11:52.215Z
+prisma read back = 2026-08-23T00:11:52.215Z
+SQL stored (UTC) = 2026-08-22T20:11:52.215Z
+```
 
-Reverted rather than shipped: this is security-critical concurrency code, GitHub
-CI cannot run during the holding period, and a partially-understood change there
-is worse than a well-documented finding. Recommended follow-up, as its own PR
-with CI green:
+That is why the first attempt broke: the read error and a matching write error
+had been cancelling. Correcting one side alone cannot work.
 
-1. add `dbNow()` on `extract(epoch from now())`;
-2. move every raw comparison to SQL-side `now()` rather than binding a Date;
-3. route `break-glass`, `impersonation`, `housekeeping`, `rbac/context` and
-   `tests/helpers/db-time.ts` through it in one change;
-4. prove it by setting the local server `TimeZone` to something off-UTC and
-   showing the break-glass TTL is still 60 minutes.
+**Fixed under Decision 2, as three changes that only work together:**
 
-### F16-004 · Seven unreferenced prototype components — **P4, reported not removed**
+1. Every pooled session is pinned with `options: '-c timezone=UTC'` in
+   `lib/db.ts`. This is what makes Prisma's model API and raw SQL agree. A no-op
+   in production (Supabase is already UTC) and in CI; locally it aligns dev with
+   both.
+2. Expiry predicates and state transitions moved into SQL on **both** sides —
+   `transaction_timestamp()`, not `clock_timestamp()`, so a sweep and the check
+   that follows cannot disagree. Covers the break-glass and impersonation
+   loaders, the in-transaction sweep, both conflict checks, every housekeeping
+   sweep, the ownership-transfer accept gate and its listings, and invitation
+   consumption. `lib/onboarding.ts` and `lib/platform/password-reauth.ts`
+   already did exactly this and were the model.
+3. `dbNowMs()` reads the instant as `extract(epoch from transaction_timestamp())`
+   for the few places needing a JavaScript value — a number has no rendering and
+   no zone to misread.
+
+**Timezone proof**, each on its own connection because `SET TIME ZONE` is
+per-connection and Prisma's pool would otherwise apply it to a connection the
+next query never touches: UTC, `Asia/Tbilisi` (+04) and `America/Sao_Paulo`
+(-03). The epoch read is invariant, a derived 60-minute window measures 60
+minutes, and SQL-side comparisons are unaffected. The complement demonstrates
+the five-hour effective break-glass window the old expression produced at +04,
+without shipping it.
+
+**Stability:** the nine focused security suites, run **eight times sequentially**
+with no concurrent database sharing — 8/8 green, 186 tests each. The same full
+suite fails 13 tests without these changes.
+
+*Proof:* `tests/phase16-db-clock.test.ts` (6),
+`tests/phase16-session-expiry-db-clock.test.ts` (7),
+`tests/helpers/tz-session.ts`.
+
+### F16-012 · MARKETING could read patient contact details — **P2, FIXED**
 
 | | |
 |---|---|
-| **Surface** | `components/` root |
-| **Files** | `AnalyticsDashboard.tsx`, `CalendarView.tsx`, `CheckoutPayment.tsx`, `ModulePlaceholder.tsx`, `OfflineManager.tsx`, `PatientDatabase.tsx`, `RemindersSystem.tsx` |
-| **Status** | Imported by nothing in `app/`, `components/` or `lib/`. Every component in a `components/<area>/` subdirectory *is* reachable — the split is exactly prototype vs product. |
-| **Severity** | P4. Not shipped to users: unimported modules are not in the client bundle. |
-| **Proposed** | Delete, or move under `docs/prototype/`. **Not done here** — the working rules forbid removing product components without proving intent, and these plausibly remain design reference. |
+| **Surface** | RBAC seed, patients API and surface |
+| **Was** | MARKETING held `client.read:contact`, reaching every patient's name, email, phone and date of birth. |
+| **Is** | `report.own` and `report.branch` only — aggregate, non-identifying analytics. |
+| **Implementation** | `prisma/migrations/20260823000001_revoke_marketing_client_contact/` |
+| **Proof** | `tests/phase16-marketing-least-privilege.test.ts` — 17 tests |
 
-Worth knowing while they stay: `CheckoutPayment.tsx:471` renders
-`Authorization token: STRIPE_TX_{Math.floor(100000 + Math.random() * 900000)}`
-on a "Checkout Complete!" screen — a fabricated authorization token that changes
-on every re-render. Harmless while unreachable; it must never become reachable.
-These seven files also account for most of the 57 lint warnings.
+Surfaced by the F16-007 matrix as a product decision, then authorized. Nothing
+was granted in exchange. A future campaign needing contact data requires its own
+permission with a stated purpose, consent and opt-out handling, minimum-necessary
+fields, and auditability.
+
+Additive and idempotent — deletes at most one row, re-running is a no-op, and
+the seed migration is left exactly as applied rather than rewritten. Rollback is
+written into the migration, with a note that running it re-grants patient
+contact access to every MARKETING member in every organization.
+
+Proven on disposable databases: clean install of all 63 leaves the two reporting
+grants; upgrade from the 62-migration baseline shows `client.read:contact`
+present before and absent after; re-running changes nothing; drift reports no
+difference.
+
+Navigation visibility is a UX signal, not the control, so the tests hit routes
+directly: 403 on the customers list, on a single record, and on search;
+cross-tenant denied. The complement keeps ORG_OWNER and ORG_ADMIN at 200 and
+asserts all six clinical roles retain `client.read:contact`.
 
 ### F16-011 · Lint warnings, all 57 classified — **partially cleaned**
 
