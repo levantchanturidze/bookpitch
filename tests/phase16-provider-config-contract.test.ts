@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { SECURITY_ENV_VALIDATORS, invalidEnv, missingEnv, REQUIRED_EMAIL_ENV } from '@/lib/ops-metrics';
+import {
+  SECURITY_ENV_VALIDATORS,
+  invalidEnv,
+  missingEnv,
+  REQUIRED_EMAIL_ENV,
+} from '@/lib/ops-metrics';
 
 // -----------------------------------------------------------------------------
 // F16-006. The config contract now sees a mocked provider.

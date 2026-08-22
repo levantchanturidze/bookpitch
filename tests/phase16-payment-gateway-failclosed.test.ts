@@ -174,9 +174,9 @@ describe('F16-001 · no server action accepts a caller-supplied destination', ()
     ['//evil.example.com/api/webhooks/payment'],
   ])('ignores a %s webhook field', async (hostile) => {
     enableMock();
-    await expect(
-      approveAction(form({ ...ABSENT_PAYMENT, webhook: hostile })),
-    ).rejects.toThrow(/payment not found/i);
+    await expect(approveAction(form({ ...ABSENT_PAYMENT, webhook: hostile }))).rejects.toThrow(
+      /payment not found/i,
+    );
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

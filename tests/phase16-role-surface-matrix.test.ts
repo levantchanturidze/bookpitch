@@ -79,7 +79,9 @@ describe('F16-007 · role × surface matrix', () => {
   });
 
   it('prints the measured matrix and evaluates every cell', () => {
-    const header = ['role'.padEnd(16), ...NAV_ITEMS.map((n) => n.id.slice(0, 9).padEnd(10))].join('');
+    const header = ['role'.padEnd(16), ...NAV_ITEMS.map((n) => n.id.slice(0, 9).padEnd(10))].join(
+      '',
+    );
     const lines = [header, '-'.repeat(header.length)];
     let cells = 0;
 
@@ -140,7 +142,9 @@ describe('F16-007 · role × surface matrix', () => {
       for (const item of NAV_ITEMS) {
         if (!can(ctx, item.requiredPermission, { organizationId: ORG })) continue;
         const base = String(item.requiredPermission).split(':')[0];
-        const justified = role.perms.some((p) => p === item.requiredPermission || p.startsWith(`${base}:`));
+        const justified = role.perms.some(
+          (p) => p === item.requiredPermission || p.startsWith(`${base}:`),
+        );
         expect(justified, `${role.key} allowed ${item.id} with no matching grant`).toBe(true);
       }
     }
