@@ -578,25 +578,43 @@ DNS measurement. Supersedes the original list.
    `lib/crypto.ts` parser, but no monitor has observed the deployed runtime
    accepting it. Unobserved is not verified.
 
-3. **Email: SPF and bounce MX are absent from DNS.** Measured 2026-08-22 against
-   both `8.8.8.8` and `1.1.1.1`:
+3. **Email DNS is correct. One real gap: the DMARC `rua` mailbox.**
 
-   | Record | State |
-   |---|---|
-   | `resend._domainkey.send.bookpitch.ge` (DKIM) | **present**, valid RSA key |
-   | `_dmarc.send.bookpitch.ge` | **present** — `p=none; rua=mailto:dmarc@bookpitch.ge` |
-   | SPF TXT on `bookpitch.ge` **and** `send.bookpitch.ge` | **absent** |
-   | Bounce MX on `bookpitch.ge` **and** `send.bookpitch.ge` | **absent** |
-   | `_dmarc.bookpitch.ge` (apex) | **absent** |
+   *Corrected 2026-08-23.* An earlier revision of this section claimed SPF and
+   the bounce MX were absent. That was wrong: it queried `send.bookpitch.ge`
+   and, finding nothing, concluded the records did not exist. They do — at the
+   SES custom MAIL FROM subdomain, which is where SPF and the feedback MX
+   belong. Resend's own dashboard specifies exactly those names.
 
-   Resend domain verification can legitimately pass on DKIM alone, so "verified
-   in Resend" and "SPF/MX published" are not the same claim. DKIM alone can
-   achieve DMARC alignment, so mail may well authenticate — but with no bounce
-   MX, bounces and complaints are not collected, and with no apex MX the DMARC
-   `rua` address `dmarc@bookpitch.ge` **cannot receive the reports it asks for**.
+   Resend API, read-only: domain **`send.bookpitch.ge`**, status
+   **`verified`**, region `eu-west-1`, all three required records `verified`.
 
-   Reconcile against the Resend dashboard before the mailbox UAT, and treat the
-   dashboard's own state as authoritative for verification status.
+   Measured against `8.8.8.8` and `1.1.1.1`:
+
+   | FQDN | Type | Result |
+   |---|---|---|
+   | `resend._domainkey.send.bookpitch.ge` | TXT | DKIM public key — **present** |
+   | `send.send.bookpitch.ge` | TXT | `v=spf1 include:amazonses.com ~all` — **present** |
+   | `send.send.bookpitch.ge` | MX | `10 feedback-smtp.eu-west-1.amazonses.com.` — **present** |
+   | `_dmarc.send.bookpitch.ge` | TXT | `v=DMARC1; p=none; rua=mailto:dmarc@bookpitch.ge` — **present** |
+   | `_dmarc.bookpitch.ge` | TXT | (no record) |
+   | `bookpitch.ge` | MX | (no record) |
+   | `bookpitch.ge` | TXT | (no record) |
+
+   Separated as they should be:
+
+   - **Resend domain verification** — verified.
+   - **DKIM** — available and correctly placed for `send.bookpitch.ge`.
+   - **SPF** — available at the MAIL FROM domain `send.send.bookpitch.ge`.
+   - **Bounce MX** — available, pointing at `feedback-smtp.eu-west-1.amazonses.com`.
+   - **DMARC policy** — `p=none` on the sending domain.
+   - **rua mailbox deliverability** — **the one genuine gap.** `bookpitch.ge`
+     has no MX, so `dmarc@bookpitch.ge` cannot receive the aggregate reports the
+     policy asks for. Point `rua` at a mailbox that exists, or publish an apex MX.
+
+   Not blocking, worth doing: there is no DMARC record at the apex, so
+   `@bookpitch.ge` itself is unprotected against spoofing even though the
+   sending subdomain is covered.
 
 4. **Designated-mailbox receipt/header UAT** — `docs/production-uat-checklist.md`
    §A–B, confirming `spf=`, `dkim=` and `dmarc=` results on a real received

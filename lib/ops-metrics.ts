@@ -276,7 +276,29 @@ export const SECURITY_ENV_VALIDATORS: Readonly<Record<string, (value: string) =>
   RATE_LIMIT_HMAC_KEY: (v) => /^[0-9a-fA-F]{64}$/.test(v),
   // Auth.js refuses anything trivially short.
   AUTH_SECRET: (v) => v.length >= 32,
+
+  // F16-001/002: a provider set to "mock" in production is set-but-unusable in
+  // the most literal sense — the adapter returns a synthetic success without
+  // contacting anyone. getGateway() and the messaging resolvers already refuse
+  // it at the call site, but that only fires when something tries to pay or
+  // send. This makes the same fault visible to the monitor beforehand, rather
+  // than at the first real payment.
+  //
+  // Absence is not checked here (invalidEnv() skips unset variables, and the
+  // resolvers throw); this is strictly the "configured wrong" case.
+  PAYMENT_GATEWAY: (v) => isRealProvider(v, ['bog', 'bog_ipay', 'tbc', 'tbc_ecommerce']),
+  EMAIL_PROVIDER: (v) => isRealProvider(v, ['postmark', 'resend']),
+  SMS_PROVIDER: (v) => isRealProvider(v, ['smsoffice']),
 };
+
+/**
+ * True when `value` names a real adapter. "mock" is rejected on purpose, and so
+ * is any name the corresponding resolver would throw on — a typo'd provider is
+ * as broken as a mocked one, and equally worth seeing before it matters.
+ */
+function isRealProvider(value: string, real: readonly string[]): boolean {
+  return real.includes(value.trim().toLowerCase());
+}
 
 /**
  * Names of variables that are set but fail their structural validator.

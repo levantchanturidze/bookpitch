@@ -60,6 +60,8 @@ gh secret list                    # GitHub Actions secret names + last update
 | `EMAIL_PROVIDER`, `RESEND_API_KEY`, `RESEND_FROM` | Vercel | no verification or alert mail is ever sent |
 | `AUTH_SECRET` | Vercel | sessions cannot be signed |
 | `FIELD_ENCRYPTION_KEY` | Vercel | encrypted columns unreadable |
+| `PAYMENT_GATEWAY` | Vercel | **payments refuse to run** — `getGateway()` throws rather than falling back to the mock adapter (F16-001) |
+| `EMAIL_PROVIDER`, `SMS_PROVIDER` | Vercel | **outbound messaging refuses to run** — the resolvers throw rather than silently mocking a send (F16-002) |
 | `RATE_LIMIT_HMAC_KEY`, `EMAIL_PRIVACY_HMAC_KEY` | Vercel | PII hashed with a fallback key |
 | `CRON_SECRET` | Vercel **and** GitHub | every cron run 401s (see §7) |
 | `DATABASE_URL`, `DATABASE_URL_APP_NOBYPASSRLS`, `DATABASE_URL_LOGIN`, `DATABASE_URL_SUPERUSER_TXPOOL`, `ADMIN_DATABASE_URL`, `DIRECT_URL` | Vercel | app cannot reach the database |
