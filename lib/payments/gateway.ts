@@ -49,9 +49,32 @@ import { TbcGateway } from './gateways/tbc';
  * are stateless).
  */
 export function getGateway(): PaymentGateway {
-  const name = (process.env.PAYMENT_GATEWAY ?? 'mock').toLowerCase();
+  const configured = (process.env.PAYMENT_GATEWAY ?? '').trim();
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  // Fail closed (CLAUDE.md invariant 2). An unset PAYMENT_GATEWAY used to fall
+  // back to MockGateway, which reports every payment it is asked about as
+  // successful. In production that turns one missing variable into free
+  // appointments, and nothing in the config contract noticed. Absence is a
+  // configuration error there, not a default.
+  if (!configured) {
+    if (isProduction) {
+      throw new Error(
+        'PAYMENT_GATEWAY must be set in production — refusing to default to the mock gateway',
+      );
+    }
+    return new MockGateway();
+  }
+
+  const name = configured.toLowerCase();
   switch (name) {
     case 'mock':
+      // Explicitly asking for the mock adapter in production is still refused:
+      // the mock signs its own webhooks, so accepting it would let anyone who
+      // can reach the webhook route mark a payment paid.
+      if (isProduction) {
+        throw new Error('PAYMENT_GATEWAY=mock is not permitted in production');
+      }
       return new MockGateway();
     case 'bog':
     case 'bog_ipay':

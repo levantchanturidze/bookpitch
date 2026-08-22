@@ -11,7 +11,12 @@ export default async function MockGatewayPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  if ((process.env.PAYMENT_GATEWAY ?? 'mock') !== 'mock') notFound();
+  // Two gates, not one. NODE_ENV is the environment fact; PAYMENT_GATEWAY is
+  // the configuration. The first alone would miss a mock-configured staging
+  // build; the second alone missed production entirely whenever the variable
+  // was unset, because the fallback was 'mock'.
+  if (process.env.NODE_ENV === 'production') notFound();
+  if ((process.env.PAYMENT_GATEWAY ?? 'mock').trim().toLowerCase() !== 'mock') notFound();
 
   const sp = await searchParams;
   const s = (k: string) => (typeof sp[k] === 'string' ? (sp[k] as string) : '');
