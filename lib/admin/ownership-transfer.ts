@@ -19,7 +19,7 @@
 // gets flipped to `status='expired'`. A housekeeping cron can also sweep.
 // -----------------------------------------------------------------------------
 
-import { dbNow, dbNowMs, unsafePrismaAdmin, withOrg } from '@/lib/db';
+import { dbNowMs, unsafePrismaAdmin, withOrg } from '@/lib/db';
 import { InvalidInputError, ConflictError, NotFoundError, type ActiveSession } from '@/lib/auth';
 import { notifyEvent } from '@/lib/notifications';
 import { getEmailProvider } from '@/lib/messaging';

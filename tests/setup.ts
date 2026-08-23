@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { prismaApp, unsafePrismaAdmin } from '@/lib/db';
 import { config as loadEnv } from 'dotenv';
 
 // Vitest runs from the repo root; load .env.local like Next.js does.
@@ -167,3 +168,64 @@ export { refuseUnsafeTarget as __assertSafeFetchTarget };
 if (!process.env.RBAC_ENFORCE_MODULES) {
   process.env.RBAC_ENFORCE_MODULES = '*';
 }
+
+// -----------------------------------------------------------------------------
+// Fixture cleanup guard — `where: { id: undefined }` is not a no-op.
+//
+// Prisma drops undefined filter values, so deleteMany({ where: { id: undefined } })
+// becomes deleteMany({}) and matches the whole table. Teardown code reaches that
+// state the moment a beforeAll fails before assigning its ids — which happened
+// while writing the Phase 16 fixtures, and only the org_owner invariant stopped
+// a dev table from being emptied.
+//
+// The pattern is in 34 test files, so this guards the call rather than editing
+// each one: any deleteMany/updateMany whose `where` carries an undefined value
+// throws instead of silently widening. Legitimate calls are unaffected, because
+// they never pass undefined.
+//
+// Test-scoped on purpose: it wraps the imported client instances here and never
+// ships in application code.
+// -----------------------------------------------------------------------------
+function findUndefinedFilter(where: unknown, path = 'where'): string | null {
+  if (where === null || typeof where !== 'object') return null;
+  for (const [key, value] of Object.entries(where as Record<string, unknown>)) {
+    if (value === undefined) return `${path}.${key}`;
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const nested = findUndefinedFilter(value, `${path}.${key}`);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+function guardBulkWrites(client: Record<string, unknown>, label: string): void {
+  for (const key of Object.keys(client)) {
+    if (key.startsWith('$') || key.startsWith('_')) continue;
+    const delegate = client[key] as Record<string, unknown> | undefined;
+    if (!delegate || typeof delegate !== 'object') continue;
+    for (const op of ['deleteMany', 'updateMany'] as const) {
+      const original = delegate[op];
+      if (typeof original !== 'function') continue;
+      const guardedFn = function guarded(args?: { where?: unknown }) {
+        const offending = args?.where === undefined ? null : findUndefinedFilter(args.where);
+        if (offending) {
+          throw new Error(
+            `[fixture guard] ${label}.${key}.${op}() was given ${offending} = undefined. ` +
+              `Prisma drops undefined filters, so this would match EVERY row. ` +
+              `Guard the id (\`if (!id) return\`) or delete by an explicit value.`,
+          );
+        }
+        return (original as (a?: unknown) => unknown).call(delegate, args);
+      };
+      (guardedFn as unknown as { __fixtureGuarded?: boolean }).__fixtureGuarded = true;
+      delegate[op] = guardedFn;
+    }
+  }
+}
+
+guardBulkWrites(unsafePrismaAdmin as unknown as Record<string, unknown>, 'unsafePrismaAdmin');
+if ((prismaApp as unknown) !== (unsafePrismaAdmin as unknown)) {
+  guardBulkWrites(prismaApp as unknown as Record<string, unknown>, 'prismaApp');
+}
+
+export { findUndefinedFilter as __findUndefinedFilter };

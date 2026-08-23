@@ -730,9 +730,14 @@ function BookingModal({
   const activeService = services.find((s) => s.id === values.serviceId);
 
   // Load available slots whenever provider + service + date are all chosen.
+  const slotInputsComplete = !!(values.staffId && values.serviceId && values.date);
+  // Derived, so the "choose staff, service & date" state needs no state write.
+  const visibleSlots = slotInputsComplete ? slots : null;
+
   useEffect(() => {
-    if (!values.staffId || !values.serviceId || !values.date) {
-      setSlots(null);
+    if (!slotInputsComplete) {
+      // Nothing to fetch. The reset is derived below rather than written into
+      // state here, which would be a synchronous setState during an effect body.
       return;
     }
     const svc = services.find((s) => s.id === values.serviceId);
@@ -761,7 +766,7 @@ function BookingModal({
     return () => {
       cancelled = true;
     };
-  }, [values.staffId, values.serviceId, values.date, services]);
+  }, [values.staffId, values.serviceId, values.date, services, slotInputsComplete]);
 
   const canSubmit =
     !!values.customerId && !!values.staffId && !!values.serviceId && !!values.date && !!values.time;
@@ -853,11 +858,11 @@ function BookingModal({
                 <div className="flex h-[34px] items-center rounded-lg border border-slate-200 bg-slate-50 px-2 font-mono text-xs text-slate-500">
                   Loading…
                 </div>
-              ) : slots === null ? (
+              ) : visibleSlots === null ? (
                 <div className="flex h-[34px] items-center rounded-lg border border-slate-100 bg-slate-50 px-2 text-xs text-slate-500">
                   Choose staff, service &amp; date
                 </div>
-              ) : slots.length === 0 ? (
+              ) : visibleSlots.length === 0 ? (
                 <div className="flex h-[34px] items-center rounded-lg border border-rose-100 bg-rose-50 px-2 text-xs text-rose-600">
                   No available times
                 </div>
@@ -868,7 +873,7 @@ function BookingModal({
                   onChange={(e) => setValues({ ...values, time: e.target.value })}
                   className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-700"
                 >
-                  {slots.map((s) => (
+                  {visibleSlots.map((s) => (
                     <option key={s} value={s}>
                       {s}
                       {activeService ? ` – ${formatEndTime(s, activeService.durationMinutes)}` : ''}

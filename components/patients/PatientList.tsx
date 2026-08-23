@@ -169,13 +169,16 @@ export default function PatientList({
   useEffect(() => {
     if (!selectedId) {
       detailSeq.current.invalidate(); // drop anything in flight
-      setDetail({ status: 'empty' });
       return;
     }
     void loadDetail(selectedId);
   }, [selectedId, loadDetail]);
 
-  const active = detail.status === 'ready' ? detail.customer : undefined;
+  // "Nothing selected" is derived, not stored. Writing it into state from the
+  // effect was a synchronous setState during an effect body — a second render
+  // for a fact already available from `selectedId`.
+  const detailView: DetailState = selectedId ? detail : { status: 'empty' };
+  const active = detailView.status === 'ready' ? detailView.customer : undefined;
   const filtered = customers;
 
   const handleCreate = (values: FormState) => {
@@ -368,7 +371,7 @@ export default function PatientList({
 
       {/* ----------------------- DETAIL PANE ----------------------------- */}
       <div className="flex h-[580px] flex-col rounded-xl border border-slate-200 bg-white p-6 lg:col-span-7">
-        {detail.status === 'ready' && active ? (
+        {detailView.status === 'ready' && active ? (
           <PatientDetail
             // Keyed by id: remounting on selection change discards the previous
             // patient's local panel state instead of carrying it across.
@@ -382,11 +385,11 @@ export default function PatientList({
             onAddHistory={(label) => handleAddHistory(active.id, label)}
             isPending={isPending}
           />
-        ) : detail.status === 'loading' ? (
+        ) : detailView.status === 'loading' ? (
           <DetailLoading label={labelSingular.toLowerCase()} />
-        ) : detail.status === 'error' ? (
+        ) : detailView.status === 'error' ? (
           <DetailError
-            message={detail.message}
+            message={detailView.message}
             onRetry={() => selectedId && void loadDetail(selectedId)}
           />
         ) : (
