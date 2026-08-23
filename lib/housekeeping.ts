@@ -215,13 +215,15 @@ async function drainEmailOutbox(
   try {
     const provider = getEmailProvider();
     const claimOwner = `hk-${process.pid}-${now.getTime()}`;
-    const claimExpiresAt = new Date(now.getTime() + OUTBOX_CLAIM_TTL_SECONDS * 1000);
 
     // Step 1: recover stale claims from crashed/timed-out workers.
     await unsafePrismaAdmin.$executeRaw`
       UPDATE email_outbox
       SET status = 'pending', claim_owner = NULL, claim_expires_at = NULL, claimed_at = NULL
-      WHERE status = 'processing' AND claim_expires_at < ${now}
+      -- Compared in SQL, not against a bound JS Date: a marshalled timestamptz
+      -- is re-interpreted in the session TimeZone (F16-010), which would either
+      -- reclaim live claims early or leave stale ones held.
+      WHERE status = 'processing' AND claim_expires_at < transaction_timestamp()
     `;
 
     // Step 2: atomically claim a batch via FOR UPDATE SKIP LOCKED.
@@ -233,7 +235,7 @@ async function drainEmailOutbox(
         SELECT id, to_address, to_address_encrypted, subject, body, body_encrypted, purpose, attempts, max_attempts
         FROM email_outbox
         WHERE status = 'pending'
-          AND next_attempt_at <= ${now}
+          AND next_attempt_at <= transaction_timestamp()
         ORDER BY next_attempt_at ASC
         LIMIT ${OUTBOX_BATCH_SIZE}
         FOR UPDATE SKIP LOCKED
@@ -244,8 +246,8 @@ async function drainEmailOutbox(
         UPDATE email_outbox
         SET status = 'processing',
             claim_owner = ${claimOwner},
-            claim_expires_at = ${claimExpiresAt},
-            claimed_at = ${now}
+            claim_expires_at = transaction_timestamp() + (${OUTBOX_CLAIM_TTL_SECONDS} * interval '1 second'),
+            claimed_at = transaction_timestamp()
         WHERE id = ANY(${ids}::uuid[])
       `;
       return rows;
@@ -261,7 +263,7 @@ async function drainEmailOutbox(
         await provider.send(toAddress, row.subject, body);
         await unsafePrismaAdmin.$executeRaw`
           UPDATE email_outbox
-          SET status = 'sent', sent_at = ${now}, claim_owner = NULL
+          SET status = 'sent', sent_at = transaction_timestamp(), claim_owner = NULL
           WHERE id = ${row.id}::uuid
         `;
         outboxSent++;

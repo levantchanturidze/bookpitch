@@ -76,6 +76,23 @@ const globalForPrisma = globalThis as unknown as CachedClients;
 // Callers on paid tiers can raise it via env.
 const POOL_MAX = Number(process.env.PG_POOL_MAX ?? 3);
 
+/**
+ * Session options for a connection, preserving anything the URL already asks
+ * for. `options` passed to the pool wins over the connection string's, so
+ * setting it blindly would discard an operator's `-c statement_timeout=...`
+ * the day someone adds one. No current URL carries `options`; this makes that
+ * stay true by construction rather than by luck.
+ */
+export function sessionOptions(connectionString: string): string {
+  const TIMEZONE = '-c timezone=UTC';
+  try {
+    const existing = new URL(connectionString).searchParams.get('options');
+    return existing && existing.trim().length > 0 ? `${existing.trim()} ${TIMEZONE}` : TIMEZONE;
+  } catch {
+    return TIMEZONE; // not URL-shaped; nothing to preserve
+  }
+}
+
 function build(connectionString: string | undefined, label: string): PrismaClient {
   if (!connectionString) {
     throw new Error(`${label} is not set — check .env.local`);
@@ -103,7 +120,7 @@ function build(connectionString: string | undefined, label: string): PrismaClien
       // this was ever visible there; CI's container does too. Local Postgres
       // here runs Asia/Tbilisi. Pinning the session removes the dependency on
       // how any particular server happens to be configured.
-      options: '-c timezone=UTC',
+      options: sessionOptions(connectionString),
     }),
     log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
   });
