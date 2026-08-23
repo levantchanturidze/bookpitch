@@ -103,15 +103,37 @@ passing; digest still explicitly paused; no email sent; no production write.
 
 ### 7. Only then, Phase 16
 
-Keep `agent/phase-16-prepilot-product-refinement` unmerged until the soak closes.
-Afterwards:
+Keep `agent/phase-16-prepilot-product-refinement` unmerged for the whole Phase 15
+soak. Phase 16 changes payment and messaging fail-closed behaviour, patient and
+scheduler data loading, security-sensitive database-time handling, RBAC
+permission state, and it carries one database migration — so it needs its own
+window, and its evidence must never be combined with Phase 15's.
 
-```bash
-git checkout agent/phase-16-prepilot-product-refinement
-git rebase main                 # never reset --hard, never force-push shared history
-# re-run the complete verification matrix
-git push -u origin agent/phase-16-prepilot-product-refinement
-gh pr create --base main
-```
+The order is not negotiable:
 
-Then normal review, CI, merge.
+1. Phase 15 CI, the production monitor and the full 24-hour soak close first.
+2. Update/rebase Phase 16 onto the resulting `main`
+   (`git rebase main` — never `reset --hard`, never force-push shared history).
+3. Rerun the **complete** Phase 16 verification matrix locally on the rebased tree.
+4. Push Phase 16 and open its PR — only once GitHub Actions is restored.
+5. Merge only when every required check is green on the **exact head SHA**.
+6. Migration 63 (`20260823000001_revoke_marketing_client_contact`) runs through
+   the established migration workflow, triggered by the Phase 16 merge.
+7. **Do not execute migration 63 against Production by hand.** Not with `psql`,
+   not with `prisma migrate deploy` from a laptop.
+8. Verify afterwards: `prisma migrate status` shows 63 applied, drift detection
+   reports no difference, MARKETING holds exactly `report.own` and
+   `report.branch`, and the application deployment that expects that state is
+   the one actually serving traffic.
+9. If the migration or the application deployment fails, **do not bypass and do
+   not patch Production by hand.** Roll back through the same workflow and
+   diagnose from the failed run.
+
+Ordering safety is already proven locally: `ROLE_PERMISSION_DENIALS` refuses
+MARKETING's patient-contact permissions in code, so a new application running
+against a database that still holds the old row denies access anyway. The
+migration makes the state correct; the code makes the order irrelevant. That is
+belt-and-braces, not a licence to skip step 8.
+
+10. Start a **new** Phase 16 post-deployment monitoring window sized to those
+    changes. Do not reuse or merge Phase 15's soak evidence.
