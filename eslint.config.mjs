@@ -46,6 +46,10 @@ const UNSAFE_DB_ALLOWLIST = [
   'lib/audit-digest.ts',
   'lib/housekeeping.ts',
   'lib/messaging/reminders.ts',
+  // P17-002 durable email helper: email_outbox is a system table with no
+  // organization_id and no RLS policy, and the immediate-delivery claim races
+  // the housekeeping worker, which is itself session-less.
+  'lib/messaging/outbox.ts',
   'lib/billing/service.ts',
   'lib/payments/service.ts',
 
