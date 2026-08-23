@@ -1,45 +1,34 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/auth';
+import { landingForRole } from '@/lib/rbac/landing';
 
 // F-10: role-aware root landing. Reads the JWT via `auth()` — no DB
 // query per home visit — and dispatches by `platformRoleId` + `roleKey`
-// (both baked into the JWT at sign-in). Anyone landing on a page they
-// can't fully view still gets the app/(app)/error.tsx "Access Locked"
-// panel via requirePermission, but the default landing now matches
-// the role's home.
+// (both baked into the JWT at sign-in).
 //
 // An earlier attempt (reverted in 3eb48d2) put `requireAuthContext()`
 // here — that hit the DB per home visit and made F-11's pool ceiling
 // worse. The JWT already has everything we need; no query.
+//
+// P17-001: the mapping moved to lib/rbac/landing.ts so it can be checked
+// against the permissions actually seeded for each role. It used to be a
+// switch whose `default:` sent every unrecognised role to /scheduler and
+// relied on app/(app)/error.tsx to catch the ones that could not read a
+// booking. That turns a routing bug into an "Access Locked" panel on the
+// first screen after sign-in, which reads as a broken account. A role
+// with no landing now goes back to /signin instead of to a page we
+// already know it cannot open.
 export default async function Root() {
   const session = await auth();
   if (!session?.user) redirect('/signin');
 
-  // Platform users don't have an org context; send them to /platform.
-  if (session.user.platformRoleId) redirect('/platform');
+  const landing = landingForRole(session.user.roleKey, Boolean(session.user.platformRoleId));
 
-  // Broken JWT (no org id, no platform role) — force re-auth.
-  if (!session.user.activeOrganizationId) redirect('/signin');
+  // No landing: either a broken JWT (no org id and no platform role), a
+  // consumer-plane role that does not belong in the staff app, or a role
+  // added without a landing contract. All three are re-auth, not a guess.
+  if (!landing) redirect('/signin');
+  if (landing !== '/platform' && !session.user.activeOrganizationId) redirect('/signin');
 
-  // Route by org-plane role. Roles that hold `booking.read` at some
-  // scope get /scheduler; role-limited holders land on pages they can
-  // actually reach. Anything else falls through to /scheduler and, if
-  // the caller lacks the perm, hits app/(app)/error.tsx's friendly
-  // Access Locked panel — not a 500.
-  switch (session.user.roleKey) {
-    case 'ACCOUNTANT':
-      // ACCOUNTANT holds report.branch + org.billing.read but NOT
-      // org.settings.update:org, which the /settings/* layout requires.
-      // Send them to /analytics instead — that's a top-level page whose
-      // permission (report.branch) they hold.
-      redirect('/analytics');
-    case 'MARKETING':
-      // MARKETING holds client.read:contact + report.branch but no
-      // booking.read. /patients is their most useful surface.
-      redirect('/patients');
-    default:
-      // ORG_OWNER, ORG_ADMIN, BRANCH_MANAGER, SENIOR_PROVIDER,
-      // FRONT_DESK, PROVIDER — all have booking.read at some scope.
-      redirect('/scheduler');
-  }
+  redirect(landing);
 }
