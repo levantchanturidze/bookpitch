@@ -102,9 +102,13 @@ describe('collectOpsMetrics against a real database', () => {
     // P15-010: the config block gained a validity count alongside the
     // presence counts. Presence alone said production was configured while
     // FIELD_ENCRYPTION_KEY was unparseable.
+    // P17-007 added missingObservabilityEnv for the same class of problem:
+    // the Sentry SDK installed and configured, and no DSN, so every uncaught
+    // exception was discarded silently.
     expect(Object.keys(metrics.config).sort()).toEqual([
       'invalidSecurityEnv',
       'missingEmailEnv',
+      'missingObservabilityEnv',
       'missingSecurityEnv',
       'missingSignupEnv',
     ]);

@@ -20,7 +20,8 @@
     "check:orphan-perms": "tsx scripts/check-orphan-perms.ts",
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "verify:sentry": "node scripts/verify-sentry.mjs"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

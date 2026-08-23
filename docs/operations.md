@@ -63,6 +63,37 @@ gh secret list                    # GitHub Actions secret names + last update
 | `RATE_LIMIT_HMAC_KEY`, `EMAIL_PRIVACY_HMAC_KEY` | Vercel | PII hashed with a fallback key |
 | `CRON_SECRET` | Vercel **and** GitHub | every cron run 401s (see §7) |
 | `DATABASE_URL`, `DATABASE_URL_APP_NOBYPASSRLS`, `DATABASE_URL_LOGIN`, `DATABASE_URL_SUPERUSER_TXPOOL`, `ADMIN_DATABASE_URL`, `DIRECT_URL` | Vercel | app cannot reach the database |
+| `SENTRY_DSN` | Vercel | **every uncaught server/edge exception is discarded** (see below) |
+| `NEXT_PUBLIC_SENTRY_DSN` | Vercel | every uncaught browser exception is discarded |
+
+### Sentry (P17-007)
+
+Every `Sentry.init()` in this repository sits inside `if (process.env.…_DSN)`.
+An absent DSN is therefore not a degraded mode — no client is created and
+`captureException` is a no-op. Production ran that way with
+`SENTRY_ENVIRONMENT` and `NEXT_PUBLIC_SENTRY_ENVIRONMENT` both set, which is
+precisely what made it look configured.
+
+Check id `production-observability-unconfigured`, deliberately separate from
+`production-config-incomplete`: missing signup or security config means the
+product is broken, a missing DSN means the product works and nobody can see it
+break. One status line for both would get the first read as the second.
+
+To prove it works rather than assume it, run:
+
+```bash
+SENTRY_DSN=… npm run verify:sentry
+```
+
+which reports four separate levels — CONFIGURED, INITIALISED, EMITTED,
+RECEIVED — and exits non-zero below level 4. Only RECEIVED means an error would
+reach a human; the first three all pass against a well-formed DSN pointing at a
+project that does not exist.
+
+Not yet done, and it needs a credential this repository does not hold: source
+maps are not uploaded, so production stack traces will point at minified code.
+That requires wrapping `next.config.ts` in `withSentryConfig` and providing
+`SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT`.
 | `DATABASE_URL_SUPERUSER_MIGRATE` | GitHub | migrations and **backups** fail |
 | `BACKUP_AGE_PRIVATE_KEY` | GitHub | backups still run; nothing can be restored |
 | `APP_URL` | GitHub | cron workflow has no target |

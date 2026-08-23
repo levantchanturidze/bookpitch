@@ -10,5 +10,10 @@ if (process.env.SENTRY_DSN) {
     environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV,
     tracesSampleRate: Number(process.env.SENTRY_EDGE_TRACES_SAMPLE_RATE ?? 0.01),
     beforeSend: (event) => sentryBeforeSend(event) as Sentry.ErrorEvent,
+    // Explicit rather than inherited: this is what decides whether cookies,
+    // headers and IP addresses ride along with every event. On a clinical
+    // scheduler the answer is no, and it belongs in the config where a
+    // reviewer can see it.
+    sendDefaultPii: false,
   });
 }

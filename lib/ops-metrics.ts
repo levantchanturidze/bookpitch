@@ -191,6 +191,14 @@ export type ConfigMetrics = {
   /** Required-but-unset environment variables for auth/crypto/cron. */
   missingSecurityEnv: number;
   /**
+   * Required-but-unset environment variables for error reporting.
+   *
+   * Non-zero means uncaught exceptions are going nowhere: the SDK is present
+   * and initialises only behind a DSN check, so an absent DSN is silent
+   * blindness rather than a visible failure.
+   */
+  missingObservabilityEnv: number;
+  /**
    * Environment variables that are SET but structurally unusable.
    *
    * P15-010: production had FIELD_ENCRYPTION_KEY set without its `<key-id>:`
@@ -241,6 +249,20 @@ export const REQUIRED_SIGNUP_ENV = [
 ] as const;
 
 export const REQUIRED_EMAIL_ENV = ['EMAIL_PROVIDER', 'RESEND_API_KEY', 'RESEND_FROM'] as const;
+
+/**
+ * P17-007. Sentry initialises only when a DSN is present — every Sentry.init()
+ * in this repository is inside `if (process.env.…_DSN)`. Production had
+ * SENTRY_ENVIRONMENT and NEXT_PUBLIC_SENTRY_ENVIRONMENT set and neither DSN,
+ * so the SDK was installed, the config files existed, instrumentation.ts
+ * exported onRequestError — and application error reporting was a no-op. That
+ * is the same shape as P15-010: everything looks configured, nothing reports.
+ *
+ * Both halves are listed. Server errors are the more critical, but a stack
+ * with browser reporting silently off is exactly the "healthy signal that
+ * means nothing" this list exists to prevent.
+ */
+export const REQUIRED_OBSERVABILITY_ENV = ['SENTRY_DSN', 'NEXT_PUBLIC_SENTRY_DSN'] as const;
 
 export const REQUIRED_SECURITY_ENV = [
   'AUTH_SECRET',
@@ -302,6 +324,7 @@ export function collectConfigMetrics(): ConfigMetrics {
     missingSignupEnv: missingEnv(REQUIRED_SIGNUP_ENV).length,
     missingEmailEnv: missingEnv(REQUIRED_EMAIL_ENV).length,
     missingSecurityEnv: missingEnv(REQUIRED_SECURITY_ENV).length,
+    missingObservabilityEnv: missingEnv(REQUIRED_OBSERVABILITY_ENV).length,
     invalidSecurityEnv: invalidEnv().length,
   };
 }
