@@ -378,6 +378,43 @@ directly: 403 on the customers list, on a single record, and on search;
 cross-tenant denied. The complement keeps ORG_OWNER and ORG_ADMIN at 200 and
 asserts all six clinical roles retain `client.read:contact`.
 
+#### Production exposure: **LATENT — zero active MARKETING memberships**
+
+Owner-confirmed and independently verified 2026-08-23 by read-only aggregate
+query against Production. Counts only — no id, email, name or any per-row value
+was selected.
+
+| Aggregate | Count |
+|---|---|
+| Memberships holding the system `MARKETING` role | **0** |
+| ...of which `status = 'active'` | **0** |
+| Breakdown by status | (no rows) |
+| Legacy `role` enum column matching `/marketing/i` | **0** |
+| Org-scoped custom roles keyed `MARKETING` | **0** |
+| Total memberships in Production (context) | 14 |
+
+The permission row still exists in Production — migration 63 is local only — but
+no membership holds the role, so nobody can exercise it. The finding is real and
+the fix is correct; the exposure is latent, not active.
+
+**No emergency hotfix or Production deployment is authorized.** F16-012 ships
+through the ordinary Phase 16 route in
+`docs/phase-16-september-integration-checklist.md`.
+
+#### Operational constraint until Phase 16 ships
+
+> **No MARKETING membership may be created or activated in Production** until
+> Phase 16 is merged and *both* migration 63 and the application-layer denial
+> (`lib/rbac/role-denials.ts`) are deployed and verified.
+
+This is what keeps the classification true. Production today has the permission
+row and neither guard: creating a MARKETING membership before deployment would
+convert a latent finding into live access to patient contact details — name,
+email, phone and date of birth — with nothing in place to refuse it.
+
+If someone needs a marketing user before then, give them a role that already
+lacks `client.read:contact`, or wait. Do not grant it "temporarily".
+
 ### F16-011 · Lint warnings, all 57 classified — **partially cleaned**
 
 | Class | Count | Action |
