@@ -132,7 +132,11 @@ test('@a11y the skip link is present and is the first stop for keyboard users', 
   // It must point at a target that exists, or it is decoration.
   await expect(skip).toHaveAttribute('href', '#main');
 
-  const isWebKit = testInfo.project.name === 'webkit' || testInfo.project.name === 'mobile-safari';
+  // Substring, not equality. P17-011 renamed these projects to 'public-webkit'
+  // and 'public-mobile-safari'; an exact-match check silently stopped matching
+  // and this test began asserting Chromium tab order against WebKit.
+  const project = testInfo.project.name.toLowerCase();
+  const isWebKit = project.includes('webkit') || project.includes('safari');
   if (isWebKit) {
     // Safari/WebKit does not include links in the Tab order unless the user
     // turns on full keyboard access ("Press Tab to highlight each item"). That
@@ -232,8 +236,11 @@ test('@responsive the signup form stays usable and reachable', async ({ page }) 
 });
 
 test('@responsive form controls meet a usable touch height', async ({ page }, testInfo) => {
+  // Substring, not prefix: the projects are now 'public-mobile-safari' etc.,
+  // and a startsWith('mobile') check skipped this on every project including
+  // the mobile ones — the test ran nowhere while still reporting as skipped.
   test.skip(
-    !testInfo.project.name.startsWith('mobile'),
+    !testInfo.project.name.toLowerCase().includes('mobile'),
     'touch target sizing only meaningful on touch viewports',
   );
   await page.goto('/signin');

@@ -9,6 +9,27 @@ import { ShieldAlert } from 'lucide-react';
  *
  * Error class identity doesn't survive the server/client boundary, so we
  * dispatch on `error.name` (set in lib/auth.ts).
+ *
+ * P17-013 — KNOWN GAP, measured 2026-08-23, not fixed in Phase 17.
+ *
+ * `error.name` is 'Error' in a production build, so `isForbidden` is always
+ * false there and this panel never renders in production. Next.js strips the
+ * name and message from errors forwarded to the client to avoid leaking server
+ * detail — see
+ * node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/error.md:106.
+ * Only `digest` survives, and it is a hash, not a type.
+ *
+ * Observed against `next start`: MARKETING opening /scheduler gets HTTP 500,
+ * `rbac.enforce_deny` in the server log, and the generic "Something went
+ * wrong" fallback below. The refusal is correct and no tenant data leaks; the
+ * user is simply told the wrong thing.
+ *
+ * The fix is not a patch here — the client cannot recover the error type. It is
+ * Next's `forbidden()` plus a `forbidden.tsx` boundary, which needs
+ * `experimental.authInterrupts` and a change at every guard callsite. That is
+ * a redesign, not a stabilization change, so it is recorded for Phase 18 in
+ * docs/phase-17-stabilization-ledger.md rather than rushed in at the end of a
+ * phase.
  */
 export default function AppError({
   error,

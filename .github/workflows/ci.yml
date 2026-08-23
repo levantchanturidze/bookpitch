@@ -209,15 +209,26 @@ jobs:
   # stopped at `npm run build`, so every browser, mobile and runtime
   # accessibility regression was invisible to the merge gate by construction.
   #
-  # Scope note, deliberately narrow: this runs the @a11y and @responsive tags.
-  # The full signup → sign-in → scheduler journey in
-  # e2e/signup-scheduler.spec.ts is NOT included, because `next start` sets
-  # NODE_ENV=production, where SignupForm correctly fails closed without a
-  # Turnstile site key and the submit button never enables. Running it here
-  # would need Cloudflare's public always-pass test keys plus matching
-  # TURNSTILE_EXPECTED_ACTION / TURNSTILE_ALLOWED_HOSTNAMES values. That is
-  # tracked as a follow-up rather than faked, since disabling the CAPTCHA to
-  # make the suite green would delete the control the test exists to protect.
+  # P17-011. The scope note that used to sit here said the signup journey was
+  # excluded because `next start` sets NODE_ENV=production and SignupForm
+  # correctly fails closed without a Turnstile site key. That was true, but the
+  # exclusion was not implemented by intent — it fell out of
+  # `--grep "@a11y|@responsive"`, a positive filter that silently drops any
+  # spec without a matching tag. Nothing reported that a critical journey had
+  # stopped running, and while nobody was looking it also went stale: it waited
+  # for a redirect to /signin after signup, which has redirected to
+  # /onboard/pending since email verification landed.
+  #
+  # There is no grep now. Every project in playwright.config.ts declares its own
+  # testMatch, so a spec is either claimed by a project or it runs nowhere, and
+  # `npm run e2e:check` fails this job if any required project reported zero
+  # tests. A green run with nothing in it is no longer a pass.
+  #
+  # The CAPTCHA is not disabled. lib/auth/e2e-runtime.ts adds one accepted
+  # credential, gated on a >=32-char token AND an APP_URL on loopback — a
+  # condition production cannot satisfy, since its APP_URL is
+  # https://bookpitch.ge. tests/phase17-turnstile-bypass.test.ts requires a
+  # refusal for the production-shaped case.
   # ---------------------------------------------------------------------------
   e2e:
     name: Browser, mobile, and accessibility suite
@@ -256,6 +267,14 @@ jobs:
       APP_URL: 'http://localhost:3210'
       RBAC_ENFORCE_MODULES: '*'
       PAYMENT_MOCK_SECRET: 'ci-mock-payment-secret-not-real'
+      # P17-009/P17-010. Test-only, and inert outside a loopback APP_URL — see
+      # lib/auth/e2e-runtime.ts. The NEXT_PUBLIC_ copy must be present at BUILD
+      # time, not just at `next start`, because Next inlines it into the bundle.
+      E2E_TURNSTILE_BYPASS_TOKEN: 'ci-e2e-turnstile-credential-not-a-secret-000000'
+      NEXT_PUBLIC_E2E_TURNSTILE_BYPASS_TOKEN: 'ci-e2e-turnstile-credential-not-a-secret-000000'
+      # The password for the seeded E2E role accounts. Never a real credential.
+      E2E_PASSWORD: 'ci-e2e-account-password'
+      DEV_USER_PASSWORD: 'ci-e2e-account-password'
 
     steps:
       - uses: actions/checkout@v4
@@ -273,6 +292,12 @@ jobs:
 
       - name: Seed database
         run: npm run db:seed
+
+      # One signed-in identity per role, including ACCOUNTANT and MARKETING —
+      # the two whose landing differs from everyone else's, and the two the
+      # base seed does not create.
+      - name: Seed E2E role accounts
+        run: npm run e2e:seed
 
       # Downloading three browser engines on every run took >18 minutes on a
       # slow runner and timed out the job twice (runs 32271431230, 32288636949,
@@ -326,9 +351,18 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Run accessibility, browser and responsive suite
+      - name: Run every Playwright suite
+        # No grep. playwright.config.ts assigns every spec to a project;
+        # anything unclaimed runs nowhere and the guard below catches it.
         # Playwright's own webServer block starts `next start -p 3210`.
-        run: npx playwright test --grep "@a11y|@responsive"
+        run: npm run e2e
+
+      - name: Verify every required E2E suite actually executed
+        # A test runner exiting 0 means "nothing failed", which is also what
+        # zero tests produces. This is the difference, and it is why the signup
+        # journey could vanish for weeks without anyone noticing.
+        if: ${{ always() }}
+        run: npm run e2e:check
 
       - name: Upload report on failure
         if: ${{ failure() }}

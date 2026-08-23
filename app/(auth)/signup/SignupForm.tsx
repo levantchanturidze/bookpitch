@@ -25,11 +25,24 @@ declare global {
 
 const SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? '';
 
+// P17-009. The end-to-end signup journey runs against `next start`, where
+// NODE_ENV is production and no Turnstile site key is configured — so no widget
+// renders, captchaToken stays null and the submit button is permanently
+// disabled. That is correct behaviour and the reason the journey has never run.
+//
+// This supplies the test credential the server also has to be holding. It is
+// NOT a client-side bypass: the server accepts this token only when its own
+// E2E_TURNSTILE_BYPASS_TOKEN matches AND APP_URL is on loopback (see
+// lib/auth/e2e-turnstile-bypass.ts). Setting this variable in a production
+// build would put a useless string in the bundle and change nothing — the
+// server would still refuse it.
+const E2E_BYPASS_TOKEN = process.env.NEXT_PUBLIC_E2E_TURNSTILE_BYPASS_TOKEN ?? '';
+
 export default function SignupForm() {
   const router = useRouter();
   const [status, setStatus] = useState<'idle' | 'submitting' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(E2E_BYPASS_TOKEN || null);
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
 
@@ -121,7 +134,7 @@ export default function SignupForm() {
       // Reset the widget so the user can solve a fresh challenge before retrying.
       if (SITE_KEY && widgetIdRef.current && window.turnstile) {
         window.turnstile.reset(widgetIdRef.current);
-        setCaptchaToken(null);
+        setCaptchaToken(E2E_BYPASS_TOKEN || null);
       }
       return;
     }

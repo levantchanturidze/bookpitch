@@ -4,6 +4,7 @@ import { createPendingRegistration } from '@/lib/onboarding';
 import { InvalidInputError } from '@/lib/auth';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { consumeGlobalBucket, hashForBucket, extractClientIp } from '@/lib/platform/rate-limit';
+import { isE2ETurnstileBypass } from '@/lib/auth/e2e-runtime';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -82,6 +83,17 @@ type TurnstileResponse = {
  * from env vars — never from the client request body.
  */
 async function verifyTurnstile(token: string | null, ip: string | null): Promise<boolean> {
+  // P17-009: the end-to-end test credential. An ADDITIONAL accepted token, not
+  // a disabled check — it requires a >=32-char E2E_TURNSTILE_BYPASS_TOKEN, an
+  // exact constant-time match, and an APP_URL on loopback. Production's APP_URL
+  // is https://bookpitch.ge, so this is inert there even if the variable leaks.
+  // See lib/auth/e2e-turnstile-bypass.ts for why the guard is APP_URL and not
+  // NODE_ENV.
+  if (isE2ETurnstileBypass(token)) {
+    log.warn('onboard.turnstile_e2e_bypass', {});
+    return true;
+  }
+
   const secret = process.env.TURNSTILE_SECRET_KEY;
   if (!secret) {
     // No key configured. In production this is a misconfiguration — fail closed

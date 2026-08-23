@@ -21,7 +21,10 @@
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",
     "postinstall": "prisma generate",
-    "verify:sentry": "node scripts/verify-sentry.mjs"
+    "verify:sentry": "node scripts/verify-sentry.mjs",
+    "e2e:seed": "tsx scripts/seed-e2e-users.ts",
+    "e2e:check": "node scripts/check-e2e-coverage.mjs",
+    "e2e:all": "npm run e2e:seed && npm run e2e && npm run e2e:check"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

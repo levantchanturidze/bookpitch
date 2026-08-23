@@ -76,4 +76,8 @@ VERCEL_SETUP.md
 # content, so they must never reach the repository.
 /test-results/
 /playwright-report/
+# P17-010: saved sign-in sessions, one file per role, written by
+# e2e/auth.setup.ts. These hold live session cookies for the E2E accounts —
+# they are generated on every run and must never be committed.
+/playwright/.auth/
 /blob-report/
