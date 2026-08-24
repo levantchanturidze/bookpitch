@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { collectConfigMetrics, REQUIRED_OBSERVABILITY_ENV } from '@/lib/ops-metrics';

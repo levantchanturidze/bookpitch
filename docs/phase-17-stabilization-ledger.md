@@ -439,3 +439,205 @@ permission seed as `data`, and `grep` skips it as binary unless given `-a`. Any
 grep-based tooling over this repository — including the gitleaks secret scan —
 silently misses this file. Cosmetic to fix, but worth knowing before trusting a
 repo-wide grep.
+
+---
+
+## 11. Test evidence
+
+Exact commands and results, all on `agent/phase-17-stabilization`.
+
+| Check | Command | Result |
+|---|---|---|
+| TypeScript | `npx tsc --noEmit` | **PASS** (0 errors) |
+| ESLint | `npx eslint .` | **PASS** (0 errors; 58 pre-existing warnings, unchanged in kind) |
+| Formatting | `npx prettier --check .` | **PASS** |
+| Unit + integration | `npx vitest run` | **1157/1157 passing, 92 files** (baseline 1055 / 86) |
+| Guard checker | `npm run test:guards` | **PASS** — 105 entry points, 18 allow-listed, all guarded |
+| Orphan permissions | `npm run check:orphan-perms` | **PASS** — 67 = 40 enforced + 27 deferred, 0 orphan, 0 inconsistent |
+| Playwright | `npm run e2e` | **240 passed, 3 skipped, 0 failed** (243 total, 9 projects, 38.3s) |
+| E2E coverage guard | `npm run e2e:check` | **PASS** — all 9 required suites executed |
+| Prisma schema | `npx prisma validate` | **PASS** |
+| Clean install | `prisma migrate deploy` into an empty database | **PASS** — 62 applied, 0 unfinished, 47 tables |
+| Schema drift | `prisma migrate diff --from-migrations --to-schema --exit-code` | **PASS** — "No difference detected", exit 0 |
+
+The three Playwright skips are the touch-target check on the three non-mobile
+projects, which is its intended condition.
+
+### Security suites, run explicitly
+
+`rbac-rls`, `rls`, `db-role-grants`, `platform-mfa`, `platform-break-glass`,
+`platform-impersonation`, `phase12-owner-invariant`, `platform-password-reauth`,
+`rate-limit`, `onboard-turnstile`, `security-review`, `security-logging`,
+`crypto-rotation`, `password-reset`, `platform-audit` — **334/334 passing across
+15 files**.
+
+### Clean-install security invariants, verified on a disposable database
+
+| Invariant | Observed |
+|---|---|
+| Migrations applied / unfinished | 62 / 0 |
+| RLS enabled / FORCE RLS | 21 / 21 tables |
+| audit_log append-only triggers | `audit_log_no_delete`, `audit_log_no_update`, `audit_log_no_truncate` |
+| `bookpitch_app` (rolsuper, rolbypassrls) | `false,false` |
+| `bookpitch_app` UPDATE on `audit_log` | `f` |
+
+Both disposable databases were dropped afterwards.
+
+---
+
+## 12. Security regression check
+
+**No migration was added, edited or removed.** `git diff --stat main --
+prisma/migrations` is empty; the count is still 62.
+
+`git diff --name-only main` touches these security-relevant paths and no others:
+`lib/rbac/landing.ts` (new, additive), `app/page.tsx`, `app/api/onboard/route.ts`,
+`lib/onboarding.ts`, `lib/auth/password-reset.ts`, `lib/auth/e2e-runtime.ts`
+(new), `lib/messaging/*`, `lib/invitations.ts`, `lib/logger.ts`, `lib/scrub.ts`,
+`lib/ops-metrics.ts`, `app/(app)/error.tsx`, `app/(auth)/signup/SignupForm.tsx`.
+
+**Untouched:** `auth.ts`, `auth.config.ts`, `proxy.ts`, `next.config.ts`,
+`prisma/schema.prisma`, all of `lib/platform/`, and every file in `lib/rbac/`
+except the new `landing.ts`.
+
+| Control | Status | Basis |
+|---|---|---|
+| Tenant isolation / FORCE RLS | intact | 21/21 FORCE RLS on clean install; `rbac-rls` + `rls` suites pass; no policy touched |
+| Ownership invariant | intact | `phase12-owner-invariant` passes; the E2E cleanup was rewritten *because* the invariant refused to bend |
+| MFA | intact | `platform-mfa` passes; `lib/platform/mfa.ts` untouched; the E2E suite uses PLATFORM_ADMIN rather than weakening the MFA-enabled SUPER_ADMIN |
+| Break-glass second factor | intact | `platform-break-glass` passes; `lib/platform/break-glass.ts` untouched |
+| Impersonation restrictions | intact | `RESTRICTED_DURING_IMPERSONATION` unchanged. P17-006 changed only how the *checker* reads it, not what `can()` does with it |
+| Session-purpose binding / reauth | intact | `platform-password-reauth` passes; those paths untouched |
+| Rate limiting | intact | `rate-limit` passes. `RateLimit.messaging()` moved out of the reminder transaction; the limit, bucket and ordering relative to dedup are unchanged |
+| Turnstile | **strengthened in test, unchanged in production** | One additional accepted credential, gated on a loopback APP_URL. `tests/phase17-turnstile-bypass.test.ts` requires a refusal for production-shaped configuration, including the leaked-variable case |
+| Safe redirects | intact | `app/page.tsx` now returns to `/signin` instead of guessing a destination — strictly more conservative |
+| CSRF | intact | `auth.config.ts` and `proxy.ts` untouched |
+| Password-reset enumeration safety | intact | route still answers 202 unconditionally; an unknown address queues nothing, asserted in `tests/phase17-durable-transactional-email.test.ts` |
+| Field encryption | intact | `lib/crypto.ts` untouched. Reset and invitation bodies are now encrypted at rest, which is more coverage, not less |
+| Audit logging | intact | append-only triggers verified on clean install; no audit write path changed |
+
+One control is newly *observable* rather than newly enforced: a missing Sentry
+DSN now trips `production-observability-unconfigured` instead of passing silently.
+
+---
+
+## 13. Production verification
+
+Separated deliberately, because three of these are not the same claim.
+
+### Locally verified
+Everything in §11.
+
+### CI verified
+**Nothing.** GitHub Actions has been billing-suspended since 2026-08-22; jobs
+report `steps=0` and never start. `npm run e2e` and every static check above ran
+on this machine. **CI has not run and must not be reported as passing.**
+
+### Deployment verified
+`bookpitch.ge` serves deployment `dpl_je5rKC33RkPs9MuRfFzq6xYLL5aG`, SHA
+`5c8fb77`, Ready 2026-08-22T18:32:42Z — the deployment carrying the corrected
+`FIELD_ENCRYPTION_KEY`. `GET /api/health` returns 200 `{"ok":true}` and `/signup`
+returns 200 with its heading rendered. Phase 17's own commits are **not**
+deployed; this branch has not been pushed.
+
+### Production runtime verified — onboarding: **NOT PRODUCTION VERIFIED**
+
+The reason is specific, and it is not "we forgot".
+
+Read-only against the production database on 2026-08-23:
+
+| | |
+|---|---|
+| Ciphertext rows, all six encrypted locations | **0** |
+| `pending_registrations` | **0** |
+| `email_outbox` | **0**, no rows in any status |
+| Newest `app_users` / `organizations` / `appointments` | all **2026-08-12** |
+| Newest `audit_log` row | **2026-08-15** |
+
+**The encryption path has not executed in production since the key was corrected
+on 2026-08-22.** There is no evidence either way because nothing has happened —
+not a signup, not a user, not a queued email.
+
+It cannot be probed synthetically either:
+
+- `POST /api/onboard` requires a real Turnstile solve. The E2E credential is
+  refused there by design — production's `APP_URL` is `https://bookpitch.ge`, and
+  that is the whole point of the gate.
+- `GET /api/health/ops` returns **401** with the CRON_SECRET available locally,
+  so `config.invalidSecurityEnv` and the ciphertext counts cannot be read from
+  the application either. (`.env.supabase`'s copy is stale, as the Phase 15
+  record already noted.)
+- The production monitor, which would answer this every 30 minutes, is not
+  running — same Actions suspension.
+
+Any one of three external actions would settle it: a real browser signup (which
+creates a permanent organisation, because the resulting audit rows cannot be
+deleted), restoring the production `CRON_SECRET` locally so `/api/health/ops`
+can be read, or restoring Actions billing so the monitor resumes.
+
+### Production runtime verified — Sentry: **NOT VERIFIED at any level**
+No DSN exists. See §4.
+
+---
+
+## 14. Remaining risks
+
+### P0
+None identified.
+
+### P1
+- **Sentry is unconfigured in production.** Every uncaught server, edge and
+  browser exception is discarded. The code is now complete and the gap is
+  counted by the monitor, but the DSN is an external action (§4).
+- **P17-013 — the Access Locked panel never renders in production.** The refusal
+  is correct and leaks nothing; the user is told "Something went wrong" instead
+  of why. Needs `forbidden()` + `experimental.authInterrupts` (§7).
+- **P17-008 — housekeeping deletes live tokens on a non-UTC Postgres session.**
+  Production Supabase is UTC so production is unaffected. Already fixed on the
+  frozen Phase 16 branch by `00577db`; the risk is that Phase 16 merges partially
+  (§6).
+- **GitHub Actions billing.** No CI, no production monitor, no crons. Nothing is
+  draining `email_outbox` in production — currently harmless only because it is
+  empty.
+
+### P2
+- **No source-map upload**, so production stack traces will point at minified
+  code once a DSN exists. Needs `withSentryConfig` + `SENTRY_AUTH_TOKEN`.
+- **Five durable-email callers still hand-roll the enqueue/drain pattern**
+  (onboarding, break-glass, impersonation, MFA, audit digest). They work and are
+  tested; consolidating them onto `lib/messaging/outbox.ts` is tidying, not a fix.
+- **`lib/admin/ownership-transfer.ts` still sends directly** and swallows the
+  failure. Lower stakes than reset or invitations — the nominee also gets an
+  in-app notification, and the transfer row exists regardless.
+- **Four NUL bytes in `prisma/rbac-seed.ts`** make the authoritative permission
+  seed invisible to `grep` and to the gitleaks scan (§10).
+- **E2E signup artifacts accumulate** in a long-lived development database, since
+  an audited organisation can only be archived, not deleted. Harmless in CI,
+  where the database is ephemeral.
+
+### Deferred product scope, unchanged
+Clinical notes and attachments, payment refunds, shift close, staff commission,
+rooms/resources, block-time, integrations, platform billing UI, payroll and
+own-tier reports all remain explicitly deferred and correctly classified. Phase
+17 built none of them to satisfy a checker.
+
+---
+
+## 15. Recommendation for Phase 18
+
+In this order, because the first two unblock the ability to verify the rest:
+
+1. **Restore GitHub Actions billing.** Nothing here is CI-verified, the
+   production monitor is dark, and no cron has run since 2026-08-22. This is the
+   single largest gap in the evidence, and it is not a code problem.
+2. **Provision the Sentry DSN** and run `npm run verify:sentry` against
+   production until it reports level 4. Then decide on source maps.
+3. **Merge Phase 16** using its own September integration checklist. Two Phase 17
+   guards are waiting for it: `tests/role-landing.test.ts` will fail on the
+   MARKETING landing the moment the revocation lands, and F16-010 fixes the
+   housekeeping clock defect reproduced in §6.
+4. **Fix P17-013** with `forbidden()` — a real redesign of the denial path, worth
+   its own scope rather than a corner of a stabilization phase.
+5. **Then, and only then, verify production onboarding**, once the monitor is
+   running and can observe it rather than requiring a synthetic org that cannot
+   be deleted.
