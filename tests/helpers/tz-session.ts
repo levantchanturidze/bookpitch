@@ -9,9 +9,15 @@
 // -----------------------------------------------------------------------------
 
 import { Client } from 'pg';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 function connectionString(): string {
+  if (process.env.ADMIN_DATABASE_URL) {
+    return process.env.ADMIN_DATABASE_URL.replace(/\?.*$/, '');
+  }
+  if (!existsSync('.env.local')) {
+    throw new Error('ADMIN_DATABASE_URL is not set and .env.local does not exist');
+  }
   const txt = readFileSync('.env.local', 'utf8');
   for (const line of txt.split(/\r?\n/)) {
     const t = line.trim();

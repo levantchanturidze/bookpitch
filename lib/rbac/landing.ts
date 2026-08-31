@@ -8,9 +8,9 @@
 // with that role happens to log in.
 //
 // The previous version encoded the mapping as a switch with the reasoning in
-// comments — "MARKETING holds client.read:contact + report.branch but no
-// booking.read". That comment is true at this commit. It is true because
-// somebody checked once, and nothing rechecks it. A role bundle is edited in
+// comments — for example, a claim that MARKETING holds a particular permission.
+// Such a comment is true only because somebody checked once, and nothing
+// rechecks it. A role bundle is edited in
 // prisma/rbac-seed.ts, the comment stays, and the landing silently becomes
 // unreachable for that role.
 //
@@ -75,17 +75,9 @@ export const ORG_ROLE_LANDING: Readonly<Record<string, LandingRoute>> = {
   // /analytics is the top-level page whose permission they hold.
   ACCOUNTANT: '/analytics',
 
-  // No booking.read. Holds client.read:contact and report.branch, so both
-  // /patients and /analytics are authorised; /patients is the more useful
-  // surface for segment work.
-  //
-  // NOTE for whoever merges the frozen Phase 16 branch: that branch revokes
-  // client.read:contact from MARKETING (migration
-  // 20260823000001_revoke_marketing_client_contact) and does not touch this
-  // mapping. When it lands, tests/role-landing.test.ts will fail on exactly
-  // this line, and the fix is to move MARKETING to '/analytics', which
-  // report.branch still authorises. That failure is the point of this file.
-  MARKETING: '/patients',
+  // No booking.read or client.read:contact. report.branch authorises the
+  // analytics surface without re-expanding access to patient contact details.
+  MARKETING: '/analytics',
 };
 
 /**
