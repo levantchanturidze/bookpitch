@@ -2,6 +2,8 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { withoutRls } from '@/lib/db';
 import { runReminderTick } from '@/lib/messaging/reminders';
+import { cronOrgConcurrency, mapWithConcurrency } from '@/lib/concurrency';
+import { log } from '@/lib/logger';
 
 // POST /api/cron/reminders
 //
@@ -9,6 +11,24 @@ import { runReminderTick } from '@/lib/messaging/reminders';
 // external scheduler (Vercel Cron, GitHub Actions workflow, systemd timer).
 // Iterates every organization and sends any due reminders. Idempotent per
 // (appointment, channel) — safe to run every few minutes.
+//
+// P17-005: the fan-out is bounded. This used to be
+// `Promise.all(orgs.map(runReminderTick))` over an unlimited findMany, which
+// starts every organization at once against a pool capped at PG_POOL_MAX
+// (default 3) and discards every successful report the moment one org throws.
+// See lib/concurrency.ts.
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+/**
+ * Ceiling on organizations handled in one invocation. Deliberately far above
+ * the current tenant count: this is a blast-radius bound and an alarm, not a
+ * paging scheme. Taking a fixed prefix of an ordered list means organizations
+ * past the limit would never be reached at all, so hitting it is a real
+ * incident — shard the schedule — and it is logged at error level.
+ */
+const MAX_ORGS_PER_RUN = Math.max(1, Number(process.env.CRON_MAX_ORGS_PER_RUN ?? 500));
+
 export async function POST(req: NextRequest) {
   const provided = req.headers.get('authorization');
   const secret = process.env.CRON_SECRET;
@@ -19,7 +39,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const orgs = await withoutRls((tx) => tx.organization.findMany({ select: { id: true } }));
-  const reports = await Promise.all(orgs.map((o) => runReminderTick(o.id)));
-  return NextResponse.json({ orgs: reports.length, reports });
+  const orgs = await withoutRls((tx) =>
+    tx.organization.findMany({
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+      take: MAX_ORGS_PER_RUN + 1,
+    }),
+  );
+  const truncated = orgs.length > MAX_ORGS_PER_RUN;
+  const batch = truncated ? orgs.slice(0, MAX_ORGS_PER_RUN) : orgs;
+  if (truncated) {
+    log.error('cron.reminders.org_limit_hit', { limit: MAX_ORGS_PER_RUN });
+  }
+
+  const concurrency = cronOrgConcurrency();
+  const settled = await mapWithConcurrency(batch, concurrency, (o) => runReminderTick(o.id));
+
+  const reports = settled.flatMap((s) => (s.status === 'fulfilled' ? [s.value] : []));
+  const failures = settled.flatMap((s, i) =>
+    s.status === 'rejected' ? [{ organizationId: batch[i].id, error: s.reason }] : [],
+  );
+  for (const f of failures) {
+    log.error('cron.reminders.org_failed', f);
+  }
+
+  return NextResponse.json({
+    orgs: reports.length,
+    concurrency,
+    ...(truncated ? { truncated: true, limit: MAX_ORGS_PER_RUN } : {}),
+    ...(failures.length ? { failed: failures.length, failures } : {}),
+    reports,
+  });
 }

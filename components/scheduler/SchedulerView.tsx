@@ -158,14 +158,19 @@ export default function SchedulerView(props: Props) {
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
       {/* ------------------- Left pane: month calendar ---------------------- */}
       <section className="rounded-xl border border-slate-200 bg-white p-6 lg:col-span-7">
-        <div className="mb-6 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        {/* P17-012: flex-wrap + min-w-0. At 320px the heading block cannot
+            shrink far enough, and MonthNav — whose month label carries a
+            min-w-[100px] — was pushed 82px past the viewport, taking the whole
+            page's scrollWidth with it. Wrapping puts the navigator on its own
+            row instead of off the screen. */}
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
             <div
               className={`rounded-lg p-2 ${isClinic ? 'bg-teal-50 text-teal-600' : 'bg-pink-50 text-pink-600'}`}
             >
               {isClinic ? <Stethoscope className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
             </div>
-            <div>
+            <div className="min-w-0">
               <h2 className="font-sans text-xl font-bold text-slate-800">
                 {isClinic ? 'Medical Appointments' : 'Salon Appointments'}
               </h2>
@@ -188,7 +193,10 @@ export default function SchedulerView(props: Props) {
         />
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4 text-xs text-slate-500">
-          <div className="flex items-center gap-3">
+          {/* P17-012: the outer row already wraps, but this group did not, so
+              the four legend items stayed on one 301px line inside a 272px
+              content box and pushed the page 22px wide at 320px. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <Legend color="bg-emerald-500" label="Confirmed" />
             <Legend color="bg-amber-500" label="Pending" />
             <Legend color="bg-blue-500" label="Completed" />

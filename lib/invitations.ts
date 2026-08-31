@@ -3,12 +3,15 @@ import { hash } from '@node-rs/argon2';
 import type { UserRole } from '@prisma/client';
 import { dbNowMs, withOrg, withoutRls } from '@/lib/db';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
-import { getEmailProvider } from '@/lib/messaging';
-import { log, sanitizeErrorMessage } from '@/lib/logger';
+import { enqueueEmail, deliverNow } from '@/lib/messaging/outbox';
+import { log } from '@/lib/logger';
 import { buildAuthContext, canManageRoleAssignment } from '@/lib/rbac';
 
 // Legacy enum → Phase 3 role key. Kept here (small mapping duplicated
 // with lib/admin.ts) so this module stays self-contained.
+/** Outbox category for invitation mail. Shows up in ops metrics. */
+const INVITE_PURPOSE = 'invitation.link';
+
 const ENUM_TO_KEY: Record<UserRole, string> = {
   owner: 'ORG_OWNER',
   practitioner: 'PROVIDER',
@@ -70,12 +73,18 @@ export async function createInvitation(
   const raw = randomBytes(32).toString('base64url');
   const tokenHash = hashToken(raw);
 
+  const origin = process.env.APP_URL ?? 'http://localhost:3000';
+  const url = `${origin}/invite?token=${encodeURIComponent(raw)}`;
+  // One queue row per issued token, so a retry re-sends this invitation
+  // rather than minting a second one.
+  const idempotencyKey = `${INVITE_PURPOSE}:${tokenHash.slice(0, 32)}`;
+
   const inv = await withOrg(session.organizationId, async (tx) => {
     const existing = await tx.invitation.findFirst({
       where: { email, status: 'pending' },
     });
     if (existing) throw new InvalidInputError('an invitation is already pending for this email');
-    return tx.invitation.create({
+    const created = await tx.invitation.create({
       data: {
         organizationId: session.organizationId,
         email,
@@ -86,20 +95,28 @@ export async function createInvitation(
         invitedBy: session.userId,
       },
     });
+    // P17-002: durable, and in the same transaction as the invitation row.
+    // This used to be a direct provider.send() whose failure was swallowed
+    // into a log.warn — the invitation existed, the invitee never heard, and
+    // the only way anyone found out was the invitee not showing up.
+    //
+    // email_outbox carries no organization_id and has no RLS policy, and
+    // bookpitch_app holds INSERT on it, so this is writable from the
+    // tenant-scoped transaction.
+    await enqueueEmail(tx, {
+      idempotencyKey,
+      to: email,
+      subject: 'You are invited to Bookpitch',
+      body: `You've been invited to join a Bookpitch workspace as ${role}.\n\nAccept within 72 hours:\n\n${url}`,
+      purpose: INVITE_PURPOSE,
+    });
+    return created;
   });
 
-  const origin = process.env.APP_URL ?? 'http://localhost:3000';
-  const url = `${origin}/invite?token=${encodeURIComponent(raw)}`;
-  try {
-    const provider = getEmailProvider();
-    await provider.send(
-      email,
-      'You are invited to Bookpitch',
-      `You've been invited to join a Bookpitch workspace as ${role}.\n\nAccept within 72 hours:\n\n${url}`,
-    );
-  } catch (err) {
-    log.warn('invitation.email_failed', { error: sanitizeErrorMessage(err) });
-  }
+  // Best-effort now; the housekeeping drain retries with backoff otherwise.
+  // The caller still gets `url` back, so an admin can hand over the link
+  // directly if mail is having a bad day.
+  await deliverNow(idempotencyKey, INVITE_PURPOSE);
   return { id: inv.id, url };
 }
 

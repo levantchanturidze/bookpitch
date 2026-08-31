@@ -406,6 +406,29 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
           `(validators in lib/ops-metrics.ts SECURITY_ENV_VALIDATORS; names never leave the server)`,
   });
 
+  // P17-007. Deliberately its OWN check rather than folded into
+  // production-config-incomplete above. Missing signup or security env means
+  // the product is broken; a missing Sentry DSN means the product works and
+  // nobody can see it break. Merging them would let "we are blind" and "we are
+  // down" share one status line, and the first would get read as the second.
+  //
+  // Every Sentry.init() in this repository sits behind `if (…_DSN)`, so an
+  // absent DSN is not a degraded mode — no client is created and
+  // captureException is a no-op. Production ran that way with
+  // SENTRY_ENVIRONMENT set, which is what made it look configured.
+  const missingObservability = (metrics?.config ?? {}).missingObservabilityEnv;
+  results.push({
+    id: 'production-observability-unconfigured',
+    title: 'Application errors are not being reported anywhere',
+    ok: (missingObservability ?? 0) === 0,
+    detail:
+      missingObservability === undefined
+        ? 'deployment predates the observability-env metric — redeploy to enable this check'
+        : `Sentry DSN env vars unset: ${missingObservability} of 2 ` +
+          `(server + browser; names in docs/operations.md § Required production environment). ` +
+          `Uncaught exceptions are discarded while this is non-zero.`,
+  });
+
   return results;
 }
 
