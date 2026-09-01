@@ -30,6 +30,10 @@
 -- ---------------------------------------------------------------------------
 
 SET default_transaction_read_only = on;
+-- Deterministic timestamp rendering: the partition bounds in check 6 are
+-- parsed back out of pg_get_expr(), whose output is formatted in the session
+-- time zone. Pinning UTC keeps the comparison stable wherever this is run.
+SET TimeZone = 'UTC';
 
 \set ON_ERROR_STOP on
 
@@ -106,37 +110,156 @@ BEGIN
   RAISE NOTICE 'ok: bookpitch_app has neither UPDATE nor DELETE on audit_log';
 END $$;
 
--- 4. RLS is enabled AND forced on every tenant table. ------------------------
+-- 4. RLS is enabled AND forced on every tenant relation, with a real policy. --
 --
 -- ENABLE without FORCE is the quiet failure: the table owner keeps bypassing
 -- its own policies, so a query that runs as the owner returns every tenant's
 -- rows while `relrowsecurity` reads true.
+--
+-- The previous version of this check counted relations that already had
+-- `relrowsecurity = true` and asserted the FORCE count matched. Two ways that
+-- passes while production is unsafe, both measured on 2026-09-01:
+--
+--   1. A required tenant table that loses BOTH bits disappears from both
+--      counts. `enabled` and `forced` stay equal and the check reports ok.
+--      Losing RLS entirely was invisible; only losing FORCE was caught.
+--   2. It filtered `relkind = 'r'`, so `audit_log` — which is `relkind = 'p'`,
+--      a partitioned parent, and holds every audit record for every tenant —
+--      was never examined at all. Production reported "20 tables with RLS, all
+--      20 FORCED" while the 21st, the audit log, went unchecked.
+--
+-- So the expected set is now stated explicitly rather than derived from the
+-- state being audited. A check whose expectations come from the thing it is
+-- checking cannot fail. Three sets, and all three are asserted:
+--
+--   REQUIRED   must exist, RLS enabled, FORCE enabled, tenant_isolation policy
+--   EXEMPT     has organization_id but is deliberately RLS-free, with reasons
+--   partitions audit_log_YYYY_MM / audit_log_default — RLS lives on the parent
+--
+-- Anything carrying organization_id that is in neither list fails: that is a
+-- new tenant table added without RLS, which is the leak this exists to catch.
+--
+-- Mirrors tests/rbac-rls.test.ts, which derives the same set from the
+-- organization_id column and applies the same exemptions.
 DO $$
 DECLARE
-  enabled int;
-  forced int;
+  -- Every relation that must be RLS-protected. 17 carry organization_id
+  -- directly; organizations keys on id, and membership_branches,
+  -- staff_availability and treatment_history isolate through a join to a
+  -- parent that does. All 21 are listed because they are all tenant data.
+  required_rels CONSTANT text[] := ARRAY[
+    'appointments', 'assistant_usage', 'audit_log', 'branches', 'customers',
+    'invitations', 'locations', 'membership_branches', 'memberships',
+    'message_log', 'message_templates', 'notifications', 'organizations',
+    'ownership_transfers', 'payments', 'rate_limit', 'services', 'staff',
+    'staff_availability', 'treatment_history', 'waitlist'
+  ];
+  -- Carries organization_id, deliberately not RLS-protected:
+  --   roles                    reference data; custom-role isolation is
+  --                            enforced at query time (rbac-schema-notes §3.2)
+  --   impersonation_sessions   platform-plane bookkeeping, read only by
+  --                            lib/rbac/context.ts via unsafePrismaAdmin
+  exempt_rels CONSTANT text[] := ARRAY['roles', 'impersonation_sessions'];
   missing text;
+  unprotected text;
+  bad_policy text;
+  unclassified text;
+  exempt_drift text;
+  n_required int;
 BEGIN
-  SELECT count(*) FILTER (WHERE c.relrowsecurity),
-         count(*) FILTER (WHERE c.relforcerowsecurity)
-    INTO enabled, forced
+  -- 4a. Every required relation exists. A dropped table must not pass by
+  --     silently leaving the population being counted.
+  SELECT string_agg(want, ', ' ORDER BY want) INTO missing
+    FROM unnest(required_rels) AS want
+   WHERE NOT EXISTS (
+     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = want AND c.relkind IN ('r', 'p')
+   );
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: required tenant relation(s) absent: % — the schema does not match the expected tenant set', missing;
+  END IF;
+
+  -- 4b. Each one has RLS enabled AND forced. Both bits, named separately, so
+  --     the failure message says which half is gone.
+  SELECT string_agg(
+           c.relname || ' (' ||
+           CASE WHEN NOT c.relrowsecurity AND NOT c.relforcerowsecurity THEN 'RLS DISABLED and not forced'
+                WHEN NOT c.relrowsecurity THEN 'RLS DISABLED'
+                ELSE 'not FORCED' END || ')', ', ' ORDER BY c.relname)
+    INTO unprotected
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'public' AND c.relname = ANY(required_rels)
+     AND c.relkind IN ('r', 'p')
+     AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity);
+  IF unprotected IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: tenant relation(s) without enforced RLS: % — tenant rows are readable across organizations', unprotected;
+  END IF;
+
+  -- 4c. Each one still carries a usable tenant_isolation policy. A policy
+  --     rewritten to USING (true), or one that lost its WITH CHECK (which is
+  --     what stops a cross-tenant INSERT), leaves relrowsecurity true and
+  --     every row exposed. Presence is not enough; the predicate must still
+  --     reference current_org_id() on both sides.
+  SELECT string_agg(c.relname || ' (' || reason || ')', ', ' ORDER BY c.relname)
+    INTO bad_policy
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND c.relkind = 'r';
-
-  IF enabled = 0 THEN
-    RAISE EXCEPTION 'production-verify: no table in public has row-level security enabled';
+    CROSS JOIN LATERAL (
+      SELECT CASE
+        WHEN p.polname IS NULL THEN 'no tenant_isolation policy'
+        WHEN p.polcmd <> '*' THEN 'policy is not FOR ALL'
+        WHEN p.polqual IS NULL
+          OR pg_get_expr(p.polqual, p.polrelid) NOT LIKE '%current_org_id()%'
+          THEN 'USING clause does not reference current_org_id()'
+        WHEN p.polwithcheck IS NULL
+          OR pg_get_expr(p.polwithcheck, p.polrelid) NOT LIKE '%current_org_id()%'
+          THEN 'WITH CHECK clause does not reference current_org_id()'
+        ELSE NULL
+      END AS reason
+        FROM (SELECT 1) AS _
+        LEFT JOIN pg_policy p
+          ON p.polrelid = c.oid AND p.polname = 'tenant_isolation'
+    ) AS chk
+   WHERE n.nspname = 'public' AND c.relname = ANY(required_rels)
+     AND c.relkind IN ('r', 'p') AND chk.reason IS NOT NULL;
+  IF bad_policy IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: tenant relation(s) with a missing or malformed tenant_isolation policy: %', bad_policy;
   END IF;
-  IF forced <> enabled THEN
-    SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO missing
-      FROM pg_class c
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = 'public' AND c.relkind = 'r'
-       AND c.relrowsecurity AND NOT c.relforcerowsecurity;
-    RAISE EXCEPTION 'production-verify: % table(s) have RLS enabled but not FORCED (%) — the owner bypasses its own policies', enabled - forced, missing;
+
+  -- 4d. Nothing carrying organization_id escapes classification. A tenant
+  --     table added by a later migration and never given RLS lands here
+  --     rather than going unnoticed until it leaks.
+  SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO unclassified
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+     AND EXISTS (SELECT 1 FROM information_schema.columns col
+                  WHERE col.table_schema = 'public' AND col.table_name = c.relname
+                    AND col.column_name = 'organization_id')
+     AND NOT (c.relname = ANY(required_rels))
+     AND NOT (c.relname = ANY(exempt_rels))
+     -- audit_log partitions inherit the parent's policy; the parent is in
+     -- required_rels and is where RLS is asserted.
+     AND c.relname !~ '^audit_log_(\d{4}_\d{2}|default)$';
+  IF unclassified IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: relation(s) carry organization_id but are neither RLS-protected nor a declared exemption: % — a tenant table was added without row-level security', unclassified;
   END IF;
 
-  RAISE NOTICE 'ok: % tables with RLS, all % FORCED', enabled, forced;
+  -- 4e. The exemption list itself is an assertion, so it must stay honest. If
+  --     a declared exemption has vanished, the list is stale and the reasons
+  --     recorded above no longer describe this database.
+  SELECT string_agg(want, ', ' ORDER BY want) INTO exempt_drift
+    FROM unnest(exempt_rels) AS want
+   WHERE NOT EXISTS (
+     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = want AND c.relkind IN ('r', 'p')
+   );
+  IF exempt_drift IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: declared RLS exemption(s) no longer exist: % — the exemption set does not match this schema', exempt_drift;
+  END IF;
+
+  n_required := array_length(required_rels, 1);
+  RAISE NOTICE 'ok: all % required tenant relations have RLS enabled, FORCED, and a tenant_isolation policy using current_org_id(); % declared exemptions intact',
+    n_required, array_length(exempt_rels, 1);
 END $$;
 
 -- 5. F16-012: MARKETING holds no route to patient contact details. ----------
@@ -178,27 +301,115 @@ BEGIN
   RAISE NOTICE 'ok: MARKETING has no client.read:contact and keeps both reporting grants';
 END $$;
 
--- 6. audit_log partitioning is still ahead of today. ------------------------
+-- 6. audit_log partitioning covers today and the maintenance horizon. -------
+--
+-- The previous version asserted only that at least one partition existed and
+-- that audit_log_default was empty. Both hold for a database whose newest
+-- partition is eight months old: `parts = 13` counts history, and the default
+-- partition is empty right up until the first write that has nowhere else to
+-- go. It reported "partitions ahead of today" while proving nothing about
+-- today, and the first audit write of an uncovered month is the event that
+-- turns that into a lost audit trail.
+--
+-- The horizon is the maintenance policy, stated once and asserted here:
+-- app/api/cron/db-partitions/route.ts loops `i = 0..3`, so the current month
+-- and the next three must always exist. Falling to two future months means the
+-- job has stopped running and there are weeks, not months, of slack left.
 DO $$
 DECLARE
-  parts int;
+  horizon_months CONSTANT int := 3;  -- must match db-partitions/route.ts
+  cur_month date := date_trunc('month', now() AT TIME ZONE 'UTC')::date;
+  want_month date;
+  want_name text;
+  bounds text[];
+  lo timestamptz;
+  hi timestamptz;
   default_rows bigint;
+  attached int;
+  overlap_pairs text;
+  fn_exists bool;
+  i int;
 BEGIN
-  SELECT count(*) INTO parts
-    FROM pg_inherits i
-    JOIN pg_class p ON p.oid = i.inhparent
-   WHERE p.relname = 'audit_log';
+  -- 6a. The current month and every month out to the horizon exists, is
+  --     attached to audit_log itself, and carries exactly the bounds its name
+  --     claims. A partition named 2026_09 covering October is worse than a
+  --     missing one: writes land silently in the wrong month.
+  FOR i IN 0..horizon_months LOOP
+    want_month := (cur_month + (i || ' months')::interval)::date;
+    want_name := 'audit_log_' || to_char(want_month, 'YYYY_MM');
 
-  IF parts = 0 THEN
-    RAISE EXCEPTION 'production-verify: audit_log has no partitions';
+    SELECT regexp_match(pg_get_expr(ch.relpartbound, ch.oid),
+                        'FROM \(''(.+?)''\) TO \(''(.+?)''\)')
+      INTO bounds
+      FROM pg_inherits inh
+      JOIN pg_class p ON p.oid = inh.inhparent
+      JOIN pg_class ch ON ch.oid = inh.inhrelid
+      JOIN pg_namespace n ON n.oid = p.relnamespace
+     WHERE n.nspname = 'public' AND p.relname = 'audit_log' AND ch.relname = want_name;
+
+    IF bounds IS NULL THEN
+      RAISE EXCEPTION 'production-verify: audit_log partition % is missing or not attached to audit_log — audit writes for % have nowhere to land except the default partition',
+        want_name, to_char(want_month, 'YYYY-MM');
+    END IF;
+
+    lo := bounds[1]::timestamptz;
+    hi := bounds[2]::timestamptz;
+    IF lo <> want_month::timestamptz OR hi <> (want_month + interval '1 month')::timestamptz THEN
+      RAISE EXCEPTION 'production-verify: audit_log partition % covers [%, %) but its name claims [%, %) — rows are being routed into the wrong month',
+        want_name, lo, hi, want_month, want_month + interval '1 month';
+    END IF;
+  END LOOP;
+
+  -- 6b. No two partitions claim the same instant. Postgres enforces this on
+  --     ATTACH, so a violation here means the catalogue itself is damaged —
+  --     which a restore can produce and nothing else would report.
+  --     Column aliases are suffixed `_b`: bare `lo`/`hi` would collide with the
+  --     PL/pgSQL variables above, which PL/pgSQL resolves in favour of the
+  --     variable and turns the predicate into a constant.
+  WITH parts AS (
+    SELECT ch.relname AS pname,
+           (regexp_match(pg_get_expr(ch.relpartbound, ch.oid), 'FROM \(''(.+?)''\) TO \(''(.+?)''\)'))[1]::timestamptz AS lo_b,
+           (regexp_match(pg_get_expr(ch.relpartbound, ch.oid), 'FROM \(''(.+?)''\) TO \(''(.+?)''\)'))[2]::timestamptz AS hi_b
+      FROM pg_inherits inh
+      JOIN pg_class p ON p.oid = inh.inhparent
+      JOIN pg_class ch ON ch.oid = inh.inhrelid
+      JOIN pg_namespace n ON n.oid = p.relnamespace
+     WHERE n.nspname = 'public' AND p.relname = 'audit_log'
+       AND pg_get_expr(ch.relpartbound, ch.oid) <> 'DEFAULT'
+  )
+  SELECT string_agg(x.pname || ' overlaps ' || y.pname, ', ') INTO overlap_pairs
+    FROM parts x JOIN parts y
+      ON x.pname < y.pname AND x.lo_b < y.hi_b AND y.lo_b < x.hi_b;
+  IF overlap_pairs IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: audit_log partitions overlap: %', overlap_pairs;
   END IF;
 
+  -- 6c. The default partition is still empty. A row here is a month that had
+  --     no partition when it was written — the horizon check above prevents
+  --     it going forward, this proves it has not already happened.
   EXECUTE 'SELECT count(*) FROM public.audit_log_default' INTO default_rows;
   IF default_rows > 0 THEN
-    RAISE EXCEPTION 'production-verify: % row(s) landed in audit_log_default — a month is missing its partition', default_rows;
+    RAISE EXCEPTION 'production-verify: % row(s) landed in audit_log_default — a month was missing its partition when those audit records were written', default_rows;
   END IF;
 
-  RAISE NOTICE 'ok: audit_log has % partitions and audit_log_default is empty', parts;
+  -- 6d. The maintenance function still exists. Without it the cron endpoint
+  --     500s every night and the horizon silently stops advancing; the first
+  --     symptom would otherwise be 6a failing months later.
+  SELECT EXISTS (
+    SELECT 1 FROM pg_proc pr JOIN pg_namespace n ON n.oid = pr.pronamespace
+     WHERE n.nspname = 'public' AND pr.proname = 'bp_create_monthly_partition'
+       AND pg_get_function_identity_arguments(pr.oid) = 'parent regclass, month date'
+  ) INTO fn_exists;
+  IF NOT fn_exists THEN
+    RAISE EXCEPTION 'production-verify: bp_create_monthly_partition(regclass, date) is missing — partition maintenance cannot run';
+  END IF;
+
+  SELECT count(*) INTO attached
+    FROM pg_inherits inh JOIN pg_class p ON p.oid = inh.inhparent
+   WHERE p.relname = 'audit_log';
+
+  RAISE NOTICE 'ok: audit_log has % attached partitions; % and the next % months exist with correct bounds; audit_log_default is empty',
+    attached, to_char(cur_month, 'YYYY-MM'), horizon_months;
 END $$;
 
 \echo '=== production invariants: ALL CHECKS PASSED ==='
