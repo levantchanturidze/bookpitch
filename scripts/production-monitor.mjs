@@ -437,7 +437,7 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
       invalidConfig === undefined
         ? 'deployment predates the invalid-env metric — redeploy to enable this check'
         : `security env vars set but malformed: ${invalidConfig} ` +
-          `(validators in lib/ops-metrics.ts SECURITY_ENV_VALIDATORS; names never leave the server)`,
+          `(validators in lib/ops-metrics.ts SECRET_ENV_VALIDATORS; names never leave the server)`,
   });
 
   // The outbound adapters, separated from the secret check above on 2026-09-01.

@@ -521,10 +521,35 @@ for p in /dashboard /platform /api/customers /api/health/ready; do
 gh workflow run production-monitor.yml
 ```
 
-**In a browser**, additionally confirm the Turnstile widget actually renders on
-`https://bookpitch.ge/signup` — a checkbox widget appears above the button and
-the button becomes enabled. A missing widget is invisible to every curl above
-and is exactly how signup was broken for a week (§12).
+**In a browser**, additionally confirm the Turnstile challenge actually solves
+on `https://bookpitch.ge/signup`. A missing widget is invisible to every curl
+above and is exactly how signup was broken for a week (§12).
+
+Do **not** look for a checkbox. Production's site key is configured as an
+invisible/managed widget: nothing appears in the accessibility tree, there is
+no visible control, `document.getElementsByTagName('iframe').length` is **0**
+because Cloudflare renders inside a closed shadow root, and the submit button
+is enabled from the start — the server, not the button, is what refuses a
+missing token. Every one of those looks like a broken widget and none of them
+is. Checked against the wrong signal on 2026-09-01, and nearly recorded as a
+defect.
+
+The signal that actually distinguishes the two is the token:
+
+```js
+// paste in the console on /signup, a few seconds after load
+const form = document.querySelector('form');
+const hidden = Array.from(form.querySelectorAll('input[type=hidden]'));
+({
+  challengeSolved: hidden.some((i) => (i.value || '').length > 20), // ← must be true
+  widgetContainerHeight: Math.round(form.querySelectorAll('div')[3].getBoundingClientRect().height), // 72
+  turnstileApiLoaded: typeof window.turnstile?.render === 'function',
+});
+```
+
+`challengeSolved: false` after ~15 seconds is the outage. The component polls
+for `window.turnstile` for that long before giving up — rendering from the
+script's `load` event is what failed silently in Phase 13.
 
 ---
 

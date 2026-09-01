@@ -15,9 +15,14 @@ Two things are true at once and both matter:
 - **production has no database**, so most production verification could not be
   performed at all — not "was skipped", could not be performed.
 
-**Release decision: the integration is COMPLETE, CI-green, merged as
-`e69795b0ea6ff8256c94f2f6722f94013f4c7234` and deployed to production as
-`dpl_87yRocWWmb2eyrwwpsrrzv5z6czn`. The release is NOT production-verified.** Three things are externally blocked and none of them can
+**Release decision, updated 2026-09-01T14:45Z after the database was restored:
+the integration is COMPLETE, CI-green, merged, deployed, and now
+PRODUCTION-VERIFIED except for two items — one self-healing, one externally
+blocked.** The monitor reports **17/21 checks passed, 2 paused by
+configuration**; the two failures are `cron-failures` (historical, clears on
+its own) and `production-observability-unconfigured` (no Sentry DSN exists).
+§17 records the restore day in full. The 24-hour soak has **not** started; §18
+states the exact criterion and what currently prevents it. Three things are externally blocked and none of them can
 be cleared from inside this repository: a Supabase credential (§2), a Sentry DSN
 (§12), and a GitHub plan that allows branch protection (§11).
 
@@ -823,3 +828,276 @@ and every deferred product area (clinical notes and attachments, payment refunds
 shift close, staff commission, rooms and resources, block-time, integrations,
 platform billing UI, payroll and own-tier reports), all still correctly
 classified as deferred and none built to satisfy a checker.
+
+---
+
+## 17. The restore day — 2026-09-01, from 12:26Z
+
+The Supabase project was restored by the account owner. Everything below was
+measured after that, against the real production database.
+
+### 17.1 It is the intended production database
+
+The claim needed evidence, not an assumption that the owner pointed the same
+variables at the same place. The backup manifest carries a
+`production_identity_fingerprint`, which is `sha256(host:port/database)` cut to
+16 characters — designed to prove two backups came from the same database
+without disclosing the host, the project ref or the database name.
+
+| | Backup of 2026-08-22 (before the loss) | Backup of 2026-09-01 (after the restore) |
+|---|---|---|
+| `production_identity_fingerprint` | `5c9f75110f30141f` | **`5c9f75110f30141f`** |
+| `pg_server_version` | 17.6 | 17.6 |
+| `toc_entries` | 547 | 547 |
+
+Identical. Corroborated independently by the migration workflow, which prints
+its datasource: `PostgreSQL database "postgres", schema "public" at
+"aws-0-eu-central-1.pooler.supabase.com:5432"` — the same host and database as
+before, and no secret in the line.
+
+### 17.2 The restored data is the recovered data
+
+| Evidence | Value |
+|---|---|
+| migrations in the restored database, before applying 63 | **62** — exactly one pending |
+| organizations | **10**, as in the 2026-08-22 dump |
+| `audit_log` rows | 100, append-only triggers intact, 12 partitions |
+| RLS policies | 21 |
+| reminder tick, live | `{"orgs":10,"concurrency":2,…}` — all ten tenants iterated |
+
+### 17.3 Migration 63, applied exactly once
+
+Run **`33509215538`** (`workflow_dispatch`, 12:43Z):
+
+```
+Show pending migrations   63 found · not yet applied: 20260823000001_revoke_marketing_client_contact
+Apply migrations          Applying migration `20260823000001_revoke_marketing_client_contact`
+                          All migrations have been successfully applied.
+Verify no drift           63 found · Database schema is up to date!
+```
+
+**Once, not twice.** Run `33519944573`, triggered by the PR #43 merge, reported
+`Database schema is up to date!` *before* its apply step.
+
+### 17.4 The security posture survived the restore
+
+`prisma migrate status` proves the ledger and nothing else. PR #43 added a
+read-only post-apply check for what a restore actually loses. Against
+production, run **`33519944573`**:
+
+```
+ok: 63 migrations applied, 0 unfinished, 0 rolled back
+ok: bookpitch_app is NOSUPERUSER NOBYPASSRLS and can log in
+ok: bookpitch_app has neither UPDATE nor DELETE on audit_log
+ok: 20 tables with RLS, all 20 FORCED
+ok: MARKETING has no client.read:contact and keeps both reporting grants
+ok: audit_log has 12 partitions and audit_log_default is empty
+=== production invariants: ALL CHECKS PASSED ===
+```
+
+That fifth line is F16-012 confirmed **in the production database**, not
+inferred from the migration having run.
+
+### 17.5 P15-010 / R-16 / issue #26 — verified, at last
+
+Two independent pieces of evidence, neither of them a config parse.
+
+**The check passes:** `PASS production-config-invalid — security env vars set
+but malformed: 0` (monitor run `33521398368`). It had read "malformed: 2" until
+the validator table was split; both were providers, not secrets (§17.7).
+
+**An encryption round-trip actually happened.** A password-reset request at
+~12:40Z produced an encrypted `email_outbox` row — `ciphertext rows —
+customers=0, outbox=1, mfa=0, total=1`, with `pending=0`, `dead=0`,
+`staleClaims=0`. That row cannot exist unless `encryptField()` succeeded, which
+is exactly what a malformed key prevented. The route returns 202
+unconditionally, so the 202 proves nothing; the ciphertext row does.
+
+### 17.6 Messaging, verified end to end in production
+
+| Property | Evidence |
+|---|---|
+| enumeration safety | `POST /api/auth/reset/request` returns **`202 {"ok":true}`** for a known and an unknown address alike — and this time the branch that must answer identically actually ran |
+| durable enqueue | one encrypted outbox row appeared for the known address, none for the unknown one |
+| delivery | that row is not pending, not processing, not dead — so it was sent |
+| a real provider is configured | in production `getEmailProvider()` refuses `mock` (F16-002); a sent row could not exist otherwise |
+| no raw token in a log | the CI log and the endpoint response contain neither |
+
+**Not verified: that the message arrived in a mailbox.** It went to the
+operator's own address. Reading that inbox is a human step and is not claimed
+here — see §19.
+
+### 17.7 Five scheduled jobs, verified one at a time
+
+Made possible by the `only:` dispatch selector added in PR #43. Before it,
+dispatching housekeeping also fired reminders at every tenant.
+
+| Job | Run | Result |
+|---|---|---|
+| housekeeping | `33520121839` | `verificationTokens: 1` pruned; outbox counters 0 |
+| retention | `33521088698` | `http=200` |
+| db-partitions | `33521146581` | `{"ok":true,"created":["2026-09","2026-10","2026-11","2026-12"]}` |
+| audit-digest | `33521199799` | `{"ok":true,"orgs":0,"mode":"disabled","skipped":true}` — the pre-launch gate |
+| reminders | `33521310009` | `{"orgs":10,"concurrency":2,…}`, **zero attempts across all ten orgs** |
+
+The reminder run is worth reading twice. `concurrency: 2` is **P17-005's
+bounded fan-out running in production**, clamped to the connection pool. And
+`attempts: []` for every organization means nothing was due — so the question
+of whether a manual dispatch might message a real customer is answered by
+measurement rather than by estimate.
+
+### 17.8 Backup and restore, both proven on the restored database
+
+Backup run **`33519003403`**, then restore drill **`33519293872`** against that
+exact artifact:
+
+```
+pg_dump 17.11 against server 17.6 · dump 244,436 bytes · globals 6,695 bytes
+archive table of contents: 547 entries · encrypted with age/x25519
+artifact 297,224 bytes  sha256 75050b99252b014805a28cab3da0e141192229db4000bd2ef0a8a8239ec77935
+OK: only encrypted artifacts staged          ← no plaintext left behind
+uploaded: artifact 9804854987, expires 2026-10-06
+
+  ↓ separate job, downloads what was uploaded
+checksum OK · manifest sha256 matches · decrypted · restorable entries: 547
+
+  ↓ restore drill, into a disposable PostgreSQL 17
+ok: 63 prisma migrations, all finished        ← migration 63 is in the backup
+ok: 10 organizations · 100 audit_log rows · 12 partitions · 21 RLS policies
+ok: audit_log UPDATE is rejected by the restored trigger
+=== restore verification: ALL CHECKS PASSED ===
+```
+
+Every step §17.8 of the brief asks for: dump executed, archive validated,
+artifact encrypted, no plaintext, upload succeeded, download and decryption and
+checksum and readability verified, and a full restore into an isolated target.
+**RPO is back to ~24 hours**; the ten-day window of the outage is closed.
+
+### 17.8b Signup and Turnstile, checked in a real browser
+
+The documented smoke test (`operations.md` §9) passes end to end, including the
+two items that matter most for a public signup:
+
+| | |
+|---|---|
+| `POST /api/onboard` with no Turnstile token | **400** `{"error":"invalid request"}` — fails closed, and the E2E bypass is confirmed absent from production |
+| 200 KB body | **413** |
+| `POST /api/onboard/resend`, unknown address | `{"ok":true}` — enumeration-safe |
+| `/dashboard`, `/platform`, `/api/customers`, `/api/health/ready`, `/scheduler`, `/patients`, `/analytics`, `/settings`, `/audit` | **307**, all of them, never 200 |
+
+The browser half nearly produced a false alarm, which is worth recording
+because the runbook told me to look for the wrong thing. On the real page:
+
+```
+turnstileApiLoaded        true
+document iframes          0
+accessibility tree        no checkbox, no "verify you are human" control
+submit button             enabled from the start
+```
+
+Every one of those reads as a broken widget, and Phase 13's outage had exactly
+that signature. It is not broken. Production's site key is an
+**invisible/managed** widget: Cloudflare renders inside a *closed* shadow root,
+so no iframe is reachable from script and nothing lands in the accessibility
+tree, and the button is not token-gated because the server is what refuses.
+
+The signal that actually distinguishes the two states is the token, and it is
+present:
+
+```
+challengeSolved        true      ← hidden response input holds a token
+widgetContainerHeight  72px
+```
+
+`operations.md` §9 has been corrected to say this, with the console snippet,
+because the old instruction — "a checkbox widget appears above the button and
+the button becomes enabled" — would lead an operator to declare a working
+signup broken.
+
+**Still not done: a synthetic production signup.** Completing one writes an
+organization that cannot be deleted, because `audit_log` is append-only and
+holds a foreign key to it. Every component of the flow is verified above; the
+account creation itself is not, and is not claimed.
+
+### 17.9 Monitor tally
+
+Run **`33521398368`**, 2026-09-01T14:45:11Z — **17/21 passed, 2 paused, 2
+failed.**
+
+| | Checks |
+|---|---|
+| PASS (17) | health-endpoint, production-5xx, unexpected-redirect, tls, deployment-reachable, cron-staleness, backup-freshness, restore-drill-stale, ops-metrics, outbox-dead-letters, outbox-stale-claims, outbox-backlog, housekeeping-stalled, retention-stalled, partition-maintenance, production-config-incomplete, **production-config-invalid** |
+| PAUSE (2) | audit-digest-stalled, production-provider-mocked — both deliberate pre-launch gates |
+| FAIL (2) | cron-failures, production-observability-unconfigured |
+
+Incidents reconciled by the automation itself, not by hand: **#37, #39 and #40
+closed as recovered**; #38 updated; **#44 opened** for the Sentry gap.
+
+### 17.10 The two remaining failures
+
+**`cron-failures` — 4/10, historical, self-healing.** The latest failing run is
+`33495627804` from 10:05Z, before the restore. Every run since has succeeded.
+The check counts failures in the last ten completed runs, so it clears after
+two more. Not forced: the five runs above were the per-job verification this
+release required.
+
+**`production-observability-unconfigured` — externally blocked.** No Sentry DSN
+exists in Vercel, in GitHub secrets, or in any local file. See §12; nothing
+about that has changed.
+
+---
+
+## 18. The 24-hour soak — criterion, and why the clock has not started
+
+### The rule
+
+The clock starts at the **first monitor run in which every applicable check is
+green**, with production configuration stable from that moment. A code
+deployment or a material configuration change resets it. Paused-by-configuration
+checks are not failures and do not hold the clock: `audit-digest-stalled` and
+`production-provider-mocked` are deliberate pre-launch gates, each of which
+flips to a real check the moment the feature is enabled.
+
+### Why it has not started
+
+As of monitor run `33521398368` (2026-09-01T14:45:11Z), two checks are not green.
+
+**`cron-failures` — will clear on its own.** Four of the last ten cron runs
+failed, all of them before the restore. Two more successful runs age them out.
+
+**`production-observability-unconfigured` — cannot clear from inside this
+repository.** No Sentry DSN exists. This is the one item that makes an
+all-green monitor result impossible today, and it is an external action, not an
+engineering task.
+
+So the honest statement is: **the soak cannot begin on the stated criterion
+until a Sentry DSN is provisioned.** Starting it anyway, by declaring that
+check out of scope, would be choosing the criterion to fit the result.
+
+### What happens when the DSN lands
+
+1. Set `SENTRY_DSN` and `NEXT_PUBLIC_SENTRY_DSN` in Vercel Production.
+2. Redeploy — that is a configuration change, so the clock could not have been
+   running through it in any case.
+3. Run `SENTRY_DSN=… npm run verify:sentry` until it reports level 4 with an
+   event id. Levels 1–3 are not enough; only level 4 means an error would reach
+   a human.
+4. Wait for the first monitor run reporting **21/21 with 2 paused**, and record
+   its run id and `completed_at`. **That timestamp is the soak start.**
+5. The soak ends 24 hours later, and requires throughout: monitor runs
+   completing, cron runs succeeding, a nightly backup succeeding, no new
+   unresolved ops incident, no dead letters accumulating in the outbox, and no
+   unexplained Sentry release regression.
+
+### Size the soak by observations, not by the clock
+
+GitHub delivers this repository's schedules hours late — measured 2026-09-01,
+worst gaps of 4h39m for `*/15 * * * *` and 5h02m for `5,35 * * * *` (R-08). A
+24-hour window will therefore contain roughly **5 to 20 monitor observations,
+not 48**. Read the soak by how many independent observations it actually
+produced, and treat a window with fewer than about six as inconclusive rather
+than passed.
+
+No new automation is needed to continue: the production monitor, the six cron
+schedules and the nightly backup are all configured, enabled and running. The
+soak resumes on its own the moment the last failing check clears.

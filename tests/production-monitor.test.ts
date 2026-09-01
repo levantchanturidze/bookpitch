@@ -868,3 +868,17 @@ describe('a stale cron says which failure it is', () => {
     expect(check!.detail).toMatch(/no successful run found at all/);
   });
 });
+
+describe('a check points at the table it actually reads', () => {
+  it('production-config-invalid names SECRET_ENV_VALIDATORS, not the union', () => {
+    // The detail line is the only pointer an operator gets — names never leave
+    // the server — so it must name the half of the split this check reads. It
+    // said SECURITY_ENV_VALIDATORS for the first run after the split, which is
+    // the union and includes the providers this check no longer counts.
+    const check = evaluateOpsMetrics({ config: { invalidSecurityEnv: 1 } }).find(
+      (r: { id: string }) => r.id === 'production-config-invalid',
+    );
+    expect(check!.detail).toContain('SECRET_ENV_VALIDATORS');
+    expect(check!.detail).not.toContain('SECURITY_ENV_VALIDATORS');
+  });
+});

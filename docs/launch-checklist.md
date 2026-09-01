@@ -3,18 +3,27 @@
 The single ordered list for taking Bookpitch from "engineering complete" to
 "live with a pilot organisation". Items are ticked only against evidence.
 
-Current state (2026-09-01): **ENGINEERING COMPLETE AND MERGED — LAUNCH
-BLOCKED ON A MISSING PRODUCTION DATABASE.**
+Current state (2026-09-01, 14:45Z): **ENGINEERING COMPLETE, MERGED, DEPLOYED
+AND PRODUCTION-VERIFIED — LAUNCH BLOCKED ON HUMAN AND EXTERNAL ITEMS ONLY.**
 
-The Supabase project behind production no longer exists. Every DB-backed route
-returns 500 or 503; `/api/health` still returns 200 because it deliberately
-touches nothing. A 2026-08-22 encrypted backup restores cleanly (restore drill
-run `33491958258`), so this is a lost host with a proven recovery point, not
-lost data — but no launch step below can be attempted until it is restored.
-Evidence and exact steps:
-[`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §2.
+The database outage earlier that day is resolved: the Supabase project was
+restored, migration 63 applied, and the monitor reports **17/21 checks passed,
+2 paused by configuration**. Backup and restore are both proven against the
+restored database, and RPO is back to ~24 hours.
 
-The email/DNS and legal blockers recorded below are unchanged and still human.
+Two things are not green, and neither is engineering:
+
+- **No Sentry DSN exists** (`production-observability-unconfigured`, issue #44).
+  Every uncaught exception in production is discarded. This is also what
+  prevents the 24-hour soak from starting — see the September ledger §18.
+- **`cron-failures`** counts four pre-restore failures in its last-ten window
+  and clears on its own.
+
+The email/DNS and legal blockers recorded below are unchanged and still human:
+no designated test mailbox has been nominated, and `LEGAL_DOCUMENT_STATUS` is
+still `'draft'` with `OPERATOR_IDENTITY` unset. Neither is claimed as done.
+Evidence for everything above:
+[`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §17.
 
 The engineering counts in section A are from Phase 15 and have since grown; the
 current figures are 1362 unit/integration tests across 109 files, 268 Playwright

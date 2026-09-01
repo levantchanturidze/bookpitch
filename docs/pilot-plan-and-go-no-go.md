@@ -2,21 +2,30 @@
 
 ## Recommendation
 
-# NO-GO (2026-09-01) — production has no database
+# CONDITIONAL GO (2026-09-01, 14:45Z) — no engineering blocker remains
 
-**Superseding the R-16 recommendation below.** The Supabase project behind
-production no longer exists (R-20): `NXDOMAIN` on `db.<ref>.supabase.co`, and
-`FATAL: (ENOTFOUND) tenant/user … not found` from both poolers on both ports.
-Every DB-backed route answers 500 or 503. No organisation can be onboarded,
-no pilot can start, and R-16 below cannot even be evaluated — the only
-validator for it is an endpoint that needs the database.
+**Superseding both recommendations below.** The database outage of 2026-09-01
+(R-20) is resolved: the project was restored, migration 63 applied exactly once,
+every production invariant passes, and backup and restore are proven against the
+restored database. **R-16 is now verified resolved**, which is what the older
+recommendation was waiting for.
 
-The data is recoverable: the 2026-08-22 encrypted backup restored cleanly in
-drill run `33491958258`, giving an RPO of roughly ten days for this incident
-rather than the ~24 hours R-09 assumes. The artifact expires around 2026-09-26.
+The monitor reports **17/21 checks passed, 2 paused by configuration**. What
+remains is not engineering:
 
-Restore first (`docs/operations.md` §6), then re-evaluate everything below —
-including R-16, which must be re-checked before anything else.
+| Remaining | Kind |
+|---|---|
+| No Sentry DSN — every uncaught production exception is discarded (#44) | external credential |
+| A real message received and inspected in a designated mailbox (R-04) | human |
+| Legal review; operator identity unset; `LEGAL_DOCUMENT_STATUS` still `'draft'` | human + adviser |
+| Treatment-history erasure decision (R-13) | human + adviser |
+| Organisational DMARC, `rua` reachability, Dependabot (R-02, R-03, R-06) | owner, hardening |
+| Branch protection unavailable on this plan (R-07) | account plan |
+| `cron-failures` — four pre-restore failures aging out of a ten-run window | self-healing |
+
+`CONDITIONAL GO` means: the software is ready and verified in production; the
+pilot is gated on the human and external items above, and on the 24-hour soak,
+which cannot begin until the Sentry DSN exists (September ledger §18).
 
 ---
 
@@ -133,9 +142,9 @@ the caps can safely rise.
 | Production build | exit 0, 40 static pages | agent | **PASS** | — | — | — |
 | `npm audit --audit-level=high` | 0 vulnerabilities | agent | **PASS** | — | — | — |
 | Secret scan | gitleaks full history, 0 leaks | agent | **PASS** | — | — | — |
-| Migrations at head | 2026-08: 62 applied, no drift. `main` now carries **63**; a clean install applies all 63 with no drift. **Production migration status is unknown — unreachable.** | agent | **PASS (CI) / UNKNOWN (prod)** | — | Re-check after restore | Restored dump will be at 62 |
-| Production health | 2026-08: 18/18 monitor checks. **2026-09-01: 6/10 — the database is gone (R-20), and the ten ops-derived checks are not evaluated at all.** | agent | **FAIL** | **P0 Blocker** | Restore the database | **Nothing DB-backed works** |
-| Backup + restore drill | **2026-09-01: backup 242.9h stale and failing (R-20); restore drill `33491958258` PASS against the 2026-08-22 artifact** | agent | **MIXED** | **P1** | Restore the database; the drill already proves the chain | Recovery point expires ~2026-09-26 |
+| Migrations at head | **63 applied in production**, 0 unfinished, 0 rolled back, `Database schema is up to date!` (runs `33509215538`, `33519944573`). Applied exactly once. | agent | **PASS** | — | — | — |
+| Production health | 2026-08: 18/18. 2026-09-01 morning: 6/10, database gone. **2026-09-01 14:45Z: 17/21 passed, 2 paused, 2 failed** — `cron-failures` (self-healing) and `production-observability-unconfigured` (no DSN). | agent | **PASS with two known reds** | — | Provision the Sentry DSN | Uncaught exceptions discarded |
+| Backup + restore drill | **2026-09-01 14:22Z: fresh encrypted backup `33519003403`, verified by download/decrypt/checksum in its own job; restore drill `33519293872` restored it end to end and found 63 migrations.** RPO back to ~24h. | agent | **PASS** | — | — | — |
 | Tenant isolation | RLS + role/grant suites green | agent | **PASS** | — | — | — |
 | Erasure completeness | P15-002 fixed, complement-proven | agent | **PASS** | — | — | — |
 | Sending domain verified | DKIM/SPF/bounce MX present under `send.bookpitch.ge` (R-01 retracted) | agent | **PASS** | — | — | — |

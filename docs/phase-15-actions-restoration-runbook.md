@@ -156,7 +156,7 @@ belt-and-braces, not a licence to skip step 8.
 | `origin/main` | `5c8fb77` | `dae46ac` — three schedule commits whose net tree change is empty |
 | Production deployment | `dpl_je5rKC33RkPs9MuRfFzq6xYLL5aG` | `dpl_92gL3DZr6kZLomHK3C1fukxd6F1r` |
 | `FIELD_ENCRYPTION_KEY` | `prod-v1:…` set 2026-08-22 | present; **structure not verifiable** — Vercel marks it Sensitive, and the only validator is the running application |
-| Production DB | 62 migrations, 0 ciphertext, 0 outbox rows | **unreachable — the Supabase project no longer exists** |
+| Production DB | 62 migrations, 0 ciphertext, 0 outbox rows | **restored 2026-09-01 and now at 63 migrations**, 1 ciphertext row, 0 pending outbox rows. The outage and the recovery are in the September ledger §2 and §17. |
 
 ### Step outcomes
 
@@ -166,16 +166,20 @@ belt-and-braces, not a licence to skip step 8.
 2. **Rerun CI on the frozen SHA** — **superseded.** `dae46ac`'s tree is
    identical to `5c8fb77`; CI ran on the integration branch, which contains
    both.
-3. **Prove the encryption-key incident resolved** — **NOT POSSIBLE.**
-   `/api/health/ops` returns 503 without a database, so
-   `production-config-invalid` is not evaluated at all. Incident #26 was
-   auto-closed by exactly that blindness rather than by a recovery; the closing
-   behaviour is fixed in `e913f83` and the underlying condition is recorded as
-   `NOT VERIFIED`.
-4. **Start the 24-hour soak** — **NOT STARTED.** The clock starts at the first
-   fully successful monitor run. There has not been one: four of ten checks
-   fail, all from a single external cause.
+3. **Prove the encryption-key incident resolved** — **DONE 2026-09-01T14:45Z**,
+   after the database was restored. `PASS production-config-invalid — malformed:
+   0` (run `33521398368`), and independently: a password-reset request produced
+   an **encrypted** `email_outbox` row, which cannot exist unless
+   `encryptField()` succeeded. Recorded on issue #26. The check had read
+   "malformed: 2" until the validator table was split — both were providers
+   deliberately on `mock`, not secrets.
+4. **Start the 24-hour soak** — **STILL NOT STARTED**, and now for one reason
+   only: `production-observability-unconfigured` fails because no Sentry DSN
+   exists, so an all-green monitor result is not achievable from inside this
+   repository. `cron-failures` is the other red and clears on its own. The exact
+   criterion, and the sequence to follow when the DSN lands, is in the September
+   ledger §18.
 
-The soak cannot begin until the database is restored. When it is, restart from
-step 1 of this runbook: the restore is itself a production configuration change
-and resets the clock.
+Steps 1–3 are complete. When the DSN is provisioned, restart from step 1: the
+redeploy it requires is itself a production configuration change and resets the
+clock.
