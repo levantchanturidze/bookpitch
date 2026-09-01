@@ -9,37 +9,14 @@
 // -----------------------------------------------------------------------------
 
 import { Client } from 'pg';
-import { existsSync, readFileSync } from 'node:fs';
-
-function connectionString(): string {
-  if (process.env.ADMIN_DATABASE_URL) {
-    return process.env.ADMIN_DATABASE_URL.replace(/\?.*$/, '');
-  }
-  if (!existsSync('.env.local')) {
-    throw new Error('ADMIN_DATABASE_URL is not set and .env.local does not exist');
-  }
-  const txt = readFileSync('.env.local', 'utf8');
-  for (const line of txt.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t || t.startsWith('#')) continue;
-    const m = t.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (m && m[1] === 'ADMIN_DATABASE_URL') {
-      let v = m[2];
-      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-        v = v.slice(1, -1);
-      }
-      return v.replace(/\?.*$/, '');
-    }
-  }
-  throw new Error('ADMIN_DATABASE_URL not found in .env.local');
-}
+import { adminDbUrl } from './admin-db-url';
 
 /** Runs `fn` against a private session pinned to `zone`. */
 export async function withTimeZone<T>(
   zone: string,
   fn: (q: <R>(sql: string, params?: unknown[]) => Promise<R[]>) => Promise<T>,
 ): Promise<T> {
-  const client = new Client({ connectionString: connectionString() });
+  const client = new Client({ connectionString: adminDbUrl() });
   await client.connect();
   try {
     await client.query(`SET TIME ZONE '${zone}'`);

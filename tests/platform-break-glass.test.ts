@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { Client } from 'pg';
+import { adminDbUrl } from './helpers/admin-db-url';
 
 const { authMock } = vi.hoisted(() => ({ authMock: vi.fn() }));
 vi.mock('@/auth', () => ({
@@ -1292,7 +1293,7 @@ describe('break-glass DB-level race — partial unique index prevents double-ins
   });
 
   it('exactly one of two concurrent INSERTs wins; loser gets 23505', async () => {
-    const dbUrl = process.env.DATABASE_URL_SUPERUSER_SESSION ?? process.env.DATABASE_URL!;
+    const dbUrl = adminDbUrl();
 
     // Clear any existing active sessions so the race starts clean.
     await unsafePrismaAdmin.$executeRaw`

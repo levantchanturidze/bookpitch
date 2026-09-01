@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { Client } from 'pg';
+import { adminDbUrl } from './helpers/admin-db-url';
 
 vi.mock('@/auth', () => ({
   auth: vi.fn(),
@@ -63,7 +64,7 @@ const LOCK_NOT_AVAILABLE = '55P03';
  * Resolves true when the row is lockable — i.e. nobody else holds it.
  */
 async function rowIsLockable(appointmentId: string): Promise<boolean> {
-  const probe = new Client({ connectionString: process.env.ADMIN_DATABASE_URL });
+  const probe = new Client({ connectionString: adminDbUrl() });
   await probe.connect();
   try {
     await probe.query('BEGIN');

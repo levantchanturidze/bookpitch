@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
+import { adminDbUrl } from './helpers/admin-db-url';
 
 // Phase 12 — PostgreSQL-enforced ORG_OWNER invariant tests.
 //
@@ -876,12 +877,7 @@ describe('Phase 12 — PostgreSQL ORG_OWNER deferred constraint (v3)', () => {
     // function can read the organizations table without RLS filtering rows out.
     // The NOBYPASSRLS app role causes the trigger to see 0 rows from organizations,
     // making v_owner_uid = NULL and silently passing the invariant check.
-    const dbUrl =
-      process.env.DATABASE_URL_SUPERUSER_SESSION ??
-      process.env.ADMIN_DATABASE_URL ??
-      process.env.DATABASE_URL_SUPERUSER_TXPOOL ??
-      process.env.ADMIN_RUNTIME_DATABASE_URL ??
-      process.env.DATABASE_URL!;
+    const dbUrl = adminDbUrl();
 
     const clientE = new Client({ connectionString: dbUrl });
     const clientF = new Client({ connectionString: dbUrl });

@@ -16,6 +16,8 @@ import { storageStatePath } from '../fixtures/roles';
 // visual testing.
 // -----------------------------------------------------------------------------
 
+const OVERFLOW_TOLERANCE_PX = 4;
+
 /**
  * Horizontal overflow, in pixels. A few pixels of rounding is not a defect; a
  * table that runs off the side is.
@@ -26,7 +28,57 @@ async function horizontalOverflow(page: import('@playwright/test').Page): Promis
   );
 }
 
-const OVERFLOW_TOLERANCE_PX = 4;
+/**
+ * What is actually sticking out, so a failure names the element instead of a
+ * number.
+ *
+ * "overflows by 143px" was the entire failure message the first time this
+ * project ran on a Linux runner (CI run 33491923279), while the same page
+ * measured 0 on the developer's machine. A pixel count that reproduces nowhere
+ * is not a diagnosis, and every minute spent guessing at it is a minute the
+ * test could have spent explaining itself.
+ */
+async function overflowReport(page: import('@playwright/test').Page): Promise<string> {
+  const report = await page.evaluate(() => {
+    const doc = document.documentElement;
+    const limit = doc.clientWidth;
+    const rows: string[] = [];
+    for (const el of Array.from(document.querySelectorAll('*'))) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      const right = Math.round(r.right + window.scrollX);
+      if (right <= limit + 1) continue;
+      const cls = (el.getAttribute('class') ?? '').slice(0, 90);
+      rows.push(
+        `right=${right} w=${Math.round(r.width)} <${el.tagName.toLowerCase()}` +
+          `${el.id ? `#${el.id}` : ''} class="${cls}">`,
+      );
+    }
+    return {
+      clientWidth: limit,
+      scrollWidth: doc.scrollWidth,
+      bodyScrollWidth: document.body.scrollWidth,
+      offenders: rows.slice(0, 8),
+    };
+  });
+  return (
+    `clientWidth=${report.clientWidth} scrollWidth=${report.scrollWidth} ` +
+    `bodyScrollWidth=${report.bodyScrollWidth}\n` +
+    (report.offenders.length
+      ? `widest elements past the viewport:\n  ${report.offenders.join('\n  ')}`
+      : 'no element extends past the viewport — the overflow is on a scrolling ancestor')
+  );
+}
+
+/** Assert no catastrophic horizontal overflow, and say what caused it if there is. */
+async function expectNoHorizontalOverflow(page: import('@playwright/test').Page, label: string) {
+  const overflow = await horizontalOverflow(page);
+  if (overflow <= OVERFLOW_TOLERANCE_PX) return;
+  expect(
+    overflow,
+    `${label} overflows by ${overflow}px at 320px\n${await overflowReport(page)}`,
+  ).toBeLessThanOrEqual(OVERFLOW_TOLERANCE_PX);
+}
 
 test.describe('front-desk surfaces at 320px', () => {
   test.use({ storageState: storageStatePath('FRONT_DESK') });
@@ -35,10 +87,7 @@ test.describe('front-desk surfaces at 320px', () => {
     test(`@responsive ${route} does not scroll horizontally`, async ({ page }) => {
       await page.goto(route);
       await expect(page.locator('#main')).toBeVisible();
-      const overflow = await horizontalOverflow(page);
-      expect(overflow, `${route} overflows by ${overflow}px at 320px`).toBeLessThanOrEqual(
-        OVERFLOW_TOLERANCE_PX,
-      );
+      await expectNoHorizontalOverflow(page, route);
     });
 
     test(`@responsive ${route} keeps navigation reachable`, async ({ page }) => {
@@ -58,10 +107,7 @@ test.describe('the analytics surface at 320px', () => {
   test('@responsive /analytics does not scroll horizontally', async ({ page }) => {
     await page.goto('/analytics');
     await expect(page.locator('#main')).toBeVisible();
-    const overflow = await horizontalOverflow(page);
-    expect(overflow, `/analytics overflows by ${overflow}px at 320px`).toBeLessThanOrEqual(
-      OVERFLOW_TOLERANCE_PX,
-    );
+    await expectNoHorizontalOverflow(page, '/analytics');
   });
 });
 
@@ -73,10 +119,7 @@ test.describe('the Access Locked state at 320px', () => {
     // meets when something has already gone wrong.
     await page.goto('/scheduler');
     await page.waitForLoadState('domcontentloaded');
-    const overflow = await horizontalOverflow(page);
-    expect(overflow, `the denial state overflows by ${overflow}px`).toBeLessThanOrEqual(
-      OVERFLOW_TOLERANCE_PX,
-    );
+    await expectNoHorizontalOverflow(page, 'the denial state');
     await expect(page.locator('body')).toBeVisible();
   });
 });
