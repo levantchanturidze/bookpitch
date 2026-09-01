@@ -37,6 +37,7 @@
 // something that ASKS whether the caller holds it:
 //
 //   requirePermission(ctx, 'key', …)          → throws ForbiddenError on deny
+//   requirePagePermission(ctx, 'key', …)      → same decision, 403 page (P17-013)
 //   can(<anything>, 'key', …)                 → authorization decision
 //   ctx.permissions.has(perm('key'))          → direct membership test
 //   ctx.platformPermissions.has(perm('key'))  → ditto
@@ -165,10 +166,16 @@ export function scanEnforcement(): Map<string, Reference[]> {
       if (ts.isCallExpression(node)) {
         const callee = node.expression;
 
-        // requirePermission(ctx, 'key', …) and can(ctx, 'key', …).
+        // requirePermission(ctx, 'key', …), its page-render twin
+        // requirePagePermission (P17-013 — same decision, different refusal
+        // transport), and can(ctx, 'key', …). Omitting the page form would
+        // reclassify every permission enforced only by a page as ORPHAN and
+        // fail CI for a rename.
         if (
           ts.isIdentifier(callee) &&
-          (callee.text === 'requirePermission' || callee.text === 'can')
+          (callee.text === 'requirePermission' ||
+            callee.text === 'requirePagePermission' ||
+            callee.text === 'can')
         ) {
           const key = keyFromArgument(node.arguments[1]);
           if (key) record(key, node, callee.text);

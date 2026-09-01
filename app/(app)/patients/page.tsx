@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission, can } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission, can } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { loadLocationsForOrg } from '@/lib/active-location';
@@ -24,7 +24,7 @@ export const metadata = { title: 'Patients · Bookpitch' };
 // fetched per selection from GET /api/customers/[id].
 export default async function PatientsPage() {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'client.read:contact',
     { organizationId: ctx.activeOrganizationId! },

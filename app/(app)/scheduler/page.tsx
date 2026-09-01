@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { loadLocationsForOrg } from '@/lib/active-location';
@@ -13,7 +13,7 @@ export const metadata = { title: 'Scheduler · Bookpitch' };
 // client SchedulerView. Server Actions revalidate this route after each write.
 export default async function SchedulerPage() {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'booking.read',
     { organizationId: ctx.activeOrganizationId! },

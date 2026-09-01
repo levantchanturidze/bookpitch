@@ -19,10 +19,19 @@ import { NAV_ITEMS } from '@/components/shell/nav-items';
 
 const APP_DIR = path.join(process.cwd(), 'app', '(app)');
 
-/** First permission key passed to a requirePermission(...) call in `source`. */
+/**
+ * First permission key passed to a permission-guard call in `source`.
+ *
+ * Both forms count. P17-013 introduced `requirePagePermission`, which makes the
+ * same decision as `requirePermission` and differs only in how it refuses — a
+ * 403 page instead of a thrown ForbiddenError. Matching only the original name
+ * made every converted page look unguarded, which is how this test failed the
+ * rename: eight "has no requirePermission() call" failures for eight pages that
+ * were guarded the whole time.
+ */
 function guardedPermissions(source: string): string[] {
   const out: string[] = [];
-  for (const match of source.matchAll(/requirePermission\s*\(([\s\S]{0,400}?)\)\s*;/g)) {
+  for (const match of source.matchAll(/require(?:Page)?Permission\s*\(([\s\S]{0,400}?)\)\s*;/g)) {
     const first = match[1].match(/'([^']+)'/);
     if (first) out.push(first[1]);
   }
@@ -54,7 +63,10 @@ describe('F16-003 · sidebar permissions match the guard on the page they link t
       // If this fails, the route stopped guarding entirely — a far worse
       // problem than a mismatch, and the reason the emptiness is asserted
       // separately from the comparison.
-      expect(guarded.length, `${item.href} has no requirePermission() call`).toBeGreaterThan(0);
+      expect(
+        guarded.length,
+        `${item.href} has no requirePermission()/requirePagePermission() call`,
+      ).toBeGreaterThan(0);
 
       expect(
         guarded,

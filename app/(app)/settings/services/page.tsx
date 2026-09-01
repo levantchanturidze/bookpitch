@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { listLocations, listServices } from '@/lib/admin';
 import ServicesPanel, { type ServiceRow } from '@/components/settings/ServicesPanel';
 import { withOrg } from '@/lib/db';
@@ -8,7 +8,12 @@ export const dynamic = 'force-dynamic';
 
 export default async function SettingsServicesPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'service.manage', { organizationId: ctx.activeOrganizationId! }, 'admin');
+  requirePagePermission(
+    ctx,
+    'service.manage',
+    { organizationId: ctx.activeOrganizationId! },
+    'admin',
+  );
   const session = ctxToSession(ctx);
   const [rows, locations, org] = await Promise.all([
     listServices(session),

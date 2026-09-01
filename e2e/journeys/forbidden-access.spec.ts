@@ -17,21 +17,24 @@ import { storageStatePath } from '../fixtures/roles';
 // -----------------------------------------------------------------------------
 
 /**
- * Denial is either a redirect away from the URL, or an error response whose
- * body does not contain the protected page.
+ * Denial is either a redirect away from the URL, or a 403 carrying the
+ * access-denied screen.
  *
- * P17-013, measured here: the "Operational Access Lock" panel in
- * app/(app)/error.tsx does NOT render in production. It dispatches on
- * `error.name === 'ForbiddenError'`, and Next.js strips the name and message
- * from errors forwarded to the client in production builds — documented at
- * node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/error.md:106.
- * A denied user gets HTTP 500 and the generic "Something went wrong" fallback.
+ * P17-013, fixed 2026-09-01. This used to accept "an error response whose body
+ * does not contain the protected page", because that was all production could
+ * manage: `app/(app)/error.tsx` dispatched on `error.name === 'ForbiddenError'`
+ * and Next strips the name from errors forwarded to the client in a production
+ * build, so a denied user got HTTP 500 and "Something went wrong".
  *
- * The refusal itself is correct: rbac.enforce_deny fires, the status is 5xx and
- * no tenant data is rendered. So this asserts the properties that must hold —
- * the protected content is absent and an error state is shown — rather than
- * pinning the specific copy, which would encode today's defect as tomorrow's
- * expectation.
+ * The guard now calls Next's `forbidden()` (lib/rbac/page-guard.ts), which
+ * renders `app/(app)/forbidden.tsx` with a 403. So this asserts the outcome
+ * rather than tolerating the defect:
+ *
+ *   • the status is exactly 403 — a 500 fails here now;
+ *   • the access-denied panel is present;
+ *   • the generic server-error copy is absent, which is the assertion that
+ *     would have caught the old behaviour;
+ *   • the response names no permission, so the refusal leaks nothing.
  */
 async function expectDenied(page: import('@playwright/test').Page, url: string) {
   const res = await page.goto(url);
@@ -41,15 +44,23 @@ async function expectDenied(page: import('@playwright/test').Page, url: string) 
   if (landedElsewhere) return;
 
   const status = res?.status() ?? 0;
-  expect(status, `${url} returned ${status} — it was not refused`).toBeGreaterThanOrEqual(400);
+  expect(status, `${url} returned ${status} — a denial must be 403, not a server error`).toBe(403);
 
-  // app/(app)/error.tsx is a client component, so the panel appears only after
-  // hydration. Counting immediately after domcontentloaded is a race — it
-  // happened to pass on /scheduler and fail on /audit, which is a slower page.
   await expect(
-    page.getByText(/access lock|something went wrong/i).first(),
-    `${url} returned ${status} but rendered no error state`,
+    page.getByText(/operational access lock/i).first(),
+    `${url} returned 403 but rendered no access-denied panel`,
   ).toBeVisible({ timeout: 15_000 });
+
+  // The complement. Without it, a 403 that rendered the generic error page
+  // would pass — which is exactly the state this test used to accept.
+  await expect(
+    page.getByText(/something went wrong/i),
+    `${url} rendered the generic server-error page instead of the denial`,
+  ).toHaveCount(0);
+
+  // The panel is shown to the refused user; it must not tell them which
+  // permission gates the page.
+  await expect(page.getByText(/missing permission/i)).toHaveCount(0);
 }
 
 /** True when `url` renders as itself with no error state — i.e. was NOT refused. */
@@ -96,15 +107,32 @@ test.describe('MARKETING cannot reach the calendar', () => {
     await expectDenied(page, '/audit');
   });
 
-  test('@journey COMPLEMENT: /patients IS reachable, so the check is not vacuous', async ({
+  test('@journey /patients is refused — F16-012 revoked client.read:contact', async ({ page }) => {
+    // This test used to assert the opposite, as the complement for the three
+    // denials above, and it passed for two compounding reasons: F16-012 had
+    // already revoked MARKETING's client.read:contact, so the page was in fact
+    // refused; and the refusal rendered as a 500 whose error page still keeps
+    // the URL, still sits inside <main>, and — because error.name does not
+    // survive to the client — never contained the words it looked for. Three
+    // assertions, all satisfied by a denial they were written to rule out.
+    //
+    // The complement is now /analytics below, which MARKETING genuinely holds.
+    await expectDenied(page, '/patients');
+  });
+
+  test('@journey COMPLEMENT: /analytics IS reachable, so the checks are not vacuous', async ({
     page,
   }) => {
-    // Without this, "everything is denied" would pass the three tests above
-    // even if the session were broken and every page redirected to /signin.
-    await page.goto('/patients');
-    expect(new URL(page.url()).pathname).toBe('/patients');
+    // Without this, "everything is denied" would pass every test above even if
+    // the session were broken and every page redirected to /signin. /analytics
+    // is MARKETING's landing (lib/rbac/landing.ts) and report.branch authorises
+    // it, so this is the one surface that must render.
+    const res = await page.goto('/analytics');
+    expect(res?.status()).toBe(200);
+    expect(new URL(page.url()).pathname).toBe('/analytics');
     await expect(page.locator('main').first()).toBeVisible();
-    await expect(page.getByText(/access locked/i)).toHaveCount(0);
+    await expect(page.getByText(/operational access lock/i)).toHaveCount(0);
+    await expect(page.getByText(/something went wrong/i)).toHaveCount(0);
   });
 });
 

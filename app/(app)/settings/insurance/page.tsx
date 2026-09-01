@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { listInsurers } from '@/lib/insurance';
 import { withOrg } from '@/lib/db';
 import InsuranceView from './InsuranceView';
@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function InsurancePage() {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'service.manage',
     { organizationId: ctx.activeOrganizationId! },

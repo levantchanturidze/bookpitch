@@ -1,4 +1,4 @@
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { queryPlatformAudit } from '@/lib/platform/audit';
 import { unsafePrismaAdmin } from '@/lib/db';
 import AuditView from '@/components/platform/AuditView';
@@ -12,7 +12,7 @@ export default async function PlatformAuditPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'platform.audit.read', undefined, 'platform');
+  requirePagePermission(ctx, 'platform.audit.read', undefined, 'platform');
 
   const sp = await searchParams;
   const s = (k: string) => (typeof sp[k] === 'string' ? (sp[k] as string) : '') || null;

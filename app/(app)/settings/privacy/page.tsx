@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { recentDsrActivity, dsrDeadlineDays } from '@/lib/gdpr-queue';
 import PrivacyView from './PrivacyView';
@@ -14,7 +14,7 @@ export const dynamic = 'force-dynamic';
 //   demand (endpoints already exist under /api/customers/[id]/*).
 export default async function PrivacyPage() {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'org.settings.update:org',
     { organizationId: ctx.activeOrganizationId! },
