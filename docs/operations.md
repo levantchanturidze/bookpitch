@@ -382,13 +382,55 @@ the day it was taken, not of `main`.
 
 `.github/workflows/cron.yml`, all bearer-authenticated with `CRON_SECRET`:
 
-| Job | Schedule (UTC) | Endpoint | Visible symptom if it stops |
-| --- | --- | --- | --- |
-| reminders | every 15 min | `/api/cron/reminders` | reminders stop going out |
-| housekeeping | hourly at :03 | `/api/cron/housekeeping` | outbox stops draining; stale rows accumulate |
-| retention | 02:17 daily | `/api/cron/retention` | customers past their window keep PII |
-| audit-digest | Mon 08:00 | `/api/cron/audit-digest` | owners stop getting the weekly rollup |
-| db-partitions | 01:30 on the 1st | `/api/cron/db-partitions` | rows fall into `audit_log_default` |
+| Job | Schedule (UTC) | Endpoint | Contacts customers? | Visible symptom if it stops |
+| --- | --- | --- | --- | --- |
+| reminders | every 15 min | `/api/cron/reminders` | **YES — email and SMS** | reminders stop going out |
+| housekeeping | hourly at :03 | `/api/cron/housekeeping` | no | outbox stops draining; stale rows accumulate |
+| retention | 02:17 daily | `/api/cron/retention` | no | customers past their window keep PII |
+| audit-digest | Mon 08:00 | `/api/cron/audit-digest` | no — owners only, and gated off | owners stop getting the weekly rollup |
+| db-partitions | 01:30 on the 1st | `/api/cron/db-partitions` | no | rows fall into `audit_log_default` |
+
+### Dispatching a cron job by hand
+
+`only` is **required** and has no blank option. It used to default to blank,
+and blank ran all five jobs — so the most likely way to use the workflow (open
+it, press the button, change nothing) was also the one that mailed every
+tenant's customers.
+
+- The four jobs marked "no" above run on their own, with no confirmation.
+  This is what you want during an incident: draining the outbox must not
+  require also firing reminders.
+- **`reminders` and `all` additionally require typing
+  `SEND-REMINDERS-TO-CUSTOMERS` into the confirm box.** `runReminderTick`
+  selects appointments in `[now, now + reminderLeadHours]`, so a dispatch
+  really can send mail and SMS to a real customer whose appointment falls in
+  that window.
+- Getting the confirmation wrong **fails** the run rather than quietly doing
+  nothing. A green run that performed no work is the same useless signal this
+  runbook exists to prevent.
+
+### Scheduler reliability, and why the lead time has a floor
+
+GitHub does not guarantee scheduled delivery, and this account routinely sees
+hours (R-08). Measured 2026-09-01, scheduled events only:
+
+```
+00:05  00:27  05:07  06:07  06:24  07:49  10:05  12:26  14:52  17:13  18:08
+```
+
+Worst gap **4h40m** against a declared 15 minutes. The reminder window is a
+sliding `[now, now + reminderLeadHours]` recomputed each tick, so a lead time
+**shorter than the gap between ticks** means appointments are not reminded
+late — they are never reminded, because by the next tick they have already
+started and left the window. `MIN_REMINDER_LEAD_HOURS` (8) is the floor derived
+from that measurement. The 24-hour default has roughly five times the margin it
+needs.
+
+If a sub-floor lead time is ever genuinely required, the scheduler has to
+change rather than the floor. Supabase `pg_cron` and `pg_net` are available on
+this project and were verified installable on 2026-09-01 in a rolled-back
+transaction; Vercel Cron on the current Hobby plan is daily-only and cannot
+serve this.
 
 `CRON_SECRET` lives in **two** places and must match: Vercel Production and the
 GitHub Actions secret. Rotating one without the other produces exactly the
@@ -404,6 +446,25 @@ gh workflow run cron.yml                     # prove it before walking away
 The monitor watches the *symptoms* of each job in the database, not just the
 workflow's exit code, because a cron that returns 200 while doing nothing has
 happened here before.
+
+It also watches the jobs' own **heartbeats**. Everything the monitor knew about
+cron health used to come from the GitHub Actions runs list — "a workflow was
+queued and its curl exited 0" — which is a fact about GitHub, not about
+Bookpitch, and stays green if the endpoint does nothing. Each job now writes
+`cron_heartbeat` on completion, so two different questions have two different
+answers:
+
+| `cron-staleness` | `cron-heartbeat-stale` | Reading |
+| --- | --- | --- |
+| stale | fresh | GitHub is late; the work is happening. Nothing to fix in the app |
+| fresh | stale | the schedule arrives and the endpoint does nothing — **the case nothing could previously see** |
+| stale | stale | the job is not running at all |
+
+And `cron-manual-verification` is an **INFO** line, excluded from the pass/fail
+counts. A `workflow_dispatch` proves the endpoint answers when called; it
+proves nothing about schedule delivery. Counting the two together is what let
+five manual dispatches displace six failed scheduled runs on 2026-09-01 and
+close incident #38 as "recovered".
 
 ---
 

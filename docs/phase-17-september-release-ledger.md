@@ -1,5 +1,12 @@
 # September release — integration, verification and what is actually true
 
+> **Current state: see [`docs/release-state.md`](./release-state.md) (2026-09-02).**
+> This ledger is a **historical record** of what was measured when it was
+> written. Statements below are in the present tense of their own date, not of
+> today; where they disagree with `release-state.md` about the present,
+> `release-state.md` is correct. Nothing here is edited to pretend an incident
+> did not happen.
+
 Session date: **2026-09-01**. Working branch `integration/phase16-phase17`,
 pull request **#36**.
 
@@ -1049,6 +1056,20 @@ about that has changed.
 
 ## 18. The 24-hour soak — criterion, and why the clock has not started
 
+> **[CORRECTED 2026-09-02]** This section previously expressed the target as
+> "21/21 with 2 paused", which cannot be satisfied: if 2 of 21 are paused then
+> at most 19 can pass. The count also moves whenever a check is added — PR #46
+> adds two — so any fixed number is wrong the next time the monitor changes.
+> The criterion never depended on a total, and is now stated without one:
+>
+> > every applicable check passed, only explicitly accepted checks paused, and
+> > zero checks failed — held without interruption for 24 hours, on one
+> > deployment, with at least six *natural* monitor observations.
+>
+> It is executable rather than prose now: `scripts/soak-controller.mjs`, run by
+> `.github/workflows/soak.yml`, with the gates asserted in
+> `tests/soak-controller.test.ts`. See `docs/release-state.md`.
+
 ### The rule
 
 The clock starts at the **first monitor run in which every applicable check is
@@ -1082,7 +1103,9 @@ check out of scope, would be choosing the criterion to fit the result.
 3. Run `SENTRY_DSN=… npm run verify:sentry` until it reports level 4 with an
    event id. Levels 1–3 are not enough; only level 4 means an error would reach
    a human.
-4. Wait for the first monitor run reporting **21/21 with 2 paused**, and record
+4. Wait for the first monitor run in which **every applicable check passed,
+   only the explicitly accepted checks are paused, and zero checks failed**,
+   and record
    its run id and `completed_at`. **That timestamp is the soak start.**
 5. The soak ends 24 hours later, and requires throughout: monitor runs
    completing, cron runs succeeding, a nightly backup succeeding, no new

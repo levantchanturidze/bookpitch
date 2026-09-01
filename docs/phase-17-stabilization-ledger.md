@@ -1,5 +1,12 @@
 # Phase 17 — Stabilization ledger
 
+> **Current state: see [`docs/release-state.md`](./release-state.md) (2026-09-02).**
+> This ledger is a **historical record** of what was measured when it was
+> written. Statements below are in the present tense of their own date, not of
+> today; where they disagree with `release-state.md` about the present,
+> `release-state.md` is correct. Nothing here is edited to pretend an incident
+> did not happen.
+
 > **Superseded in places, 2026-09-01.** This document records Phase 17 as it
 > stood on 2026-08-23, when GitHub Actions was billing-suspended and nothing
 > here was CI-verified. Both of those are now false: Actions was restored on
@@ -73,7 +80,7 @@ run `33521310009` across all ten organizations.
 
 | # | Finding | Verdict | Evidence |
 |---|---|---|---|
-| §5 | MARKETING lands on an unauthorized `/patients` | **NOT REPRODUCIBLE** | MARKETING still holds `client.read:contact` in both `prisma/rbac-seed.ts` and migration `20260810000006`, and `/patients` requires exactly that. The revocation exists only on the frozen Phase 16 branch (migration `20260823000001_revoke_marketing_client_contact`), which does not touch the landing. |
+| §5 | MARKETING lands on an unauthorized `/patients` | **NOT REPRODUCIBLE** | **[SUPERSEDED 2026-09-01]** MARKETING no longer holds `client.read:contact` in production — migration `20260823000001` was applied in run `33509215538` and the production invariant check verifies its absence. At the time of writing it still held the grant in both `prisma/rbac-seed.ts` and migration `20260810000006`, and `/patients` required exactly that. The revocation exists only on the frozen Phase 16 branch (migration `20260823000001_revoke_marketing_client_contact`), which does not touch the landing. |
 | §7 | The signup journey is silently excluded | **CONFIRMED, and worse** | `ci.yml` ran `--grep "@a11y\|@responsive"`; `e2e/signup-scheduler.spec.ts` carried no tag. It had also gone stale — it waited for `/signin` after signup, but signup has redirected to `/onboard/pending` since email verification landed. It would have failed had it ever run. |
 | §10 | Sentry is a no-op in production | **CONFIRMED, and worse** | `vercel env ls production`: both `*_ENVIRONMENT` names set, neither DSN present. `next.config.ts` has no `withSentryConfig` and there was no `instrumentation-client.ts`, so the browser config was never bundled — and importing it **failed the build** (§4). |
 | §14 | Password reset swallows delivery failure | **CONFIRMED** | `lib/auth/password-reset.ts:65-77` — direct `provider.send()`, `catch → log.warn`, route answers 202. |

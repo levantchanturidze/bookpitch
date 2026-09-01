@@ -1,5 +1,12 @@
 # Phase 16 — September integration checklist
 
+> **Current state: see [`docs/release-state.md`](./release-state.md) (2026-09-02).**
+> This ledger is a **historical record** of what was measured when it was
+> written. Statements below are in the present tense of their own date, not of
+> today; where they disagree with `release-state.md` about the present,
+> `release-state.md` is correct. Nothing here is edited to pretend an incident
+> did not happen.
+
 > **Executed 2026-09-01.** Outcome recorded in
 > [`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md).
 > Read the "What actually happened" section below before following the
@@ -118,7 +125,7 @@ instead, and why:
 | 7 | Rebase Phase 16 onto final `main` | **Merged, not rebased.** The Phase 16 and Phase 17 commits were already integrated at `86e09a9`/`00a5d76`; `ceeb9a9` merges current `main` in. The historical commit trail is preserved rather than flattened. |
 | 8 | Rerun the full local matrix | **Done** — September ledger §8. |
 | 9–11 | Push, require every check on the exact head SHA, merge normally | **Done** — September ledger §9–§10. |
-| 12 | Verify migration 63 applies through the workflow | **BLOCKED.** There is no production database to apply it to. The migration is in `main` and applies cleanly to an empty database (63 applied, 0 unfinished, no drift). |
+| 12 | Verify migration 63 applies through the workflow | ~~**BLOCKED.** There is no production database to apply it to.~~ **DONE 2026-09-01** — the database was restored and migration 63 applied exactly once through `migrate.yml` (run `33509215538`). |
 | 13 | Production RBAC proof that MARKETING holds exactly `report.own` + `report.branch` | **BLOCKED** in production; proven in CI against a real database, and at the browser level: MARKETING receives 403 on `/patients` and 200 on `/analytics`. |
 | 14 | Start a Phase 16 post-deployment monitoring window | **NOT STARTED**, for the same reason as step 4. |
 

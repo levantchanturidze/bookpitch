@@ -134,7 +134,7 @@ the caps can safely rise.
 
 | Gate | Evidence | Owner | Status | Severity | Action | Consequence if unresolved |
 |---|---|---|---|---|---|---|
-| **Production encryption key parses** | Malformed; `/api/cron/audit-digest` → 500 (R-16) | **owner** | **FAIL** | **P0 Blocker** | Prefix with `<key-id>:` | **Signup, clinical fields and MFA all 500** |
+| **Production encryption key parses** | ~~Malformed~~ **corrected 2026-09-01**; `production-config-invalid — malformed: 0` | **owner** | **PASS** | Cleared | — | Was: signup, clinical fields and MFA all 500 (R-16) |
 | Unit/integration suite | 1003 tests, 83 files, exit 0 | agent | **PASS** | — | — | — |
 | Browser/mobile/a11y suite | 177 passed, 3 skipped, 6 projects, exit 0 | agent | **PASS** | — | — | — |
 | Suite runs in CI | `e2e` job added (P15-006) | agent | **PASS** | — | — | Regressions invisible |
