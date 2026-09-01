@@ -1,0 +1,78 @@
+name: Production soak
+
+# Durable 24-hour soak controller.
+#
+# The soak has been "about to start" since Phase 15 and has never run, because
+# every previous plan needed an interactive session to survive 24 hours. This
+# one does not: state lives in a GitHub issue, each tick is one short scheduled
+# run, and nothing sleeps on a runner.
+#
+# Ticks are cheap and read-only against production. They do NOT gate anything
+# by themselves — the soak's verdict is published to the issue, which is the
+# durable record §13 asks for.
+#
+# Starting a soak is deliberate: a scheduled tick with no open soak issue does
+# nothing. Dispatch with start=true to begin one against an exact SHA.
+
+on:
+  schedule:
+    # Offset from the production monitor's own schedule so a tick reads
+    # observations that already exist rather than racing them.
+    - cron: '20,50 * * * *'
+  workflow_dispatch:
+    inputs:
+      start:
+        description: 'Start a NEW soak. Requires release_sha.'
+        required: true
+        type: boolean
+        default: false
+      release_sha:
+        description: 'Exact merged SHA the soak measures. Required when start=true.'
+        required: false
+        type: string
+        default: ''
+      deployment_id:
+        description: 'Vercel deployment id serving that SHA (evidence only).'
+        required: false
+        type: string
+        default: ''
+      sentry_receipt_verified:
+        description: 'Set true ONLY after scripts/verify-sentry.mjs reached level 4 (RECEIVED).'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # The controller writes its state and evidence to an issue. It has no write
+  # access to the repository itself, so it can never push to main.
+  issues: write
+
+concurrency:
+  # Two ticks racing would double-post and could double-count a restart.
+  group: production-soak
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to start a soak without a SHA
+        if: ${{ inputs.start == true && inputs.release_sha == '' }}
+        run: |
+          echo "::error::start=true requires release_sha — a soak with no pinned SHA measures nothing."
+          exit 1
+
+      - name: Soak tick
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          MONITOR_PRODUCTION_URL: https://bookpitch.ge
+          SOAK_START: ${{ inputs.start }}
+          SOAK_RELEASE_SHA: ${{ inputs.release_sha }}
+          SOAK_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          SOAK_SENTRY_RECEIPT_VERIFIED: ${{ inputs.sentry_receipt_verified }}
+        run: node scripts/soak-controller.mjs
