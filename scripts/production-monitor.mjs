@@ -406,6 +406,44 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
           `(validators in lib/ops-metrics.ts SECURITY_ENV_VALIDATORS; names never leave the server)`,
   });
 
+  // The outbound adapters, separated from the secret check above on 2026-09-01.
+  //
+  // They used to share `invalidSecurityEnv`, so a payment gateway still on the
+  // mock adapter before launch reported as "A required secret is set but
+  // structurally unusable" — the same line, the same title and the same
+  // severity as a malformed FIELD_ENCRYPTION_KEY. Production sat at
+  // "malformed: 2" with both of them being deliberate, which is how a check
+  // teaches an operator to stop reading it.
+  //
+  // `mock` before launch is PAUSED: reporting PASS would be a lie (no payment
+  // or SMS reaches anyone), reporting FAIL would page someone about a decision
+  // every 30 minutes forever. A value that is neither a real adapter nor
+  // `mock` is a typo, fails closed at the first send and nowhere earlier, and
+  // is a genuine FAIL.
+  const mockedProviders = (metrics?.config ?? {}).mockedProviderEnv;
+  const unrecognisedProviders = (metrics?.config ?? {}).unrecognisedProviderEnv;
+  if (mockedProviders !== undefined || unrecognisedProviders !== undefined) {
+    const mocked = mockedProviders ?? 0;
+    const unrecognised = unrecognisedProviders ?? 0;
+    results.push({
+      id: 'production-provider-mocked',
+      title: 'An outbound provider is not a real adapter',
+      ok: unrecognised === 0,
+      paused: unrecognised === 0 && mocked > 0,
+      detail:
+        unrecognised > 0
+          ? `${unrecognised} provider env var(s) name neither a real adapter nor "mock" — ` +
+            'the resolver fails closed at the first send and nothing earlier reports it ' +
+            '(names in lib/ops-metrics.ts PROVIDER_ENV_VALIDATORS; they never leave the server)'
+          : mocked > 0
+            ? `DISABLED BY CONFIGURATION — ${mocked} outbound provider(s) are on the "mock" ` +
+              'adapter. Nothing is delivered through them and the resolvers refuse mock in ' +
+              'production, so this is a deliberate pre-launch gate, not a fault. See ' +
+              'docs/deferred-features.md.'
+            : 'every configured provider names a real adapter',
+    });
+  }
+
   // P17-007. Deliberately its OWN check rather than folded into
   // production-config-incomplete above. Missing signup or security env means
   // the product is broken; a missing Sentry DSN means the product works and
@@ -450,6 +488,7 @@ export const OPS_DERIVED_CHECK_IDS = Object.freeze([
   'partition-maintenance',
   'production-config-incomplete',
   'production-config-invalid',
+  'production-provider-mocked',
   'production-observability-unconfigured',
 ]);
 

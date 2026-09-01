@@ -214,6 +214,21 @@ export type ConfigMetrics = {
    * Presence is not validity. This counts the difference.
    */
   invalidSecurityEnv: number;
+  /**
+   * Providers deliberately left on the `mock` adapter before launch.
+   *
+   * Reported, never counted as a fault: `getGateway()` and the messaging
+   * resolvers refuse `mock` in production, so the runtime already fails closed.
+   * This number is how an operator sees it before a customer does.
+   */
+  mockedProviderEnv: number;
+  /**
+   * Providers set to a value that is neither a real adapter nor `mock`.
+   *
+   * A typo. Non-zero is a fault: the resolver throws at the first send, and
+   * nothing earlier says so.
+   */
+  unrecognisedProviderEnv: number;
 };
 
 export type OpsMetrics = {
@@ -288,7 +303,15 @@ export function missingEnv(names: readonly string[]): string[] {
  * failure P15-010 was — a well-formed-looking value that every consumer
  * rejected at the first byte.
  */
-export const SECURITY_ENV_VALIDATORS: Readonly<Record<string, (value: string) => boolean>> = {
+/**
+ * Structural validators for the cryptographic and auth secrets.
+ *
+ * A failure here is a P0: the value is present, so `missingEnv()` says the
+ * configuration is complete, and the application throws at the first call that
+ * uses it. P15-010 was exactly this — FIELD_ENCRYPTION_KEY set without its
+ * `<key-id>:` prefix, signup returning 500, and nothing reporting it for weeks.
+ */
+export const SECRET_ENV_VALIDATORS: Readonly<Record<string, (value: string) => boolean>> = {
   // lib/crypto.ts parseKeySpec: "<key-id>:<64-hex-chars>", key-id non-empty.
   FIELD_ENCRYPTION_KEY: (v) => {
     const colon = v.indexOf(':');
@@ -300,19 +323,41 @@ export const SECURITY_ENV_VALIDATORS: Readonly<Record<string, (value: string) =>
   RATE_LIMIT_HMAC_KEY: (v) => /^[0-9a-fA-F]{64}$/.test(v),
   // Auth.js refuses anything trivially short.
   AUTH_SECRET: (v) => v.length >= 32,
+};
 
-  // F16-001/002: a provider set to "mock" in production is set-but-unusable in
-  // the most literal sense — the adapter returns a synthetic success without
-  // contacting anyone. getGateway() and the messaging resolvers already refuse
-  // it at the call site, but that only fires when something tries to pay or
-  // send. This makes the same fault visible to the monitor beforehand, rather
-  // than at the first real payment.
-  //
-  // Absence is not checked here (invalidEnv() skips unset variables, and the
-  // resolvers throw); this is strictly the "configured wrong" case.
+/**
+ * The outbound adapters. Separate from the secrets above, and the separation is
+ * the point.
+ *
+ * F16-001/002 put these in the same table, so "a payment gateway we have not
+ * launched is still on the mock adapter" and "the encryption key is malformed,
+ * signup is returning 500" arrived on one status line, under one title — "A
+ * required secret is set but structurally unusable". They are not the same
+ * event and must not share a line, for the reason
+ * `production-observability-unconfigured` is already its own check: an
+ * operator who learns to expect that line to be red stops reading it.
+ *
+ * A provider on `mock` before launch is a deliberate state, reported as PAUSED.
+ * A provider set to something that is neither a real adapter nor `mock` is a
+ * typo and a fault, and is reported as one. Absence is `missingEnv()`'s job —
+ * `invalidEnv()` skips unset variables and the resolvers fail closed.
+ */
+export const PROVIDER_ENV_VALIDATORS: Readonly<Record<string, (value: string) => boolean>> = {
   PAYMENT_GATEWAY: (v) => isRealProvider(v, ['bog', 'bog_ipay', 'tbc', 'tbc_ecommerce']),
   EMAIL_PROVIDER: (v) => isRealProvider(v, ['postmark', 'resend']),
   SMS_PROVIDER: (v) => isRealProvider(v, ['smsoffice']),
+};
+
+/**
+ * Both tables together.
+ *
+ * Kept so a caller that wants "every structural validator" still has one name
+ * for it. `collectConfigMetrics()` deliberately does NOT use it — it reports
+ * the two halves separately.
+ */
+export const SECURITY_ENV_VALIDATORS: Readonly<Record<string, (value: string) => boolean>> = {
+  ...SECRET_ENV_VALIDATORS,
+  ...PROVIDER_ENV_VALIDATORS,
 };
 
 /**
@@ -343,13 +388,32 @@ export function invalidEnv(
     .map(([name]) => name);
 }
 
+/**
+ * Providers that are set to the literal `mock` adapter.
+ *
+ * Distinguished from a typo because the two need different responses: `mock`
+ * before launch is a decision, `mokc` is a fault that will fail closed at the
+ * first real send and nowhere earlier.
+ */
+export function mockedProviders(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string[] {
+  return Object.keys(PROVIDER_ENV_VALIDATORS).filter(
+    (name) => (env[name] ?? '').trim().toLowerCase() === 'mock',
+  );
+}
+
 export function collectConfigMetrics(): ConfigMetrics {
   return {
     missingSignupEnv: missingEnv(REQUIRED_SIGNUP_ENV).length,
     missingEmailEnv: missingEnv(REQUIRED_EMAIL_ENV).length,
     missingSecurityEnv: missingEnv(REQUIRED_SECURITY_ENV).length,
     missingObservabilityEnv: missingEnv(REQUIRED_OBSERVABILITY_ENV).length,
-    invalidSecurityEnv: invalidEnv().length,
+    // Secrets only. This is the number the P0 check reads, and folding the
+    // providers into it is what made that check permanently red.
+    invalidSecurityEnv: invalidEnv(SECRET_ENV_VALIDATORS).length,
+    mockedProviderEnv: mockedProviders().length,
+    unrecognisedProviderEnv: invalidEnv(PROVIDER_ENV_VALIDATORS).length - mockedProviders().length,
   };
 }
 
