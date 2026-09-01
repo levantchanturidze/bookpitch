@@ -803,3 +803,68 @@ describe('mocked providers are separated from malformed secrets', () => {
     ).toBeUndefined();
   });
 });
+
+// -----------------------------------------------------------------------------
+// A stale cron has two causes that need opposite responses.
+//
+// Measured on this repository 2026-09-01: `*/15 * * * *` was delivered at
+// 00:05, 00:27, 05:07, 06:07, 06:24, 07:49, 10:05 and 12:26 UTC — gaps of up
+// to 4h39m against a declared 15 minutes. The 90-minute limit encodes
+// "reminders run every 15 minutes, so a 90-minute gap means something broke",
+// and that premise no longer holds.
+//
+// The threshold is deliberately NOT raised: reminders really are late, which is
+// a real product impact for a booking system. What the check must do is say
+// whether the operator should fix the app or accept GitHub's queue.
+// -----------------------------------------------------------------------------
+describe('a stale cron says which failure it is', () => {
+  const NOW = new Date('2026-09-01T14:20:00Z');
+
+  function run(runId: number, conclusion: string, completedAt: string) {
+    return { status: 'completed', conclusion, completedAt, runId };
+  }
+
+  function staleness(runs: ReturnType<typeof run>[]) {
+    return evaluateCronHealth(runs, NOW).find((r: { id: string }) => r.id === 'cron-staleness');
+  }
+
+  it('names schedule delivery when the most recent run succeeded', () => {
+    const check = staleness([run(33507668170, 'success', '2026-09-01T12:26:30Z')]);
+    expect(check!.ok, 'reminders are late; this is still a failure').toBe(false);
+    expect(check!.detail).toMatch(/SUCCEEDED/);
+    expect(check!.detail).toMatch(/GitHub has not delivered the schedule/);
+    expect(check!.detail).toMatch(/the application is not broken/);
+  });
+
+  it('names the application when the most recent run failed', () => {
+    const check = staleness([
+      run(2, 'failure', '2026-09-01T12:30:00Z'),
+      run(1, 'success', '2026-09-01T09:00:00Z'),
+    ]);
+    expect(check!.ok).toBe(false);
+    expect(check!.detail).toMatch(/FAILURE/);
+    expect(check!.detail).toMatch(/not schedule delivery/);
+  });
+
+  it('COMPLEMENT: a fresh successful run is green and gets no cause clause', () => {
+    // Without this, appending a cause to everything would look like a pass.
+    const check = staleness([run(3, 'success', '2026-09-01T14:00:00Z')]);
+    expect(check!.ok).toBe(true);
+    expect(check!.detail).not.toMatch(/GitHub has not delivered/);
+    expect(check!.detail).not.toMatch(/not schedule delivery/);
+  });
+
+  it('COMPLEMENT: the 90-minute limit is unchanged', () => {
+    // The cause clause must not become a way to widen the window. 89 minutes
+    // passes, 91 does not.
+    expect(staleness([run(4, 'success', '2026-09-01T12:52:00Z')])!.ok).toBe(true);
+    expect(staleness([run(5, 'success', '2026-09-01T12:48:00Z')])!.ok).toBe(false);
+    expect(DEFAULTS.cronMaxAgeMinutes).toBe(90);
+  });
+
+  it('no runs at all still reports the original message', () => {
+    const check = staleness([]);
+    expect(check!.ok).toBe(false);
+    expect(check!.detail).toMatch(/no successful run found at all/);
+  });
+});

@@ -114,6 +114,35 @@ mitigation in place. **Accepted risk** = proceed, informed.
 - **Launch: Accepted. Pilot: Accepted. Money: yes, to remove (paid plan or a
   public repository — neither is authorised).**
 
+## R-08 · GitHub delivers scheduled workflows hours late — **measured 2026-09-01**
+
+> **Update 2026-09-01: this is not limited to low-frequency schedules, and the
+> delay is hours, not minutes.** Every scheduled event delivered to this
+> repository on 2026-09-01, from the API:
+>
+> | Declared | Delivered (UTC) | Worst gap |
+> |---|---|---|
+> | Scheduled crons `*/15 * * * *` | 00:05, 00:27, 05:07, 06:07, 06:24, 07:49, 10:05, 12:26 | **4h39m** |
+> | Production monitor `5,35 * * * *` | 00:30, 05:32, 10:22 | **5h02m** |
+> | Production backup `40 1 * * *` | 06:44 | 5h04m late |
+>
+> Consequences that follow, and that are now recorded rather than rediscovered:
+>
+> - **`cron-staleness` cannot stay green on schedule delivery alone.** Its
+>   90-minute limit encodes "reminders run every 15 minutes, so a 90-minute gap
+>   means something broke". That premise is false here. The threshold is
+>   deliberately **not** raised — reminders really are late, and a booking
+>   product should say so — but the check now names its cause: whether the most
+>   recent run succeeded (GitHub's queue) or failed (the application).
+> - **Reminders are late by hours.** For a pilot with real appointments this is
+>   a product risk, not just an ops one. Mitigation if it matters before launch:
+>   move the reminder tick to a scheduler that guarantees delivery, or accept a
+>   documented worst-case lateness in the pilot agreement.
+> - **A 24-hour soak yields ~5–20 monitor observations, not 48.** Size the soak
+>   by observations, not by wall-clock alone.
+
+### Original entry
+
 ## R-08 · Low-frequency scheduled workflows are dropped by GitHub
 
 - **Evidence.** The `0 8 * * 1` schedule in `.github/workflows/cron.yml` did
