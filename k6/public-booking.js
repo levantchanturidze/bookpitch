@@ -72,7 +72,7 @@ function randomFutureIso() {
   return d.toISOString();
 }
 
-export default function (data) {
+export default function publicBookingScenario(data) {
   const body = {
     slug: PUBLIC_SLUG,
     staffId: data.staffId,

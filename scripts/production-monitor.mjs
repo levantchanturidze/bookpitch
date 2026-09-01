@@ -71,7 +71,7 @@ export function evaluateHealthBody(bodyText) {
   return { ok: true };
 }
 
-export function evaluateHealthProbes(probes, opts = DEFAULTS) {
+export function evaluateHealthProbes(probes) {
   const failures = probes.filter((p) => !p.ok);
   const serverErrors = probes.filter((p) => p.status >= 500);
   const redirects = probes.filter((p) => p.status >= 300 && p.status < 400);

@@ -9,7 +9,7 @@ vi.mock('@/auth', () => ({
 
 const { unsafePrismaAdmin, withoutRls } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
-const { updateMemberRole, removeMember, deleteStaff } = await import('@/lib/admin');
+const { updateMemberRole, deleteStaff } = await import('@/lib/admin');
 const { createInvitation } = await import('@/lib/invitations');
 const { ConflictError, InvalidInputError } = await import('@/lib/auth');
 const { assertNotLastOwner } = await import('@/lib/admin/last-owner');

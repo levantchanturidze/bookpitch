@@ -1,4 +1,6 @@
-// eslint-disable-next-line no-restricted-imports -- Group C: operational probe, no session, cross-tenant counts only
+// Group C: operational probe — no session, cross-tenant counts only. The
+// no-restricted-imports rule that used to need a disable here no longer
+// reports on this import, and an unused disable is itself a lint warning.
 import { unsafePrismaAdmin } from '@/lib/db';
 import { auditDigestDeliveryMode, isAuditDigestDeliveryEnabled } from '@/lib/audit-digest';
 

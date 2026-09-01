@@ -54,7 +54,7 @@ function makeP2002legacy(
   });
 }
 
-function makeP2003(fkMsg?: string): Prisma.PrismaClientKnownRequestError {
+function makeP2003(): Prisma.PrismaClientKnownRequestError {
   return new Prisma.PrismaClientKnownRequestError('FK constraint failed', {
     code: 'P2003',
     clientVersion: '7.9.0',
