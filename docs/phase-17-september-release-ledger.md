@@ -545,6 +545,27 @@ side of it, for the same single cause as everything else.
 | `/api/health/ops` unauthenticated | 401 |
 | `/book/<unknown-slug>` | **500** — no database |
 
+### Branch inventory — classified, not deleted
+
+Every remote branch, checked against `main` two ways, because the two answers
+differ and only one of them is about risk.
+
+| | Count | Meaning |
+|---|---|---|
+| tip is an ancestor of `main` | 3 | `main`, `integration/phase16-phase17`, `agent/phase-17-stabilization` — merged with a merge commit, so their commits are literally on `main` |
+| tip is **not** an ancestor, but its PR is **MERGED** | 26 | squash-merged. The *content* is on `main`; the commits are not. This is why `git merge-base --is-ancestor` says "unmerged" for branches that are nothing of the kind. |
+| tip is not an ancestor and its PR was **CLOSED** | 1 | `agent/phase-14-product-qa-ux` (PR #16), superseded by PR #17 from `agent/phase-14-followup`, which carries the same tip |
+| open | 1 | `agent/september-release-evidence` (PR #42) |
+
+**No branch holds work that is not on `main`.** `agent/phase-16-prepilot-product-refinement`
+is local-only, in the worktree at `/Users/levan/Desktop/VS/bookpitch-phase16`;
+its head `14f7c26` **is** an ancestor of `main`, so the Phase 16 history is no
+longer single-copy.
+
+Nothing was deleted. `delete_branch_on_merge` is off and no repository policy
+authorises a sweep, so this is an inventory for a later, deliberate cleanup —
+after the soak, and after the database is restored.
+
 ### Recovery branches retained
 
 `agent/phase-17-stabilization` and `integration/phase16-phase17` are **not**
