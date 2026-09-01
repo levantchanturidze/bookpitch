@@ -164,18 +164,52 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
   const completed = runs.filter((r) => r.status === 'completed');
   const latestSuccess = completed.find((r) => r.conclusion === 'success');
 
-  results.push(
-    evaluateWorkflowFreshness({
-      id: 'cron-staleness',
-      title: 'Scheduled cron workflow has stopped running',
-      label: 'Scheduled crons',
-      latestSuccess: latestSuccess
-        ? { completedAt: latestSuccess.completedAt, runId: latestSuccess.runId }
-        : null,
-      maxAgeMs: opts.cronMaxAgeMinutes * 60_000,
-      now,
-    }),
-  );
+  const staleness = evaluateWorkflowFreshness({
+    id: 'cron-staleness',
+    title: 'Scheduled cron workflow has stopped running',
+    label: 'Scheduled crons',
+    latestSuccess: latestSuccess
+      ? { completedAt: latestSuccess.completedAt, runId: latestSuccess.runId }
+      : null,
+    maxAgeMs: opts.cronMaxAgeMinutes * 60_000,
+    now,
+  });
+
+  // Say WHICH failure this is. "Scheduled crons have not succeeded recently"
+  // has two causes that need opposite responses, and the age alone cannot tell
+  // them apart:
+  //
+  //   the last run FAILED          the endpoint or the app is broken — fix it
+  //   the last run SUCCEEDED       GitHub did not deliver the schedule — the
+  //                                app is fine and reminders are merely late
+  //
+  // Measured on this repository 2026-09-01: `*/15 * * * *` was delivered at
+  // 00:05, 00:27, 05:07, 06:07, 06:24, 07:49, 10:05 and 12:26 UTC. Gaps of up
+  // to 4h39m against a declared 15 minutes, and the same for the monitor's own
+  // `5,35 * * * *`. The 90-minute limit encodes "reminders run every 15
+  // minutes, so a 90-minute gap means something broke" — a premise this
+  // account's scheduling has falsified.
+  //
+  // The threshold is NOT raised. Reminders really are late and that is a real
+  // product impact for a booking system; hiding it behind a bigger number would
+  // make the check agree with GitHub instead of with the customer. What changes
+  // is that the operator is told which lever to pull. See R-08.
+  if (!staleness.ok && completed.length > 0) {
+    const latest = completed[0];
+    if (latest.conclusion === 'success') {
+      const gapMs = now.getTime() - new Date(latest.completedAt).getTime();
+      staleness.detail +=
+        ` — the most recent run (${latest.runId}) SUCCEEDED ${(gapMs / 3_600_000).toFixed(1)}h ago,` +
+        ' so the endpoint is healthy and GitHub has not delivered the schedule since.' +
+        ' Reminders are late; the application is not broken (R-08).';
+    } else {
+      staleness.detail +=
+        ` — the most recent run (${latest.runId}) ${latest.conclusion.toUpperCase()},` +
+        ' so this is the application or the endpoint, not schedule delivery.';
+    }
+  }
+
+  results.push(staleness);
 
   const recent = completed.slice(0, opts.cronRecentRuns);
   const failed = recent.filter((r) => r.conclusion === 'failure');
@@ -406,6 +440,44 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
           `(validators in lib/ops-metrics.ts SECURITY_ENV_VALIDATORS; names never leave the server)`,
   });
 
+  // The outbound adapters, separated from the secret check above on 2026-09-01.
+  //
+  // They used to share `invalidSecurityEnv`, so a payment gateway still on the
+  // mock adapter before launch reported as "A required secret is set but
+  // structurally unusable" — the same line, the same title and the same
+  // severity as a malformed FIELD_ENCRYPTION_KEY. Production sat at
+  // "malformed: 2" with both of them being deliberate, which is how a check
+  // teaches an operator to stop reading it.
+  //
+  // `mock` before launch is PAUSED: reporting PASS would be a lie (no payment
+  // or SMS reaches anyone), reporting FAIL would page someone about a decision
+  // every 30 minutes forever. A value that is neither a real adapter nor
+  // `mock` is a typo, fails closed at the first send and nowhere earlier, and
+  // is a genuine FAIL.
+  const mockedProviders = (metrics?.config ?? {}).mockedProviderEnv;
+  const unrecognisedProviders = (metrics?.config ?? {}).unrecognisedProviderEnv;
+  if (mockedProviders !== undefined || unrecognisedProviders !== undefined) {
+    const mocked = mockedProviders ?? 0;
+    const unrecognised = unrecognisedProviders ?? 0;
+    results.push({
+      id: 'production-provider-mocked',
+      title: 'An outbound provider is not a real adapter',
+      ok: unrecognised === 0,
+      paused: unrecognised === 0 && mocked > 0,
+      detail:
+        unrecognised > 0
+          ? `${unrecognised} provider env var(s) name neither a real adapter nor "mock" — ` +
+            'the resolver fails closed at the first send and nothing earlier reports it ' +
+            '(names in lib/ops-metrics.ts PROVIDER_ENV_VALIDATORS; they never leave the server)'
+          : mocked > 0
+            ? `DISABLED BY CONFIGURATION — ${mocked} outbound provider(s) are on the "mock" ` +
+              'adapter. Nothing is delivered through them and the resolvers refuse mock in ' +
+              'production, so this is a deliberate pre-launch gate, not a fault. See ' +
+              'docs/deferred-features.md.'
+            : 'every configured provider names a real adapter',
+    });
+  }
+
   // P17-007. Deliberately its OWN check rather than folded into
   // production-config-incomplete above. Missing signup or security env means
   // the product is broken; a missing Sentry DSN means the product works and
@@ -450,6 +522,7 @@ export const OPS_DERIVED_CHECK_IDS = Object.freeze([
   'partition-maintenance',
   'production-config-incomplete',
   'production-config-invalid',
+  'production-provider-mocked',
   'production-observability-unconfigured',
 ]);
 

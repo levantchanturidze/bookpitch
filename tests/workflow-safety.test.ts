@@ -498,3 +498,172 @@ describe('the committed age recipient is a public key only', () => {
     expect(suspicious).toEqual([]);
   });
 });
+
+// -----------------------------------------------------------------------------
+// The post-migration production invariant check.
+//
+// Production was restored from a 2026-08-22 backup on 2026-09-01. A restore is
+// the event that quietly loses the things `prisma migrate status` cannot see:
+// roles are cluster globals and do not travel inside a database dump, RLS can
+// come back ENABLED but not FORCED, and a permission row a migration deleted
+// reappears from any dump taken before it.
+//
+// scripts/verify-production-invariants.sql is the check. These tests defend the
+// two properties that make it safe to point at production at all.
+// -----------------------------------------------------------------------------
+describe('production invariant check is read-only and actually wired up', () => {
+  const sqlPath = path.join(ROOT, 'scripts', 'verify-production-invariants.sql');
+  const sql = readFileSync(sqlPath, 'utf8');
+
+  /**
+   * The script with `--` comments and single-quoted string literals removed, so
+   * neither prose nor an error message can satisfy — or trip — the scan below.
+   *
+   * Both strips are load-bearing. The comments explain what each check defends
+   * against and name the operations freely; the RAISE EXCEPTION messages say
+   * things like "bookpitch_app has UPDATE on audit_log", which is the whole
+   * point of the message and would otherwise read as a write statement.
+   */
+  const code = sql
+    .split(/\r?\n/)
+    .map((line) => line.replace(/--.*$/, ''))
+    .join('\n');
+  const executable = code.replace(/'(?:[^']|'')*'/g, "''");
+
+  it('contains no statement that could write', () => {
+    // The DELETE/UPDATE/INSERT words appear all over the comments explaining
+    // what the checks are for; only the executable half is scanned.
+    const writes = ['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'DROP', 'CREATE', 'GRANT', 'REVOKE'];
+    const found = writes.filter((w) => new RegExp(`\\b${w}\\b`, 'i').test(executable));
+    expect(
+      found,
+      'this script runs against production; a write here is not recoverable by re-running it',
+    ).toEqual([]);
+  });
+
+  it('COMPLEMENT: the scan sees the executable half at all', () => {
+    // Without this, a strip that removed everything would make the test above
+    // pass on an empty string.
+    expect(executable).toMatch(/RAISE EXCEPTION/);
+    expect(executable).toMatch(/pg_roles/);
+    expect(executable.length).toBeGreaterThan(1000);
+  });
+
+  it('COMPLEMENT: the write scan still fires on a real write statement', () => {
+    // The strips above are broad enough to hide a genuine write if they were
+    // wrong. Run the same scan over a line that unambiguously writes.
+    const withWrite = `${executable}\nDELETE FROM roles WHERE key = 'X';`
+      .split(/\r?\n/)
+      .map((line) => line.replace(/--.*$/, ''))
+      .join('\n')
+      .replace(/'(?:[^']|'')*'/g, "''");
+    expect(/\bDELETE\b/i.test(withWrite)).toBe(true);
+  });
+
+  it('pins the session read-only', () => {
+    expect(executable).toMatch(/SET\s+default_transaction_read_only\s*=\s*on/i);
+  });
+
+  it('migrate.yml runs it with -f, which is what makes the pin apply', () => {
+    // `psql -c "SET …; DELETE …"` puts both in one implicit transaction, so the
+    // pin does not cover the statement it was meant to stop. Measured: -f gives
+    // "cannot execute DELETE in a read-only transaction", -c gives "DELETE 0".
+    const migrate = readFileSync(path.join(WORKFLOW_DIR, 'migrate.yml'), 'utf8');
+    expect(migrate).toMatch(/psql[^\n]*-f scripts\/verify-production-invariants\.sql/);
+    expect(migrate).not.toMatch(/psql[^\n]*-c[^\n]*verify-production-invariants/);
+  });
+
+  it('runs after the apply, not before it', () => {
+    const migrate = readFileSync(path.join(WORKFLOW_DIR, 'migrate.yml'), 'utf8');
+    const apply = migrate.indexOf('prisma migrate deploy');
+    const verify = migrate.indexOf('verify-production-invariants.sql');
+    expect(apply).toBeGreaterThan(-1);
+    expect(verify).toBeGreaterThan(apply);
+  });
+
+  it('checks the invariants that a restore can silently break', () => {
+    // `code` keeps string literals: the table and permission names this asserts
+    // on are arguments to has_table_privilege() and a WHERE clause, so they are
+    // quoted, and the write-scan view above deliberately removes them.
+    for (const marker of [
+      'rolbypassrls',
+      'rolsuper',
+      'relforcerowsecurity',
+      'audit_log',
+      'client.read:contact',
+    ]) {
+      expect(code, `${marker} is not checked`).toContain(marker);
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// A manual cron dispatch must be able to run ONE job.
+//
+// Every job's dispatch clause used to be a bare `github.event_name ==
+// 'workflow_dispatch'`, so "drain the outbox by hand" also fired reminders at
+// every tenant. runReminderTick selects [now, now + leadHours], so that really
+// can send mail to a real customer — which makes the one operation you most
+// want during an incident the one you cannot safely perform.
+// -----------------------------------------------------------------------------
+describe('scheduled crons can be dispatched one job at a time', () => {
+  const { raw, doc: cron } = readWorkflow('cron.yml');
+  const JOBS = ['reminders', 'housekeeping', 'retention', 'audit-digest', 'db-partitions'];
+
+  it('offers exactly the five jobs, plus blank for the previous behaviour', () => {
+    const options = (
+      cron as unknown as {
+        on?: { workflow_dispatch?: { inputs?: Record<string, { options?: string[] }> } };
+      }
+    ).on?.workflow_dispatch?.inputs?.only?.options;
+    expect(options, 'the dispatch has no job selector').toBeDefined();
+    expect(options).toEqual(['', ...JOBS]);
+  });
+
+  it('every job gates its dispatch clause on inputs.only', () => {
+    for (const job of JOBS) {
+      const condition = String(
+        (cron.jobs as unknown as Record<string, { if?: string }>)[job]?.if ?? '',
+      );
+      expect(condition, `${job} has no condition`).not.toBe('');
+      expect(
+        condition,
+        `${job} still runs on any dispatch, so a single-job dispatch fires it too`,
+      ).toContain(`inputs.only == '${job}'`);
+      expect(condition).toContain("inputs.only == ''");
+    }
+  });
+
+  it('COMPLEMENT: a bare workflow_dispatch clause would fail the check above', () => {
+    // Proves the assertion is about the gating and not merely about the string
+    // 'workflow_dispatch' appearing somewhere.
+    const bare = "github.event.schedule == '3 * * * *' || github.event_name == 'workflow_dispatch'";
+    expect(bare).not.toContain("inputs.only == 'housekeeping'");
+  });
+
+  it('leaves every schedule clause exactly as it was', () => {
+    // The selector must not change what runs on a timer. Each job keeps its own
+    // cron expression, and audit-digest keeps both of its.
+    const expected: Record<string, string[]> = {
+      reminders: ['*/15 * * * *'],
+      housekeeping: ['3 * * * *'],
+      retention: ['17 2 * * *'],
+      'audit-digest': ['0 8 * * 1', '3 * * * *'],
+      'db-partitions': ['30 1 1 * *'],
+    };
+    for (const [job, schedules] of Object.entries(expected)) {
+      const condition = String(
+        (cron.jobs as unknown as Record<string, { if?: string }>)[job]?.if ?? '',
+      );
+      for (const schedule of schedules) {
+        expect(condition, `${job} lost its ${schedule} schedule`).toContain(
+          `github.event.schedule == '${schedule}'`,
+        );
+      }
+    }
+    // And the trigger list itself is untouched.
+    for (const schedule of ['*/15 * * * *', '3 * * * *', '17 2 * * *', '0 8 * * 1', '30 1 1 * *']) {
+      expect(raw).toContain(`- cron: '${schedule}'`);
+    }
+  });
+});

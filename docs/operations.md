@@ -68,6 +68,28 @@ gh secret list                    # GitHub Actions secret names + last update
 | `SENTRY_DSN` | Vercel | **every uncaught server/edge exception is discarded** (see below) |
 | `NEXT_PUBLIC_SENTRY_DSN` | Vercel | every uncaught browser exception is discarded |
 
+### Present is not valid, and not-yet-configured is not broken
+
+Three monitor checks read this configuration, and they mean different things.
+Reading them as one is what made the first of them useless for a fortnight.
+
+| Check | Reads | What a failure means |
+| --- | --- | --- |
+| `production-config-incomplete` | variables that are **unset** | the product is broken in a way the code will fail closed on |
+| `production-config-invalid` | `SECRET_ENV_VALIDATORS` — `FIELD_ENCRYPTION_KEY`, `EMAIL_PRIVACY_HMAC_KEY`, `RATE_LIMIT_HMAC_KEY`, `AUTH_SECRET` | **P0.** The value is present, so the check above is green, and the application throws at the first call that uses it. This is P15-010 exactly. |
+| `production-provider-mocked` | `PROVIDER_ENV_VALIDATORS` — `PAYMENT_GATEWAY`, `EMAIL_PROVIDER`, `SMS_PROVIDER` | **PAUSE** when a provider is on `mock`: a pre-launch decision, nothing is delivered, and the resolvers refuse `mock` in production anyway. **FAIL** when a value is neither a real adapter nor `mock` — a typo, which fails closed at the first send and nowhere earlier. |
+
+The providers used to be validated by the same table as the secrets, so on
+2026-09-01 production reported "A required secret is set but structurally
+unusable — malformed: 2" while both were a payment gateway and an SMS provider
+deliberately left on `mock`. A check that is permanently red for a decision is
+a check nobody reads, which is the whole reason `production-config-invalid`
+exists.
+
+Names never leave the server in any of the three. The endpoint returns counts
+only, and `assertMetricsAreNumericOnly()` refuses the request rather than emit
+a string.
+
 ### Sentry (P17-007)
 
 Every `Sentry.init()` in this repository sits inside `if (process.env.…_DSN)`.

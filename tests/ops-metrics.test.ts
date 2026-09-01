@@ -105,12 +105,17 @@ describe('collectOpsMetrics against a real database', () => {
     // P17-007 added missingObservabilityEnv for the same class of problem:
     // the Sentry SDK installed and configured, and no DSN, so every uncaught
     // exception was discarded silently.
+    // 2026-09-01 split the provider adapters out of invalidSecurityEnv: a
+    // gateway on `mock` before launch is a decision, a malformed encryption key
+    // is a P0, and one number could not mean both.
     expect(Object.keys(metrics.config).sort()).toEqual([
       'invalidSecurityEnv',
       'missingEmailEnv',
       'missingObservabilityEnv',
       'missingSecurityEnv',
       'missingSignupEnv',
+      'mockedProviderEnv',
+      'unrecognisedProviderEnv',
     ]);
 
     expect(Object.keys(metrics.auditDigest).sort()).toEqual([

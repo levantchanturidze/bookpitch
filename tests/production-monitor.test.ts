@@ -535,10 +535,34 @@ describe('an unobservable check is not a resolved one', () => {
     expect(toClose[0].orphaned).toBe(true);
   });
 
-  it('OPS_DERIVED_CHECK_IDS matches what evaluateOpsMetrics actually emits', () => {
-    // A drifted list would silently shrink the exemption back to nothing.
-    const emitted = evaluateOpsMetrics({}).map((r: { id: string }) => r.id);
+  it('OPS_DERIVED_CHECK_IDS matches every id evaluateOpsMetrics can emit', () => {
+    // A drifted list silently shrinks the exemption back to nothing. It has
+    // caught two real drifts already: `audit-digest-stale` vs
+    // `audit-digest-stalled`, and `production-provider-mocked` when the
+    // provider split added it.
+    //
+    // The payload must be COMPLETE. Some checks are omitted for a deployment
+    // that predates their metric — see the test below — so evaluating an empty
+    // object measures the subset, not the set.
+    const complete = {
+      config: {
+        invalidSecurityEnv: 0,
+        missingObservabilityEnv: 0,
+        mockedProviderEnv: 0,
+        unrecognisedProviderEnv: 0,
+      },
+    };
+    const emitted = evaluateOpsMetrics(complete).map((r: { id: string }) => r.id);
     expect([...OPS_DERIVED_CHECK_IDS].sort()).toEqual([...emitted].sort());
+  });
+
+  it('COMPLEMENT: an older deployment emits a strict subset, never an unknown id', () => {
+    // Every id an old payload produces must still be in the exemption list, or
+    // an incident raised before an upgrade would be closed as an orphan after
+    // one.
+    const emitted = evaluateOpsMetrics({}).map((r: { id: string }) => r.id);
+    expect(emitted.length).toBeGreaterThan(0);
+    for (const id of emitted) expect(OPS_DERIVED_CHECK_IDS).toContain(id);
   });
 });
 
@@ -700,5 +724,147 @@ describe('audit digest paused state', () => {
     // ...while genuine problems still fail.
     expect(byId('outbox-dead-letters').ok).toBe(false);
     expect(byId('production-config-invalid').ok).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// A deliberate pre-launch state and a P0 must not share a status line.
+//
+// Until 2026-09-01 the provider adapters were validated by the same table as
+// FIELD_ENCRYPTION_KEY, so production reported "A required secret is set but
+// structurally unusable — malformed: 2" while both of them were a payment
+// gateway and an SMS provider deliberately left on `mock` before launch. The
+// one check that had already caught a real P0 was permanently red for a
+// decision, which is how an operator learns to stop reading it.
+// -----------------------------------------------------------------------------
+describe('mocked providers are separated from malformed secrets', () => {
+  const base = { config: {} as Record<string, number> };
+
+  function providerCheck(config: Record<string, number>) {
+    return evaluateOpsMetrics({ ...base, config }).find(
+      (r: { id: string }) => r.id === 'production-provider-mocked',
+    );
+  }
+  function secretCheck(config: Record<string, number>) {
+    return evaluateOpsMetrics({ ...base, config }).find(
+      (r: { id: string }) => r.id === 'production-config-invalid',
+    );
+  }
+
+  it('two mocked providers are PAUSED, not failed', () => {
+    const check = providerCheck({ mockedProviderEnv: 2, unrecognisedProviderEnv: 0 });
+    expect(check).toBeDefined();
+    expect(check!.ok).toBe(true);
+    expect(check!.paused).toBe(true);
+    expect(check!.detail).toMatch(/DISABLED BY CONFIGURATION/);
+    expect(check!.detail).toMatch(/deliberate pre-launch gate/);
+  });
+
+  it('a provider that is neither real nor "mock" is a FAIL', () => {
+    // The complement that keeps the pause from swallowing a typo.
+    const check = providerCheck({ mockedProviderEnv: 1, unrecognisedProviderEnv: 1 });
+    expect(check!.ok).toBe(false);
+    expect(check!.paused).toBe(false);
+    expect(check!.detail).toMatch(/neither a real adapter nor/);
+  });
+
+  it('all-real providers pass without pausing', () => {
+    const check = providerCheck({ mockedProviderEnv: 0, unrecognisedProviderEnv: 0 });
+    expect(check!.ok).toBe(true);
+    expect(check!.paused).toBe(false);
+  });
+
+  it('a mocked provider no longer makes the secret check fail', () => {
+    // The regression this whole split exists to prevent.
+    const check = secretCheck({
+      invalidSecurityEnv: 0,
+      mockedProviderEnv: 2,
+      unrecognisedProviderEnv: 0,
+    });
+    expect(check!.ok).toBe(true);
+  });
+
+  it('COMPLEMENT: a malformed secret still fails the secret check', () => {
+    // Without this, the split could have been "stop checking secrets".
+    const check = secretCheck({
+      invalidSecurityEnv: 1,
+      mockedProviderEnv: 0,
+      unrecognisedProviderEnv: 0,
+    });
+    expect(check!.ok).toBe(false);
+    expect(check!.detail).toMatch(/malformed/);
+  });
+
+  it('a deployment predating the provider metric reports no provider check at all', () => {
+    // Rather than reporting a green one it has no evidence for.
+    const results = evaluateOpsMetrics({ config: { invalidSecurityEnv: 0 } });
+    expect(
+      results.find((r: { id: string }) => r.id === 'production-provider-mocked'),
+    ).toBeUndefined();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// A stale cron has two causes that need opposite responses.
+//
+// Measured on this repository 2026-09-01: `*/15 * * * *` was delivered at
+// 00:05, 00:27, 05:07, 06:07, 06:24, 07:49, 10:05 and 12:26 UTC — gaps of up
+// to 4h39m against a declared 15 minutes. The 90-minute limit encodes
+// "reminders run every 15 minutes, so a 90-minute gap means something broke",
+// and that premise no longer holds.
+//
+// The threshold is deliberately NOT raised: reminders really are late, which is
+// a real product impact for a booking system. What the check must do is say
+// whether the operator should fix the app or accept GitHub's queue.
+// -----------------------------------------------------------------------------
+describe('a stale cron says which failure it is', () => {
+  const NOW = new Date('2026-09-01T14:20:00Z');
+
+  function run(runId: number, conclusion: string, completedAt: string) {
+    return { status: 'completed', conclusion, completedAt, runId };
+  }
+
+  function staleness(runs: ReturnType<typeof run>[]) {
+    return evaluateCronHealth(runs, NOW).find((r: { id: string }) => r.id === 'cron-staleness');
+  }
+
+  it('names schedule delivery when the most recent run succeeded', () => {
+    const check = staleness([run(33507668170, 'success', '2026-09-01T12:26:30Z')]);
+    expect(check!.ok, 'reminders are late; this is still a failure').toBe(false);
+    expect(check!.detail).toMatch(/SUCCEEDED/);
+    expect(check!.detail).toMatch(/GitHub has not delivered the schedule/);
+    expect(check!.detail).toMatch(/the application is not broken/);
+  });
+
+  it('names the application when the most recent run failed', () => {
+    const check = staleness([
+      run(2, 'failure', '2026-09-01T12:30:00Z'),
+      run(1, 'success', '2026-09-01T09:00:00Z'),
+    ]);
+    expect(check!.ok).toBe(false);
+    expect(check!.detail).toMatch(/FAILURE/);
+    expect(check!.detail).toMatch(/not schedule delivery/);
+  });
+
+  it('COMPLEMENT: a fresh successful run is green and gets no cause clause', () => {
+    // Without this, appending a cause to everything would look like a pass.
+    const check = staleness([run(3, 'success', '2026-09-01T14:00:00Z')]);
+    expect(check!.ok).toBe(true);
+    expect(check!.detail).not.toMatch(/GitHub has not delivered/);
+    expect(check!.detail).not.toMatch(/not schedule delivery/);
+  });
+
+  it('COMPLEMENT: the 90-minute limit is unchanged', () => {
+    // The cause clause must not become a way to widen the window. 89 minutes
+    // passes, 91 does not.
+    expect(staleness([run(4, 'success', '2026-09-01T12:52:00Z')])!.ok).toBe(true);
+    expect(staleness([run(5, 'success', '2026-09-01T12:48:00Z')])!.ok).toBe(false);
+    expect(DEFAULTS.cronMaxAgeMinutes).toBe(90);
+  });
+
+  it('no runs at all still reports the original message', () => {
+    const check = staleness([]);
+    expect(check!.ok).toBe(false);
+    expect(check!.detail).toMatch(/no successful run found at all/);
   });
 });
