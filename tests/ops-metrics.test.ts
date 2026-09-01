@@ -108,13 +108,21 @@ describe('collectOpsMetrics against a real database', () => {
     // 2026-09-01 split the provider adapters out of invalidSecurityEnv: a
     // gateway on `mock` before launch is a decision, a malformed encryption key
     // is a P0, and one number could not mean both.
+    // The four provider fields were added with PROVIDER_CONTRACT. Before them
+    // PAYMENT_GATEWAY and SMS_PROVIDER were in no required-variable set at
+    // all, so unsetting either left every count at zero while the resolver
+    // threw on the first call.
     expect(Object.keys(metrics.config).sort()).toEqual([
+      'deferredProviderEnv',
       'invalidSecurityEnv',
       'missingEmailEnv',
       'missingObservabilityEnv',
+      'missingProviderCredentialEnv',
+      'missingProviderEnv',
       'missingSecurityEnv',
       'missingSignupEnv',
       'mockedProviderEnv',
+      'undeclaredMockProviderEnv',
       'unrecognisedProviderEnv',
     ]);
 

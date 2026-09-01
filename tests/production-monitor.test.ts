@@ -560,6 +560,14 @@ describe('an unobservable check is not a resolved one', () => {
         missingObservabilityEnv: 0,
         mockedProviderEnv: 0,
         unrecognisedProviderEnv: 0,
+        // Added with PROVIDER_CONTRACT. `production-provider-unconfigured` is
+        // omitted for a deployment that does not report this field, so
+        // leaving it out here measures the subset rather than the set — which
+        // is the drift this test exists to catch.
+        missingProviderEnv: 0,
+        missingProviderCredentialEnv: 0,
+        deferredProviderEnv: 0,
+        undeclaredMockProviderEnv: 0,
       },
     };
     const emitted = evaluateOpsMetrics(complete).map((r: { id: string }) => r.id);
@@ -1072,5 +1080,108 @@ describe('manual dispatches cannot stand in for scheduled evidence', () => {
         .filter((r: { informational?: boolean }) => !r.informational)
         .map((r: { id: string }) => r.id),
     ).toEqual(['cron-staleness', 'cron-failures']);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4.5 — the monitor's four provider verdicts.
+//
+// `mock` used to mean "deliberate pre-launch gate" for ANY provider, read
+// straight off the value of the variable. Whether a feature may ship deferred
+// is a product decision, and PROVIDER_CONTRACT.deferrable now carries it. A
+// mocked EMAIL provider — no signup, no password reset, no audit digest —
+// would otherwise have been reported in grey as a deliberate pause forever.
+// -----------------------------------------------------------------------------
+describe('provider verdicts distinguish a decision from a fault', () => {
+  const check = (config: Record<string, number>, id = 'production-provider-mocked') =>
+    evaluateOpsMetrics({ config }).find((r: { id: string }) => r.id === id);
+
+  it('an accepted deferral PAUSES', () => {
+    const r = check({
+      mockedProviderEnv: 2,
+      unrecognisedProviderEnv: 0,
+      deferredProviderEnv: 2,
+      undeclaredMockProviderEnv: 0,
+    });
+    expect(r!.ok).toBe(true);
+    expect(r!.paused).toBe(true);
+    expect(r!.detail).toMatch(/accepted deferral/);
+  });
+
+  it('an UNaccepted mock FAILS, and says it is not a pre-launch gate', () => {
+    const r = check({
+      mockedProviderEnv: 3,
+      unrecognisedProviderEnv: 0,
+      deferredProviderEnv: 2,
+      undeclaredMockProviderEnv: 1,
+    });
+    expect(r!.ok, 'a mocked email provider is not a deliberate pause').toBe(false);
+    expect(r!.paused).toBe(false);
+    expect(r!.detail).toMatch(/WITHOUT an accepted deferral/);
+    expect(r!.detail).toMatch(/silently delivers nothing/);
+  });
+
+  it('a typo and an unaccepted mock are both reported when both are present', () => {
+    const r = check({
+      mockedProviderEnv: 2,
+      unrecognisedProviderEnv: 1,
+      deferredProviderEnv: 1,
+      undeclaredMockProviderEnv: 1,
+    });
+    expect(r!.ok).toBe(false);
+    expect(r!.detail).toMatch(/neither a real adapter nor/);
+    expect(r!.detail).toMatch(/WITHOUT an accepted deferral/);
+  });
+
+  it('a deployment predating the deferral record keeps its old meaning', () => {
+    // Not "0 undeclared mocks, therefore healthy" — it has no evidence either
+    // way, so it falls back to the previous behaviour and says so.
+    const r = check({ mockedProviderEnv: 2, unrecognisedProviderEnv: 0 });
+    expect(r!.ok).toBe(true);
+    expect(r!.paused).toBe(true);
+    expect(r!.detail).toMatch(/predates the per-provider deferral record/);
+  });
+
+  it('THE REGRESSION: an unset provider is now reported', () => {
+    // PAYMENT_GATEWAY and SMS_PROVIDER were in no required-variable set, so
+    // this check did not exist and every count stayed 0 while getGateway()
+    // threw on the first call.
+    const r = check(
+      { missingProviderEnv: 1, missingProviderCredentialEnv: 0 },
+      'production-provider-unconfigured',
+    );
+    expect(r).toBeDefined();
+    expect(r!.ok).toBe(false);
+    expect(r!.detail).toMatch(/provider env vars unset: 1/);
+  });
+
+  it('credentials missing for the selected adapter are reported', () => {
+    const r = check(
+      { missingProviderEnv: 0, missingProviderCredentialEnv: 2 },
+      'production-provider-unconfigured',
+    );
+    expect(r!.ok).toBe(false);
+    expect(r!.detail).toMatch(/credentials missing for the selected adapter: 2/);
+  });
+
+  it('a fully-configured deployment passes', () => {
+    const r = check(
+      { missingProviderEnv: 0, missingProviderCredentialEnv: 0 },
+      'production-provider-unconfigured',
+    );
+    expect(r!.ok).toBe(true);
+  });
+
+  it('a deployment predating the metric reports no check rather than a green one', () => {
+    const results = evaluateOpsMetrics({ config: { invalidSecurityEnv: 0 } });
+    expect(
+      results.find((r: { id: string }) => r.id === 'production-provider-unconfigured'),
+    ).toBeUndefined();
+  });
+
+  it('the new check is registered so monitor blindness cannot close its incident', () => {
+    // Incident #26 was closed as "no longer reported" when the ops probe was
+    // failing. A check missing from this list repeats that.
+    expect(OPS_DERIVED_CHECK_IDS).toContain('production-provider-unconfigured');
   });
 });

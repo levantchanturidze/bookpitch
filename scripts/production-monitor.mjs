@@ -191,7 +191,10 @@ export function evaluateWorkflowFreshness({ id, title, label, latestSuccess, max
  *                                application or the endpoint is broken
  *   manual verification          informational only
  *
- * @param {Array<{runId:number,status:string,conclusion:string,completedAt:string,event?:string}>} runs
+ * @param {Array<{runId:number,status:string,conclusion:string|null,completedAt:string,event?:string}>} runs
+ * @param {Date} [now]
+ * @param {typeof DEFAULTS} [opts]
+ * @returns {Array<{id:string,title:string,ok:boolean,detail:string,informational?:boolean,paused?:boolean}>}
  */
 export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
   const results = [];
@@ -521,27 +524,85 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
   // every 30 minutes forever. A value that is neither a real adapter nor
   // `mock` is a typo, fails closed at the first send and nowhere earlier, and
   // is a genuine FAIL.
-  const mockedProviders = (metrics?.config ?? {}).mockedProviderEnv;
-  const unrecognisedProviders = (metrics?.config ?? {}).unrecognisedProviderEnv;
+  const cfg = metrics?.config ?? {};
+  const mockedProviders = cfg.mockedProviderEnv;
+  const unrecognisedProviders = cfg.unrecognisedProviderEnv;
   if (mockedProviders !== undefined || unrecognisedProviders !== undefined) {
     const mocked = mockedProviders ?? 0;
     const unrecognised = unrecognisedProviders ?? 0;
+    // Fields added by the provider-contract change. A deployment that predates
+    // it reports none of them; fall back so the check keeps its old meaning
+    // rather than reading `undefined` as zero faults.
+    const legacy = cfg.deferredProviderEnv === undefined;
+    const deferred = cfg.deferredProviderEnv ?? mocked;
+    const undeclared = cfg.undeclaredMockProviderEnv ?? 0;
+
+    // Four distinguishable states, and only ONE of them may pause:
+    //
+    //   unrecognised   a typo. Throws at the first send, nothing earlier says
+    //                  so. FAIL.
+    //   undeclared     on `mock` where deferral was never agreed. Email is the
+    //                  case that matters: mocked email means nobody can
+    //                  complete signup. Inferring "pre-launch, therefore fine"
+    //                  from the value `mock` is exactly how that would be
+    //                  reported as a deliberate decision. FAIL.
+    //   deferred       on `mock` AND recorded as an accepted deferral in
+    //                  docs/deferred-features.md § Outbound providers. PAUSE.
+    //   real           PASS.
+    const faults = unrecognised + undeclared;
     results.push({
       id: 'production-provider-mocked',
       title: 'An outbound provider is not a real adapter',
-      ok: unrecognised === 0,
-      paused: unrecognised === 0 && mocked > 0,
+      ok: faults === 0,
+      paused: faults === 0 && deferred > 0,
       detail:
-        unrecognised > 0
-          ? `${unrecognised} provider env var(s) name neither a real adapter nor "mock" — ` +
-            'the resolver fails closed at the first send and nothing earlier reports it ' +
-            '(names in lib/ops-metrics.ts PROVIDER_ENV_VALIDATORS; they never leave the server)'
-          : mocked > 0
-            ? `DISABLED BY CONFIGURATION — ${mocked} outbound provider(s) are on the "mock" ` +
-              'adapter. Nothing is delivered through them and the resolvers refuse mock in ' +
-              'production, so this is a deliberate pre-launch gate, not a fault. See ' +
-              'docs/deferred-features.md.'
+        faults > 0
+          ? [
+              unrecognised > 0
+                ? `${unrecognised} provider env var(s) name neither a real adapter nor "mock" — ` +
+                  'the resolver fails closed at the first send and nothing earlier reports it'
+                : null,
+              undeclared > 0
+                ? `${undeclared} provider(s) are on "mock" WITHOUT an accepted deferral — ` +
+                  'this is not a pre-launch gate, it is a feature that silently delivers nothing'
+                : null,
+            ]
+              .filter(Boolean)
+              .join('; ') +
+            ' (names in lib/ops-metrics.ts PROVIDER_CONTRACT; they never leave the server)'
+          : deferred > 0
+            ? `DISABLED BY CONFIGURATION — ${deferred} outbound provider(s) are on the "mock" ` +
+              'adapter, each one an accepted deferral. Nothing is delivered through them and ' +
+              'the resolvers refuse mock in production, so this is a deliberate pre-launch ' +
+              'gate, not a fault. See docs/deferred-features.md § Outbound providers.' +
+              (legacy ? ' (deployment predates the per-provider deferral record)' : '')
             : 'every configured provider names a real adapter',
+    });
+  }
+
+  // A provider variable that is UNSET, and the credentials whichever adapter
+  // is selected actually reads.
+  //
+  // Neither was checked anywhere. PAYMENT_GATEWAY and SMS_PROVIDER were in no
+  // required-variable set at all, so unsetting one left every `missing*` count
+  // at 0 while getGateway() threw "refusing to default to the mock provider"
+  // on the first call. And the email requirement list was hard-coded to
+  // Resend, so EMAIL_PROVIDER=postmark passed with POSTMARK_API_TOKEN unset.
+  //
+  // Reported apart from `production-config-incomplete` because the response is
+  // different: that check means "someone forgot a variable in Vercel", this one
+  // means "an adapter was selected and then not configured".
+  if (cfg.missingProviderEnv !== undefined) {
+    const missingProviders = cfg.missingProviderEnv ?? 0;
+    const missingCreds = cfg.missingProviderCredentialEnv ?? 0;
+    results.push({
+      id: 'production-provider-unconfigured',
+      title: 'An outbound provider is unset or missing its credentials',
+      ok: missingProviders === 0 && missingCreds === 0,
+      detail:
+        `provider env vars unset: ${missingProviders}; credentials missing for the selected ` +
+        `adapter: ${missingCreds} (names in lib/ops-metrics.ts PROVIDER_CONTRACT; ` +
+        'they never leave the server)',
     });
   }
 
@@ -590,6 +651,7 @@ export const OPS_DERIVED_CHECK_IDS = Object.freeze([
   'production-config-incomplete',
   'production-config-invalid',
   'production-provider-mocked',
+  'production-provider-unconfigured',
   'production-observability-unconfigured',
 ]);
 
