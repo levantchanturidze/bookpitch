@@ -158,11 +158,54 @@ export function evaluateWorkflowFreshness({ id, title, label, latestSuccess, max
   };
 }
 
+/**
+ * Cron health, split by how the run was TRIGGERED.
+ *
+ * This function used to take every completed run of cron.yml regardless of
+ * event. A `workflow_dispatch` and a `schedule` run execute the same jobs and
+ * hit the same endpoints, so they look identical in the runs list — but they
+ * answer different questions, and conflating them made the monitor lie twice
+ * on 2026-09-01:
+ *
+ *   * Five manual dispatches at 14:32–14:44Z pushed six genuinely failed
+ *     SCHEDULED runs out of the ten-run window. `cron-failures` went from
+ *     6/10 to 1/10 and reported PASS.
+ *   * On the strength of that, the alerting path CLOSED incident #38 at
+ *     18:45Z as "recovered". Nothing had recovered; the evidence had been
+ *     displaced by runs a human started.
+ *
+ * The measured scheduled-only window at that moment was 6 failures out of 10.
+ *
+ * So the two reliability checks now read `event === 'schedule'` and nothing
+ * else. A manual run cannot make `cron-staleness` fresh, and cannot age a
+ * scheduled failure out of the failure window. What a manual run CAN prove —
+ * that the endpoint answers when something calls it — is genuinely useful
+ * during an incident, so it is reported on its own informational line that is
+ * excluded from the pass/fail counts and never opens or closes an incident.
+ *
+ * Three distinguishable outcomes, which need three different responses:
+ *
+ *   scheduler delivery failure   GitHub is not delivering the schedule; the
+ *                                app is fine and the work is merely late
+ *   scheduled endpoint failure   the schedule arrived and the run failed; the
+ *                                application or the endpoint is broken
+ *   manual verification          informational only
+ *
+ * @param {Array<{runId:number,status:string,conclusion:string,completedAt:string,event?:string}>} runs
+ */
 export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
   const results = [];
 
   const completed = runs.filter((r) => r.status === 'completed');
-  const latestSuccess = completed.find((r) => r.conclusion === 'success');
+
+  // Fail closed on an unknown trigger. A run whose event is missing — an older
+  // cached payload, or a GitHub response shape change — must not be counted as
+  // scheduled evidence, because the whole point is that only a genuine
+  // schedule delivery proves the scheduler is alive.
+  const scheduled = completed.filter((r) => r.event === 'schedule');
+  const manual = completed.filter((r) => r.event === 'workflow_dispatch');
+
+  const latestSuccess = scheduled.find((r) => r.conclusion === 'success');
 
   const staleness = evaluateWorkflowFreshness({
     id: 'cron-staleness',
@@ -194,33 +237,57 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
   // product impact for a booking system; hiding it behind a bigger number would
   // make the check agree with GitHub instead of with the customer. What changes
   // is that the operator is told which lever to pull. See R-08.
-  if (!staleness.ok && completed.length > 0) {
-    const latest = completed[0];
-    if (latest.conclusion === 'success') {
-      const gapMs = now.getTime() - new Date(latest.completedAt).getTime();
+  if (!staleness.ok) {
+    if (scheduled.length === 0) {
       staleness.detail +=
-        ` — the most recent run (${latest.runId}) SUCCEEDED ${(gapMs / 3_600_000).toFixed(1)}h ago,` +
-        ' so the endpoint is healthy and GitHub has not delivered the schedule since.' +
-        ' Reminders are late; the application is not broken (R-08).';
+        ' — no SCHEDULED run has been delivered at all in the window examined.' +
+        ' Any recent runs were started by hand, which proves the endpoint works' +
+        ' and says nothing about schedule delivery (R-08).';
     } else {
-      staleness.detail +=
-        ` — the most recent run (${latest.runId}) ${latest.conclusion.toUpperCase()},` +
-        ' so this is the application or the endpoint, not schedule delivery.';
+      const latest = scheduled[0];
+      if (latest.conclusion === 'success') {
+        const gapMs = now.getTime() - new Date(latest.completedAt).getTime();
+        staleness.detail +=
+          ` — the most recent SCHEDULED run (${latest.runId}) SUCCEEDED ${(gapMs / 3_600_000).toFixed(1)}h ago,` +
+          ' so the endpoint is healthy and GitHub has not delivered the schedule since.' +
+          ' Reminders are late; the application is not broken (R-08).';
+      } else {
+        staleness.detail +=
+          ` — the most recent SCHEDULED run (${latest.runId}) ${latest.conclusion.toUpperCase()},` +
+          ' so this is the application or the endpoint, not schedule delivery.';
+      }
     }
   }
 
   results.push(staleness);
 
-  const recent = completed.slice(0, opts.cronRecentRuns);
+  const recent = scheduled.slice(0, opts.cronRecentRuns);
   const failed = recent.filter((r) => r.conclusion === 'failure');
   results.push({
     id: 'cron-failures',
     title: 'Scheduled cron workflow is failing repeatedly',
     ok: failed.length < opts.cronFailureThreshold,
     detail:
-      failed.length < opts.cronFailureThreshold
-        ? `${failed.length}/${recent.length} recent cron runs failed`
-        : `${failed.length}/${recent.length} recent cron runs failed (latest failing run ${failed[0].runId})`,
+      (failed.length < opts.cronFailureThreshold
+        ? `${failed.length}/${recent.length} recent SCHEDULED cron runs failed`
+        : `${failed.length}/${recent.length} recent SCHEDULED cron runs failed (latest failing run ${failed[0].runId})`) +
+      ' (manual dispatches excluded)',
+  });
+
+  // Informational. Never gates the run, never opens an incident: a manual
+  // dispatch is an operator action, and its absence is not a fault.
+  results.push({
+    id: 'cron-manual-verification',
+    title: 'Manual cron dispatch (informational)',
+    ok: true,
+    informational: true,
+    detail:
+      manual.length === 0
+        ? 'no manual dispatch in the window examined'
+        : `last manual dispatch ${manual[0].runId} ${String(manual[0].conclusion).toUpperCase()}` +
+          ` ${((now.getTime() - new Date(manual[0].completedAt).getTime()) / 3_600_000).toFixed(1)}h ago` +
+          ` (${manual.length} in the window). Proves the endpoint answers when called;` +
+          ' proves nothing about schedule delivery.',
   });
 
   return results;
@@ -576,6 +643,12 @@ export function reconcileIncidents(results, openIssues) {
   const reportedIds = new Set(results.map((r) => r.id));
 
   for (const result of results) {
+    // Informational lines are observations, never gates. `cron-manual-verification`
+    // reports whether an operator pressed the button; that is not a fault when
+    // absent and not a recovery when present, and letting it reach this loop
+    // would give a manual dispatch power over an incident's lifecycle — the
+    // exact coupling that closed #38 on displaced evidence.
+    if (result.informational) continue;
     const existing = byId.get(result.id);
     if (!result.ok) {
       if (existing) toComment.push({ result, issue: existing });
@@ -813,17 +886,52 @@ async function main() {
     }
 
     // --- 8. Cron workflow outcomes ---------------------------------------
+    //
+    // Fetched as two event-filtered queries rather than one mixed page. A
+    // single `per_page=20` page is not enough to guarantee a full scheduled
+    // window: on 2026-09-01 five manual dispatches inside twelve minutes
+    // occupied a quarter of it, which is exactly how six scheduled failures
+    // were pushed out of the ten-run window and incident #38 was closed as
+    // recovered. Filtering server-side means the reliability window is always
+    // ten SCHEDULED runs no matter how many times a human pressed the button.
+    //
+    // evaluateCronHealth() filters by event again on its own inputs. That is
+    // deliberate duplication: the evaluator is unit-tested against mixed
+    // histories and must be correct on its own, without depending on the
+    // caller having asked the right question.
     try {
-      const data = await gh(
-        `/repos/${repo}/actions/workflows/cron.yml/runs?branch=main&per_page=20`,
-        token,
-      );
-      const runs = (data.workflow_runs ?? []).map((r) => ({
+      const [scheduledData, manualData] = await Promise.all([
+        gh(
+          `/repos/${repo}/actions/workflows/cron.yml/runs` +
+            `?branch=main&event=schedule&per_page=${DEFAULTS.cronRecentRuns * 2}`,
+          token,
+        ),
+        gh(
+          `/repos/${repo}/actions/workflows/cron.yml/runs` +
+            `?branch=main&event=workflow_dispatch&per_page=5`,
+          token,
+        ),
+      ]);
+      const toRun = (r) => ({
         runId: r.id,
         status: r.status,
         conclusion: r.conclusion,
         completedAt: r.updated_at,
-      }));
+        // Carried through so the evaluator can tell a delivered schedule from
+        // a button press. Falling back to the query's own event keeps the
+        // field populated if a payload ever omits it.
+        event: r.event,
+      });
+      const runs = [
+        ...(scheduledData.workflow_runs ?? []).map((r) => ({
+          ...toRun(r),
+          event: r.event ?? 'schedule',
+        })),
+        ...(manualData.workflow_runs ?? []).map((r) => ({
+          ...toRun(r),
+          event: r.event ?? 'workflow_dispatch',
+        })),
+      ];
       results.push(...evaluateCronHealth(runs, now));
     } catch (err) {
       results.push(
@@ -988,15 +1096,21 @@ async function main() {
   console.log(`target: ${productionUrl}`);
   console.log('');
   for (const r of results) {
-    const label = r.paused ? 'PAUSE' : r.ok ? 'PASS' : 'FAIL';
+    const label = r.informational ? 'INFO' : r.paused ? 'PAUSE' : r.ok ? 'PASS' : 'FAIL';
     console.log(`${label}  ${r.id.padEnd(24)} ${r.detail}`);
   }
   console.log('');
-  const pausedCount = results.filter((r) => r.paused).length;
-  const passedCount = results.length - failing.length - pausedCount;
+  const pausedCount = results.filter((r) => r.paused && !r.informational).length;
+  // Informational lines are observations, not gates. They are excluded from
+  // both the numerator and the denominator so "N/M checks passed" keeps
+  // meaning "M things had to be true and N were".
+  const infoCount = results.filter((r) => r.informational).length;
+  const gateCount = results.length - infoCount;
+  const passedCount = gateCount - failing.length - pausedCount;
   console.log(
-    `${passedCount}/${results.length} checks passed` +
-      (pausedCount ? `, ${pausedCount} paused by configuration` : ''),
+    `${passedCount}/${gateCount} checks passed` +
+      (pausedCount ? `, ${pausedCount} paused by configuration` : '') +
+      (infoCount ? `, ${infoCount} informational` : ''),
   );
 
   if (process.env.GITHUB_STEP_SUMMARY) {
@@ -1009,7 +1123,8 @@ async function main() {
       '| | check | detail |',
       '| --- | --- | --- |',
       ...results.map(
-        (r) => `| ${r.paused ? '⏸️' : r.ok ? '✅' : '❌'} | \`${r.id}\` | ${r.detail} |`,
+        (r) =>
+          `| ${r.informational ? 'ℹ️' : r.paused ? '⏸️' : r.ok ? '✅' : '❌'} | \`${r.id}\` | ${r.detail} |`,
       ),
     ];
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');

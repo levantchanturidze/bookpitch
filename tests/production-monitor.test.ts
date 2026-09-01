@@ -153,12 +153,16 @@ describe('workflow freshness', () => {
 });
 
 describe('cron workflow health', () => {
-  function run(minutesAgo: number, conclusion: string, runId = 1) {
+  // `event` is explicit because the two reliability checks read it: only a
+  // delivered schedule is evidence that the scheduler is alive. These cases
+  // are all about schedule delivery, so they say so.
+  function run(minutesAgo: number, conclusion: string, runId = 1, event = 'schedule') {
     return {
       runId,
       status: 'completed',
       conclusion,
       completedAt: new Date(NOW.getTime() - minutesAgo * 60_000).toISOString(),
+      event,
     };
   }
 
@@ -186,7 +190,13 @@ describe('cron workflow health', () => {
 
   it('ignores runs that are still in progress', () => {
     const runs = [
-      { runId: 9, status: 'in_progress', conclusion: null, completedAt: NOW.toISOString() },
+      {
+        runId: 9,
+        status: 'in_progress',
+        conclusion: null,
+        completedAt: NOW.toISOString(),
+        event: 'schedule',
+      },
       run(5, 'success', 1),
     ];
     const results = evaluateCronHealth(runs, NOW);
@@ -820,8 +830,8 @@ describe('mocked providers are separated from malformed secrets', () => {
 describe('a stale cron says which failure it is', () => {
   const NOW = new Date('2026-09-01T14:20:00Z');
 
-  function run(runId: number, conclusion: string, completedAt: string) {
-    return { status: 'completed', conclusion, completedAt, runId };
+  function run(runId: number, conclusion: string, completedAt: string, event = 'schedule') {
+    return { status: 'completed', conclusion, completedAt, runId, event };
   }
 
   function staleness(runs: ReturnType<typeof run>[]) {
@@ -880,5 +890,187 @@ describe('a check points at the table it actually reads', () => {
     );
     expect(check!.detail).toContain('SECRET_ENV_VALIDATORS');
     expect(check!.detail).not.toContain('SECURITY_ENV_VALIDATORS');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4.2 — a manual dispatch is not evidence about the schedule.
+//
+// On 2026-09-01 the monitor reported `cron-failures` as 1/10 PASS and closed
+// incident #38 as "recovered" at 18:45Z. The scheduled-only window at that
+// moment was 6 failures out of 10. Five manual dispatches fired between 14:32Z
+// and 14:44Z — inside twelve minutes, while an operator was verifying the
+// endpoint by hand after the database restore — and displaced six genuinely
+// failed scheduled runs out of the ten-run window.
+//
+// The run ids below are the real ones from that day, so this suite is a
+// regression test against the actual incident rather than an invented shape.
+// -----------------------------------------------------------------------------
+describe('manual dispatches cannot stand in for scheduled evidence', () => {
+  const NOW = new Date('2026-09-01T18:45:00Z');
+
+  const scheduled = (runId: number, conclusion: string, at: string) => ({
+    runId,
+    status: 'completed',
+    conclusion,
+    completedAt: at,
+    event: 'schedule',
+  });
+  const manual = (runId: number, conclusion: string, at: string) => ({
+    runId,
+    status: 'completed',
+    conclusion,
+    completedAt: at,
+    event: 'workflow_dispatch',
+  });
+
+  // Exactly what the GitHub API returned that afternoon, newest first.
+  const REAL_HISTORY = [
+    scheduled(33541926725, 'success', '2026-09-01T18:09:07Z'),
+    scheduled(33536493384, 'success', '2026-09-01T17:13:34Z'),
+    scheduled(33522243865, 'success', '2026-09-01T14:53:05Z'),
+    manual(33521310009, 'success', '2026-09-01T14:44:10Z'),
+    manual(33521199799, 'success', '2026-09-01T14:43:05Z'),
+    manual(33521146581, 'success', '2026-09-01T14:42:30Z'),
+    manual(33521088698, 'success', '2026-09-01T14:41:55Z'),
+    manual(33520121839, 'success', '2026-09-01T14:32:35Z'),
+    scheduled(33507668170, 'success', '2026-09-01T12:26:29Z'),
+    scheduled(33495627804, 'failure', '2026-09-01T10:05:51Z'),
+    scheduled(33484027298, 'failure', '2026-09-01T07:50:02Z'),
+    scheduled(33477445116, 'failure', '2026-09-01T06:24:23Z'),
+    scheduled(33476271477, 'failure', '2026-09-01T06:07:42Z'),
+    scheduled(33472358999, 'failure', '2026-09-01T05:07:10Z'),
+    scheduled(33454824142, 'failure', '2026-09-01T00:27:39Z'),
+    scheduled(33453316896, 'failure', '2026-09-01T00:05:16Z'),
+  ];
+
+  const check = (runs: typeof REAL_HISTORY, id: string) =>
+    evaluateCronHealth(runs, NOW).find((r: { id: string }) => r.id === id)!;
+
+  it('reproduces the incident: five manual successes cannot clear the window', () => {
+    const failures = check(REAL_HISTORY, 'cron-failures');
+    // Counting every event, as the monitor used to, the last ten runs contain
+    // one failure and this reports PASS. Counting scheduled runs only, the
+    // last ten contain six.
+    expect(failures.ok, 'six scheduled failures in ten must not read as healthy').toBe(false);
+    expect(failures.detail).toMatch(/6\/10 recent SCHEDULED cron runs failed/);
+    expect(failures.detail).toMatch(/manual dispatches excluded/);
+  });
+
+  it('the displaced scheduled failures are the ones still counted', () => {
+    const failures = check(REAL_HISTORY, 'cron-failures');
+    // The oldest failure in the scheduled window is the one the manual runs
+    // pushed out. Naming the latest failing run keeps the operator pointed at
+    // real evidence.
+    expect(failures.detail).toMatch(/latest failing run 33495627804/);
+  });
+
+  it('a manual success does not refresh cron-staleness', () => {
+    // One scheduled run 4 hours ago (beyond the 90-minute limit), and a manual
+    // run one minute ago. Staleness must read 4 hours, not one minute.
+    const runs = [
+      manual(999, 'success', '2026-09-01T18:44:00Z'),
+      scheduled(888, 'success', '2026-09-01T14:45:00Z'),
+    ];
+    const stale = check(runs, 'cron-staleness');
+    expect(stale.ok).toBe(false);
+    expect(stale.detail).toMatch(/run 888/);
+    expect(stale.detail).not.toMatch(/999/);
+  });
+
+  it('manual runs alone are reported as no scheduled delivery at all', () => {
+    const runs = [
+      manual(1, 'success', '2026-09-01T18:44:00Z'),
+      manual(2, 'success', '2026-09-01T18:43:00Z'),
+      manual(3, 'success', '2026-09-01T18:42:00Z'),
+      manual(4, 'success', '2026-09-01T18:41:00Z'),
+      manual(5, 'success', '2026-09-01T18:40:00Z'),
+    ];
+    const stale = check(runs, 'cron-staleness');
+    expect(stale.ok, 'five manual successes are not a working schedule').toBe(false);
+    expect(stale.detail).toMatch(/no SCHEDULED run has been delivered/);
+
+    const failures = check(runs, 'cron-failures');
+    expect(failures.detail).toMatch(/0\/0 recent SCHEDULED cron runs failed/);
+  });
+
+  it('reports the manual dispatch separately, and only as information', () => {
+    const info = check(REAL_HISTORY, 'cron-manual-verification');
+    expect(info.informational).toBe(true);
+    expect(info.ok).toBe(true);
+    expect(info.detail).toMatch(/last manual dispatch 33521310009 SUCCESS/);
+    expect(info.detail).toMatch(/proves nothing about schedule delivery/);
+  });
+
+  it('says so when no manual dispatch has happened', () => {
+    const info = check(
+      [scheduled(1, 'success', '2026-09-01T18:44:00Z')],
+      'cron-manual-verification',
+    );
+    expect(info.detail).toMatch(/no manual dispatch/);
+    expect(info.ok, 'the absence of a manual run is not a fault').toBe(true);
+  });
+
+  // The three outcomes need three different responses, so the operator must be
+  // able to tell them apart from the status line alone.
+  it('distinguishes scheduler delivery failure from application failure', () => {
+    const delivery = check([scheduled(1, 'success', '2026-09-01T12:00:00Z')], 'cron-staleness');
+    expect(delivery.detail).toMatch(/SUCCEEDED/);
+    expect(delivery.detail).toMatch(/GitHub has not delivered the schedule/);
+
+    const application = check(
+      [
+        scheduled(2, 'failure', '2026-09-01T12:30:00Z'),
+        scheduled(1, 'success', '2026-09-01T09:00:00Z'),
+      ],
+      'cron-staleness',
+    );
+    expect(application.detail).toMatch(/FAILURE/);
+    expect(application.detail).toMatch(/not schedule delivery/);
+  });
+
+  // Fail closed. A payload without `event` must not be counted as scheduled
+  // evidence — otherwise a GitHub response-shape change would silently
+  // reinstate the bug this whole suite exists to prevent.
+  it('a run with an unknown trigger is not scheduled evidence', () => {
+    const runs = [
+      { runId: 7, status: 'completed', conclusion: 'success', completedAt: '2026-09-01T18:44:00Z' },
+    ];
+    const stale = check(runs as typeof REAL_HISTORY, 'cron-staleness');
+    expect(stale.ok).toBe(false);
+    expect(stale.detail).toMatch(/no SCHEDULED run has been delivered|no successful run found/);
+  });
+
+  // Parity: the informational line must never be able to open, comment on or
+  // close an incident, because a manual dispatch is an operator action and its
+  // presence or absence is not a production fault.
+  it('the informational check is excluded from the incident lifecycle', () => {
+    const results = evaluateCronHealth(REAL_HISTORY, NOW);
+    const info = results.find((r: { id: string }) => r.id === 'cron-manual-verification')!;
+
+    // Even with an open issue carrying its marker, nothing is closed.
+    const openIssues = [
+      { number: 99, title: '[ops] manual', body: incidentMarker('cron-manual-verification') },
+    ];
+    const { toOpen, toComment, toClose } = reconcileIncidents([info], openIssues);
+    expect(toOpen).toEqual([]);
+    expect(toComment).toEqual([]);
+    expect(toClose.map((c: { issue: { number: number } }) => c.issue.number)).not.toContain(99);
+  });
+
+  // List/evaluator parity: every id the evaluator emits is accounted for, and
+  // the reliability ids are exactly the two that gate the run.
+  it('emits exactly the three cron ids, two gating and one informational', () => {
+    const results = evaluateCronHealth(REAL_HISTORY, NOW);
+    expect(results.map((r: { id: string }) => r.id)).toEqual([
+      'cron-staleness',
+      'cron-failures',
+      'cron-manual-verification',
+    ]);
+    expect(
+      results
+        .filter((r: { informational?: boolean }) => !r.informational)
+        .map((r: { id: string }) => r.id),
+    ).toEqual(['cron-staleness', 'cron-failures']);
   });
 });
