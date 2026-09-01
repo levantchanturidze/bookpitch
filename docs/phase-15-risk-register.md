@@ -235,7 +235,18 @@ mitigation in place. **Accepted risk** = proceed, informed.
   `docs/legal-review-checklist.md`.
 - **Launch: Conditional (legal). Pilot: Conditional. Money: no.**
 
-## R-20 · Production has no database — **P0, added 2026-09-01**
+## R-20 · Production has no database — **P0, added and RESOLVED 2026-09-01**
+
+> **Resolved 2026-09-01.** The account owner restored the Supabase project. The
+> restored database is proven to be the intended one: the backup manifest's
+> `production_identity_fingerprint` — `sha256(host:port/database)` truncated —
+> is `5c9f75110f30141f` in both the 2026-08-22 backup taken before the loss and
+> the 2026-09-01 backup taken after the restore. Migration 63 applied exactly
+> once, all production invariants pass, and a fresh encrypted backup restores
+> end to end (drill `33519293872`). **RPO is back to ~24 hours**; the ten-day
+> window this entry warned about is closed. September ledger §17.
+
+### The incident as it stood
 
 - **Evidence.** The Supabase project `cglqphbebckvpeyisqqb` no longer exists.
   `NXDOMAIN` on `db.<ref>.supabase.co` and on `<ref>.supabase.co`;
@@ -266,16 +277,49 @@ mitigation in place. **Accepted risk** = proceed, informed.
 
 ---
 
-## R-16 · FIELD_ENCRYPTION_KEY is malformed in production — **P0, corrected 2026-08-22, NOT VERIFIED**
+## R-21 · A pre-launch decision was reported as a malformed secret — **resolved 2026-09-01**
 
-> **Update 2026-09-01.** A correctly prefixed `<key-id>:<64-hex>` value was
-> provisioned on 2026-08-22. Nothing has confirmed it since: Actions produced
-> zero-step runs until 2026-08-31T20:55Z, and `/api/health/ops` — the only
-> validator, because Vercel marks the variable Sensitive and `vercel env pull`
-> returns it empty — has been unreachable since, for R-20. Incident #26 was
-> auto-closed at 2026-09-01T00:31:06Z by that blindness rather than by a
-> recovery; the closing behaviour is fixed in `e913f83`. Treat this as
-> **NOT VERIFIED** and re-check it first once R-20 is resolved.
+- **Evidence.** After the restore, production reported
+  `FAIL production-config-invalid — security env vars set but malformed: 2`.
+  Both were `PAYMENT_GATEWAY` and `SMS_PROVIDER` on the `mock` adapter, because
+  neither product has launched and no credential for either exists.
+- **Why it mattered.** That is the check that caught R-16, a malformed
+  encryption key that made signup return 500 for weeks. Leaving it permanently
+  red for a decision is how an operator learns to stop reading it — and the one
+  place that must never happen is the check that has already caught a P0.
+- **Fix.** `SECURITY_ENV_VALIDATORS` split into `SECRET_ENV_VALIDATORS`
+  (P0 on failure) and `PROVIDER_ENV_VALIDATORS` (new `production-provider-mocked`
+  check). `mock` is reported PAUSED, like the audit digest's delivery gate; a
+  value that is neither a real adapter nor `mock` is a typo that fails closed at
+  the first send and stays a FAIL. PR #43.
+- **Residual.** Payments and SMS remain mocked in production and the monitor now
+  says so in its own line every run. `getGateway()` and the messaging resolvers
+  refuse `mock` in production, so the runtime already fails closed — this is
+  visibility, not a new control.
+- **Owner accepts:** [ ]
+
+---
+
+## R-16 · FIELD_ENCRYPTION_KEY was malformed in production — **P0, RESOLVED and VERIFIED 2026-09-01**
+
+> **Verified 2026-09-01T14:45Z**, by two independent pieces of evidence, and
+> neither of them is a config parse.
+>
+> 1. `PASS production-config-invalid — security env vars set but malformed: 0`
+>    (monitor run `33521398368`). Until the validator table was split that line
+>    read "malformed: 2", and both were outbound providers deliberately on
+>    `mock` — not secrets. See R-21.
+> 2. A password-reset request at ~12:40Z produced an **encrypted**
+>    `email_outbox` row (`ciphertext rows — outbox=1`). That row cannot exist
+>    unless `encryptField()` succeeded, which is exactly what the malformed key
+>    prevented. The endpoint returns 202 unconditionally, so the 202 proves
+>    nothing; the ciphertext row does.
+>
+> The intermediate state is worth keeping: the key was corrected on 2026-08-22
+> and was **unverifiable** for ten days — Actions produced zero-step runs until
+> 2026-08-31, then `/api/health/ops` was unreachable under R-20. Incident #26
+> was auto-closed at 2026-09-01T00:31:06Z by that blindness rather than by a
+> recovery; that behaviour is fixed in `e913f83`.
 
 - **Evidence.** Vercel runtime log, deployment `dpl_AnCxShtJ4zagx87dYhJiG1ZFANUE`,
   `POST /api/cron/audit-digest` → **500**:

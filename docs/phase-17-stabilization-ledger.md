@@ -2,7 +2,9 @@
 
 > **Superseded in places, 2026-09-01.** This document records Phase 17 as it
 > stood on 2026-08-23, when GitHub Actions was billing-suspended and nothing
-> here was CI-verified. The September integration ran the work for real and
+> here was CI-verified. Both of those are now false: Actions was restored on
+> 2026-08-31 and every claim below has since run in CI, and the work is merged
+> into `main` and deployed. The September integration ran the work for real and
 > changed several conclusions below — most importantly **P17-013 is fixed, not
 > deferred** (§7, §14, §15). Every correction is marked inline and dated. The
 > authoritative September record is
@@ -32,7 +34,7 @@ control made observable, or a claim replaced with a measurement.
 | Unit + integration suite | 86 files, 1055 tests, all passing (35.15s) |
 | Guard checker | 105 entry points, 18 allow-listed, all guarded |
 | Production | `bookpitch.ge`, deployment `dpl_je5rKC33RkPs9MuRfFzq6xYLL5aG` = SHA `5c8fb77`, `/api/health` 200 |
-| GitHub Actions | **billing-suspended** since 2026-08-22 |
+| GitHub Actions | **billing-suspended** since 2026-08-22 — *restored 2026-08-31T20:55Z–2026-09-01T00:05Z; every run since executes real steps* |
 
 ### The Phase 16 branch is not on main
 
@@ -47,15 +49,23 @@ does not reproduce at `main`, it is recorded as such rather than "fixed".
 
 ### GitHub Actions is suspended
 
+> **No longer true, 2026-09-01.** Billing was restored between 2026-08-31T20:55Z
+> and 2026-09-01T00:05Z. The transition is visible in step counts: every run
+> before is `steps: 0`, every run after executes real steps. Everything below
+> described the state on 2026-08-23 and is kept for the record.
+
 Every scheduled run since 2026-08-22 fails before starting:
 
 > The job was not started because recent account payments have failed or your
 > spending limit needs to be increased.
 
-Consequences that matter when reading this document: **CI has not run**, the
-production monitor is not running, and the scheduled crons are not firing — so
-nothing is draining `email_outbox` in production right now. Every result below
-is `LOCALLY VERIFIED`. None of it is CI-verified.
+Consequences that mattered when this was written: **CI had not run**, the
+production monitor was not running, and the scheduled crons were not firing.
+Every result below was `LOCALLY VERIFIED` and none of it was CI-verified.
+
+As of 2026-09-01 all of that is CI-verified, merged and deployed, and the crons
+are draining `email_outbox` again — housekeeping run `33520121839`, reminders
+run `33521310009` across all ten organizations.
 
 ---
 

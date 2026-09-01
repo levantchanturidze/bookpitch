@@ -1,12 +1,17 @@
 # Phase 15 — Launch readiness, UAT and pilot operations ledger
 
-> **September addendum, 2026-09-01.** The scheduled-workflow table and the
-> P15-010 row below were written while GitHub Actions was billing-suspended.
-> Actions is restored; production is not — its database no longer exists, so
-> every cron job, the backup and the ops-metrics endpoint fail for one
-> external cause. Current status of every Phase 15 item, and the exact
-> external action required, is in
-> [`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md).
+> **September addendum, 2026-09-01, updated 14:45Z.** The tables below were
+> written while GitHub Actions was billing-suspended. Both of that day's
+> blockers are gone: **Actions was restored** on 2026-08-31, and the
+> **production database was restored** from the 2026-08-22 backup on
+> 2026-09-01. Production now runs migration **63**, every cron job succeeds,
+> the backup and restore drill both pass, and the monitor reports **17/21
+> checks passed with 2 paused by configuration**.
+>
+> Two things below are therefore stale in opposite directions: the migration
+> count is 62 and is now 63, and the P15-010 row said `NOT VERIFIED` and is now
+> **verified**. Both are corrected inline. Full evidence:
+> [`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §17.
 
 
 **Status: ENGINEERING COMPLETE — EXTERNAL LAUNCH VERIFICATION BLOCKED**
@@ -37,7 +42,7 @@ Recommendation: **CONDITIONAL GO** — see `docs/pilot-plan-and-go-no-go.md`.
 | Production health | `/api/health` → `{"ok":true}` |
 | Production monitor | run `32172833269` — 18/18 checks passed |
 | Production deployment | `dpl_AbFp1ZVHJ7Ep6KtH9WKsfJsvRuD6`, serving `7d7f7e0` |
-| Migrations | 62 on disk, `migrate status` up to date, no drift |
+| Migrations | 62 on disk at the time of writing. **63 since 2026-09-01** — `20260823000001_revoke_marketing_client_contact` applied to production through `migrate.yml` run `33509215538`; `migrate status` up to date, no drift. |
 | Baseline tests | 77 files / 935 tests, exit 0 |
 | Recovery branch | `backup/local-main-before-phase14` @ `517ed0a` — untouched |
 
@@ -55,7 +60,7 @@ Read from the current code, not from prior reports.
 | API route handlers | 77 |
 | Public path clauses in `isPublicPath` | 26 |
 | Scheduled cron endpoints | 5 |
-| Prisma migrations | 62 |
+| Prisma migrations | 62 at the time of writing; **63 in production since 2026-09-01** |
 | Unit/integration test files | 81 |
 | Playwright specs | 3 (× 6 projects) |
 
@@ -121,7 +126,7 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
 | P15-007 | P2 | Load-test workflow could target production | **Fixed** |
 | P15-008 | P1 | Test suite had no DB identity guard | **Fixed** |
 | P15-009 | P1 | Digest bypassed the outbox; its metric could never be non-null | **Fixed** |
-| P15-010 | **P0** | `FIELD_ENCRYPTION_KEY` malformed in production — signup, clinical fields and MFA all 500 | **Corrected 2026-08-22; NOT VERIFIED.** A correctly prefixed key was provisioned, but no monitor run has ever confirmed it — Actions was billing-suspended until 2026-08-31, and since 2026-09-01 `/api/health/ops` cannot answer because production has no database. Incident #26 was auto-closed by that blindness, which is itself a defect, fixed in `e913f83`. See [`phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §3. |
+| P15-010 | **P0** | `FIELD_ENCRYPTION_KEY` malformed in production — signup, clinical fields and MFA all 500 | **VERIFIED RESOLVED 2026-09-01T14:45Z.** Corrected 2026-08-22 and unconfirmable until the database came back. Two independent proofs, neither a config parse: `PASS production-config-invalid — malformed: 0` (monitor run `33521398368`), and a password-reset request that produced an **encrypted** `email_outbox` row — impossible unless `encryptField()` succeeded. Recorded on issue #26. See [`phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §17.5. |
 | P15-011 | P2 | Monitor incidents opened unassigned, so nobody was ever notified | **Fixed** |
 | P15-013 | P2 | Phase 15 reported the sending domain unverified — wrong hostnames queried | **Retracted and corrected** |
 | P15-012 | P3 | Concurrent test runs on one database corrupt each other's fixtures | **Root-caused and fixed** |

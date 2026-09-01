@@ -2,7 +2,16 @@
 
 **Branch:** `agent/phase-16-prepilot-product-refinement`
 **Baseline:** `5c8fb77353869d29cc8378f7a83e6d23a75e55ef` (frozen Phase 15 `main`)
-**Status:** `LOCAL VERIFICATION PASSED — GITHUB CI PENDING`
+**Status:** `MERGED AND PRODUCTION-VERIFIED` — 2026-09-01.
+
+> The line below read `LOCAL VERIFICATION PASSED — GITHUB CI PENDING` while
+> GitHub Actions was billing-suspended. Actions was restored on
+> 2026-08-31, this work merged into `main` through PR #36 as `e69795b`, and
+> CI has run it repeatedly since. F16-012 in particular is now confirmed in
+> the **production database**, not merely in the migration:
+> `ok: MARKETING has no client.read:contact and keeps both reporting grants`
+> (run `33519944573`). See
+> [`phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §17.
 
 Phase 15 is in a holding pattern: GitHub Actions is suspended for an account
 billing condition until approximately 2026-09-01, so no CI run and no official
@@ -136,7 +145,7 @@ Enforcement stays covered by `scripts/check-guards.ts` and the route-access test
 |---|---|
 | **Surface** | Production configuration diagnostics |
 | **Was** | F16-001/002 made the resolvers refuse `mock` in production, but only at the call site — the first real payment or reminder. Until then the monitor reported a complete, valid configuration. |
-| **Implementation** | `lib/ops-metrics.ts` (`SECURITY_ENV_VALIDATORS`, `isRealProvider`) |
+| **Implementation** | `lib/ops-metrics.ts` (`PROVIDER_ENV_VALIDATORS`, `isRealProvider`) — split out of `SECURITY_ENV_VALIDATORS` on 2026-09-01, because a provider on `mock` before launch and a malformed encryption key were arriving on one status line |
 | **Proof** | `tests/phase16-provider-config-contract.test.ts` — 18 tests |
 | **Severity** | P2 — turns a latent misconfiguration into a visible one before it costs a payment. |
 

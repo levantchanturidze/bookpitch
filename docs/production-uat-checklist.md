@@ -19,21 +19,26 @@ support records. Write it down here before starting:
 If you have not designated one, stop: sections A and B cannot be completed, and
 they are the ones that prove email delivery works.
 
-**Blocking prerequisite 0 — production has no database (2026-09-01).** The
-Supabase project behind production no longer exists, so every DB-backed route
-returns 500 and **nothing in this checklist can be attempted**. This supersedes
-prerequisite 1 below: until a database exists, the encryption key cannot be
-exercised either. See
-[`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md)
-§2 for the evidence and the exact restore steps.
+**Prerequisite 0 — the database outage is over (2026-09-01).** Production lost
+its Supabase project earlier that day and it was restored the same day.
+Migration 63 is applied, all production invariants pass, and the monitor
+reports 17/21 with 2 paused. Nothing in this checklist is blocked by it any
+more. September ledger §17.
 
-**Blocking prerequisite 1 — the encryption key.** *Superseded 2026-08-22, but
-unverified.* A correctly prefixed `<key-id>:<64-hex>` value was provisioned on
-2026-08-22; no monitor run has confirmed it, because `/api/health/ops` has never
-been reachable since. Treat this as `NOT VERIFIED`, not as fixed, and re-check
-it as the first thing after the database is restored. Original condition:
-`FIELD_ENCRYPTION_KEY` lacked its `<key-id>:` prefix, so `encryptField()` threw
-and **signup returned 500**. See R-16 in `docs/phase-15-risk-register.md`.
+**Prerequisite 1 — the encryption key: RESOLVED and VERIFIED 2026-09-01T14:45Z.**
+`PASS production-config-invalid — malformed: 0`, and independently a
+password-reset request produced an **encrypted** `email_outbox` row, which
+cannot exist unless `encryptField()` succeeded. Section A is no longer blocked
+by it. Original condition: `FIELD_ENCRYPTION_KEY` lacked its `<key-id>:` prefix,
+so `encryptField()` threw and **signup returned 500**. See R-16 in
+`docs/phase-15-risk-register.md`.
+
+**What still blocks this checklist is the thing it always said it needed: a
+designated test mailbox.** No address has been nominated, so sections A and B —
+the ones that prove a real message arrives in a real inbox — cannot be
+performed. One transactional message did reach the durable outbox and was sent
+during verification, to the operator's own address; whether it landed in that
+inbox is unread and unclaimed.
 
 **Blocking prerequisite 2 — nothing.** An earlier revision claimed the sending
 domain was unverified. That was wrong: `send.bookpitch.ge` has DKIM, SPF and a
