@@ -263,6 +263,23 @@ export type ConfigMetrics = {
   undeclaredMockProviderEnv: number;
 };
 
+/**
+ * Minutes since each cron job last COMPLETED, as recorded by the job itself.
+ *
+ * Distinct from the GitHub Actions run list, which reports invocation: a
+ * workflow can be queued, curl can exit 0, and the endpoint can have processed
+ * nothing. null means the job has never written a heartbeat — a fresh
+ * deployment, or a job that has genuinely never completed.
+ */
+export type CronHeartbeatMetrics = {
+  remindersMinutesAgo: number | null;
+  housekeepingMinutesAgo: number | null;
+  retentionMinutesAgo: number | null;
+  auditDigestMinutesAgo: number | null;
+  /** Organizations the last reminder tick handled. 0 means "ran, did nothing". */
+  remindersLastUnits: number | null;
+};
+
 export type OpsMetrics = {
   outbox: OutboxMetrics;
   housekeeping: HousekeepingMetrics;
@@ -270,6 +287,7 @@ export type OpsMetrics = {
   auditDigest: AuditDigestMetrics;
   ciphertext: CiphertextMetrics;
   partitions: PartitionMetrics;
+  cronHeartbeat: CronHeartbeatMetrics;
   config: ConfigMetrics;
 };
 
@@ -615,19 +633,26 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
   // authoritative for anything time-based in this project (see CLAUDE.md and
   // the reauth-expiry memory): a skewed runner must not be able to invent a
   // healthy-looking age.
-  const [outboxRows, housekeepingRows, retentionRows, digestRows, ciphertextRows, partitionRows] =
-    await Promise.all([
-      unsafePrismaAdmin.$queryRaw<
-        Array<{
-          pending: bigint;
-          processing: bigint;
-          dead: bigint;
-          stale_claims: bigint;
-          oldest_pending_age_seconds: number | null;
-          dead_last_24h: bigint;
-          dead_exhausted: bigint;
-        }>
-      >`
+  const [
+    outboxRows,
+    housekeepingRows,
+    retentionRows,
+    digestRows,
+    ciphertextRows,
+    partitionRows,
+    heartbeatRows,
+  ] = await Promise.all([
+    unsafePrismaAdmin.$queryRaw<
+      Array<{
+        pending: bigint;
+        processing: bigint;
+        dead: bigint;
+        stale_claims: bigint;
+        oldest_pending_age_seconds: number | null;
+        dead_last_24h: bigint;
+        dead_exhausted: bigint;
+      }>
+    >`
         SELECT
           count(*) FILTER (WHERE status = 'pending')                                  AS pending,
           count(*) FILTER (WHERE status = 'processing')                               AS processing,
@@ -641,9 +666,9 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         FROM email_outbox
       `,
 
-      unsafePrismaAdmin.$queryRaw<
-        Array<{ overdue_rate_limit: bigint; overdue_tokens: bigint; overdue_reauth: bigint }>
-      >`
+    unsafePrismaAdmin.$queryRaw<
+      Array<{ overdue_rate_limit: bigint; overdue_tokens: bigint; overdue_reauth: bigint }>
+    >`
         SELECT
           (SELECT count(*) FROM rate_limit WHERE window_start < NOW() - interval '2 days')
             AS overdue_rate_limit,
@@ -655,10 +680,10 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
             AS overdue_reauth
       `,
 
-      // Mirrors lib/gdpr.ts runRetentionTick: stale by updated_at against the
-      // org's own window, not yet redacted, and with no appointment inside the
-      // window. Counted, never selected.
-      unsafePrismaAdmin.$queryRaw<Array<{ overdue_customers: bigint }>>`
+    // Mirrors lib/gdpr.ts runRetentionTick: stale by updated_at against the
+    // org's own window, not yet redacted, and with no appointment inside the
+    // window. Counted, never selected.
+    unsafePrismaAdmin.$queryRaw<Array<{ overdue_customers: bigint }>>`
         SELECT count(*) AS overdue_customers
         FROM customers c
         JOIN organizations o ON o.id = c.organization_id
@@ -671,22 +696,22 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           )
       `,
 
-      unsafePrismaAdmin.$queryRaw<
-        Array<{
-          hours_since: number | null;
-          oldest_eligible_org_age_hours: number | null;
-          eligible_owner_memberships: number;
-          eligible_organizations: number;
-          distinct_normalized_recipient_addresses: number;
-          expected_digest_messages_per_run: number;
-          known_fixture_domain: number;
-          reserved_tld_non_fixture: number;
-          other_unclassified: number;
-          other_at_operator_domain: number;
-          other_distinct_domains: number;
-          eligible_organizations_with_no_customers: number;
-        }>
-      >`
+    unsafePrismaAdmin.$queryRaw<
+      Array<{
+        hours_since: number | null;
+        oldest_eligible_org_age_hours: number | null;
+        eligible_owner_memberships: number;
+        eligible_organizations: number;
+        distinct_normalized_recipient_addresses: number;
+        expected_digest_messages_per_run: number;
+        known_fixture_domain: number;
+        reserved_tld_non_fixture: number;
+        other_unclassified: number;
+        other_at_operator_domain: number;
+        other_distinct_domains: number;
+        eligible_organizations_with_no_customers: number;
+      }>
+    >`
         -- float8, not numeric: Prisma maps PostgreSQL numeric to a Decimal
         -- object, which would survive the numeric-only assertion below as an
         -- object and then serialise to something the monitor cannot compare.
@@ -791,11 +816,11 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           )::int AS eligible_organizations_with_no_customers
       `,
 
-      // P15-010: counts only. No encrypted value, address or identifier is
-      // selected — the question is "does any ciphertext exist", nothing more.
-      unsafePrismaAdmin.$queryRaw<
-        Array<{ customer_fields: bigint; outbox_rows: bigint; mfa_secrets: bigint }>
-      >`
+    // P15-010: counts only. No encrypted value, address or identifier is
+    // selected — the question is "does any ciphertext exist", nothing more.
+    unsafePrismaAdmin.$queryRaw<
+      Array<{ customer_fields: bigint; outbox_rows: bigint; mfa_secrets: bigint }>
+    >`
         SELECT
           (
             SELECT count(*) FROM customers
@@ -811,7 +836,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           ) AS mfa_secrets
       `,
 
-      unsafePrismaAdmin.$queryRaw<Array<{ months_ahead: bigint; default_rows: bigint }>>`
+    unsafePrismaAdmin.$queryRaw<Array<{ months_ahead: bigint; default_rows: bigint }>>`
 
         SELECT
           (
@@ -827,7 +852,18 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           ) AS months_ahead,
           (SELECT count(*) FROM audit_log_default) AS default_rows
       `,
-    ]);
+    // Heartbeats, aged against the DATABASE clock for the same reason as
+    // every other age here: a serverless instance with a skewed clock must
+    // not be able to make a dead job look alive.
+    unsafePrismaAdmin.$queryRaw<
+      Array<{ job: string; minutes_ago: number | null; last_units: number }>
+    >`
+        SELECT job,
+               EXTRACT(EPOCH FROM (NOW() - last_succeeded_at))::float / 60 AS minutes_ago,
+               last_units
+          FROM cron_heartbeat
+      `,
+  ]);
 
   const o = outboxRows[0] ?? {};
   const h = housekeepingRows[0] ?? {};
@@ -893,6 +929,17 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       monthsAhead: num((p as Record<string, unknown>).months_ahead),
       defaultPartitionRows: num((p as Record<string, unknown>).default_rows),
     },
+    cronHeartbeat: (() => {
+      const by = new Map((heartbeatRows ?? []).map((row) => [row.job, row] as const));
+      const ago = (job: string) => numOrNull(by.get(job)?.minutes_ago);
+      return {
+        remindersMinutesAgo: ago('reminders'),
+        housekeepingMinutesAgo: ago('housekeeping'),
+        retentionMinutesAgo: ago('retention'),
+        auditDigestMinutesAgo: ago('audit-digest'),
+        remindersLastUnits: numOrNull(by.get('reminders')?.last_units),
+      };
+    })(),
     config: collectConfigMetrics(),
   };
 }

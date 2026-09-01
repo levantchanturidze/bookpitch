@@ -45,6 +45,19 @@ export const DEFAULTS = {
   outboxOldestPendingMaxSeconds: 3 * 3600,
   /** Weekly digest; alert if nothing has been queued for this long. */
   auditDigestMaxAgeHours: 24 * 10,
+  /**
+   * How long since the reminders endpoint last COMPLETED before that is an
+   * incident.
+   *
+   * Deliberately looser than cronMaxAgeMinutes (90). That check asks "did
+   * GitHub deliver the schedule", and GitHub's measured worst case on this
+   * account is 4h39m. This one asks "did the application actually do the
+   * work", and it must not simply restate the same delivery complaint in a
+   * second colour — it exists to catch the case where the schedule IS
+   * arriving and the endpoint is silently doing nothing. 6h clears the
+   * measured delivery worst case with margin.
+   */
+  reminderHeartbeatMaxMinutes: 6 * 60,
 };
 
 // -----------------------------------------------------------------------------
@@ -474,6 +487,39 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
     }`,
   });
 
+  // Did the application actually RUN, as opposed to GitHub having queued a
+  // workflow whose curl exited 0?
+  //
+  // Every cron check before this one read the GitHub Actions run list, which
+  // is a fact about GitHub. `POST /api/cron/reminders` can return 200 having
+  // processed zero organizations, and the only record of that was a log line
+  // nobody reads. The heartbeat is the application's own statement, written
+  // by the job, aged against the database clock.
+  //
+  // Reported apart from cron-staleness because the responses differ:
+  //
+  //   cron-staleness stale, heartbeat fresh   GitHub is late; work is happening
+  //   cron-staleness fresh, heartbeat stale   the schedule arrives and the
+  //                                           endpoint is doing nothing — the
+  //                                           case nothing could previously see
+  const heartbeat = metrics?.cronHeartbeat ?? {};
+  if (heartbeat.remindersMinutesAgo !== undefined) {
+    const ago = heartbeat.remindersMinutesAgo;
+    const limit = opts.reminderHeartbeatMaxMinutes;
+    results.push({
+      id: 'cron-heartbeat-stale',
+      title: 'The reminders job has not completed recently',
+      ok: ago !== null && ago <= limit,
+      detail:
+        ago === null
+          ? 'the reminders job has never recorded a completion — it has not run once ' +
+            'since this table existed, whatever the workflow run list says'
+          : `reminders last completed ${(ago / 60).toFixed(1)}h ago ` +
+            `(limit ${(limit / 60).toFixed(1)}h), handling ` +
+            `${heartbeat.remindersLastUnits ?? 0} organization(s)`,
+    });
+  }
+
   // Phase 13: production signup was silently dead for a week because two
   // Turnstile binding variables were never set in Vercel. verifyTurnstile()
   // fails closed on a missing one, so every signup returned 400 and nothing
@@ -648,6 +694,7 @@ export const OPS_DERIVED_CHECK_IDS = Object.freeze([
   'retention-stalled',
   'audit-digest-stalled',
   'partition-maintenance',
+  'cron-heartbeat-stale',
   'production-config-incomplete',
   'production-config-invalid',
   'production-provider-mocked',

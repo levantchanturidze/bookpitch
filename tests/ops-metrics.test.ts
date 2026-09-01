@@ -77,10 +77,20 @@ describe('collectOpsMetrics against a real database', () => {
       'auditDigest',
       'ciphertext',
       'config',
+      'cronHeartbeat',
       'housekeeping',
       'outbox',
       'partitions',
       'retention',
+    ]);
+    // Application-side proof of COMPLETION, as opposed to the GitHub Actions
+    // run list's proof of INVOCATION. null until the job has run once.
+    expect(Object.keys(metrics.cronHeartbeat).sort()).toEqual([
+      'auditDigestMinutesAgo',
+      'housekeepingMinutesAgo',
+      'remindersLastUnits',
+      'remindersMinutesAgo',
+      'retentionMinutesAgo',
     ]);
     // P15-003: the digest metric carries two numbers now. The monitor needs
     // both to tell "nothing due yet" apart from "the weekly job never ran".

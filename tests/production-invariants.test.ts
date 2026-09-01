@@ -43,8 +43,21 @@ const SCRIPT = path.join(ROOT, 'scripts', 'verify-production-invariants.sql');
 
 // The migration/superuser role: these tests need to ALTER TABLE and DETACH
 // PARTITION, which the app role deliberately cannot do.
+//
+// INVARIANT_TEST_DATABASE_URL wins, and the order matters. lib/db.ts builds
+// `unsafePrismaAdmin` from DATABASE_URL_SUPERUSER_SESSION, so pointing that
+// variable at a separate fixture database to isolate this suite silently
+// splits the WHOLE run across two databases: prismaApp keeps using
+// DATABASE_URL while every admin query goes somewhere else. Measured — 52 test
+// files failed with "unknown customer" and similar, none of them for a real
+// reason.
+//
+// So there is a dedicated variable for aiming this suite somewhere else, and
+// the shared one is only a fallback. In CI they are the same database anyway:
+// DATABASE_URL_SUPERUSER_SESSION is the CI superuser URL, this suite mutates
+// and restores it in place, and vitest runs files serially.
 const ADMIN_URL =
-  process.env.DATABASE_URL_SUPERUSER_SESSION ?? process.env.INVARIANT_TEST_DATABASE_URL ?? '';
+  process.env.INVARIANT_TEST_DATABASE_URL ?? process.env.DATABASE_URL_SUPERUSER_SESSION ?? '';
 
 let pgEnv: NodeJS.ProcessEnv | null = null;
 let tmpDir: string | null = null;
@@ -218,6 +231,21 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
         JOIN pg_namespace n ON n.oid=p.pronamespace
        WHERE n.nspname='public' AND p.proname='bp_create_monthly_partition'`,
     ).trim();
+
+    // Fail once, with the reason, rather than nineteen times with "fixture
+    // must be clean". A database that does not already satisfy the production
+    // invariants cannot host injected-failure tests: every case would fail for
+    // a cause that has nothing to do with the injection. Seen on a developer
+    // database carrying rolled-back migrations from an abandoned branch.
+    const baseline = runVerifier();
+    if (!baseline.ok) {
+      throw new Error(
+        'the target database does not satisfy the production invariants before any ' +
+          'injection, so nothing below would be measuring what it claims. Point ' +
+          'INVARIANT_TEST_DATABASE_URL at a freshly migrated database.\n\n' +
+          baseline.output.trim(),
+      );
+    }
   });
 
   afterAll(() => {

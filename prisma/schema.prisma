@@ -98,7 +98,7 @@ model Organization {
 
   // ISO 4217 currency code for all payments in this org. Default GEL; change
   // when multi-currency support lands.
-  currency String @default("GEL") @db.VarChar(3) @map("currency")
+  currency String @default("GEL") @map("currency") @db.VarChar(3)
 
   // ---- Spec §3 additions (RBAC Phase 1). Backfill in Phase 2.
   vertical                  String? // clinic|salon|fitness|mixed — CHECK in migration
@@ -186,12 +186,12 @@ model AppUser {
   sessionVersion Int       @default(1) @map("session_version")
 
   // ---- Spec §3 additions (RBAC Phase 1).
-  status            String    @default("active") // active|locked|deleted (CHECK in migration)
-  locale            String?
-  mfaEnabled        Boolean   @default(false) @map("mfa_enabled")
+  status                  String    @default("active") // active|locked|deleted (CHECK in migration)
+  locale                  String?
+  mfaEnabled              Boolean   @default(false) @map("mfa_enabled")
   // AES-GCM encrypted TOTP secret (same scheme as allergies/clinicalNotes).
   // NULL = MFA not enrolled; non-null = TOTP required for break-glass.
-  mfaTotp           String?   @map("mfa_totp")
+  mfaTotp                 String?   @map("mfa_totp")
   // Pending TOTP secret during re-enrollment. Written by generateTotpEnrollment
   // when mfaEnabled=true; promoted to mfaTotp (and cleared) by confirmTotpEnrollment.
   // verifyTotp always reads mfaTotp so the active break-glass path is unaffected.
@@ -199,11 +199,11 @@ model AppUser {
   // Timestamp when mfaTotpPending was written, for housekeeping to sweep stale challenges.
   mfaTotpPendingCreatedAt DateTime? @map("mfa_totp_pending_created_at") @db.Timestamptz(6)
   // Unix epoch of the last successfully consumed TOTP 30s window, for replay protection.
-  mfaLastTotpWindow BigInt?   @map("mfa_last_totp_window")
-  lastLoginAt       DateTime? @map("last_login_at") @db.Timestamptz(6)
+  mfaLastTotpWindow       BigInt?   @map("mfa_last_totp_window")
+  lastLoginAt             DateTime? @map("last_login_at") @db.Timestamptz(6)
   // Platform-plane role (SUPER_ADMIN, PLATFORM_ADMIN, …). NULL for
   // org-plane-only users — that is, everyone today.
-  platformRoleId    String?   @map("platform_role_id") @db.Uuid
+  platformRoleId          String?   @map("platform_role_id") @db.Uuid
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -599,6 +599,27 @@ model RateLimit {
   @@map("rate_limit")
 }
 
+/// Last successful completion of each cron job, written by the job itself.
+///
+/// The monitor previously inferred cron health entirely from the GitHub
+/// Actions runs list, which is a fact about GitHub rather than about
+/// Bookpitch: a workflow can be queued, curl can exit 0, and the endpoint can
+/// have processed nothing. This is the application's own statement that it
+/// ran, and it survives replacing the scheduler.
+///
+/// Not tenant-scoped — a tick spans every organization — so no
+/// organization_id and no RLS policy. Overwritten in place: it is a heartbeat,
+/// not a history.
+model CronHeartbeat {
+  job             String   @id
+  lastSucceededAt DateTime @map("last_succeeded_at") @db.Timestamptz(6)
+  /// Units of work the last run handled (organizations, rows) — small,
+  /// numeric and non-identifying, so "ran and did nothing" is visible.
+  lastUnits       Int      @default(0) @map("last_units")
+
+  @@map("cron_heartbeat")
+}
+
 // =============================================================================
 // AUDIT LOG
 // =============================================================================
@@ -917,37 +938,37 @@ model PendingRegistration {
 //   break_glass.alert   — security alert sent to SECURITY_ALERT_EMAIL
 //   impersonation.notify — org-owner notification on impersonation start
 model EmailOutbox {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   // Caller-supplied idempotency key (e.g. 'break_glass_alert:{sessionId}').
   // Enforced UNIQUE via sparse DB index (migration 20260813000005).
   // Prisma cannot express partial unique indexes — DB enforcement only.
-  idempotencyKey String?   @map("idempotency_key")
-  toAddress      String    @map("to_address")
-  subject        String
-  body           String
-  purpose        String
+  idempotencyKey     String?   @map("idempotency_key")
+  toAddress          String    @map("to_address")
+  subject            String
+  body               String
+  purpose            String
   // State machine: pending → processing → sent | dead
-  status         String    @default("pending")
-  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  status             String    @default("pending")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   // Exponential-backoff scheduling for retries. Set to now() initially.
-  nextAttemptAt  DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
-  sentAt         DateTime? @map("sent_at") @db.Timestamptz(6)
-  failedAt       DateTime? @map("failed_at") @db.Timestamptz(6)
-  attempts       Int       @default(0)
-  maxAttempts    Int       @default(3) @map("max_attempts")
-  lastError      String?   @map("last_error")
-  failureCategory String?  @map("failure_category")
+  nextAttemptAt      DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  sentAt             DateTime? @map("sent_at") @db.Timestamptz(6)
+  failedAt           DateTime? @map("failed_at") @db.Timestamptz(6)
+  attempts           Int       @default(0)
+  maxAttempts        Int       @default(3) @map("max_attempts")
+  lastError          String?   @map("last_error")
+  failureCategory    String?   @map("failure_category")
   // Concurrent-worker claiming (FOR UPDATE SKIP LOCKED in migration 20260813000005).
-  claimOwner     String?   @map("claim_owner")
-  claimExpiresAt DateTime? @map("claim_expires_at") @db.Timestamptz(6)
-  claimedAt      DateTime? @map("claimed_at") @db.Timestamptz(6)
+  claimOwner         String?   @map("claim_owner")
+  claimExpiresAt     DateTime? @map("claim_expires_at") @db.Timestamptz(6)
+  claimedAt          DateTime? @map("claimed_at") @db.Timestamptz(6)
   // When true, body contains AES-256-GCM ciphertext from encryptField().
   // Drain decrypts before passing to the email provider.
-  bodyEncrypted       Boolean  @default(false) @map("body_encrypted")
+  bodyEncrypted      Boolean   @default(false) @map("body_encrypted")
   // When true, to_address contains AES-256-GCM ciphertext (encryptField).
   // to_address_hash stores SHA-256 hex of the lowercase plaintext for filtering.
-  toAddressEncrypted  Boolean  @default(false) @map("to_address_encrypted")
-  toAddressHash       String?  @map("to_address_hash")
+  toAddressEncrypted Boolean   @default(false) @map("to_address_encrypted")
+  toAddressHash      String?   @map("to_address_hash")
 
   // idx_email_outbox_worker (WHERE status = 'pending') — partial, migration only.
   // idx_email_outbox_to_address_hash — partial index on non-null hash, migration only.
