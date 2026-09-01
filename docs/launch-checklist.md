@@ -3,8 +3,22 @@
 The single ordered list for taking Bookpitch from "engineering complete" to
 "live with a pilot organisation". Items are ticked only against evidence.
 
-Current state: **ENGINEERING COMPLETE — EXTERNAL LAUNCH VERIFICATION BLOCKED.**
-Three blockers remain, all email/DNS, all human.
+Current state (2026-09-01): **ENGINEERING COMPLETE AND MERGED — LAUNCH
+BLOCKED ON A MISSING PRODUCTION DATABASE.**
+
+The Supabase project behind production no longer exists. Every DB-backed route
+returns 500 or 503; `/api/health` still returns 200 because it deliberately
+touches nothing. A 2026-08-22 encrypted backup restores cleanly (restore drill
+run `33491958258`), so this is a lost host with a proven recovery point, not
+lost data — but no launch step below can be attempted until it is restored.
+Evidence and exact steps:
+[`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §2.
+
+The email/DNS and legal blockers recorded below are unchanged and still human.
+
+The engineering counts in section A are from Phase 15 and have since grown; the
+current figures are 1362 unit/integration tests across 109 files, 268 Playwright
+tests across 9 projects, and 63 migrations.
 
 ## A. Engineering — done
 

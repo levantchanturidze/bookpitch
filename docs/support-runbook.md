@@ -13,8 +13,17 @@ There is no ticketing system and no status page. Incidents arrive by exactly
 three routes:
 
 1. **Automated** — the production monitor runs every ~30 minutes
-   (`.github/workflows/production-monitor.yml`, 18 checks) and opens or updates
-   a GitHub issue assigned to the repository owner on failure.
+   (`.github/workflows/production-monitor.yml`) and opens or updates a GitHub
+   issue assigned to the repository owner on failure.
+
+   Ten checks run without `/api/health/ops`; ten more are derived from it, so a
+   healthy run reports twenty. **A check that is missing is not a check that
+   passed.** When `ops-metrics` fails, the ten it feeds are not evaluated at
+   all, and since 2026-09-01 the monitor keeps their incidents open with
+   "Still open, and NOT verified either way" rather than closing them as
+   orphans. Read a monitor run by counting what it reported, not by looking for
+   red: `6/10 checks passed` and `20/20 checks passed` are very different
+   states even though neither shows a failing config check.
 2. **Migration failure** — `.github/workflows/migrate.yml` opens an assigned
    issue on failure.
 3. **Human report** — a pilot organisation contacts the operator directly.
@@ -54,7 +63,7 @@ communicate — do not attempt a workaround that bypasses a security control.
 Work outside in; each step is cheap and rules out a layer.
 
 1. `curl -s https://bookpitch.ge/api/health` → expect exactly `{"ok":true}`.
-2. Latest **Production monitor** run — which of the 18 checks failed, and its
+2. Latest **Production monitor** run — which checks failed, and each one's
    detail line.
 3. Vercel deployment state: is the current production deployment `Ready`, and
    does it correspond to the merged SHA?

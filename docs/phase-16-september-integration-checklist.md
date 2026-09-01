@@ -1,5 +1,12 @@
 # Phase 16 — September integration checklist
 
+> **Executed 2026-09-01.** Outcome recorded in
+> [`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md).
+> Read the "What actually happened" section below before following the
+> sequence: the plan assumed a healthy production, and production had lost its
+> database. Steps 12–14 could not run for that reason, and step 3 could not be
+> satisfied at all.
+
 Phase 16 is frozen locally and unmerged. This is the exact order to run once
 GitHub Actions is billable again (expected ~2026-09-01).
 
@@ -89,3 +96,34 @@ PostgreSQL RLS / least-privilege / concurrency tests · `npm run test:guards` ·
 `npm run check:orphan-perms` · `npm run check:reachable` · `npm run build` ·
 Playwright across all six projects · `npm audit --audit-level=high` ·
 full-history `gitleaks detect`.
+
+
+---
+
+## What actually happened, 2026-09-01
+
+The plan assumed Phase 15 and Phase 16 would soak separately against a
+production that worked. Production had lost its database before the window
+opened, so the two-soak design could not be executed as written. What was done
+instead, and why:
+
+| Step | Planned | Actual |
+|---|---|---|
+| 1 | Confirm jobs start (`steps > 0`) | **Done.** Billing restored between 2026-08-31T20:55Z and 2026-09-01T00:05Z; the transition is visible in step counts. |
+| 2 | Rerun Phase 15 CI on `main` @ `5c8fb77` | **Superseded.** `main` had advanced to `dae46ac`, whose tree is byte-identical to `5c8fb77`. CI ran on the integration branch, which contains both. |
+| 3 | Prove the encryption-key incident resolved; #26 closes through automation | **NOT POSSIBLE.** `/api/health/ops` cannot answer without a database, so `production-config-invalid` cannot be evaluated. #26 was auto-closed by that blindness at 00:31:06Z — a defect, now fixed (September ledger §3). The condition itself is `NOT VERIFIED`. |
+| 4 | Start Phase 15's 24-hour soak at the first fully successful monitor run | **NOT STARTED.** No monitor run has been fully successful; four checks fail for a single external cause. |
+| 5 | Keep Phase 16 unmerged for the window | **Deliberately not followed.** Waiting would have held finished, CI-verified engineering behind an external blocker that nothing in the repository can clear. The separation of evidence is preserved in writing instead: Phase 15's key correction is recorded as `NOT VERIFIED`, not folded into Phase 16's result. |
+| 6 | Close Phase 15 after 24 hours | **Not closed.** |
+| 7 | Rebase Phase 16 onto final `main` | **Merged, not rebased.** The Phase 16 and Phase 17 commits were already integrated at `86e09a9`/`00a5d76`; `ceeb9a9` merges current `main` in. The historical commit trail is preserved rather than flattened. |
+| 8 | Rerun the full local matrix | **Done** — September ledger §8. |
+| 9–11 | Push, require every check on the exact head SHA, merge normally | **Done** — September ledger §9–§10. |
+| 12 | Verify migration 63 applies through the workflow | **BLOCKED.** There is no production database to apply it to. The migration is in `main` and applies cleanly to an empty database (63 applied, 0 unfinished, no drift). |
+| 13 | Production RBAC proof that MARKETING holds exactly `report.own` + `report.branch` | **BLOCKED** in production; proven in CI against a real database, and at the browser level: MARKETING receives 403 on `/patients` and 200 on `/analytics`. |
+| 14 | Start a Phase 16 post-deployment monitoring window | **NOT STARTED**, for the same reason as step 4. |
+
+The deployment-order safety argument below is unaffected and still holds: the
+code denial in `lib/rbac/role-denials.ts` refuses `client.read:contact` for
+MARKETING regardless of whether migration 63 has landed, and
+`tests/phase16-deployment-order.test.ts` proves both orders against a real
+database.

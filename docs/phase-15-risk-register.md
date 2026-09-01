@@ -206,7 +206,47 @@ mitigation in place. **Accepted risk** = proceed, informed.
   `docs/legal-review-checklist.md`.
 - **Launch: Conditional (legal). Pilot: Conditional. Money: no.**
 
-## R-16 · FIELD_ENCRYPTION_KEY is malformed in production — **P0, LAUNCH BLOCKER**
+## R-20 · Production has no database — **P0, added 2026-09-01**
+
+- **Evidence.** The Supabase project `cglqphbebckvpeyisqqb` no longer exists.
+  `NXDOMAIN` on `db.<ref>.supabase.co` and on `<ref>.supabase.co`;
+  `FATAL: (ENOTFOUND) tenant/user … not found` from both
+  `aws-0-eu-central-1` and `aws-1-eu-central-1` poolers on ports 5432 and 6543;
+  the same message in the production Vercel runtime log for deployment
+  `dpl_92gL3DZr6kZLomHK3C1fukxd6F1r`. A paused project still resolves in DNS.
+- **Impact.** Every DB-backed route returns 500 or 503: public booking, sign-in,
+  every cron endpoint, `/api/health/ops`. `/api/health` still returns
+  `200 {"ok":true}` because it is a process-liveness probe that deliberately
+  touches nothing — it is not evidence that anything works.
+- **Data loss.** Not proven, and unlikely to be total. The newest encrypted
+  backup artifact (`production-backup-32546836760-1`, 2026-08-22T02:40Z) was
+  restored end-to-end in restore drill run `33491958258`: checksum verified,
+  decrypted, `pg_restore` with no errors, 62 migrations finished, 28 required
+  tables, 10 organizations, audit_log append-only triggers intact with 100 rows
+  and 12 partitions. **RPO for this incident is therefore ~10 days**, not the
+  ~24 hours R-09 assumes, because the backups after 2026-08-22 failed for this
+  same cause and the artifact retention window is 35 days
+  (expires ~2026-09-26 — recover before then).
+- **Blocks.** The 24-hour soak, all production UAT, migration 63 reaching
+  production, and any verification of R-16 below.
+- **Mitigation.** None available in-repository. Restoring requires a Supabase
+  account credential that exists nowhere in this repository, in CI, or in
+  Vercel's readable configuration. Steps are in `docs/operations.md` §6
+  "When the database host itself is gone".
+- **Owner accepts:** [ ]
+
+---
+
+## R-16 · FIELD_ENCRYPTION_KEY is malformed in production — **P0, corrected 2026-08-22, NOT VERIFIED**
+
+> **Update 2026-09-01.** A correctly prefixed `<key-id>:<64-hex>` value was
+> provisioned on 2026-08-22. Nothing has confirmed it since: Actions produced
+> zero-step runs until 2026-08-31T20:55Z, and `/api/health/ops` — the only
+> validator, because Vercel marks the variable Sensitive and `vercel env pull`
+> returns it empty — has been unreachable since, for R-20. Incident #26 was
+> auto-closed at 2026-09-01T00:31:06Z by that blindness rather than by a
+> recovery; the closing behaviour is fixed in `e913f83`. Treat this as
+> **NOT VERIFIED** and re-check it first once R-20 is resolved.
 
 - **Evidence.** Vercel runtime log, deployment `dpl_AnCxShtJ4zagx87dYhJiG1ZFANUE`,
   `POST /api/cron/audit-digest` → **500**:

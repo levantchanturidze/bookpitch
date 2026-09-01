@@ -32,6 +32,35 @@ export async function POST(req: Request) {
 That's the whole guard. Any additional logic (rate limiting, input parsing,
 etc.) happens after the guard passes.
 
+### Pages and layouts use a different form (P17-013)
+
+A **route handler** keeps `requirePermission`, exactly as above: `withApi`
+catches `ForbiddenError` and answers `403` with a JSON body its callers parse.
+
+A **page or non-root layout** uses `requirePagePermission` from the same barrel:
+
+```ts
+const ctx = await requireAuthContext();
+requirePagePermission(ctx, 'booking.read', { organizationId: ctx.activeOrganizationId! }, 'appointments');
+```
+
+Same decision, same `rbac.enforce_deny` log line, same `RBAC_ENFORCE_MODULES`
+behaviour — only the refusal differs. It calls Next's `forbidden()`, so Next
+renders the nearest `forbidden.tsx` (`app/(app)/` and `app/platform/` each have
+one) with a real `403`.
+
+The split exists because nothing catches a thrown error during a server render:
+Next treats it as an unhandled server error and answers `500`, and it strips
+`error.name` before the error reaches the client, so an error boundary cannot
+tell a denial from a crash. Measured before the fix — MARKETING opening
+`/scheduler`, `/audit`, `/settings` and `/patients` received `500` and
+"Something went wrong".
+
+Do **not** use `requirePagePermission` in a route handler: `withApi`'s catch
+would swallow the interrupt, which is the documented way to lose it.
+`tests/phase17-forbidden-boundary.test.ts` fails if either side of the split is
+crossed.
+
 ## Choosing the permission key + scope
 
 Permission keys live in the `permissions` table (see `prisma/rbac-seed.ts`

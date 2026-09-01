@@ -1,5 +1,13 @@
 # Phase 17 — Stabilization ledger
 
+> **Superseded in places, 2026-09-01.** This document records Phase 17 as it
+> stood on 2026-08-23, when GitHub Actions was billing-suspended and nothing
+> here was CI-verified. The September integration ran the work for real and
+> changed several conclusions below — most importantly **P17-013 is fixed, not
+> deferred** (§7, §14, §15). Every correction is marked inline and dated. The
+> authoritative September record is
+> [`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md).
+
 Working branch `agent/phase-17-stabilization`, cut from `main` at `5c8fb77`.
 
 Phase 17 is a stabilization phase: no new product features, and no deferred
@@ -361,7 +369,20 @@ None of these were visible to any previous test.
 4. **P17-013 — the "Access Locked" panel never renders in production.**
    See below.
 
-### P17-013 — KNOWN GAP, not fixed in Phase 17
+### P17-013 — was a known gap; FIXED 2026-09-01
+
+> **Correction, 2026-09-01 (commit `825dfaa`).** The analysis below is accurate
+> and the conclusion it reached — "recorded for Phase 18 rather than rushed in"
+> — was reversed once Actions could verify the change. `forbidden()` plus a
+> `forbidden.tsx` boundary is in, `experimental.authInterrupts` is enabled, and
+> the same MARKETING account that received 500 on `/scheduler`, `/audit`,
+> `/settings` and `/patients` now receives **403** with the Access Lock panel,
+> while `/analytics` still returns 200 and every API denial is still 403 JSON.
+> The change touched 23 page and layout callsites, not "every guard callsite":
+> route handlers deliberately keep `requirePermission`. See
+> [`phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §4.
+
+The state before that fix, recorded 2026-08-23:
 
 `app/(app)/error.tsx` dispatches on `error.name === 'ForbiddenError'`. Next.js
 strips the name and message from errors forwarded to the client in production
@@ -583,22 +604,40 @@ No DSN exists. See §4.
 ## 14. Remaining risks
 
 ### P0
-None identified.
+
+> **Added 2026-09-01: production has no database.** The Supabase project
+> `cglqphbebckvpeyisqqb` no longer exists — `NXDOMAIN` on
+> `db.<ref>.supabase.co`, `tenant/user not found` on both poolers. Every
+> DB-backed production route returns 500 or 503. A 2026-08-22 encrypted backup
+> restores cleanly (restore drill run `33491958258`), so this is a lost host
+> with a proven recovery point, not lost data. Only the account owner can fix
+> it. Detail and the exact steps:
+> [`phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §2.
+
+Nothing identified on 2026-08-23.
 
 ### P1
+
+> **Correction, 2026-09-01.** Three of the four below are now resolved, and a
+> P0 that did not exist on 2026-08-23 does now: production has lost its
+> database. See
+> [`phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §2.
+
 - **Sentry is unconfigured in production.** Every uncaught server, edge and
   browser exception is discarded. The code is now complete and the gap is
   counted by the monitor, but the DSN is an external action (§4).
-- **P17-013 — the Access Locked panel never renders in production.** The refusal
-  is correct and leaks nothing; the user is told "Something went wrong" instead
-  of why. Needs `forbidden()` + `experimental.authInterrupts` (§7).
-- **P17-008 — housekeeping deletes live tokens on a non-UTC Postgres session.**
-  Production Supabase is UTC so production is unaffected. Already fixed on the
-  frozen Phase 16 branch by `00577db`; the risk is that Phase 16 merges partially
-  (§6).
-- **GitHub Actions billing.** No CI, no production monitor, no crons. Nothing is
-  draining `email_outbox` in production — currently harmless only because it is
-  empty.
+  *Still true on 2026-09-01: no `SENTRY_DSN` exists in Vercel, in GitHub
+  secrets, or anywhere else. Externally blocked.*
+- ~~**P17-013 — the Access Locked panel never renders in production.**~~
+  **Fixed 2026-09-01**, commit `825dfaa`.
+- ~~**P17-008 — housekeeping deletes live tokens on a non-UTC Postgres
+  session.**~~ **Resolved by the integration**: Phase 16's `00577db` is in the
+  merged tree, and `tests/phase16-session-expiry-db-clock.test.ts` proves the
+  behaviour against a genuinely non-UTC session — for the first time in CI, on
+  a runner, after the fix in `6863262` gave that suite a connection URL that
+  exists there.
+- ~~**GitHub Actions billing.**~~ **Restored** between 2026-08-31T20:55Z and
+  2026-09-01T00:05Z, proven by step counts (September ledger §1).
 
 ### P2
 - **No source-map upload**, so production stack traces will point at minified
@@ -627,17 +666,20 @@ own-tier reports all remain explicitly deferred and correctly classified. Phase
 
 In this order, because the first two unblock the ability to verify the rest:
 
-1. **Restore GitHub Actions billing.** Nothing here is CI-verified, the
-   production monitor is dark, and no cron has run since 2026-08-22. This is the
-   single largest gap in the evidence, and it is not a code problem.
+> **Status, 2026-09-01.** Items 1, 3 and 4 are done; item 2 remains externally
+> blocked; item 5 is blocked by the database outage, not by the monitor.
+
+1. ~~**Restore GitHub Actions billing.**~~ **Done** — restored between
+   2026-08-31T20:55Z and 2026-09-01T00:05Z, and the first real run of this work
+   immediately found two defects that a laptop could not (September ledger §7).
 2. **Provision the Sentry DSN** and run `npm run verify:sentry` against
    production until it reports level 4. Then decide on source maps.
-3. **Merge Phase 16** using its own September integration checklist. Two Phase 17
-   guards are waiting for it: `tests/role-landing.test.ts` will fail on the
-   MARKETING landing the moment the revocation lands, and F16-010 fixes the
-   housekeeping clock defect reproduced in §6.
-4. **Fix P17-013** with `forbidden()` — a real redesign of the denial path, worth
-   its own scope rather than a corner of a stabilization phase.
+3. ~~**Merge Phase 16**~~ **Done** — integrated on
+   `integration/phase16-phase17` (PR #36). MARKETING lands on `/analytics` and
+   `tests/role-landing.test.ts` passes against the revoked permission.
+4. ~~**Fix P17-013** with `forbidden()`~~ **Done**, commit `825dfaa`. It turned
+   out to be 23 page callsites plus two boundaries, not a redesign of the guard
+   layer — route handlers keep the old form on purpose.
 5. **Then, and only then, verify production onboarding**, once the monitor is
    running and can observe it rather than requiring a synthetic org that cannot
    be deleted.

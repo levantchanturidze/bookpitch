@@ -1,5 +1,14 @@
 # Phase 15 — GitHub Actions restoration runbook
 
+> **Executed 2026-09-01. Outcome: step 1 passed, steps 2 onward blocked.**
+> Actions billing was restored between 2026-08-31T20:55Z and 2026-09-01T00:05Z
+> and every run since executes real steps. The soak did **not** start, because
+> production had lost its database in the meantime and no monitor run can be
+> fully successful while that is true. The frozen baseline below no longer
+> matches reality — read the diff table under "What was actually found" before
+> using this runbook. Full record:
+> [`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md).
+
 For the day GitHub Actions is billable again (expected ~2026-09-01). Until then
 Phase 15 is frozen and the mandatory 24-hour soak has **not** started.
 
@@ -137,3 +146,36 @@ belt-and-braces, not a licence to skip step 8.
 
 10. Start a **new** Phase 16 post-deployment monitoring window sized to those
     changes. Do not reuse or merge Phase 15's soak evidence.
+
+---
+
+## What was actually found, 2026-09-01
+
+| Baseline row | Runbook said | Found |
+|---|---|---|
+| `origin/main` | `5c8fb77` | `dae46ac` — three schedule commits whose net tree change is empty |
+| Production deployment | `dpl_je5rKC33RkPs9MuRfFzq6xYLL5aG` | `dpl_92gL3DZr6kZLomHK3C1fukxd6F1r` |
+| `FIELD_ENCRYPTION_KEY` | `prod-v1:…` set 2026-08-22 | present; **structure not verifiable** — Vercel marks it Sensitive, and the only validator is the running application |
+| Production DB | 62 migrations, 0 ciphertext, 0 outbox rows | **unreachable — the Supabase project no longer exists** |
+
+### Step outcomes
+
+1. **Prove Actions actually runs** — **PASS.** Production monitor run
+   `33455049387` executed 5 steps including checkout; scheduled cron run
+   `33453316896` executed 3. The zero-step signature is gone.
+2. **Rerun CI on the frozen SHA** — **superseded.** `dae46ac`'s tree is
+   identical to `5c8fb77`; CI ran on the integration branch, which contains
+   both.
+3. **Prove the encryption-key incident resolved** — **NOT POSSIBLE.**
+   `/api/health/ops` returns 503 without a database, so
+   `production-config-invalid` is not evaluated at all. Incident #26 was
+   auto-closed by exactly that blindness rather than by a recovery; the closing
+   behaviour is fixed in `e913f83` and the underlying condition is recorded as
+   `NOT VERIFIED`.
+4. **Start the 24-hour soak** — **NOT STARTED.** The clock starts at the first
+   fully successful monitor run. There has not been one: four of ten checks
+   fail, all from a single external cause.
+
+The soak cannot begin until the database is restored. When it is, restart from
+step 1 of this runbook: the restore is itself a production configuration change
+and resets the clock.

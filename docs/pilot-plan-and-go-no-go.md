@@ -2,6 +2,26 @@
 
 ## Recommendation
 
+# NO-GO (2026-09-01) — production has no database
+
+**Superseding the R-16 recommendation below.** The Supabase project behind
+production no longer exists (R-20): `NXDOMAIN` on `db.<ref>.supabase.co`, and
+`FATAL: (ENOTFOUND) tenant/user … not found` from both poolers on both ports.
+Every DB-backed route answers 500 or 503. No organisation can be onboarded,
+no pilot can start, and R-16 below cannot even be evaluated — the only
+validator for it is an endpoint that needs the database.
+
+The data is recoverable: the 2026-08-22 encrypted backup restored cleanly in
+drill run `33491958258`, giving an RPO of roughly ten days for this incident
+rather than the ~24 hours R-09 assumes. The artifact expires around 2026-09-26.
+
+Restore first (`docs/operations.md` §6), then re-evaluate everything below —
+including R-16, which must be re-checked before anything else.
+
+---
+
+## Earlier recommendation, 2026-08 — retained for the record
+
 # NO-GO (until R-16 is corrected), then CONDITIONAL GO
 
 **A P0 configuration defect was found in production during this phase
@@ -58,7 +78,7 @@ capacity. Support attention is the scarce resource.
 | Support channel | Direct contact with the operator |
 | Support hours | Best-effort; no 24-hour cover (R-11) |
 | Escalation | `docs/support-runbook.md` §3 — single operator, containment over repair |
-| Monitoring | Production monitor every ~30 min, 18 checks, opens an assigned GitHub issue on failure |
+| Monitoring | Production monitor every ~30 min — 10 checks always, plus 10 derived from `/api/health/ops` when it answers (20 on a healthy run). Opens an assigned GitHub issue on failure. |
 
 ## Success metrics
 
@@ -113,9 +133,9 @@ the caps can safely rise.
 | Production build | exit 0, 40 static pages | agent | **PASS** | — | — | — |
 | `npm audit --audit-level=high` | 0 vulnerabilities | agent | **PASS** | — | — | — |
 | Secret scan | gitleaks full history, 0 leaks | agent | **PASS** | — | — | — |
-| Migrations at head | 62 applied, no drift | agent | **PASS** | — | — | — |
-| Production health | 18/18 monitor checks | agent | **PASS** | — | — | — |
-| Backup + restore drill | backup 16.1h, drill 47h — both inside limits | agent | **PASS** | — | — | — |
+| Migrations at head | 2026-08: 62 applied, no drift. `main` now carries **63**; a clean install applies all 63 with no drift. **Production migration status is unknown — unreachable.** | agent | **PASS (CI) / UNKNOWN (prod)** | — | Re-check after restore | Restored dump will be at 62 |
+| Production health | 2026-08: 18/18 monitor checks. **2026-09-01: 6/10 — the database is gone (R-20), and the ten ops-derived checks are not evaluated at all.** | agent | **FAIL** | **P0 Blocker** | Restore the database | **Nothing DB-backed works** |
+| Backup + restore drill | **2026-09-01: backup 242.9h stale and failing (R-20); restore drill `33491958258` PASS against the 2026-08-22 artifact** | agent | **MIXED** | **P1** | Restore the database; the drill already proves the chain | Recovery point expires ~2026-09-26 |
 | Tenant isolation | RLS + role/grant suites green | agent | **PASS** | — | — | — |
 | Erasure completeness | P15-002 fixed, complement-proven | agent | **PASS** | — | — | — |
 | Sending domain verified | DKIM/SPF/bounce MX present under `send.bookpitch.ge` (R-01 retracted) | agent | **PASS** | — | — | — |
@@ -127,7 +147,7 @@ the caps can safely rise.
 | Treatment-history erasure | Undecided (R-13) | **owner + adviser** | **OPEN** | Conditional | Legal decision | Erasure may be incomplete |
 | Dependabot alerts | Disabled (R-06) | **owner** | **OPEN** | Conditional | Enable in settings; free | No CVE alerts between pushes |
 | DMARC `rua` reachable | Unreachable (R-03) | **owner** | **OPEN** | Hardening | Point at a real mailbox | No DMARC visibility |
-| Branch protection | Unavailable on plan (R-07) | **owner** | **ACCEPTED** | Accepted | Manual verification | Human error possible |
+| Branch protection | Unavailable on plan (R-07). Re-attempted 2026-09-01: `PUT /branches/main/protection` → 403 "Upgrade to GitHub Pro or make this repository public". | **owner** | **ACCEPTED** | Accepted | Upgrade to GitHub Pro, then apply the rule in the September ledger §11. Do **not** make the repository public to obtain it. | Human error possible |
 | PITR / 24h RPO | Supabase Free (R-09) | **owner** | **ACCEPTED** | Accepted | Disclosed in `/terms` | Up to ~24h loss |
 | Backup residency | Not EU-guaranteed (R-10) | **owner** | **ACCEPTED** | Conditional | Legal decision | Residency claim unsupportable |
 | Single operator | No second responder (R-11) | **owner** | **ACCEPTED** | Accepted | Caps + runbooks | Unattended incidents |

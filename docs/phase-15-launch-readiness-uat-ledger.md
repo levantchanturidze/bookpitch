@@ -1,5 +1,14 @@
 # Phase 15 — Launch readiness, UAT and pilot operations ledger
 
+> **September addendum, 2026-09-01.** The scheduled-workflow table and the
+> P15-010 row below were written while GitHub Actions was billing-suspended.
+> Actions is restored; production is not — its database no longer exists, so
+> every cron job, the backup and the ops-metrics endpoint fail for one
+> external cause. Current status of every Phase 15 item, and the exact
+> external action required, is in
+> [`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md).
+
+
 **Status: ENGINEERING COMPLETE — EXTERNAL LAUNCH VERIFICATION BLOCKED**
 
 > **Read R-16 first.** Production's `FIELD_ENCRYPTION_KEY` is malformed, so
@@ -79,13 +88,17 @@ A legacy `UserRole` enum (`owner`/`practitioner`/`receptionist`) also exists in
 
 All five run from GitHub Actions (`.github/workflows/cron.yml`), not Vercel Cron.
 
-| Job | Schedule | Status |
-|---|---|---|
-| reminders | `*/15 * * * *` | Firing reliably |
-| housekeeping | `3 * * * *` | Firing reliably |
-| retention | `17 2 * * *` | Firing |
-| audit-digest | `0 8 * * 1` **+ `3 * * * *`** | Weekly delivery never fired; now also hourly and idempotent (P15-004, P15-009) |
-| db-partitions | `30 1 1 * *` | Same exposure as audit-digest |
+| Job | Schedule | Status (2026-08) | Status (2026-09-01) |
+|---|---|---|---|
+| reminders | `*/15 * * * *` | Firing reliably | Scheduled and dispatched; the endpoint 500s — no database |
+| housekeeping | `3 * * * *` | Firing reliably | as above |
+| retention | `17 2 * * *` | Firing | as above (run `33484027298`, `http=500`) |
+| audit-digest | `0 8 * * 1` **+ `3 * * * *`** | Weekly delivery never fired; now also hourly and idempotent (P15-004, P15-009) | as above |
+| db-partitions | `30 1 1 * *` | Same exposure as audit-digest | as above |
+
+The schedules themselves are correct and GitHub is honouring them: the
+September restoration commit `dae46ac` put back every cron expression, and runs
+appear on time. The failure is downstream of the trigger, in the application.
 
 ### External dependencies
 
@@ -108,7 +121,7 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
 | P15-007 | P2 | Load-test workflow could target production | **Fixed** |
 | P15-008 | P1 | Test suite had no DB identity guard | **Fixed** |
 | P15-009 | P1 | Digest bypassed the outbox; its metric could never be non-null | **Fixed** |
-| P15-010 | **P0** | `FIELD_ENCRYPTION_KEY` malformed in production — signup, clinical fields and MFA all 500 | **Detected**; correction is human-only |
+| P15-010 | **P0** | `FIELD_ENCRYPTION_KEY` malformed in production — signup, clinical fields and MFA all 500 | **Corrected 2026-08-22; NOT VERIFIED.** A correctly prefixed key was provisioned, but no monitor run has ever confirmed it — Actions was billing-suspended until 2026-08-31, and since 2026-09-01 `/api/health/ops` cannot answer because production has no database. Incident #26 was auto-closed by that blindness, which is itself a defect, fixed in `e913f83`. See [`phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §3. |
 | P15-011 | P2 | Monitor incidents opened unassigned, so nobody was ever notified | **Fixed** |
 | P15-013 | P2 | Phase 15 reported the sending domain unverified — wrong hostnames queried | **Retracted and corrected** |
 | P15-012 | P3 | Concurrent test runs on one database corrupt each other's fixtures | **Root-caused and fixed** |

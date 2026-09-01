@@ -19,10 +19,21 @@ support records. Write it down here before starting:
 If you have not designated one, stop: sections A and B cannot be completed, and
 they are the ones that prove email delivery works.
 
-**Blocking prerequisite 1 — the encryption key.** Production's
-`FIELD_ENCRYPTION_KEY` lacks its `<key-id>:` prefix, so `encryptField()` throws
-and **signup returns 500**. Section A cannot pass until it is corrected. See
-R-16 in `docs/phase-15-risk-register.md`.
+**Blocking prerequisite 0 — production has no database (2026-09-01).** The
+Supabase project behind production no longer exists, so every DB-backed route
+returns 500 and **nothing in this checklist can be attempted**. This supersedes
+prerequisite 1 below: until a database exists, the encryption key cannot be
+exercised either. See
+[`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md)
+§2 for the evidence and the exact restore steps.
+
+**Blocking prerequisite 1 — the encryption key.** *Superseded 2026-08-22, but
+unverified.* A correctly prefixed `<key-id>:<64-hex>` value was provisioned on
+2026-08-22; no monitor run has confirmed it, because `/api/health/ops` has never
+been reachable since. Treat this as `NOT VERIFIED`, not as fixed, and re-check
+it as the first thing after the database is restored. Original condition:
+`FIELD_ENCRYPTION_KEY` lacked its `<key-id>:` prefix, so `encryptField()` threw
+and **signup returned 500**. See R-16 in `docs/phase-15-risk-register.md`.
 
 **Blocking prerequisite 2 — nothing.** An earlier revision claimed the sending
 domain was unverified. That was wrong: `send.bookpitch.ge` has DKIM, SPF and a

@@ -306,6 +306,54 @@ There is no automation for this and there must not be. If you have to do it:
 
 `prisma migrate reset` and `prisma db push` are never run against production.
 
+### When the database host itself is gone (2026-09-01)
+
+Distinguish this from a credential problem before doing anything, because the
+remedies are opposite: a rotated password is a five-minute fix, a deleted
+project is a restore.
+
+```bash
+# 1. Does the project still exist at all?  NXDOMAIN here is decisive.
+host "db.<project-ref>.supabase.co"
+host "<project-ref>.supabase.co"
+
+# 2. What does the pooler say?  Read the message, not just the failure.
+#    "tenant/user … not found"          → the project is unknown to the pooler
+#    "password authentication failed"   → the project exists; rotate, do not restore
+PGCONNECT_TIMEOUT=10 psql "$URL" -tAc 'select 1'
+
+# 3. Both poolers, both ports — a project can move between aws-0 and aws-1.
+```
+
+A *paused* Supabase project still resolves in DNS. `NXDOMAIN` on the project
+host, plus `tenant/user not found` on both poolers and both ports, means the
+project is gone and the recovery above is the only path.
+
+Two traps this outage exposed:
+
+- **`/api/health` will still return `200 {"ok":true}`.** It is a process
+  liveness probe and deliberately touches nothing. It is not evidence that
+  anything works. `/api/health/ops` is the endpoint that would have said so, and
+  it needs `CRON_SECRET`.
+- **A Sensitive Vercel variable cannot be read back.** `vercel env pull`
+  returns it empty, so you cannot compare production's `DATABASE_URL` against a
+  local one. Read the project ref out of a runtime log instead
+  (`vercel logs <deployment> --json`), which is where this one was confirmed.
+
+After restoring into a new project, the runtime role needs its own password —
+Supabase's dashboard reset only rotates `postgres`:
+
+```sql
+ALTER USER bookpitch_app WITH PASSWORD '<new>';
+```
+
+Then update, in Vercel Production: `DATABASE_URL`, `DIRECT_URL`,
+`ADMIN_DATABASE_URL`, `DATABASE_URL_LOGIN`, `DATABASE_URL_SUPERUSER_TXPOOL`;
+and in GitHub Actions secrets: `DATABASE_URL_SUPERUSER_MIGRATE`,
+`ADMIN_MIGRATE_DATABASE_URL`. Redeploy, then run
+`.github/workflows/migrate.yml` — a restored dump is at the migration count of
+the day it was taken, not of `main`.
+
 ---
 
 ## 7. Scheduled jobs

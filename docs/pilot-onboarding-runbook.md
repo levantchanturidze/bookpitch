@@ -89,7 +89,7 @@ not to have taken effect, the user's session may need re-establishing.
 
 Daily, for the first week:
 
-- [ ] Production monitor green (all 18 checks).
+- [ ] Production monitor green, and reporting **20** checks. Ten of them come from `/api/health/ops`; a run that reports only ten has not passed them, it never evaluated them.
 - [ ] Outbox: `pending` not climbing, `dead` still 0.
 - [ ] No open incident issue.
 - [ ] Ask the organisation directly whether anything looked wrong. They will
