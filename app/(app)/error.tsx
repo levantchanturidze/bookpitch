@@ -1,14 +1,20 @@
 'use client';
 
-import { ShieldAlert } from 'lucide-react';
-
 /**
- * Error boundary for every page under the (app) layout. In particular,
- * turns ForbiddenError thrown by requireRole() into a friendly "Access
- * Locked" panel matching the prototype's design.
+ * Error boundary for every page under the (app) layout.
  *
- * Error class identity doesn't survive the server/client boundary, so we
- * dispatch on `error.name` (set in lib/auth.ts).
+ * It used to also render an "Operational Access Lock" panel by dispatching on
+ * `error.name === 'ForbiddenError'`. That branch was dead in the only build
+ * that matters: Next.js strips the name and message from errors forwarded to
+ * the client in production — see
+ * node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/error.md:106
+ * — so `error.name` is always 'Error' there and a denied user got HTTP 500 and
+ * the generic fallback below (P17-013, measured 2026-09-01 against
+ * `next start`: MARKETING on /scheduler, /audit and /settings).
+ *
+ * Authorization now interrupts before it reaches here. lib/rbac/page-guard.ts
+ * calls Next's `forbidden()`, which renders app/(app)/forbidden.tsx with a 403.
+ * This boundary is back to what an error boundary is for: an actual failure.
  */
 export default function AppError({
   error,
@@ -17,28 +23,6 @@ export default function AppError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
-  const isForbidden = error.name === 'ForbiddenError';
-
-  if (isForbidden) {
-    return (
-      <div className="flex flex-col items-center justify-center space-y-4 rounded-2xl border border-slate-100 bg-white p-12 py-20 text-center shadow-sm">
-        <div className="rounded-full bg-rose-50 p-4 text-rose-600">
-          <ShieldAlert className="h-8 w-8 stroke-[2.5]" />
-        </div>
-        <div>
-          <h2 className="text-base font-extrabold text-slate-800">Operational Access Lock</h2>
-          <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-slate-500">
-            Your credential role is restricted from this module for compliance reasons. Contact the
-            operations owner if you need elevated access.
-          </p>
-        </div>
-        <div className="max-w-md rounded-xl border border-slate-100 bg-slate-50 p-3.5 font-mono text-[10px] text-slate-500">
-          Role-based access control (RBAC) blocks this route. Switch to a different login to view.
-        </div>
-      </div>
-    );
-  }
-
   // P14-008: this used to render `{error.message}` directly. Next.js redacts
   // *server* errors in production, but an error thrown in a client component
   // reaches the boundary with its real message intact — so a stray

@@ -34,7 +34,7 @@ export const options = {
   },
 };
 
-export default function () {
+export default function schedulerReadScenario() {
   const h = http.get(`${BASE_URL}/api/health`, { tags: { name: 'health' } });
   healthLatency.add(h.timings.duration);
   check(h, {

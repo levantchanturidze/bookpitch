@@ -139,6 +139,8 @@ describe('RBAC seed', () => {
       unsafePrismaAdmin.permission.count(),
       unsafePrismaAdmin.rolePermission.count(),
     ]);
-    expect({ roles, perms, rp }).toEqual({ roles: 13, perms: 67, rp: 214 });
+    // 213, not 214: F16-012 removed client.read:contact from MARKETING. The
+    // total is asserted explicitly so a bundle change has to be deliberate.
+    expect({ roles, perms, rp }).toEqual({ roles: 13, perms: 67, rp: 213 });
   });
 });

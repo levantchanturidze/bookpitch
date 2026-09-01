@@ -1,4 +1,4 @@
-import { requireAuthContext, requirePermission, perm } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission, perm } from '@/lib/rbac';
 import { listPlatformRoleHolders } from '@/lib/platform/roles';
 import PlatformRolesPanel from '@/components/platform/PlatformRolesPanel';
 
@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 // non-SUPER users — UI-hide + server-side deny.
 export default async function PlatformRolesPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'platform.audit.read', undefined, 'platform');
+  requirePagePermission(ctx, 'platform.audit.read', undefined, 'platform');
   const holders = await listPlatformRoleHolders();
   const canAssign = ctx.platformPermissions.has(perm('platform.role.assign'));
   return (

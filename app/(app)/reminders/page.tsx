@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission, can } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission, can } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { loadLocationsForOrg } from '@/lib/active-location';
 import RemindersView from '@/components/reminders/RemindersView';
@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function RemindersPage() {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'booking.update',
     { organizationId: ctx.activeOrganizationId! },

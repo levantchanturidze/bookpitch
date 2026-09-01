@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // next-auth pulls in next/server; mock @/auth so the module graph stays clean.
 vi.mock('@/auth', () => ({

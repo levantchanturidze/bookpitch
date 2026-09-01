@@ -22,7 +22,7 @@
 // ended_at on expired rows for cleanliness; not required for correctness.
 // -----------------------------------------------------------------------------
 
-import { unsafePrismaAdmin } from '@/lib/db';
+import { dbNowMs, unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError, ConflictError } from '@/lib/auth';
 import type { AuthContext } from '@/lib/rbac';
 import { notifyEvent } from '@/lib/notifications';
@@ -77,19 +77,25 @@ export async function startImpersonation(input: StartImpersonationInput) {
   // Anchor to the DB clock so all expiry checks are consistent regardless of
   // Node/server clock divergence. Both the conflict check and the new session's
   // expiresAt use the same DB now().
-  const [dbNow] = await unsafePrismaAdmin.$queryRaw<[{ now: Date }]>`SELECT now() AS now`;
-  const expiresAt = new Date((dbNow.now as unknown as Date).getTime() + IMPERSONATION_TTL_MS);
+  // F16-010: as a number, so no timezone rendering is involved. `SELECT now()`
+  // read through Prisma's raw path is parsed as UTC whatever the session
+  // TimeZone actually is, which silently moved this deadline off-UTC.
+  const dbNowAt = new Date(await dbNowMs(unsafePrismaAdmin));
+  const expiresAt = new Date(dbNowAt.getTime() + IMPERSONATION_TTL_MS);
 
   // One active session at a time. Prevents nesting confusion.
-  const existing = await unsafePrismaAdmin.impersonationSession.findFirst({
-    where: {
-      actorUserId: input.actor.userId,
-      endedAt: null,
-      expiresAt: { gt: dbNow.now as unknown as Date },
-    },
-    select: { id: true },
-  });
-  if (existing) throw new ConflictError('you already have an active impersonation session');
+  // Compared in SQL — see F16-010. A bound JS Date is rendered in the session
+  // TimeZone, so off-UTC an expired session would still look active here.
+  const existing = await unsafePrismaAdmin.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM impersonation_sessions
+    WHERE actor_user_id = ${input.actor.userId}::uuid
+      AND ended_at IS NULL
+      AND expires_at > transaction_timestamp()
+    LIMIT 1
+  `;
+  if (existing.length > 0) {
+    throw new ConflictError('you already have an active impersonation session');
+  }
 
   // Session creation, audit log, sessionVersion bump, and alert outbox row in
   // a single transaction. A crash between any of these steps would leave partial
@@ -233,7 +239,7 @@ export async function endImpersonation(actor: AuthContext, reason: string = 'use
   await unsafePrismaAdmin.$transaction(async (tx) => {
     await tx.impersonationSession.update({
       where: { id: sessionId },
-      data: { endedAt: new Date(), endedReason: reason },
+      data: { endedAt: new Date(await dbNowMs(tx)), endedReason: reason },
     });
 
     await tx.auditLog.create({

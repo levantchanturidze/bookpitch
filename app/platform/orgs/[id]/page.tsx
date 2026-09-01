@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { requireAuthContext, requirePermission, can, loadOrgToggles } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission, can, loadOrgToggles } from '@/lib/rbac';
 import { getOrganization } from '@/lib/platform/orgs';
 import OrgDetail from '@/components/platform/OrgDetail';
 
@@ -11,7 +11,7 @@ export default async function PlatformOrgDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'platform.analytics.read', undefined, 'platform');
+  requirePagePermission(ctx, 'platform.analytics.read', undefined, 'platform');
   const { id } = await params;
   const org = await getOrganization(id);
   if (!org) return notFound();

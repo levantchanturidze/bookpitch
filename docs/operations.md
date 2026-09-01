@@ -60,9 +60,42 @@ gh secret list                    # GitHub Actions secret names + last update
 | `EMAIL_PROVIDER`, `RESEND_API_KEY`, `RESEND_FROM` | Vercel | no verification or alert mail is ever sent |
 | `AUTH_SECRET` | Vercel | sessions cannot be signed |
 | `FIELD_ENCRYPTION_KEY` | Vercel | encrypted columns unreadable |
+| `PAYMENT_GATEWAY` | Vercel | **payments refuse to run** — `getGateway()` throws rather than falling back to the mock adapter (F16-001) |
+| `EMAIL_PROVIDER`, `SMS_PROVIDER` | Vercel | **outbound messaging refuses to run** — the resolvers throw rather than silently mocking a send (F16-002) |
 | `RATE_LIMIT_HMAC_KEY`, `EMAIL_PRIVACY_HMAC_KEY` | Vercel | PII hashed with a fallback key |
 | `CRON_SECRET` | Vercel **and** GitHub | every cron run 401s (see §7) |
 | `DATABASE_URL`, `DATABASE_URL_APP_NOBYPASSRLS`, `DATABASE_URL_LOGIN`, `DATABASE_URL_SUPERUSER_TXPOOL`, `ADMIN_DATABASE_URL`, `DIRECT_URL` | Vercel | app cannot reach the database |
+| `SENTRY_DSN` | Vercel | **every uncaught server/edge exception is discarded** (see below) |
+| `NEXT_PUBLIC_SENTRY_DSN` | Vercel | every uncaught browser exception is discarded |
+
+### Sentry (P17-007)
+
+Every `Sentry.init()` in this repository sits inside `if (process.env.…_DSN)`.
+An absent DSN is therefore not a degraded mode — no client is created and
+`captureException` is a no-op. Production ran that way with
+`SENTRY_ENVIRONMENT` and `NEXT_PUBLIC_SENTRY_ENVIRONMENT` both set, which is
+precisely what made it look configured.
+
+Check id `production-observability-unconfigured`, deliberately separate from
+`production-config-incomplete`: missing signup or security config means the
+product is broken, a missing DSN means the product works and nobody can see it
+break. One status line for both would get the first read as the second.
+
+To prove it works rather than assume it, run:
+
+```bash
+SENTRY_DSN=… npm run verify:sentry
+```
+
+which reports four separate levels — CONFIGURED, INITIALISED, EMITTED,
+RECEIVED — and exits non-zero below level 4. Only RECEIVED means an error would
+reach a human; the first three all pass against a well-formed DSN pointing at a
+project that does not exist.
+
+Not yet done, and it needs a credential this repository does not hold: source
+maps are not uploaded, so production stack traces will point at minified code.
+That requires wrapping `next.config.ts` in `withSentryConfig` and providing
+`SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT`.
 | `DATABASE_URL_SUPERUSER_MIGRATE` | GitHub | migrations and **backups** fail |
 | `BACKUP_AGE_PRIVATE_KEY` | GitHub | backups still run; nothing can be restored |
 | `APP_URL` | GitHub | cron workflow has no target |
@@ -272,6 +305,54 @@ There is no automation for this and there must not be. If you have to do it:
 6. Only then decommission the damaged database.
 
 `prisma migrate reset` and `prisma db push` are never run against production.
+
+### When the database host itself is gone (2026-09-01)
+
+Distinguish this from a credential problem before doing anything, because the
+remedies are opposite: a rotated password is a five-minute fix, a deleted
+project is a restore.
+
+```bash
+# 1. Does the project still exist at all?  NXDOMAIN here is decisive.
+host "db.<project-ref>.supabase.co"
+host "<project-ref>.supabase.co"
+
+# 2. What does the pooler say?  Read the message, not just the failure.
+#    "tenant/user … not found"          → the project is unknown to the pooler
+#    "password authentication failed"   → the project exists; rotate, do not restore
+PGCONNECT_TIMEOUT=10 psql "$URL" -tAc 'select 1'
+
+# 3. Both poolers, both ports — a project can move between aws-0 and aws-1.
+```
+
+A *paused* Supabase project still resolves in DNS. `NXDOMAIN` on the project
+host, plus `tenant/user not found` on both poolers and both ports, means the
+project is gone and the recovery above is the only path.
+
+Two traps this outage exposed:
+
+- **`/api/health` will still return `200 {"ok":true}`.** It is a process
+  liveness probe and deliberately touches nothing. It is not evidence that
+  anything works. `/api/health/ops` is the endpoint that would have said so, and
+  it needs `CRON_SECRET`.
+- **A Sensitive Vercel variable cannot be read back.** `vercel env pull`
+  returns it empty, so you cannot compare production's `DATABASE_URL` against a
+  local one. Read the project ref out of a runtime log instead
+  (`vercel logs <deployment> --json`), which is where this one was confirmed.
+
+After restoring into a new project, the runtime role needs its own password —
+Supabase's dashboard reset only rotates `postgres`:
+
+```sql
+ALTER USER bookpitch_app WITH PASSWORD '<new>';
+```
+
+Then update, in Vercel Production: `DATABASE_URL`, `DIRECT_URL`,
+`ADMIN_DATABASE_URL`, `DATABASE_URL_LOGIN`, `DATABASE_URL_SUPERUSER_TXPOOL`;
+and in GitHub Actions secrets: `DATABASE_URL_SUPERUSER_MIGRATE`,
+`ADMIN_MIGRATE_DATABASE_URL`. Redeploy, then run
+`.github/workflows/migrate.yml` — a restored dump is at the migration count of
+the day it was taken, not of `main`.
 
 ---
 

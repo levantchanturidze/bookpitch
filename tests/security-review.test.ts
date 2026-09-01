@@ -30,11 +30,11 @@ vi.mock('@/auth', () => ({
 }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
-const { unsafePrismaAdmin, prismaApp, withOrg, withoutRls } = await import('@/lib/db');
+const { unsafePrismaAdmin, prismaApp, withOrg } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
 const { mockJwt, mockPlatformJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
-const { buildAuthContext, can, requireAuthContext } = await import('@/lib/rbac');
+const { buildAuthContext, can } = await import('@/lib/rbac');
 const { switchActiveOrg } = await import('@/lib/org-switch');
 const { InvalidInputError } = await import('@/lib/auth');
 
@@ -206,7 +206,7 @@ describe('SEC § cross-tenant isolation', () => {
 
   it('P1.4: GET /api/customers returns only the caller org rows', async () => {
     authMock.mockResolvedValue(await mockJwt(H.isoOwnerId, H.isoOrgId));
-    const res = await routeCustomers.GET();
+    const res = await routeCustomers.GET(req('http://localhost/api/customers'));
     const body = await json<{ customers: Array<{ name: string }> }>(res);
     // Isolation Corp seeded with one customer ("Do Not Leak"). The DTO
     // deliberately omits organizationId (correct behavior — no need to
@@ -1254,7 +1254,7 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
       // new connection for the inner tx — no deadlock, correct answer.
       // If a future move to the tx-pool changes this shape, this probe
       // will surface it before DATABASE_URL_SUPERUSER_TXPOOL is activated.
-      const owner = await withOrg(H.grandOrgId, async (_outerTx) => {
+      const owner = await withOrg(H.grandOrgId, async () => {
         return resolveBookingOwner(appt.id, H.grandOrgId);
       });
       expect(owner).toBe(H.grandOwnerId);

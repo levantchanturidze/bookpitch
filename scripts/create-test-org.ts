@@ -55,7 +55,7 @@ async function main() {
 
   const { hash } = await import('@node-rs/argon2');
   const { unsafePrismaAdmin } = await import('@/lib/db');
-  const { UserRole, LocationType } = await import('@prisma/client');
+  const { LocationType } = await import('@prisma/client');
 
   // -----------------------------------------------------------------------
   // Helpers — every one is idempotent.

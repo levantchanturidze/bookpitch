@@ -46,6 +46,10 @@ const UNSAFE_DB_ALLOWLIST = [
   'lib/audit-digest.ts',
   'lib/housekeeping.ts',
   'lib/messaging/reminders.ts',
+  // P17-002 durable email helper: email_outbox is a system table with no
+  // organization_id and no RLS policy, and the immediate-delivery claim races
+  // the housekeeping worker, which is itself session-less.
+  'lib/messaging/outbox.ts',
   'lib/billing/service.ts',
   'lib/payments/service.ts',
 
@@ -137,17 +141,41 @@ const eslintConfig = defineConfig([
     // Reference-only prototype (not part of the Next.js app):
     'prototype/**',
   ]),
-  // Ported prototype code lives here verbatim until P1.3 wires it in.
-  // Downgrade rules that only fire because of that not-yet-refactored code.
+  // Six rules were downgraded here because components/ held prototype code
+  // ported verbatim. F16-004 deleted the last seven of those files, so the
+  // justification is gone. Four rules reached zero violations and are back at
+  // error. Two are still warn, each for a stated reason — not to reach a
+  // cosmetic zero. See docs/phase-16-reconciliation-ledger.md (F16-011).
   {
     files: ['components/**/*.{ts,tsx}', 'lib/types.ts'],
     rules: {
+      // Promoted — zero violations in this scope.
+      'react/no-unescaped-entities': 'error',
+      '@typescript-eslint/no-unused-vars': 'error',
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@next/next/no-img-element': 'error',
+
+      // Still `warn`, deliberately.
+      //
+      // set-state-in-effect (3): every one is the canonical data-fetching
+      // idiom — set a loading flag, then fetch (PatientList, SchedulerView,
+      // useNotifications). The React Compiler flags it as a cascading-render
+      // hint, not a correctness defect, and it cannot see that the remaining
+      // writes happen after an await. Two genuine redundant writes WERE removed
+      // by deriving state instead (F16-011); what is left is the idiom itself.
+      // Suppressing three real call sites to reach zero would weaken the rule
+      // rather than the code.
       'react-hooks/set-state-in-effect': 'warn',
+
+      // purity (2): platform/OrgList.tsx and platform/OrgDetail.tsx call
+      // Date.now() during render, which can disagree between server HTML and
+      // client hydration on a day boundary. Passing the instant down from the
+      // server page fixes the client components and relocates the identical
+      // call into an async server component, where this same rule fires as an
+      // error — 0 errors became 2. A real fix means not rendering a
+      // time-derived value at all, which changes the UI. Left at warn with the
+      // blocker named rather than hidden behind a helper.
       'react-hooks/purity': 'warn',
-      'react/no-unescaped-entities': 'warn',
-      '@typescript-eslint/no-unused-vars': 'warn',
-      '@typescript-eslint/no-explicit-any': 'warn',
-      '@next/next/no-img-element': 'warn',
     },
   },
   // SEC-007: default rule for every runtime source file — block

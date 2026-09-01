@@ -12,7 +12,7 @@
 //   const expiresAt = future(60 * 60_000); // 1 hour from DB now
 // -----------------------------------------------------------------------------
 
-import { unsafePrismaAdmin } from '@/lib/db';
+import { dbNowMs, unsafePrismaAdmin } from '@/lib/db';
 
 export interface DbTimeHandle {
   /** PostgreSQL server time as a JS timestamp (ms since epoch). */
@@ -32,11 +32,11 @@ export interface DbTimeHandle {
  * sessions, and reauth grants.
  */
 export async function dbTime(): Promise<DbTimeHandle> {
-  const rows = await unsafePrismaAdmin.$queryRaw<[{ now: unknown }]>`SELECT now() AS now`;
-  const raw = rows[0]?.now;
-  // Prisma returns timestamptz as a Date object via the query engine.
-  // Guard against the rare case where the driver returns a string.
-  const nowMs = raw instanceof Date ? raw.getTime() : new Date(raw as string).getTime();
+  // Via dbNowMs(): `SELECT now()` alone is rendered in the session TimeZone and
+  // parsed as UTC by Prisma's raw path, so fixtures anchored to it were offset
+  // by the zone. Locally that was four hours, and every assertion built on it
+  // was wrong in the same direction, which is why nothing noticed (F16-010).
+  const nowMs = await dbNowMs(unsafePrismaAdmin);
 
   return {
     nowMs,

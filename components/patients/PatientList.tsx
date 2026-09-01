@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useTransition, useId } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, useTransition } from 'react';
 import {
   Calendar,
   Download,
@@ -18,7 +18,9 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-import type { CustomerDetailDto } from '@/lib/customers';
+import type { CustomerDetailDto, CustomerListItemDto } from '@/lib/customers';
+import { createSequencer } from './sequencer';
+import { DetailEmpty, DetailError, DetailLoading, ListEmpty } from './DetailStates';
 import ModalShell from '@/components/ui/ModalShell';
 import StatusMessage from '@/components/ui/StatusMessage';
 import {
@@ -31,10 +33,20 @@ import {
 } from './actions';
 
 type Props = {
-  customers: CustomerDetailDto[];
+  /** First page, rendered by the server. Further pages arrive via the API. */
+  initialCustomers: CustomerListItemDto[];
+  initialCursor: string | null;
+  initialHasMore: boolean;
   locationType: 'clinic' | 'salon';
   isOwner: boolean;
 };
+
+/** Detail-panel lifecycle for the selected patient. */
+type DetailState =
+  | { status: 'empty' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; customer: CustomerDetailDto };
 
 type FormState = {
   name: string;
@@ -58,7 +70,13 @@ const EMPTY_FORM: FormState = {
   consent: false,
 };
 
-export default function PatientList({ customers, locationType, isOwner }: Props) {
+export default function PatientList({
+  initialCustomers,
+  initialCursor,
+  initialHasMore,
+  locationType,
+  isOwner,
+}: Props) {
   const dlgTitleId = useId();
   const isClinic = locationType === 'clinic';
   const accent = isClinic ? 'teal' : 'pink';
@@ -66,24 +84,102 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
   const labelPlural = isClinic ? 'Patients' : 'Clients';
 
   const [search, setSearch] = useState('');
-  const [selectedId, setSelectedId] = useState<string | undefined>(customers[0]?.id);
+  const [customers, setCustomers] = useState<CustomerListItemDto[]>(initialCustomers);
+  const [cursor, setCursor] = useState<string | null>(initialCursor);
+  const [hasMore, setHasMore] = useState(initialHasMore);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+
+  const [selectedId, setSelectedId] = useState<string | undefined>(initialCustomers[0]?.id);
+  const [detail, setDetail] = useState<DetailState>({ status: 'empty' });
+
   const [formOpen, setFormOpen] = useState<false | 'create' | 'edit'>(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return customers;
-    return customers.filter((c) =>
-      `${c.name} ${c.phone ?? ''} ${c.email ?? ''}`.toLowerCase().includes(q),
-    );
-  }, [customers, search]);
+  // Monotonic request ids. Selection can change faster than the network
+  // answers, and the reply that arrives last is not necessarily the reply that
+  // was asked for last — without this, clicking A then B could leave A's
+  // clinical record on screen under B's name. Every handler compares its own id
+  // to the current one and drops itself if it has been superseded.
+  const detailSeq = useRef(createSequencer());
+  const listSeq = useRef(createSequencer());
 
-  const active = useMemo(
-    () => customers.find((c) => c.id === selectedId) ?? customers[0],
-    [customers, selectedId],
+  /** One page of the org's customers. `append` distinguishes "more" from "search". */
+  const loadPage = useCallback(
+    async (opts: { q: string; cursor: string | null; append: boolean }) => {
+      const ticket = listSeq.current.next();
+      setListLoading(true);
+      setListError(null);
+      try {
+        const params = new URLSearchParams();
+        if (opts.q.trim()) params.set('q', opts.q.trim());
+        if (opts.cursor) params.set('cursor', opts.cursor);
+        const res = await fetch(`/api/customers?${params.toString()}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`Could not load ${labelPlural.toLowerCase()}.`);
+        const body = (await res.json()) as {
+          customers: CustomerListItemDto[];
+          nextCursor: string | null;
+          hasMore: boolean;
+        };
+        if (!listSeq.current.isCurrent(ticket)) return; // superseded
+        setCustomers((prev) => (opts.append ? [...prev, ...body.customers] : body.customers));
+        setCursor(body.nextCursor);
+        setHasMore(body.hasMore);
+      } catch (err) {
+        if (!listSeq.current.isCurrent(ticket)) return;
+        setListError((err as Error).message);
+      } finally {
+        if (listSeq.current.isCurrent(ticket)) setListLoading(false);
+      }
+    },
+    [labelPlural],
   );
+
+  // Server-side search. Debounced so typing does not issue a request per
+  // keystroke, and deliberately NOT a filter over the loaded page — filtering
+  // one page while calling it "search" would quietly hide the rest of the org.
+  const initialSearchSkipped = useRef(false);
+  useEffect(() => {
+    if (!initialSearchSkipped.current) {
+      initialSearchSkipped.current = true;
+      return; // the server already rendered page one
+    }
+    const t = setTimeout(() => void loadPage({ q: search, cursor: null, append: false }), 250);
+    return () => clearTimeout(t);
+  }, [search, loadPage]);
+
+  /** Fetches the selected patient's full record, including treatment history. */
+  const loadDetail = useCallback(async (id: string) => {
+    const ticket = detailSeq.current.next();
+    setDetail({ status: 'loading' });
+    try {
+      const res = await fetch(`/api/customers/${id}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error('Could not load this record.');
+      const body = (await res.json()) as { customer: CustomerDetailDto };
+      if (!detailSeq.current.isCurrent(ticket)) return; // a later selection already won
+      setDetail({ status: 'ready', customer: body.customer });
+    } catch (err) {
+      if (!detailSeq.current.isCurrent(ticket)) return;
+      setDetail({ status: 'error', message: (err as Error).message });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedId) {
+      detailSeq.current.invalidate(); // drop anything in flight
+      return;
+    }
+    void loadDetail(selectedId);
+  }, [selectedId, loadDetail]);
+
+  // "Nothing selected" is derived, not stored. Writing it into state from the
+  // effect was a synchronous setState during an effect body — a second render
+  // for a fact already available from `selectedId`.
+  const detailView: DetailState = selectedId ? detail : { status: 'empty' };
+  const active = detailView.status === 'ready' ? detailView.customer : undefined;
+  const filtered = customers;
 
   const handleCreate = (values: FormState) => {
     setError(null);
@@ -99,8 +195,10 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
           clinicalNotes: values.clinicalNotes || null,
           consent: values.consent,
         });
-        setSelectedId(created.id);
         setFormOpen(false);
+        await loadPage({ q: search, cursor: null, append: false });
+        setSelectedId(created.id);
+        await loadDetail(created.id);
       } catch (err) {
         setError((err as Error).message);
       }
@@ -122,6 +220,8 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
           consent: values.consent || undefined,
         });
         setFormOpen(false);
+        await loadPage({ q: search, cursor: null, append: false });
+        await loadDetail(id);
       } catch (err) {
         setError((err as Error).message);
       }
@@ -142,6 +242,7 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
       }
       setConfirmDeleteId(null);
       if (selectedId === id) setSelectedId(undefined);
+      await loadPage({ q: search, cursor: null, append: false });
     });
   };
 
@@ -150,6 +251,9 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
     startTransition(async () => {
       try {
         await addTreatmentHistoryAction(customerId, label);
+        // The panel owns history now, so re-read it rather than waiting for a
+        // route revalidation that no longer carries it.
+        await loadDetail(customerId);
       } catch (err) {
         setError((err as Error).message);
       }
@@ -164,7 +268,8 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
           <div>
             <h3 className="text-base font-bold text-slate-800">{labelPlural} Database</h3>
             <p className="text-[10px] text-slate-500">
-              {customers.length} registered · {filtered.length} shown
+              {customers.length} loaded{hasMore ? '+' : ''}
+              {search.trim() ? ` · matching “${search.trim()}”` : ''}
             </p>
           </div>
           <button
@@ -196,15 +301,33 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
         )}
 
         <div className="flex-1 space-y-2 overflow-y-auto pr-1">
-          {filtered.length === 0 && (
-            <div className="flex flex-col items-center py-12 text-center text-slate-500">
-              <Search className="mb-2 h-8 w-8 stroke-1 text-slate-300" aria-hidden="true" />
-              <p className="text-xs">No records match your search.</p>
+          {listError && (
+            <div className="flex flex-col items-center py-10 text-center text-slate-500">
+              <Info className="mb-2 h-7 w-7 stroke-1 text-rose-300" aria-hidden="true" />
+              <p className="mb-3 text-xs">{listError}</p>
+              <button
+                type="button"
+                onClick={() => void loadPage({ q: search, cursor: null, append: false })}
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Try again
+              </button>
             </div>
           )}
+          {!listError && listLoading && filtered.length === 0 && (
+            <div
+              className="flex flex-col items-center py-12 text-center text-slate-500"
+              aria-live="polite"
+            >
+              <p className="text-xs">Loading {labelPlural.toLowerCase()}…</p>
+            </div>
+          )}
+          {!listError && !listLoading && filtered.length === 0 && (
+            <ListEmpty searching={!!search.trim()} label={labelPlural.toLowerCase()} />
+          )}
           {filtered.map((c) => {
-            const isSelected = c.id === active?.id;
-            const hasAllergyFlag = !!c.allergies && c.allergies.toLowerCase() !== 'none';
+            const isSelected = c.id === selectedId;
+            const hasAllergyFlag = c.hasAllergies;
             return (
               <button
                 key={c.id}
@@ -233,13 +356,26 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
               </button>
             );
           })}
+          {hasMore && !listError && (
+            <button
+              type="button"
+              disabled={listLoading}
+              onClick={() => void loadPage({ q: search, cursor, append: true })}
+              className="w-full rounded-xl border border-dashed border-slate-200 py-2.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {listLoading ? 'Loading…' : `Load more ${labelPlural.toLowerCase()}`}
+            </button>
+          )}
         </div>
       </div>
 
       {/* ----------------------- DETAIL PANE ----------------------------- */}
       <div className="flex h-[580px] flex-col rounded-xl border border-slate-200 bg-white p-6 lg:col-span-7">
-        {active ? (
+        {detailView.status === 'ready' && active ? (
           <PatientDetail
+            // Keyed by id: remounting on selection change discards the previous
+            // patient's local panel state instead of carrying it across.
+            key={active.id}
             active={active}
             isClinic={isClinic}
             accent={accent}
@@ -249,11 +385,15 @@ export default function PatientList({ customers, locationType, isOwner }: Props)
             onAddHistory={(label) => handleAddHistory(active.id, label)}
             isPending={isPending}
           />
+        ) : detailView.status === 'loading' ? (
+          <DetailLoading label={labelSingular.toLowerCase()} />
+        ) : detailView.status === 'error' ? (
+          <DetailError
+            message={detailView.message}
+            onRetry={() => selectedId && void loadDetail(selectedId)}
+          />
         ) : (
-          <div className="flex flex-1 flex-col items-center justify-center text-slate-500">
-            <Info className="mb-2 h-10 w-10 stroke-1 text-slate-300" aria-hidden="true" />
-            <p className="text-xs">Select a {labelSingular.toLowerCase()} to inspect details.</p>
-          </div>
+          <DetailEmpty label={labelSingular.toLowerCase()} />
         )}
       </div>
 

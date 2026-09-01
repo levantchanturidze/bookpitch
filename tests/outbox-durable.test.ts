@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
+import { adminDbUrl } from './helpers/admin-db-url';
 
 // Outbox durability and status-machine tests.
 //
@@ -369,7 +370,7 @@ describe('OD.7 — multiple rows with NULL idempotency key are all allowed', () 
 
 describe('OD.10 — concurrent workers cannot double-claim the same outbox row', () => {
   it('only one of two concurrent pg connections claims a pending row', async () => {
-    const dbUrl = process.env.DATABASE_URL_SUPERUSER_SESSION ?? process.env.DATABASE_URL!;
+    const dbUrl = adminDbUrl();
 
     // Insert a single pending row for both workers to race over.
     const idempotencyKey = `test:concurrent:${randomUUID()}`;

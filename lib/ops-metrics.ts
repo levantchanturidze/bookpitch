@@ -1,4 +1,6 @@
-// eslint-disable-next-line no-restricted-imports -- Group C: operational probe, no session, cross-tenant counts only
+// Group C: operational probe — no session, cross-tenant counts only. The
+// no-restricted-imports rule that used to need a disable here no longer
+// reports on this import, and an unused disable is itself a lint warning.
 import { unsafePrismaAdmin } from '@/lib/db';
 import { auditDigestDeliveryMode, isAuditDigestDeliveryEnabled } from '@/lib/audit-digest';
 
@@ -191,6 +193,14 @@ export type ConfigMetrics = {
   /** Required-but-unset environment variables for auth/crypto/cron. */
   missingSecurityEnv: number;
   /**
+   * Required-but-unset environment variables for error reporting.
+   *
+   * Non-zero means uncaught exceptions are going nowhere: the SDK is present
+   * and initialises only behind a DSN check, so an absent DSN is silent
+   * blindness rather than a visible failure.
+   */
+  missingObservabilityEnv: number;
+  /**
    * Environment variables that are SET but structurally unusable.
    *
    * P15-010: production had FIELD_ENCRYPTION_KEY set without its `<key-id>:`
@@ -242,6 +252,20 @@ export const REQUIRED_SIGNUP_ENV = [
 
 export const REQUIRED_EMAIL_ENV = ['EMAIL_PROVIDER', 'RESEND_API_KEY', 'RESEND_FROM'] as const;
 
+/**
+ * P17-007. Sentry initialises only when a DSN is present — every Sentry.init()
+ * in this repository is inside `if (process.env.…_DSN)`. Production had
+ * SENTRY_ENVIRONMENT and NEXT_PUBLIC_SENTRY_ENVIRONMENT set and neither DSN,
+ * so the SDK was installed, the config files existed, instrumentation.ts
+ * exported onRequestError — and application error reporting was a no-op. That
+ * is the same shape as P15-010: everything looks configured, nothing reports.
+ *
+ * Both halves are listed. Server errors are the more critical, but a stack
+ * with browser reporting silently off is exactly the "healthy signal that
+ * means nothing" this list exists to prevent.
+ */
+export const REQUIRED_OBSERVABILITY_ENV = ['SENTRY_DSN', 'NEXT_PUBLIC_SENTRY_DSN'] as const;
+
 export const REQUIRED_SECURITY_ENV = [
   'AUTH_SECRET',
   'FIELD_ENCRYPTION_KEY',
@@ -276,7 +300,29 @@ export const SECURITY_ENV_VALIDATORS: Readonly<Record<string, (value: string) =>
   RATE_LIMIT_HMAC_KEY: (v) => /^[0-9a-fA-F]{64}$/.test(v),
   // Auth.js refuses anything trivially short.
   AUTH_SECRET: (v) => v.length >= 32,
+
+  // F16-001/002: a provider set to "mock" in production is set-but-unusable in
+  // the most literal sense — the adapter returns a synthetic success without
+  // contacting anyone. getGateway() and the messaging resolvers already refuse
+  // it at the call site, but that only fires when something tries to pay or
+  // send. This makes the same fault visible to the monitor beforehand, rather
+  // than at the first real payment.
+  //
+  // Absence is not checked here (invalidEnv() skips unset variables, and the
+  // resolvers throw); this is strictly the "configured wrong" case.
+  PAYMENT_GATEWAY: (v) => isRealProvider(v, ['bog', 'bog_ipay', 'tbc', 'tbc_ecommerce']),
+  EMAIL_PROVIDER: (v) => isRealProvider(v, ['postmark', 'resend']),
+  SMS_PROVIDER: (v) => isRealProvider(v, ['smsoffice']),
 };
+
+/**
+ * True when `value` names a real adapter. "mock" is rejected on purpose, and so
+ * is any name the corresponding resolver would throw on — a typo'd provider is
+ * as broken as a mocked one, and equally worth seeing before it matters.
+ */
+function isRealProvider(value: string, real: readonly string[]): boolean {
+  return real.includes(value.trim().toLowerCase());
+}
 
 /**
  * Names of variables that are set but fail their structural validator.
@@ -302,6 +348,7 @@ export function collectConfigMetrics(): ConfigMetrics {
     missingSignupEnv: missingEnv(REQUIRED_SIGNUP_ENV).length,
     missingEmailEnv: missingEnv(REQUIRED_EMAIL_ENV).length,
     missingSecurityEnv: missingEnv(REQUIRED_SECURITY_ENV).length,
+    missingObservabilityEnv: missingEnv(REQUIRED_OBSERVABILITY_ENV).length,
     invalidSecurityEnv: invalidEnv().length,
   };
 }

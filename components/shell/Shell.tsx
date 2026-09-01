@@ -84,7 +84,12 @@ export default function Shell({
       {/* -------------------------------------------------------------------- */}
       <header className="sticky top-0 z-40 border-b border-[#E2E8F0] bg-white px-6 py-3.5 sm:px-8">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+          {/* P17-012: min-w-0 lets this group shrink below its intrinsic width
+              at 320px. Without it the flex item refuses to shrink, the header
+              grows past the viewport, and the notification bell and user menu
+              on the right are pushed 24px off-screen on EVERY authenticated
+              page — measured, not guessed. */}
+          <div className="flex min-w-0 items-center gap-3">
             <button
               onClick={() => setMobileOpen(true)}
               className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 lg:hidden"
@@ -101,11 +106,11 @@ export default function Shell({
               >
                 {isClinic ? <Stethoscope className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
               </div>
-              <div className="hidden sm:block">
-                <h1 className="font-display text-sm font-extrabold tracking-tight text-slate-900">
+              <div className="hidden min-w-0 sm:block">
+                <h1 className="font-display truncate text-sm font-extrabold tracking-tight text-slate-900">
                   {activeLocation.name}
                 </h1>
-                <p className="font-mono text-[10px] text-slate-500">
+                <p className="truncate font-mono text-[10px] text-slate-500">
                   {organizationName} · Operations Portal
                 </p>
               </div>
@@ -118,7 +123,9 @@ export default function Shell({
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          {/* shrink-0: these two are the controls a narrow-screen user most
+              needs to reach, so they hold their size and the left group yields. */}
+          <div className="flex shrink-0 items-center gap-2">
             <NotificationBell open={notifOpen} onToggle={() => setNotifOpen((v) => !v)} />
             <UserMenu
               email={session.email}
@@ -305,8 +312,26 @@ function LocationSwitcher({
 }) {
   if (locations.length < 2) return null;
 
+  // P17-012 follow-up, measured on a Linux CI runner 2026-09-01. The header's
+  // left group already carries `min-w-0`, but this control did not, and neither
+  // did the forms and buttons inside it — so its min-content width was the sum
+  // of three un-truncatable labels and the whole flex chain refused to shrink
+  // below it. At 320px the document became 463px wide on EVERY authenticated
+  // page, including the access-denied screen.
+  //
+  // It measured 0px of overflow on macOS at 320px and every width down to
+  // 180px, which is why it survived Phase 17: Arial is present there and this
+  // repository's base font-family asks for it. A Linux runner has no Arial,
+  // falls back to a wider face, and the same three labels total 347px instead
+  // of fitting.
+  //
+  // The fix is not a width. `min-w-0` at each level of the flex chain plus
+  // `truncate` on the label means the control shrinks and ellipsises whatever
+  // the font metrics turn out to be, instead of being correct for one machine.
+  // The emoji and the `title` stay, so the button is still identifiable at its
+  // narrowest.
   return (
-    <div className="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+    <div className="flex min-w-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-100 p-0.5">
       {locations.map((loc) => {
         const active = loc.id === activeLocation.id;
         const activeColor =
@@ -314,15 +339,20 @@ function LocationSwitcher({
             ? 'bg-white text-teal-800 shadow-sm'
             : 'bg-white text-pink-800 shadow-sm';
         return (
-          <form key={loc.id} action={setActiveLocationAction.bind(null, loc.id)}>
+          <form
+            key={loc.id}
+            className="min-w-0"
+            action={setActiveLocationAction.bind(null, loc.id)}
+          >
             <button
               type="submit"
-              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-bold transition ${
+              className={`flex max-w-full min-w-0 items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-bold transition ${
                 active ? activeColor : 'text-slate-600 hover:text-slate-800'
               }`}
               title={`Switch to ${loc.name}`}
             >
-              {loc.type === 'clinic' ? '🏥' : '💅'} {loc.name}
+              <span aria-hidden="true">{loc.type === 'clinic' ? '🏥' : '💅'}</span>
+              <span className="truncate">{loc.name}</span>
             </button>
           </form>
         );

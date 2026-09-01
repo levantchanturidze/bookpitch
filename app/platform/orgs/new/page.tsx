@@ -1,4 +1,4 @@
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import NewOrgForm from '@/components/platform/NewOrgForm';
 
 export const metadata = { title: 'New organization · Platform' };
@@ -9,6 +9,6 @@ export const dynamic = 'force-dynamic';
 // the form even renders, and again in POST /api/platform/orgs.
 export default async function NewOrgPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'platform.org.create', undefined, 'platform');
+  requirePagePermission(ctx, 'platform.org.create', undefined, 'platform');
   return <NewOrgForm />;
 }

@@ -6,6 +6,7 @@ import { InvalidInputError } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { encryptField, decryptField, hashEmailForIndex } from '@/lib/crypto';
+import { isE2ELoopbackRuntime } from '@/lib/auth/e2e-runtime';
 
 // -----------------------------------------------------------------------------
 // Self-service org onboarding — two-phase: pending → activated.
@@ -60,7 +61,16 @@ function hashToken(raw: Buffer): string {
  */
 function resolveAppUrl(): string {
   const raw = process.env.NEXTAUTH_URL ?? process.env.APP_URL ?? 'http://localhost:3000';
-  if (process.env.NODE_ENV === 'production') {
+  // P17-009: `next start` sets NODE_ENV=production, so these checks fire
+  // during any local end-to-end run and signup answers 500 before reaching the
+  // logic under test. The relaxation is gated on the same one-way condition as
+  // the Turnstile credential — a >=32-char E2E_TURNSTILE_BYPASS_TOKEN AND an
+  // APP_URL on loopback — so it grants nothing that condition has not already
+  // asserted, and production's https://bookpitch.ge fails it outright.
+  //
+  // Deliberately not a NODE_ENV escape: NODE_ENV IS production here, which is
+  // exactly the configuration worth testing.
+  if (process.env.NODE_ENV === 'production' && !isE2ELoopbackRuntime()) {
     if (!raw.startsWith('https://')) {
       throw new Error('APP_URL must use HTTPS in production');
     }

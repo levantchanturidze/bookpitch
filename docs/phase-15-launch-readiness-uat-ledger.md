@@ -1,5 +1,14 @@
 # Phase 15 — Launch readiness, UAT and pilot operations ledger
 
+> **September addendum, 2026-09-01.** The scheduled-workflow table and the
+> P15-010 row below were written while GitHub Actions was billing-suspended.
+> Actions is restored; production is not — its database no longer exists, so
+> every cron job, the backup and the ops-metrics endpoint fail for one
+> external cause. Current status of every Phase 15 item, and the exact
+> external action required, is in
+> [`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md).
+
+
 **Status: ENGINEERING COMPLETE — EXTERNAL LAUNCH VERIFICATION BLOCKED**
 
 > **Read R-16 first.** Production's `FIELD_ENCRYPTION_KEY` is malformed, so
@@ -79,13 +88,17 @@ A legacy `UserRole` enum (`owner`/`practitioner`/`receptionist`) also exists in
 
 All five run from GitHub Actions (`.github/workflows/cron.yml`), not Vercel Cron.
 
-| Job | Schedule | Status |
-|---|---|---|
-| reminders | `*/15 * * * *` | Firing reliably |
-| housekeeping | `3 * * * *` | Firing reliably |
-| retention | `17 2 * * *` | Firing |
-| audit-digest | `0 8 * * 1` **+ `3 * * * *`** | Weekly delivery never fired; now also hourly and idempotent (P15-004, P15-009) |
-| db-partitions | `30 1 1 * *` | Same exposure as audit-digest |
+| Job | Schedule | Status (2026-08) | Status (2026-09-01) |
+|---|---|---|---|
+| reminders | `*/15 * * * *` | Firing reliably | Scheduled and dispatched; the endpoint 500s — no database |
+| housekeeping | `3 * * * *` | Firing reliably | as above |
+| retention | `17 2 * * *` | Firing | as above (run `33484027298`, `http=500`) |
+| audit-digest | `0 8 * * 1` **+ `3 * * * *`** | Weekly delivery never fired; now also hourly and idempotent (P15-004, P15-009) | as above |
+| db-partitions | `30 1 1 * *` | Same exposure as audit-digest | as above |
+
+The schedules themselves are correct and GitHub is honouring them: the
+September restoration commit `dae46ac` put back every cron expression, and runs
+appear on time. The failure is downstream of the trigger, in the application.
 
 ### External dependencies
 
@@ -108,7 +121,7 @@ Cloudflare Turnstile (signup bot protection), Sentry (errors), GitHub Actions
 | P15-007 | P2 | Load-test workflow could target production | **Fixed** |
 | P15-008 | P1 | Test suite had no DB identity guard | **Fixed** |
 | P15-009 | P1 | Digest bypassed the outbox; its metric could never be non-null | **Fixed** |
-| P15-010 | **P0** | `FIELD_ENCRYPTION_KEY` malformed in production — signup, clinical fields and MFA all 500 | **Detected**; correction is human-only |
+| P15-010 | **P0** | `FIELD_ENCRYPTION_KEY` malformed in production — signup, clinical fields and MFA all 500 | **Corrected 2026-08-22; NOT VERIFIED.** A correctly prefixed key was provisioned, but no monitor run has ever confirmed it — Actions was billing-suspended until 2026-08-31, and since 2026-09-01 `/api/health/ops` cannot answer because production has no database. Incident #26 was auto-closed by that blindness, which is itself a defect, fixed in `e913f83`. See [`phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §3. |
 | P15-011 | P2 | Monitor incidents opened unassigned, so nobody was ever notified | **Fixed** |
 | P15-013 | P2 | Phase 15 reported the sending domain unverified — wrong hostnames queried | **Retracted and corrected** |
 | P15-012 | P3 | Concurrent test runs on one database corrupt each other's fixtures | **Root-caused and fixed** |
@@ -552,17 +565,91 @@ Also verified:
 
 ## 9. Remaining external blockers
 
-0. **Correct `FIELD_ENCRYPTION_KEY` in production** (R-16) — set it to
-   `<key-id>:<64-hex-chars>`, e.g. prefix the existing 64 hex characters with
-   `k1:`. **This blocks everything else**, including the email UAT, because
-   signup fails before any mail is queued.
-1. **Verify `bookpitch.ge` in Resend and publish DKIM/SPF/MX** (R-01).
-2. **Publish `_dmarc.bookpitch.ge`** at `p=none` with a reachable `rua`
-   (R-02, R-03).
-3. **Designate a test mailbox and run `docs/production-uat-checklist.md`
-   §A–B**, confirming `spf=pass`, `dkim=pass`, `dmarc=pass` (R-04, R-05).
-4. **Legal review** — `docs/legal-review-checklist.md`, including the P15-005
-   decision.
-5. **Enable Dependabot alerts** — free, two clicks (R-06).
+Revised 2026-08-22, after the `FIELD_ENCRYPTION_KEY` correction and a direct
+DNS measurement. Supersedes the original list.
 
-Item 0 is the priority. Items 1–3 are the remaining launch blockers and are one piece of work.
+### Resolved
+
+0. ~~**Correct `FIELD_ENCRYPTION_KEY` in production** (R-16)~~ — **done**
+   2026-08-22. The old value could not be read back (Vercel `sensitive` vars are
+   write-only), so the "prefix the existing hex" fix was impossible. With
+   ciphertext proven exhaustively zero, the key was provisioned fresh as
+   `prod-v1:<64 hex>` — initial provisioning, not a data-bearing rotation.
+   Escrowed per `docs/field-key-escrow.md`. Deployment
+   `dpl_je5rKC33RkPs9MuRfFzq6xYLL5aG`, SHA `5c8fb77`, Ready 2026-08-22T18:32:42Z.
+   **Not yet confirmed by the monitor** — see the new blocker below.
+
+### Blocking, in order
+
+1. **GitHub Actions is billing-suspended** (new, ~2026-08-22T16:30Z → ~2026-09-01).
+   Jobs report `steps=0` and never start. No CI, no scheduled monitor, and the
+   mandatory 24-hour soak cannot begin. This now blocks everything else.
+   Runbook: `docs/phase-15-actions-restoration-runbook.md`.
+
+2. **Confirm `production-config-invalid` reaches PASS** and let incident **#26**
+   close through automation. The key is proven correct against the real
+   `lib/crypto.ts` parser, but no monitor has observed the deployed runtime
+   accepting it. Unobserved is not verified.
+
+3. **Email DNS is correct. One real gap: the DMARC `rua` mailbox.**
+
+   Verified 2026-08-23 against `8.8.8.8` and `1.1.1.1`, plus the Resend API
+   read-only. **No DNS or provider change has been made or is authorized.**
+
+   | Claim | State |
+   |---|---|
+   | Resend domain verification | **verified** — `send.bookpitch.ge`, region `eu-west-1` |
+   | DKIM | **verified** — `resend._domainkey.send.bookpitch.ge` |
+   | SPF | **verified** — `send.send.bookpitch.ge` TXT `v=spf1 include:amazonses.com ~all` |
+   | Bounce MX | **verified** — `send.send.bookpitch.ge` MX `10 feedback-smtp.eu-west-1.amazonses.com.` |
+   | Subdomain DMARC policy | **exists** — `_dmarc.send.bookpitch.ge` `v=DMARC1; p=none; rua=mailto:dmarc@bookpitch.ge` |
+   | DMARC `rua` reporting | **not operational** — the destination mailbox is not deliverable |
+   | Apex DMARC | **absent** — a separate, unresolved policy decision |
+
+   `send.send.bookpitch.ge` is not a typo: it is the SES custom MAIL FROM
+   subdomain of the sending domain, which is where SPF and the feedback MX
+   belong, and it is the name Resend's own dashboard specifies. An earlier
+   revision of this section queried `send.bookpitch.ge`, found nothing, and
+   wrongly reported both as absent.
+
+   The `rua` gap is narrow and real: aggregate reports are requested but cannot
+   arrive, because `bookpitch.ge` publishes no MX and so `dmarc@bookpitch.ge`
+   cannot receive mail. Sending itself is unaffected — DKIM alignment carries
+   DMARC.
+
+   Two options, **prepared and deliberately not executed** (no DNS or provider
+   mutation is authorized):
+
+   1. **Same-domain mailbox or forwarder.** Publish an apex MX and make
+      `dmarc@bookpitch.ge` deliver somewhere a human reads, or forward it.
+      Keeps reporting inside the domain and needs no third party. Costs an apex
+      MX, which is also what any future `@bookpitch.ge` mail would need.
+   2. **An approved DMARC reporting provider.** Point `rua` at the provider's
+      address and publish the external-report authorization record the DMARC
+      spec requires — a report receiver outside the domain is ignored without
+      `bookpitch.ge._report._dmarc.<provider>` on the provider's side. Gives
+      parsing and dashboards; adds a processor to the privacy review, since
+      aggregate reports carry sending-IP metadata.
+
+   Decide before raising `p=none` to `quarantine` or `reject`: a policy with no
+   readable reports is a policy with no feedback loop.
+
+4. **Designated-mailbox receipt/header UAT** — `docs/production-uat-checklist.md`
+   §A–B, confirming `spf=`, `dkim=` and `dmarc=` results on a real received
+   message (R-04, R-05). Cannot start until a mailbox is designated.
+
+5. **Audit-digest delivery** — `AUDIT_DIGEST_ENABLED` is absent and must stay
+   absent until recipients are approved. 7 messages per run to 6 distinct
+   addresses; 4 reserved/non-deliverable, **2 unclassified and unresolved**.
+
+6. **Legal review** — `docs/legal-review-checklist.md`, including the P15-005
+   treatment-history retention decision, and operating-entity details.
+
+7. **Enable Dependabot alerts** (R-06) — disabled at the repository level;
+   enabling needs `admin:repo_hook`.
+
+8. **Production signup/UAT** — requires an approved human test account. No
+   production account may be created by automation.
+
+Item 1 gates items 2 and 4. Items 3, 5, 6, 7 and 8 are independent of it and can
+progress in parallel.

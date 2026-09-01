@@ -149,7 +149,8 @@ export async function seedRbacFixtures(): Promise<void> {
   const split = await upsertOrg('Split Practice', { vertical: 'clinic' });
   const downtown = await upsertBranch(split.id, 'Downtown');
   const uptown = await upsertBranch(split.id, 'Uptown');
-  const airport = await upsertBranch(split.id, 'Airport');
+  // The branch is created for its side effect; nothing here reads it back.
+  await upsertBranch(split.id, 'Airport');
   // Legacy `locations` compat — analytics and other pages still read
   // from `locations`. Give Split Practice one so those queries don't
   // 404 in tests. Phase 6: link the Downtown branch to this legacy

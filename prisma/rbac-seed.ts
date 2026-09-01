@@ -223,6 +223,11 @@ const P: ReadonlyArray<PermSpec> = [
     action: 'read',
     scope: 'basic',
     desc: 'Name + appointment time only',
+    // P17-006: no callsite asks for the :basic tier. `client.read:contact` is
+    // the enforced floor for every client surface, so a :basic-only holder is
+    // denied outright rather than shown a reduced view. Fail-closed, but the
+    // tier gates nothing until a basic-tier surface exists.
+    notYetImplemented: 'client_read_basic_tier',
   },
   {
     key: 'client.read:contact',
@@ -260,6 +265,9 @@ const P: ReadonlyArray<PermSpec> = [
     action: 'create',
     scope: null,
     desc: 'Create a clinical note',
+    // P17-006: no clinical_notes table and no create endpoint exist. Previously
+    // counted as enforced only because RESTRICTED_DURING_IMPERSONATION names it.
+    notYetImplemented: 'clinical_notes',
   },
   {
     key: 'clinical_note.read:own',
@@ -267,6 +275,10 @@ const P: ReadonlyArray<PermSpec> = [
     action: 'read',
     scope: 'own',
     desc: 'Read own clinical notes',
+    // P17-006: `decideFullAccess` in lib/customers.ts checks :any, never :own,
+    // and can() matches tier/scope keys passed whole — so a :own-only holder is
+    // denied. Nothing distinguishes this grant from having no grant.
+    notYetImplemented: 'clinical_notes',
   },
   {
     key: 'clinical_note.read:any',
@@ -281,6 +293,8 @@ const P: ReadonlyArray<PermSpec> = [
     action: 'attachment.manage',
     scope: null,
     desc: 'Attach/remove files on clinical notes',
+    // P17-006: no clinical_note_attachments table, no upload/download endpoint.
+    notYetImplemented: 'clinical_note_attachments',
   },
 
   // PAYMENTS ---------------------------------------------------------------
@@ -446,6 +460,11 @@ const P: ReadonlyArray<PermSpec> = [
     action: 'financial',
     scope: 'org',
     desc: 'Org-wide financial reports',
+    // P17-006: /analytics gates on `report.branch`; no surface asks for the
+    // financial tier. can()'s providerFinancialReports elevation also grants
+    // this key, but nothing reads it, so that half of the toggle is inert —
+    // the `report.branch` half is what makes the toggle observable.
+    notYetImplemented: 'report_financial_tier',
   },
   {
     key: 'report.payroll',
@@ -477,6 +496,10 @@ const P: ReadonlyArray<PermSpec> = [
     action: 'settings.update',
     scope: 'branch',
     desc: 'Edit branch profile + hours',
+    // P17-006: every settings surface passes `org.settings.update:org` whole,
+    // so can() never resolves the :branch grant. No branch-scoped settings
+    // surface exists for it to gate.
+    notYetImplemented: 'branch_scoped_org_settings',
   },
   {
     key: 'org.branch.manage',
@@ -520,6 +543,10 @@ const P: ReadonlyArray<PermSpec> = [
     action: 'delete',
     scope: null,
     desc: 'Soft-delete the organization',
+    // P17-006: there is no org-plane self-delete endpoint. Deletion is a
+    // platform-plane operation (`platform.org.delete`, soft delete). Previously
+    // counted as enforced only because RESTRICTED_DURING_IMPERSONATION names it.
+    notYetImplemented: 'org_self_delete',
   },
 
   // AUDIT (org-scope; platform.audit.read below) --------------------------
@@ -847,11 +874,20 @@ const ROLE_PERMISSIONS: Record<string, ReadonlyArray<string>> = {
 
   MARKETING: [
     // Not fully spec'd — spec §4.2 leaves this as a placeholder ("campaigns,
-    // promo codes, segments"). Minimum viable seed for now:
-    'client.read:contact', // to see segments
+    // promo codes, segments").
+    //
+    // F16-012: 'client.read:contact' was removed. It reached the patients
+    // surface and, through it, every patient's name, email, phone and date of
+    // birth — a marketing role reading identifiable patient contact data in a
+    // clinical product, granted by default and never separately justified.
+    //
+    // Aggregate, non-identifying reporting is what the role is for and is left
+    // intact. A campaign that genuinely needs contact data needs its OWN
+    // permission with a stated purpose, consent and opt-out handling,
+    // minimum-necessary fields and auditability — not this one back.
     'report.own',
     'report.branch',
-    // No financial, no clinical.
+    // No contact, no financial, no clinical.
   ],
 
   // CONSUMER PLANE — CLIENT has no RBAC permissions. Access resolved by

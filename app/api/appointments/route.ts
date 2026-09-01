@@ -10,6 +10,7 @@ import {
   assertWithinAvailability,
   isExclusionViolation,
   loadServiceForLocation,
+  parseAppointmentRange,
   parseCreateInput,
   toAppointmentDto,
 } from '@/lib/appointments';
@@ -29,15 +30,11 @@ export async function GET(req: NextRequest) {
     const session = ctxToSession(ctx);
     const url = new URL(req.url);
     const locationId = url.searchParams.get('locationId') ?? undefined;
-    const from = url.searchParams.get('from'); // ISO
-    const to = url.searchParams.get('to');
-    if (!from || !to) throw new InvalidInputError('from and to are required');
-
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
-      throw new InvalidInputError('from/to must be ISO dates');
-    }
+    // Bounded, ordered, half-open [from, to). See parseAppointmentRange.
+    const { from: fromDate, to: toDate } = parseAppointmentRange(
+      url.searchParams.get('from'),
+      url.searchParams.get('to'),
+    );
 
     // Phase 6: branch scoping. When the caller has populated
     // ctx.branchIds (BRANCH_MANAGER), constrain the query to the

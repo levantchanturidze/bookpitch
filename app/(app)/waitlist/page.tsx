@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { listWaitlist } from '@/lib/waitlist';
 import WaitlistView from './WaitlistView';
@@ -9,7 +9,12 @@ export const dynamic = 'force-dynamic';
 
 export default async function WaitlistPage() {
   const ctx = await requireAuthContext();
-  requirePermission(ctx, 'booking.read', { organizationId: ctx.activeOrganizationId! }, 'waitlist');
+  requirePagePermission(
+    ctx,
+    'booking.read',
+    { organizationId: ctx.activeOrganizationId! },
+    'waitlist',
+  );
   const session = ctxToSession(ctx);
   const [rows, customers, staff, services] = await Promise.all([
     listWaitlist(session),

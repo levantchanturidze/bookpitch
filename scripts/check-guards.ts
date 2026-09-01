@@ -4,9 +4,9 @@
 //   npm run test:guards
 //
 // Walks every `app/api/**/route.ts` and `app/(app)/**/{page,layout}.tsx` and
-// verifies each file contains a `requireAuthContext(` or `requirePermission(`
-// or `requireSession(` call. Files in NO_GUARD_ALLOWLIST are exempt with a
-// documented reason.
+// verifies each file contains a `requireAuthContext(`, `requirePermission(`,
+// `requirePagePermission(` or `requireSession(` call. Files in
+// NO_GUARD_ALLOWLIST are exempt with a documented reason.
 //
 // Exit non-zero (fails CI) on any un-guarded file that isn't in the allowlist.
 // Adding a new path means updating the allowlist deliberately — the audit
@@ -67,7 +67,12 @@ const NO_GUARD_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   },
 ];
 
-const GUARD_RE = /(requireAuthContext|requirePermission|requireSession)\s*\(/;
+// P17-013 added `requirePagePermission` — the page-render form of
+// `requirePermission`, which turns a denial into Next's 403 interrupt instead
+// of a 500. It is listed explicitly rather than relied on through the
+// `requireAuthContext` every page also calls: a page that guarded ONLY with
+// the page form would otherwise read as unguarded to this scanner.
+const GUARD_RE = /(requireAuthContext|requirePagePermission|requirePermission|requireSession)\s*\(/;
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {

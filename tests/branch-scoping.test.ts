@@ -103,8 +103,12 @@ describe('branch scoping — list endpoints filter for BRANCH_MANAGER', () => {
 
   it('appointments GET without locationId returns only scoped locations for BRANCH_MANAGER', async () => {
     authMock.mockResolvedValue(await mockJwt(mgrUserId, splitOrgId));
-    const from = new Date(Date.UTC(2020, 0, 1)).toISOString();
-    const to = new Date(Date.UTC(2100, 0, 1)).toISOString();
+    // F16-008 bounded the endpoint to APPOINTMENT_RANGE_MAX_DAYS, so this can
+    // no longer ask for 1970..2100. A month either side of now still contains
+    // the seeded appointments, and branch scoping — what this test is actually
+    // about — is unaffected by the width of the window.
+    const from = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const to = new Date(Date.now() + 30 * 86_400_000).toISOString();
     const res = await listAppts.GET(
       req(
         `http://x/api/appointments?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,

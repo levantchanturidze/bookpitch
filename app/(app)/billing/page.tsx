@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { loadLocationsForOrg } from '@/lib/active-location';
 import BillingList, { type BillingRow } from '@/components/billing/BillingList';
@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function BillingPage() {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'payment.charge',
     { organizationId: ctx.activeOrganizationId! },

@@ -21,6 +21,7 @@
 import type { AuthContext, PermissionKey, Resource } from './types';
 import { perm } from './types';
 import { RESTRICTED_DURING_IMPERSONATION } from './impersonation';
+import { isDeniedByRole } from './role-denials';
 
 export function can(
   ctx: AuthContext,
@@ -82,6 +83,14 @@ export function can(
   // 3. Impersonation restrictions (spec §7.1 rule 5). Populated set,
   //    defined in lib/rbac/impersonation.ts.
   if (ctx.isImpersonating && RESTRICTED_DURING_IMPERSONATION.has(p)) {
+    return false;
+  }
+
+  // 4b. Role-level denials (F16-012). Consulted above the granted set, so a
+  //     stale role_permissions row cannot allow what the role must never hold.
+  //     This is what makes migration 63's rollout ordering irrelevant: the
+  //     data removes the grant, this refuses it either way.
+  if (isDeniedByRole(ctx.roleKey, String(p))) {
     return false;
   }
 

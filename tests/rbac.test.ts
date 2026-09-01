@@ -11,7 +11,7 @@ vi.mock('@/auth', () => ({
 }));
 
 // Now safe to import — these transitively bind to the mocked auth().
-const { ForbiddenError, UnauthenticatedError } = await import('@/lib/auth');
+const { UnauthenticatedError } = await import('@/lib/auth');
 const { requireAuthContext } = await import('@/lib/rbac');
 const { GET: whoamiOwner } = await import('@/app/api/dev/whoami-owner/route');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');

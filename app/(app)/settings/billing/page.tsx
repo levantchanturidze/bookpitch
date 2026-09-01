@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { getBilling } from '@/lib/billing/service';
 import BillingView from './BillingView';
 
@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function BillingPage() {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'org.billing.read',
     { organizationId: ctx.activeOrganizationId! },

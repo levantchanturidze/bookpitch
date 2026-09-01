@@ -1,4 +1,4 @@
-import { withoutRls, unsafePrismaAdmin } from '@/lib/db';
+import { dbNowMs, unsafePrismaAdmin, withoutRls } from '@/lib/db';
 import { getEmailProvider } from '@/lib/messaging';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { decryptField } from '@/lib/crypto';
@@ -33,7 +33,6 @@ import { decryptField } from '@/lib/crypto';
 // -----------------------------------------------------------------------------
 
 const ONE_DAY_MS = 24 * 3600 * 1000;
-const THIRTY_DAYS_MS = 30 * ONE_DAY_MS;
 
 // Stable bigint key for pg_try_advisory_xact_lock.
 // Must not collide with any other advisory lock in the codebase.
@@ -75,16 +74,10 @@ export async function runHousekeeping(): Promise<HousekeepingResult> {
   // Use PostgreSQL time as the authoritative clock for all security decisions.
   // This prevents Node/PostgreSQL clock skew from affecting claim eligibility,
   // retry scheduling, lock expiry, and retention cutoffs.
-  const [{ now }] = await unsafePrismaAdmin.$queryRaw<[{ now: Date }]>`SELECT NOW() AS now`;
-
-  const rlCutoff = new Date(now.getTime() - ONE_DAY_MS);
-  const notifCutoff = new Date(now.getTime() - THIRTY_DAYS_MS);
-  const reauthCutoff = new Date(now.getTime() - ONE_DAY_MS);
-  const recoveryCodeCutoff = new Date(now.getTime() - THIRTY_DAYS_MS);
-  // Pending MFA enrollment challenges older than 24h are swept.
-  // A SUPER_ADMIN who starts re-enrollment must confirm within 24h, or they
-  // restart the process. This does not affect the active break-glass path.
-  const mfaChallengeCutoff = new Date(now.getTime() - ONE_DAY_MS);
+  // F16-010: as a number. Read as a rendered timestamptz this was four hours
+  // ahead off-UTC, which made the sweeps below delete tokens and grants that
+  // were still live.
+  const now = new Date(await dbNowMs(unsafePrismaAdmin));
 
   const result = await withoutRls(async (tx) => {
     // ── Advisory lock — prevent concurrent housekeeping runs ──────────────────
@@ -97,37 +90,43 @@ export async function runHousekeeping(): Promise<HousekeepingResult> {
     }
 
     // ── App-level tables ──────────────────────────────────────────────────────
-    const rateLimit = await tx.rateLimit.deleteMany({
-      where: { windowStart: { lt: rlCutoff } },
-    });
-    const verificationTokens = await tx.verificationToken.deleteMany({
-      where: { expires: { lt: now } },
-    });
-    const notifications = await tx.notification.deleteMany({
-      where: { read: true, createdAt: { lt: notifCutoff } },
-    });
+    //
+    // F16-010: every cutoff below is computed and compared inside SQL. Binding a
+    // JS Date as a query parameter has it re-interpreted in the session
+    // TimeZone, so off-UTC these sweeps deleted rows that were still live —
+    // verification tokens and reauth grants among them. `transaction_timestamp()`
+    // never leaves the database, and one transaction sees one instant.
+    const rateLimit = await tx.$executeRaw`
+      DELETE FROM rate_limit WHERE window_start < transaction_timestamp() - interval '1 day'
+    `;
+    const verificationTokens = await tx.$executeRaw`
+      DELETE FROM verification_tokens WHERE expires < transaction_timestamp()
+    `;
+    const notifications = await tx.$executeRaw`
+      DELETE FROM notifications
+      WHERE read = true AND created_at < transaction_timestamp() - interval '30 days'
+    `;
 
     // ── Platform security tables ──────────────────────────────────────────────
-    const platformRateLimit = await tx.platformRateLimit.deleteMany({
-      where: { windowStart: { lt: rlCutoff } },
-    });
+    const platformRateLimit = await tx.$executeRaw`
+      DELETE FROM platform_rate_limit
+      WHERE window_start < transaction_timestamp() - interval '1 day'
+    `;
     // Pending registrations that were never verified (expired tokens).
-    const pendingRegistrations = await tx.pendingRegistration.deleteMany({
-      where: { expiresAt: { lt: now } },
-    });
+    const pendingRegistrations = await tx.$executeRaw`
+      DELETE FROM pending_registrations WHERE expires_at < transaction_timestamp()
+    `;
     // Reauth grants that are consumed OR expired by more than 1 day.
-    const reauthGrants = await tx.platformReauthGrant.deleteMany({
-      where: {
-        OR: [
-          { consumedAt: { lt: reauthCutoff } },
-          { expiresAt: { lt: reauthCutoff }, consumedAt: null },
-        ],
-      },
-    });
+    const reauthGrants = await tx.$executeRaw`
+      DELETE FROM platform_reauth_grant
+      WHERE consumed_at < transaction_timestamp() - interval '1 day'
+         OR (expires_at < transaction_timestamp() - interval '1 day' AND consumed_at IS NULL)
+    `;
     // Used recovery codes — retained 30 days for audit, then swept.
-    const usedRecoveryCodes = await tx.appUserRecoveryCode.deleteMany({
-      where: { usedAt: { lt: recoveryCodeCutoff } },
-    });
+    const usedRecoveryCodes = await tx.$executeRaw`
+      DELETE FROM app_user_recovery_codes
+      WHERE used_at < transaction_timestamp() - interval '30 days'
+    `;
 
     // ── Platform session cleanup ──────────────────────────────────────────────
     // Break-glass sessions expire at a DB-enforced time but may never get an
@@ -135,14 +134,14 @@ export async function runHousekeeping(): Promise<HousekeepingResult> {
     // the DB stays clean and audit queries don't need to reason about expiry.
     const bgResult = await tx.$executeRaw`
       UPDATE break_glass_sessions
-      SET ended_at = now(), ended_reason = 'expired_sweep'
-      WHERE ended_at IS NULL AND expires_at < ${now}
+      SET ended_at = transaction_timestamp(), ended_reason = 'expired_sweep'
+      WHERE ended_at IS NULL AND expires_at < transaction_timestamp()
     `;
     // Impersonation sessions: same pattern.
     const impResult = await tx.$executeRaw`
       UPDATE impersonation_sessions
-      SET ended_at = now(), ended_reason = 'expired_sweep'
-      WHERE ended_at IS NULL AND expires_at < ${now}
+      SET ended_at = transaction_timestamp(), ended_reason = 'expired_sweep'
+      WHERE ended_at IS NULL AND expires_at < transaction_timestamp()
     `;
 
     // ── Stale MFA enrollment challenges ──────────────────────────────────────
@@ -154,17 +153,17 @@ export async function runHousekeeping(): Promise<HousekeepingResult> {
       UPDATE app_users
       SET mfa_totp_pending = null, mfa_totp_pending_created_at = null
       WHERE mfa_totp_pending IS NOT NULL
-        AND mfa_totp_pending_created_at < ${mfaChallengeCutoff}
+        AND mfa_totp_pending_created_at < transaction_timestamp() - interval '1 day'
     `;
 
     return {
-      rateLimit: rateLimit.count,
-      verificationTokens: verificationTokens.count,
-      notifications: notifications.count,
-      platformRateLimit: platformRateLimit.count,
-      pendingRegistrations: pendingRegistrations.count,
-      reauthGrants: reauthGrants.count,
-      usedRecoveryCodes: usedRecoveryCodes.count,
+      rateLimit: Number(rateLimit),
+      verificationTokens: Number(verificationTokens),
+      notifications: Number(notifications),
+      platformRateLimit: Number(platformRateLimit),
+      pendingRegistrations: Number(pendingRegistrations),
+      reauthGrants: Number(reauthGrants),
+      usedRecoveryCodes: Number(usedRecoveryCodes),
       expiredBreakGlassSessions: Number(bgResult),
       expiredImpersonationSessions: Number(impResult),
       staleMfaEnrollmentChallenges: Number(mfaResult),
@@ -216,13 +215,15 @@ async function drainEmailOutbox(
   try {
     const provider = getEmailProvider();
     const claimOwner = `hk-${process.pid}-${now.getTime()}`;
-    const claimExpiresAt = new Date(now.getTime() + OUTBOX_CLAIM_TTL_SECONDS * 1000);
 
     // Step 1: recover stale claims from crashed/timed-out workers.
     await unsafePrismaAdmin.$executeRaw`
       UPDATE email_outbox
       SET status = 'pending', claim_owner = NULL, claim_expires_at = NULL, claimed_at = NULL
-      WHERE status = 'processing' AND claim_expires_at < ${now}
+      -- Compared in SQL, not against a bound JS Date: a marshalled timestamptz
+      -- is re-interpreted in the session TimeZone (F16-010), which would either
+      -- reclaim live claims early or leave stale ones held.
+      WHERE status = 'processing' AND claim_expires_at < transaction_timestamp()
     `;
 
     // Step 2: atomically claim a batch via FOR UPDATE SKIP LOCKED.
@@ -234,7 +235,7 @@ async function drainEmailOutbox(
         SELECT id, to_address, to_address_encrypted, subject, body, body_encrypted, purpose, attempts, max_attempts
         FROM email_outbox
         WHERE status = 'pending'
-          AND next_attempt_at <= ${now}
+          AND next_attempt_at <= transaction_timestamp()
         ORDER BY next_attempt_at ASC
         LIMIT ${OUTBOX_BATCH_SIZE}
         FOR UPDATE SKIP LOCKED
@@ -245,8 +246,8 @@ async function drainEmailOutbox(
         UPDATE email_outbox
         SET status = 'processing',
             claim_owner = ${claimOwner},
-            claim_expires_at = ${claimExpiresAt},
-            claimed_at = ${now}
+            claim_expires_at = transaction_timestamp() + (${OUTBOX_CLAIM_TTL_SECONDS} * interval '1 second'),
+            claimed_at = transaction_timestamp()
         WHERE id = ANY(${ids}::uuid[])
       `;
       return rows;
@@ -262,7 +263,7 @@ async function drainEmailOutbox(
         await provider.send(toAddress, row.subject, body);
         await unsafePrismaAdmin.$executeRaw`
           UPDATE email_outbox
-          SET status = 'sent', sent_at = ${now}, claim_owner = NULL
+          SET status = 'sent', sent_at = transaction_timestamp(), claim_owner = NULL
           WHERE id = ${row.id}::uuid
         `;
         outboxSent++;

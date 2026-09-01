@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission, loadOrgToggles } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission, loadOrgToggles } from '@/lib/rbac';
 import PermissionsPanel from '@/components/settings/PermissionsPanel';
 
 export const metadata = { title: 'Permissions · Bookpitch' };
@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 // client component so the individual switches are interactive.
 export default async function PermissionsPage() {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'org.settings.update:org',
     { organizationId: ctx.activeOrganizationId! },

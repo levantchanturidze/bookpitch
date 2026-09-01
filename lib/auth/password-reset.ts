@@ -2,8 +2,8 @@ import { randomBytes, createHash } from 'node:crypto';
 import { hash } from '@node-rs/argon2';
 import { unsafePrismaAdmin, withoutRls } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
-import { getEmailProvider } from '@/lib/messaging';
-import { log, sanitizeErrorMessage } from '@/lib/logger';
+import { enqueueEmail, supersedePendingEmails, deliverNow } from '@/lib/messaging/outbox';
+import { log } from '@/lib/logger';
 
 // -----------------------------------------------------------------------------
 // Password reset flow.
@@ -14,8 +14,7 @@ import { log, sanitizeErrorMessage } from '@/lib/logger';
 //     from the route — never leaks whether an account exists.
 //   - Stores a HASH of the token (never the token itself) with a 1-hour
 //     expiry in verification_tokens (identifier = email, token = sha256).
-//   - Emails the RAW token via the configured provider (or logs the URL in
-//     dev with EMAIL_PROVIDER=mock).
+//   - Enqueues the RAW token's link on the durable email outbox (P17-002).
 //
 // consumeReset(rawToken, newPassword):
 //   - Hashes rawToken, looks up the row, checks expiry.
@@ -26,6 +25,9 @@ import { log, sanitizeErrorMessage } from '@/lib/logger';
 // -----------------------------------------------------------------------------
 
 const TOKEN_TTL_MS = 60 * 60 * 1000;
+
+/** Outbox category for reset mail. Used for superseding and for ops metrics. */
+const PURPOSE = 'password_reset.link';
 
 export type RequestResetInput = { email: string };
 
@@ -52,29 +54,44 @@ export async function requestPasswordReset(input: RequestResetInput): Promise<vo
   const tokenHash = hashToken(rawToken);
   const expires = new Date(Date.now() + TOKEN_TTL_MS);
 
+  const origin = process.env.APP_URL ?? 'http://localhost:3000';
+  const url = `${origin}/reset?token=${encodeURIComponent(rawToken)}`;
+  // Keyed on the token hash: one queue row per issued token, so a retry
+  // re-sends THIS link rather than minting another one.
+  const idempotencyKey = `password_reset:${tokenHash.slice(0, 32)}`;
+
   await withoutRls(async (tx) => {
     // Drop any prior in-flight tokens for this email so only the newest is valid.
     await tx.verificationToken.deleteMany({ where: { identifier: email } });
     await tx.verificationToken.create({
       data: { identifier: email, token: tokenHash, expires },
     });
+    // …and drop any queued mail carrying one of those now-dead links, so the
+    // user cannot receive a link that this very request just invalidated.
+    await supersedePendingEmails(tx, PURPOSE, email);
+    // Same transaction as the token write: if the token does not commit, no
+    // email is queued, and if the email cannot be queued, no token exists.
+    await enqueueEmail(tx, {
+      idempotencyKey,
+      to: email,
+      subject: 'Reset your Bookpitch password',
+      body:
+        `A password reset was requested for your account.\n\n` +
+        `Open this link within the next hour to choose a new password:\n\n${url}\n\n` +
+        `If you didn't request this, you can safely ignore the message.`,
+      purpose: PURPOSE,
+      // The link dies after TOKEN_TTL_MS. Retrying past that delivers a dead
+      // link, so the budget is deliberately smaller than the outbox default.
+      maxAttempts: 2,
+    });
   });
 
-  const origin = process.env.APP_URL ?? 'http://localhost:3000';
-  const url = `${origin}/reset?token=${encodeURIComponent(rawToken)}`;
-  try {
-    const provider = getEmailProvider();
-    await provider.send(
-      email,
-      'Reset your Bookpitch password',
-      `A password reset was requested for your account.\n\nOpen this link within the next hour to choose a new password:\n\n${url}\n\nIf you didn't request this, you can safely ignore the message.`,
-    );
-    log.info('password_reset.request.sent');
-  } catch (err) {
-    // Provider failure is not fatal — the mock provider succeeds trivially,
-    // and a real provider outage should not block the user's request loop.
-    log.warn('password_reset.request.provider_failed', { error: sanitizeErrorMessage(err) });
-  }
+  // Best-effort immediate send. If it fails the row stays queued and the
+  // housekeeping drain retries with backoff; if it exhausts its attempts the
+  // row goes to dead-letter, which lib/ops-metrics.ts counts and the
+  // production monitor alarms on. Either way the mail is no longer lost.
+  const delivered = await deliverNow(idempotencyKey, PURPOSE);
+  log.info('password_reset.request.queued', { deliveredImmediately: delivered });
 }
 
 export type ConsumeResetInput = { token: string; newPassword: string };

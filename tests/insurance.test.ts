@@ -57,8 +57,6 @@ describe('buildClaimsExport', () => {
   let locationId: string;
   let staffId: string;
   let serviceId: string;
-  let customerInsured: string;
-  let customerUninsured: string;
 
   beforeAll(async () => {
     const seed = await withoutRls(async (tx) => {
@@ -181,8 +179,6 @@ describe('buildClaimsExport', () => {
     locationId = seed.location.id;
     staffId = seed.staff.id;
     serviceId = seed.service.id;
-    customerInsured = seed.insured.id;
-    customerUninsured = seed.uninsured.id;
   });
 
   afterAll(async () => {

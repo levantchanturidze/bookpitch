@@ -354,3 +354,52 @@ function utcTimeValueToLocalMin(utcTime: Date, tz: string): number {
   const [h, m] = localHHMM.split(':').map(Number);
   return h * 60 + m;
 }
+
+// -----------------------------------------------------------------------------
+// F16-008 — calendar range bounding.
+//
+// GET /api/appointments validated that `from` and `to` parse, but not that they
+// are ordered or close together. `from=1970-01-01&to=2100-01-01` was a valid
+// request that returned every appointment the caller could see, with customer
+// and staff joined onto each row.
+//
+// Half-open [from, to) throughout — the same semantics the query already used
+// (`gte` / `lt`). A closed upper bound would return an appointment starting
+// exactly at midnight in both the month that ends there and the month that
+// begins there, which is how calendars grow duplicates at their seams.
+// -----------------------------------------------------------------------------
+
+/** Longest span one request may ask for. A month view plus its overflow weeks. */
+export const APPOINTMENT_RANGE_MAX_DAYS = 62;
+
+export type AppointmentRange = { from: Date; to: Date };
+
+/**
+ * Validates a calendar range. Throws rather than clamping: a silently narrowed
+ * range would render a calendar with real appointments missing from it, which
+ * is worse than an error.
+ */
+export function parseAppointmentRange(
+  rawFrom: string | null,
+  rawTo: string | null,
+): AppointmentRange {
+  if (!rawFrom || !rawTo) throw new InvalidInputError('from and to are required');
+
+  const from = new Date(rawFrom);
+  const to = new Date(rawTo);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    throw new InvalidInputError('from/to must be ISO dates');
+  }
+  if (to.getTime() <= from.getTime()) {
+    throw new InvalidInputError('to must be after from');
+  }
+
+  const spanDays = (to.getTime() - from.getTime()) / 86_400_000;
+  if (spanDays > APPOINTMENT_RANGE_MAX_DAYS) {
+    throw new InvalidInputError(
+      `range must not exceed ${APPOINTMENT_RANGE_MAX_DAYS} days (asked for ${Math.ceil(spanDays)})`,
+    );
+  }
+
+  return { from, to };
+}

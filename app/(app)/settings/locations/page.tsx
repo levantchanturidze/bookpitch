@@ -1,5 +1,5 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { listLocations } from '@/lib/admin';
 import LocationsPanel, { type LocationRow } from '@/components/settings/LocationsPanel';
 
@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function SettingsLocationsPage() {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'org.branch.manage',
     { organizationId: ctx.activeOrganizationId! },

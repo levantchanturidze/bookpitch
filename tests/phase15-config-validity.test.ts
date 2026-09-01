@@ -127,7 +127,8 @@ describe('P15-010 the monitor surfaces it', () => {
   it('does not silently pass on a deployment that predates the metric', () => {
     // undefined must not be treated as zero without saying so, or the check
     // quietly reverts to the vacuous behaviour it was built to replace.
-    const { invalidSecurityEnv: _drop, ...older } = base.config;
+    const older = { ...base.config };
+    delete (older as Partial<typeof older>).invalidSecurityEnv;
     const r = evaluateOpsMetrics({ ...base, config: older }, DEFAULTS);
     const check = r.find((c: { id: string }) => c.id === 'production-config-invalid')!;
     expect(check.detail).toMatch(/predates/i);

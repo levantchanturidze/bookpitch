@@ -20,7 +20,31 @@ Production and Preview. Resend adapter already fails gracefully (email
 error caught and logged; invitation URL still returned to caller).
 **Action:** commit + push → Vercel auto-deploy.
 
-### P0.2 Verify end-to-end onboarding in production ✅ 2026-08-10
+### P0.2 Verify end-to-end onboarding in production ⚠️ NOT PRODUCTION VERIFIED
+
+> **Status downgraded 2026-08-23 (Phase 17).** The ✅ below records a genuine
+> 2026-08-10 verification, but it was invalidated by P15-010: production's
+> `FIELD_ENCRYPTION_KEY` was missing its `<key-id>:` prefix, so every signup
+> returned HTTP 500. The key was corrected on 2026-08-22 (deployment
+> `dpl_je5rKC33RkPs9MuRfFzq6xYLL5aG`, SHA `5c8fb77`) and the resulting
+> deployment has never been exercised.
+>
+> Measured read-only against production on 2026-08-23: **zero** ciphertext rows
+> in all six encrypted locations, zero pending registrations, zero outbox rows,
+> newest user/org/appointment all 2026-08-12, newest audit row 2026-08-15. The
+> encryption path has not run since the correction, so there is no evidence
+> either way.
+>
+> It cannot be probed synthetically: `/api/onboard` requires a real Turnstile
+> solve and the E2E credential is inert against a production `APP_URL` by
+> design, while `/api/health/ops` returns 401 with the CRON_SECRET available
+> locally. See `docs/phase-17-stabilization-ledger.md` §13.
+>
+> **Restore the ✅ only on genuine proof** — a real signup observed reaching
+> `/onboard/success`, or the production monitor reporting a healthy
+> `production-config-invalid` check once Actions billing is restored.
+
+#### Original 2026-08-10 verification (superseded)
 Trace path:
 1. Sign in as SUPER_ADMIN → /platform/orgs/new
 2. Fill form (org name, vertical, owner email) → copy invitation URL

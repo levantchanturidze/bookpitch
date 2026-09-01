@@ -177,8 +177,8 @@ export default function NewOrgForm() {
             placeholder="owner@acmeclinic.com"
           />
           <span className="mt-1 block text-[11px] text-slate-400">
-            If the email is already registered, they'll be promoted to ORG_OWNER of this new org.
-            Otherwise an invitation link is generated (§9 rule 4 — never a temp password).
+            If the email is already registered, they&apos;ll be promoted to ORG_OWNER of this new
+            org. Otherwise an invitation link is generated (§9 rule 4 — never a temp password).
           </span>
         </label>
 

@@ -1,4 +1,4 @@
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import TabsNav from '@/components/settings/TabsNav';
 
 export const metadata = { title: 'Settings · Bookpitch' };
@@ -8,7 +8,7 @@ export const metadata = { title: 'Settings · Bookpitch' };
 // checks (e.g. staff.update on /settings/staff).
 export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
   const ctx = await requireAuthContext();
-  requirePermission(
+  requirePagePermission(
     ctx,
     'org.settings.update:org',
     { organizationId: ctx.activeOrganizationId! },

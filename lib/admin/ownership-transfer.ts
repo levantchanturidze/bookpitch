@@ -19,7 +19,7 @@
 // gets flipped to `status='expired'`. A housekeeping cron can also sweep.
 // -----------------------------------------------------------------------------
 
-import { unsafePrismaAdmin, withOrg } from '@/lib/db';
+import { dbNowMs, unsafePrismaAdmin, withOrg } from '@/lib/db';
 import { InvalidInputError, ConflictError, NotFoundError, type ActiveSession } from '@/lib/auth';
 import { notifyEvent } from '@/lib/notifications';
 import { getEmailProvider } from '@/lib/messaging';
@@ -67,7 +67,8 @@ export async function nominateTransfer(
       throw new ConflictError('a pending ownership transfer already exists for this organization');
     }
 
-    const expiresAt = new Date(Date.now() + TRANSFER_TTL_MS);
+    // F16-010: the deadline is the database's, not this process's.
+    const expiresAt = new Date((await dbNowMs(tx)) + TRANSFER_TTL_MS);
     const row = await tx.ownershipTransfer.create({
       data: {
         organizationId: session.organizationId,
@@ -147,14 +148,17 @@ export async function acceptTransfer(
   if (transfer.status !== 'pending') {
     throw new InvalidInputError(`transfer is ${transfer.status}, not pending`);
   }
-  if (transfer.expiresAt < new Date()) {
-    // Lazy expiry — mark and reject.
-    await unsafePrismaAdmin.ownershipTransfer.update({
-      where: { id: transferId },
-      data: { status: 'expired', decidedAt: new Date() },
-    });
-    throw new InvalidInputError('transfer has expired');
-  }
+  // Expiry is decided by the database (F16-010). The mark-expired write and the
+  // predicate are one statement, so a transfer cannot be accepted between the
+  // check and the update, and neither side depends on this process's clock.
+  const lapsed = await unsafePrismaAdmin.$executeRaw`
+    UPDATE ownership_transfers
+    SET status = 'expired', decided_at = transaction_timestamp()
+    WHERE id = ${transferId}::uuid
+      AND status = 'pending'
+      AND expires_at <= transaction_timestamp()
+  `;
+  if (lapsed > 0) throw new InvalidInputError('transfer has expired');
 
   const orgOwnerRole = await unsafePrismaAdmin.role.findFirstOrThrow({
     where: { key: 'ORG_OWNER', organizationId: null },
@@ -330,10 +334,38 @@ export async function revokeTransfer(
   return { ok: true };
 }
 
+/**
+ * Ids of pending, unexpired transfers for one side of the nomination.
+ * The expiry predicate stays in SQL — see F16-010.
+ */
+async function unexpiredPendingTransferIds(
+  column: 'from_user_id' | 'to_user_id',
+  userId: string,
+): Promise<string[]> {
+  const sql =
+    column === 'from_user_id'
+      ? unsafePrismaAdmin.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM ownership_transfers
+          WHERE from_user_id = ${userId}::uuid
+            AND status = 'pending'
+            AND expires_at > transaction_timestamp()
+        `
+      : unsafePrismaAdmin.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM ownership_transfers
+          WHERE to_user_id = ${userId}::uuid
+            AND status = 'pending'
+            AND expires_at > transaction_timestamp()
+        `;
+  return (await sql).map((r) => r.id);
+}
+
 /** Nominator's outbox — pending transfers initiated by `userId`. */
 export async function pendingTransfersFromNominator(userId: string) {
+  // Unexpired ids are selected in SQL, then hydrated with their relations. A
+  // bound JS Date would be re-interpreted in the session TimeZone (F16-010).
+  const liveIds = await unexpiredPendingTransferIds('from_user_id', userId);
   const rows = await unsafePrismaAdmin.ownershipTransfer.findMany({
-    where: { fromUserId: userId, status: 'pending', expiresAt: { gt: new Date() } },
+    where: { id: { in: liveIds } },
     include: {
       organization: { select: { name: true } },
       toUser: { select: { email: true, fullName: true } },
@@ -353,8 +385,9 @@ export async function pendingTransfersFromNominator(userId: string) {
 
 /** Nominee's inbox — pending transfers addressed to `userId`. */
 export async function pendingTransfersForNominee(userId: string) {
+  const liveIds = await unexpiredPendingTransferIds('to_user_id', userId);
   const rows = await unsafePrismaAdmin.ownershipTransfer.findMany({
-    where: { toUserId: userId, status: 'pending', expiresAt: { gt: new Date() } },
+    where: { id: { in: liveIds } },
     include: {
       organization: { select: { name: true } },
       fromUser: { select: { email: true, fullName: true } },

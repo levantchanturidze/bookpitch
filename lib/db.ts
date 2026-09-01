@@ -76,12 +76,52 @@ const globalForPrisma = globalThis as unknown as CachedClients;
 // Callers on paid tiers can raise it via env.
 const POOL_MAX = Number(process.env.PG_POOL_MAX ?? 3);
 
+/**
+ * Session options for a connection, preserving anything the URL already asks
+ * for. `options` passed to the pool wins over the connection string's, so
+ * setting it blindly would discard an operator's `-c statement_timeout=...`
+ * the day someone adds one. No current URL carries `options`; this makes that
+ * stay true by construction rather than by luck.
+ */
+export function sessionOptions(connectionString: string): string {
+  const TIMEZONE = '-c timezone=UTC';
+  try {
+    const existing = new URL(connectionString).searchParams.get('options');
+    return existing && existing.trim().length > 0 ? `${existing.trim()} ${TIMEZONE}` : TIMEZONE;
+  } catch {
+    return TIMEZONE; // not URL-shaped; nothing to preserve
+  }
+}
+
 function build(connectionString: string | undefined, label: string): PrismaClient {
   if (!connectionString) {
     throw new Error(`${label} is not set — check .env.local`);
   }
   return new PrismaClient({
-    adapter: new PrismaPg({ connectionString, max: POOL_MAX }),
+    adapter: new PrismaPg({
+      connectionString,
+      max: POOL_MAX,
+      // F16-010. Every session is UTC, on every connection, everywhere.
+      //
+      // The driver sends a timestamptz parameter without an offset, so
+      // PostgreSQL interprets it in the *session* TimeZone. On a non-UTC
+      // session that stores a different instant than the one the application
+      // meant: writing 00:11Z on an Asia/Tbilisi session stored 20:11Z.
+      // Prisma reads it back through the same shift, so a Prisma-only
+      // round-trip looks perfect — and disagrees with any SQL predicate by
+      // exactly the zone offset.
+      //
+      // The codebase legitimately does both: lib/onboarding.ts and
+      // lib/platform/password-reauth.ts compute and compare expiry in SQL,
+      // while other paths write Dates through the model API. Those two views
+      // only agree when the session is UTC.
+      //
+      // Production Supabase already runs UTC, which is the only reason none of
+      // this was ever visible there; CI's container does too. Local Postgres
+      // here runs Asia/Tbilisi. Pinning the session removes the dependency on
+      // how any particular server happens to be configured.
+      options: sessionOptions(connectionString),
+    }),
     log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
   });
 }
@@ -213,4 +253,59 @@ export async function withOrgReplica<T>(
     await tx.$executeRawUnsafe(`SET LOCAL app.current_org_id = '${orgId}'`);
     return fn(tx);
   });
+}
+
+// -----------------------------------------------------------------------------
+// F16-010 — one coherent database clock.
+//
+// `SELECT now()` returns a timestamptz. PostgreSQL renders it in the session
+// TimeZone, and Prisma's **raw** query path parses that rendering as if it were
+// UTC. On a server whose TimeZone is not UTC the Date handed back is wrong by
+// exactly the zone offset, silently and with no error. Measured on this project:
+// production Supabase runs `UTC` and agrees; local Postgres runs `Asia/Tbilisi`
+// and comes back four hours ahead.
+//
+// The same fragility applies in the other direction: binding a JS Date **into**
+// raw SQL is rendered and re-parsed too, skewed the opposite way. That is why an
+// earlier partial fix broke — the read error and the write error had been
+// cancelling each other out.
+//
+// Two rules, and this file provides the tool for the first:
+//
+//   1. To get a JavaScript instant from the database, ask for a number:
+//      `extract(epoch from transaction_timestamp())` has no rendering and no
+//      zone to misread. Verified equal to Date.now() within milliseconds on a
+//      host where `now()` was off by four hours.
+//   2. Inside raw SQL, never bind a JS Date for a security comparison. Write
+//      `transaction_timestamp()` on both sides instead, so the value never
+//      leaves the database.
+//
+// transaction_timestamp() rather than clock_timestamp(): every comparison made
+// within one transaction must use one instant, or a sweep and the conflict
+// check that follows it can disagree about whether a row had expired.
+// -----------------------------------------------------------------------------
+
+type RawCapable = { $queryRaw: PrismaClient['$queryRaw'] };
+
+/**
+ * The transaction's instant, as epoch milliseconds. Timezone-invariant.
+ *
+ * Pass the transaction client when inside one, so the value matches the
+ * `transaction_timestamp()` any SQL in the same transaction will see.
+ */
+export async function dbNowMs(client: RawCapable = unsafePrismaAdmin): Promise<number> {
+  const rows = await client.$queryRaw<Array<{ epoch: unknown }>>`
+    SELECT extract(epoch from transaction_timestamp()) AS epoch
+  `;
+  const raw = rows[0]?.epoch;
+  const seconds = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(seconds)) {
+    throw new Error('dbNowMs(): database did not return a usable epoch');
+  }
+  return Math.round(seconds * 1000);
+}
+
+/** The same instant as a Date. Safe to use in Prisma **model** filters. */
+export async function dbNow(client: RawCapable = unsafePrismaAdmin): Promise<Date> {
+  return new Date(await dbNowMs(client));
 }

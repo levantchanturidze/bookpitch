@@ -1,6 +1,14 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { NAV_ITEMS } from '@/components/shell/nav-items';
-import { ForbiddenError, UnauthenticatedError } from '@/lib/auth';
+import { UnauthenticatedError } from '@/lib/auth';
+
+// P17-013. A page no longer throws ForbiddenError on a denial: it calls
+// Next's `forbidden()`, which throws an error carrying this digest and makes
+// the response a 403 rendering app/(app)/forbidden.tsx. Asserting the digest
+// rather than an error class is what keeps this test measuring the refusal
+// users actually receive — the ForbiddenError version passed while production
+// was answering 500.
+const FORBIDDEN_DIGEST = 'NEXT_HTTP_ERROR_FALLBACK;403';
 
 // vi.mock() is hoisted above `const` declarations, so the mock ref must be
 // created via vi.hoisted() to be visible when the factory runs.
@@ -131,6 +139,19 @@ describe('page-level guards match NAV_ITEMS.requiredPermission', () => {
     __clearAuthContextCache();
   });
 
+  // `forbidden()` refuses to work unless the build enabled
+  // experimental.authInterrupts. `next start` sets this from next.config.ts;
+  // vitest is not a Next build, so the suite supplies it and puts it back.
+  const previousAuthInterrupts = process.env.__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS;
+  beforeAll(() => {
+    process.env.__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS = '1';
+  });
+  afterAll(() => {
+    if (previousAuthInterrupts === undefined)
+      delete process.env.__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS;
+    else process.env.__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS = previousAuthInterrupts;
+  });
+
   for (const user of USERS) {
     describe(`user ${user.email} (${user.roleKey})`, () => {
       for (const item of NAV_ITEMS) {
@@ -138,14 +159,14 @@ describe('page-level guards match NAV_ITEMS.requiredPermission', () => {
         if (!load) continue;
         const shouldAllow = user.canByNavId[item.id];
 
-        it(`/${item.id} → ${shouldAllow ? 'renders' : 'ForbiddenError'}`, async () => {
+        it(`/${item.id} → ${shouldAllow ? 'renders' : '403 interrupt'}`, async () => {
           authMock.mockResolvedValue(await jwtFor(user.email));
           const { default: Page } = await load();
           if (shouldAllow) {
             const result = await Page();
             expect(result).toBeDefined();
           } else {
-            await expect(Page()).rejects.toBeInstanceOf(ForbiddenError);
+            await expect(Page()).rejects.toMatchObject({ digest: FORBIDDEN_DIGEST });
           }
         });
       }

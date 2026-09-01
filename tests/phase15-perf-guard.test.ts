@@ -14,8 +14,6 @@ import { assertSafeTarget } from '../scripts/perf-baseline.mjs';
 // exists.
 // -----------------------------------------------------------------------------
 
-const OVERRIDE = 'i-understand-this-generates-load';
-
 describe('P15-007 perf baseline refuses production targets', () => {
   it('allows loopback without any override', () => {
     for (const url of ['http://localhost:3000', 'http://127.0.0.1:3210', 'http://[::1]:3000']) {

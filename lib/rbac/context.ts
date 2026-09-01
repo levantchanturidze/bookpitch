@@ -173,38 +173,45 @@ async function loadPlatformPermissions(
  * cannot rely on it having run.
  */
 async function loadActiveImpersonation(userId: string) {
-  const now = new Date();
-  return prismaLogin.impersonationSession.findFirst({
-    where: {
-      actorUserId: userId,
-      endedAt: null,
-      expiresAt: { gt: now },
-    },
-    select: {
-      id: true,
-      onBehalfOfUserId: true,
-      organizationId: true,
-      expiresAt: true,
-    },
-    orderBy: { startedAt: 'desc' },
-  });
+  // The expiry predicate stays in SQL. A JS Date bound as a query parameter is
+  // rendered and re-interpreted in the session TimeZone, so off-UTC an expired
+  // row compares as live — which is the whole of F16-010. `transaction_timestamp()`
+  // never leaves the database, so there is nothing to render.
+  const rows = await prismaLogin.$queryRaw<
+    Array<{ id: string; onBehalfOfUserId: string; organizationId: string; expiresAt: Date }>
+  >`
+    SELECT id,
+           on_behalf_of_user_id AS "onBehalfOfUserId",
+           organization_id      AS "organizationId",
+           expires_at           AS "expiresAt"
+    FROM impersonation_sessions
+    WHERE actor_user_id = ${userId}::uuid
+      AND ended_at IS NULL
+      AND expires_at > transaction_timestamp()
+    ORDER BY started_at DESC
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
 }
 
 async function loadActiveBreakGlass(userId: string) {
-  const now = new Date();
-  return prismaLogin.breakGlassSession.findFirst({
-    where: {
-      actorUserId: userId,
-      endedAt: null,
-      expiresAt: { gt: now },
-    },
-    select: {
-      id: true,
-      expiresAt: true,
-      targetOrganizationId: true,
-    },
-    orderBy: { startedAt: 'desc' },
-  });
+  // Same rule, and this is the one that matters most: break-glass is the path
+  // to client PII and clinical records, and rbac-spec.md §7.2 caps it at 60
+  // minutes. A ceiling evaluated against a mis-rendered clock is not a ceiling.
+  const rows = await prismaLogin.$queryRaw<
+    Array<{ id: string; expiresAt: Date; targetOrganizationId: string | null }>
+  >`
+    SELECT id,
+           expires_at             AS "expiresAt",
+           target_organization_id AS "targetOrganizationId"
+    FROM break_glass_sessions
+    WHERE actor_user_id = ${userId}::uuid
+      AND ended_at IS NULL
+      AND expires_at > transaction_timestamp()
+    ORDER BY started_at DESC
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
 }
 
 async function buildOrgContext(
