@@ -973,6 +973,52 @@ artifact encrypted, no plaintext, upload succeeded, download and decryption and
 checksum and readability verified, and a full restore into an isolated target.
 **RPO is back to ~24 hours**; the ten-day window of the outage is closed.
 
+### 17.8b Signup and Turnstile, checked in a real browser
+
+The documented smoke test (`operations.md` §9) passes end to end, including the
+two items that matter most for a public signup:
+
+| | |
+|---|---|
+| `POST /api/onboard` with no Turnstile token | **400** `{"error":"invalid request"}` — fails closed, and the E2E bypass is confirmed absent from production |
+| 200 KB body | **413** |
+| `POST /api/onboard/resend`, unknown address | `{"ok":true}` — enumeration-safe |
+| `/dashboard`, `/platform`, `/api/customers`, `/api/health/ready`, `/scheduler`, `/patients`, `/analytics`, `/settings`, `/audit` | **307**, all of them, never 200 |
+
+The browser half nearly produced a false alarm, which is worth recording
+because the runbook told me to look for the wrong thing. On the real page:
+
+```
+turnstileApiLoaded        true
+document iframes          0
+accessibility tree        no checkbox, no "verify you are human" control
+submit button             enabled from the start
+```
+
+Every one of those reads as a broken widget, and Phase 13's outage had exactly
+that signature. It is not broken. Production's site key is an
+**invisible/managed** widget: Cloudflare renders inside a *closed* shadow root,
+so no iframe is reachable from script and nothing lands in the accessibility
+tree, and the button is not token-gated because the server is what refuses.
+
+The signal that actually distinguishes the two states is the token, and it is
+present:
+
+```
+challengeSolved        true      ← hidden response input holds a token
+widgetContainerHeight  72px
+```
+
+`operations.md` §9 has been corrected to say this, with the console snippet,
+because the old instruction — "a checkbox widget appears above the button and
+the button becomes enabled" — would lead an operator to declare a working
+signup broken.
+
+**Still not done: a synthetic production signup.** Completing one writes an
+organization that cannot be deleted, because `audit_log` is append-only and
+holds a foreign key to it. Every component of the flow is verified above; the
+account creation itself is not, and is not claimed.
+
 ### 17.9 Monitor tally
 
 Run **`33521398368`**, 2026-09-01T14:45:11Z — **17/21 passed, 2 paused, 2
