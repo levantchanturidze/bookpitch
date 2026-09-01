@@ -513,6 +513,27 @@ FAIL  ops-metrics           /api/health/ops returned 503
 Ten checks, not twenty: the ten `/api/health/ops` feeds were not evaluated. That
 is the distinction §3 exists to preserve.
 
+### Production backup, dispatched by hand post-deployment
+
+Run **`33496773826`** (`workflow_dispatch`) — **failure**, and the failure is
+precisely located:
+
+| Step | Result |
+|---|---|
+| Set up job, checkout, install PostgreSQL 17 + age, weekly-copy decision | success (4 real steps) |
+| **Run production backup** | **failure** — `tenant/user … not found` at the dump |
+| Assert the output directory holds no plaintext | skipped |
+| Upload encrypted backup (daily / weekly) | skipped |
+| *Verify the uploaded artifact decrypts* (second job) | skipped |
+
+So of the things §17.7 asks to prove: the dump step **executed and failed**;
+archive validation, encryption and upload **never ran**; and no plaintext was
+left behind, because nothing was written. The manual-dispatch path itself works.
+
+The backup chain is not unproven — it is proven against the last artifact that
+exists, by restore drill `33491958258` (§2). What is failing is the production
+side of it, for the same single cause as everything else.
+
 ### Production probes against the new deployment
 
 | | |
