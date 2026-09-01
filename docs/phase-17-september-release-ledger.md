@@ -15,8 +15,9 @@ Two things are true at once and both matter:
 - **production has no database**, so most production verification could not be
   performed at all — not "was skipped", could not be performed.
 
-**Release decision: the integration is COMPLETE and merged; the release is NOT
-production-verified.** Three things are externally blocked and none of them can
+**Release decision: the integration is COMPLETE, CI-green, merged as
+`e69795b0ea6ff8256c94f2f6722f94013f4c7234` and deployed to production as
+`dpl_87yRocWWmb2eyrwwpsrrzv5z6czn`. The release is NOT production-verified.** Three things are externally blocked and none of them can
 be cleared from inside this repository: a Supabase credential (§2), a Sentry DSN
 (§12), and a GitHub plan that allows branch protection (§11).
 
@@ -106,6 +107,11 @@ ok: 10 organizations, memberships structurally valid
 ok: audit_log append-only triggers present, 100 rows restored
 ok: audit_log UPDATE is rejected by the restored trigger
 ok: audit_log has 12 partitions
+ok: 21 RLS policies, RLS enabled on tenant tables
+ok: owner invariant triggers and functions present
+ok: email_outbox schema present
+ok: bp_create_monthly_partition() present
+=== restore verification: ALL CHECKS PASSED ===
 ```
 
 This is a lost **host** with a proven recovery point, not lost data. Anything
@@ -144,8 +150,15 @@ The check had not been removed. `/api/health/ops` was answering 503 (§2), so
 **Absent was read as gone, and gone was read as resolved** — on the one incident
 class that had already caused a P0.
 
-Fixed in `e913f83`. `reconcileIncidents` now separates *gone* (close as orphan)
-from *unobservable* (keep open, say why). The exemption is scoped to
+Fixed in `e913f83`, and now on `main`. `reconcileIncidents` separates *gone*
+(close as orphan) from *unobservable* (keep open, say why).
+
+**Verified by test, not yet observable in production.** The fix only changes
+behaviour while an ops-derived incident is open, and none is: #26 is closed and
+the four live incidents (#37–#40) are all base checks. Four complement
+assertions cover both halves — recovery still closes as recovery, a genuinely
+removed check still closes as an orphan, a removed check absent during an ops
+outage still closes as an orphan, and the id list must match the evaluator. The exemption is scoped to
 `OPS_DERIVED_CHECK_IDS`, which is asserted against `evaluateOpsMetrics()` itself
 rather than hand-maintained — and that assertion failed on its first run, because
 the list said `audit-digest-stale` and the evaluator emits `audit-digest-stalled`.
@@ -413,6 +426,109 @@ auth.platform_login_alert_failed — EMAIL_PROVIDER must be set in production
 
 Neither failure was infrastructure. Both were real defects in code that had
 passed on a laptop, and both are fixed with a test that fails without the fix.
+
+---
+
+## 10a. Merge and deployment
+
+**Merged 2026-09-01T10:06:52Z.**
+
+| | |
+|---|---|
+| Starting `main` | `dae46acfc25b42360e369b28c6ea51ab2b72a287` |
+| Final integration head | `1b4f26ecde044394b01a29abb3a7a139e7d7d7fd` |
+| Pull request | **#36** |
+| Merge commit | **`e69795b0ea6ff8256c94f2f6722f94013f4c7234`** |
+| Parents | `dae46ac` + `1b4f26e` — a merge commit, not a squash |
+| Final `main` | `e69795b0ea6ff8256c94f2f6722f94013f4c7234` |
+| Commits added to `main` | 39 |
+| Working tree | clean |
+
+Squashing would have collapsed 38 commits — the whole Phase 16 and Phase 17
+history — into one. The brief asks that the trail be preserved, so `--merge`
+was used even though this repository's previous PRs were squashed.
+
+**PR #35 reconciled as merged, not closed.** Its head `92ba247` is an ancestor
+of `main`; GitHub attributed it to `86e09a95`, the integration merge that
+brought Phase 17 in, and marked #35 `MERGED` at 10:06:54Z on its own. A comment
+records what changed between that PR and what landed.
+
+### CI on the merged `main`
+
+Run **`33495733305`** (push, `e69795b0`) — **success**.
+
+### Production deployment
+
+| | |
+|---|---|
+| Deployment id | **`dpl_87yRocWWmb2eyrwwpsrrzv5z6czn`** |
+| URL | `https://bookpitch-gp8csbakw-padelebi-s-projects.vercel.app` |
+| Target | production, region `fra1` |
+| Source SHA | **`e69795b0`** — equal to the merged `main` |
+| Created | 2026-09-01T10:06:56Z, Ready after ~1m |
+| Aliases | `bookpitch.ge`, `www.bookpitch.ge`, `bookpitch1.vercel.app`, `bookpitch-git-main-…` |
+
+Git-triggered from the merge, which is this repository's established mechanism —
+no deployment was made from an unmerged branch. Independently confirmed by the
+monitor itself, which resolves the deployed SHA rather than trusting Vercel:
+
+```
+PASS  deployment-reachable     deployment e69795b responded 200
+```
+
+### Migrations after deployment
+
+`.github/workflows/migrate.yml` fired on the merge (migration 63 is new to
+`main`) and **failed at "Apply migrations"**, opening issue #41:
+
+```
+Datasource "db": PostgreSQL database "postgres" at aws-0-eu-central-1.pooler.supabase.com:5432
+Error: Schema engine error:
+FATAL: (ENOTFOUND) tenant/user postgres.cglqphbebckvpeyisqqb not found
+```
+
+This is the correct outcome and it is recorded as a failure, not explained away:
+**production's migration state is unknown and migration 63 is not applied**. The
+workflow must be re-run after the database is restored — the 2026-08-22 dump is
+at 62, `main` is at 63.
+
+### Manual dispatch, post-deployment
+
+Production monitor run **`33496578517`** (`workflow_dispatch`, `alerts=off`),
+5 real steps, **6/10 checks passed**:
+
+```
+PASS  health-endpoint       3/3 probes returned 200 {"ok":true}
+PASS  production-5xx        0/3 probes returned 5xx
+PASS  unexpected-redirect   no redirects on the canonical health URL
+PASS  tls                   certificate valid until 2026-11-10 (69 days remaining)
+PASS  deployment-reachable  deployment e69795b responded 200
+FAIL  cron-staleness        Scheduled crons: no successful run found at all
+FAIL  cron-failures         10/10 recent cron runs failed
+FAIL  backup-freshness      last success 247.6h ago, limit 26.0h
+PASS  restore-drill-stale   last success 0.9h ago (run 33491958258), limit 960.0h
+FAIL  ops-metrics           /api/health/ops returned 503
+```
+
+Ten checks, not twenty: the ten `/api/health/ops` feeds were not evaluated. That
+is the distinction §3 exists to preserve.
+
+### Production probes against the new deployment
+
+| | |
+|---|---|
+| `/api/health` | 200 |
+| `/privacy` | 200 |
+| `/signin` | 200 |
+| `/` | 307 → `/signin`, no loop |
+| `/api/health/ops` unauthenticated | 401 |
+| `/book/<unknown-slug>` | **500** — no database |
+
+### Recovery branches retained
+
+`agent/phase-17-stabilization` and `integration/phase16-phase17` are **not**
+deleted, and `delete_branch_on_merge` is off. They stay until production
+verification and the soak are complete.
 
 ---
 
