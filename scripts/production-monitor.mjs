@@ -432,6 +432,27 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
   return results;
 }
 
+/**
+ * Every check id evaluateOpsMetrics() produces.
+ *
+ * These exist only when /api/health/ops answered. When it does not, none of
+ * them appear in the results at all — which is indistinguishable, to the
+ * reconciler below, from a check that was deleted. tests/production-monitor
+ * pins this list against evaluateOpsMetrics() itself so it cannot drift.
+ */
+export const OPS_DERIVED_CHECK_IDS = Object.freeze([
+  'outbox-dead-letters',
+  'outbox-stale-claims',
+  'outbox-backlog',
+  'housekeeping-stalled',
+  'retention-stalled',
+  'audit-digest-stalled',
+  'partition-maintenance',
+  'production-config-incomplete',
+  'production-config-invalid',
+  'production-observability-unconfigured',
+]);
+
 // -----------------------------------------------------------------------------
 // Incident reconciliation — pure. Given the check results and the currently
 // open incident issues, decide what to open, comment on, and close.
@@ -491,15 +512,50 @@ export function reconcileIncidents(results, openIssues) {
     }
   }
 
-  // An open incident for a check that is no longer reported at all cannot still
-  // be true — the check that raised it does not exist any more. Close it, with
-  // its own reason so the comment does not claim a recovery that was never
-  // observed. Found by the alert-path test: the synthetic `simulated-failure`
-  // check only exists while MONITOR_SIMULATE_FAILURE is set, so its issue was
-  // never in `results` on the next healthy run and stayed open forever. The
-  // same would happen to any real check that is renamed or removed.
+  // Absent from `results` means one of two very different things, and treating
+  // them alike closed a real incident on 2026-09-01.
+  //
+  // Incident #26 (production-config-invalid — FIELD_ENCRYPTION_KEY set without
+  // its key-id prefix) was closed automatically at 00:31:06Z with "this check
+  // is no longer reported by the monitor". The check had not been removed. Its
+  // data source, /api/health/ops, was answering 503 because production had lost
+  // its database — so evaluateOpsMetrics() never ran and none of its ids were
+  // in `results`. The monitor went blind and read its own blindness as an
+  // all-clear, on the one incident class that had already caused a P0.
+  //
+  // So: a check whose evaluator could not run is UNOBSERVABLE, not gone. Its
+  // incident stays open and says why.
+  const opsProbeFailed = results.some((r) => r.id === 'ops-metrics' && !r.ok);
+  const unobservable = new Set(
+    opsProbeFailed ? OPS_DERIVED_CHECK_IDS.filter((id) => !reportedIds.has(id)) : [],
+  );
+
   for (const [id, issue] of byId) {
     if (reportedIds.has(id)) continue;
+
+    if (unobservable.has(id)) {
+      toComment.push({
+        result: {
+          id,
+          title: issue.title ?? id,
+          ok: false,
+          detail:
+            'not evaluated this run — /api/health/ops is failing, so the metric this ' +
+            'check reads was never fetched. The incident is neither confirmed nor ' +
+            'cleared; fix ops-metrics to see it again.',
+        },
+        issue,
+        unobservable: true,
+      });
+      continue;
+    }
+
+    // Genuinely gone: the check that raised it does not exist any more. Close
+    // it, with its own reason so the comment does not claim a recovery that was
+    // never observed. Found by the alert-path test: the synthetic
+    // `simulated-failure` check only exists while MONITOR_SIMULATE_FAILURE is
+    // set, so its issue was never in `results` on the next healthy run and
+    // stayed open forever. The same would happen to any check that is renamed.
     toClose.push({
       result: {
         id,
@@ -967,7 +1023,7 @@ async function syncIncidents(repo, token, results, now) {
     console.log(`alert: opened incident #${issue.number} for ${result.id}`);
   }
 
-  for (const { result, issue } of toComment) {
+  for (const { result, issue, unobservable } of toComment) {
     // One comment per run would spam a long outage. Only comment when the
     // detail line has changed since the last update, so an unchanging outage
     // stays a single quiet issue.
@@ -981,7 +1037,9 @@ async function syncIncidents(repo, token, results, now) {
     await gh(`/repos/${repo}/issues/${issue.number}/comments`, token, {
       method: 'POST',
       body: JSON.stringify({
-        body: `Still failing at ${now.toISOString()}.\n\n**Detail:** ${result.detail}`,
+        body: unobservable
+          ? `Still open at ${now.toISOString()}, and NOT verified either way.\n\n**Detail:** ${result.detail}`
+          : `Still failing at ${now.toISOString()}.\n\n**Detail:** ${result.detail}`,
       }),
     });
     // Re-assign alongside the comment so a snoozed or dismissed notification
@@ -993,7 +1051,9 @@ async function syncIncidents(repo, token, results, now) {
         body: JSON.stringify({ assignees: incidentAssignees() }),
       }).catch(() => null);
     }
-    console.log(`alert: updated incident #${issue.number} for ${result.id}`);
+    console.log(
+      `alert: ${unobservable ? 'kept unobservable' : 'updated'} incident #${issue.number} for ${result.id}`,
+    );
   }
 
   for (const { result, issue, orphaned } of toClose) {

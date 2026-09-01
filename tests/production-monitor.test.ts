@@ -10,6 +10,7 @@ import {
   evaluateAuditDigest,
   incidentAssignees,
   reconcileIncidents,
+  OPS_DERIVED_CHECK_IDS,
   incidentMarker,
   INCIDENT_LABEL,
 } from '../scripts/production-monitor.mjs';
@@ -469,6 +470,75 @@ describe('incident deduplication', () => {
     expect(toOpen).toHaveLength(1);
     expect(toComment).toHaveLength(0);
     expect(toClose).toHaveLength(0);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The monitor must not read its own blindness as an all-clear.
+//
+// On 2026-09-01T00:31:06Z incident #26 — production-config-invalid, the P0
+// where FIELD_ENCRYPTION_KEY was set without its key-id prefix — was closed
+// automatically with "this check is no longer reported by the monitor". The
+// check had not been removed. /api/health/ops was returning 503 because
+// production had lost its database, so evaluateOpsMetrics() never ran and none
+// of its ids reached the reconciler. Absent was read as gone, and gone was read
+// as resolved.
+// -----------------------------------------------------------------------------
+describe('an unobservable check is not a resolved one', () => {
+  const opsDown = {
+    id: 'ops-metrics',
+    title: 'Operational metrics endpoint is failing',
+    ok: false,
+    detail: '/api/health/ops returned 503',
+  };
+  const opsUp = { ...opsDown, ok: true, detail: '/api/health/ops returned 200' };
+  const configIncident = [{ number: 26, body: incidentMarker('production-config-invalid') }];
+
+  it('keeps an ops-derived incident OPEN while /api/health/ops is failing', () => {
+    const { toClose, toComment } = reconcileIncidents([opsDown], configIncident);
+    expect(toClose, 'incident #26 was closed by a probe failure').toHaveLength(0);
+    expect(toComment).toHaveLength(1);
+    expect(toComment[0].unobservable).toBe(true);
+    expect(toComment[0].result.detail).toMatch(/not evaluated this run/);
+    // It must not claim the condition is still true either — the point is that
+    // nobody knows.
+    expect(toComment[0].result.detail).toMatch(/neither confirmed nor cleared/);
+  });
+
+  it('COMPLEMENT: closes it as recovered once ops-metrics answers and the check passes', () => {
+    const configOk = {
+      id: 'production-config-invalid',
+      title: 'A required secret is set but structurally unusable',
+      ok: true,
+      detail: 'security env vars set but malformed: 0',
+    };
+    const { toClose } = reconcileIncidents([opsUp, configOk], configIncident);
+    expect(toClose).toHaveLength(1);
+    expect(toClose[0].orphaned).toBeUndefined();
+  });
+
+  it('COMPLEMENT: a genuinely removed check is still closed as an orphan', () => {
+    // Without this, the fix could have been "never close anything absent",
+    // which reintroduces the incident that never closes.
+    const removed = [{ number: 99, body: incidentMarker('simulated-failure') }];
+    const { toClose } = reconcileIncidents([opsUp], removed);
+    expect(toClose).toHaveLength(1);
+    expect(toClose[0].orphaned).toBe(true);
+  });
+
+  it('COMPLEMENT: a non-ops check absent while ops is down is still an orphan', () => {
+    // The exemption is scoped to the ids that /api/health/ops actually feeds.
+    // A removed TLS check must not be kept alive by an unrelated outage.
+    const removed = [{ number: 98, body: incidentMarker('simulated-failure') }];
+    const { toClose } = reconcileIncidents([opsDown], removed);
+    expect(toClose).toHaveLength(1);
+    expect(toClose[0].orphaned).toBe(true);
+  });
+
+  it('OPS_DERIVED_CHECK_IDS matches what evaluateOpsMetrics actually emits', () => {
+    // A drifted list would silently shrink the exemption back to nothing.
+    const emitted = evaluateOpsMetrics({}).map((r: { id: string }) => r.id);
+    expect([...OPS_DERIVED_CHECK_IDS].sort()).toEqual([...emitted].sort());
   });
 });
 
