@@ -74,6 +74,28 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: npx prisma migrate status
 
+      # `prisma migrate status` proves the migration ledger and nothing else.
+      # It cannot see that bookpitch_app came back from a restore with
+      # BYPASSRLS, that a table has RLS enabled but no longer FORCED, or that a
+      # permission a migration deleted has reappeared from an older dump — all
+      # of which a restore really can do, because roles are cluster globals and
+      # a dump is a point in time.
+      #
+      # Production was restored from a 2026-08-22 backup on 2026-09-01 and none
+      # of that was verifiable from outside the database. This step is that
+      # verification, and it is SELECT-only: the script pins the session
+      # read-only, and `-f` (not `-c`) is required for the pin to apply.
+      - name: Install PostgreSQL client
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Verify production invariants (read-only)
+        env:
+          PGURL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
+        run: psql "$PGURL" -v ON_ERROR_STOP=1 -f scripts/verify-production-invariants.sql
+
       # SEC-007 followup: the F-06 workflow silently failed for a week
       # before it was noticed (Aug 2026 audit). Any failure here now opens
       # or updates a labeled GitHub issue that pages via GitHub's own
