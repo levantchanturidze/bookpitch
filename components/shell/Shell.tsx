@@ -312,8 +312,26 @@ function LocationSwitcher({
 }) {
   if (locations.length < 2) return null;
 
+  // P17-012 follow-up, measured on a Linux CI runner 2026-09-01. The header's
+  // left group already carries `min-w-0`, but this control did not, and neither
+  // did the forms and buttons inside it — so its min-content width was the sum
+  // of three un-truncatable labels and the whole flex chain refused to shrink
+  // below it. At 320px the document became 463px wide on EVERY authenticated
+  // page, including the access-denied screen.
+  //
+  // It measured 0px of overflow on macOS at 320px and every width down to
+  // 180px, which is why it survived Phase 17: Arial is present there and this
+  // repository's base font-family asks for it. A Linux runner has no Arial,
+  // falls back to a wider face, and the same three labels total 347px instead
+  // of fitting.
+  //
+  // The fix is not a width. `min-w-0` at each level of the flex chain plus
+  // `truncate` on the label means the control shrinks and ellipsises whatever
+  // the font metrics turn out to be, instead of being correct for one machine.
+  // The emoji and the `title` stay, so the button is still identifiable at its
+  // narrowest.
   return (
-    <div className="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+    <div className="flex min-w-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-100 p-0.5">
       {locations.map((loc) => {
         const active = loc.id === activeLocation.id;
         const activeColor =
@@ -321,15 +339,20 @@ function LocationSwitcher({
             ? 'bg-white text-teal-800 shadow-sm'
             : 'bg-white text-pink-800 shadow-sm';
         return (
-          <form key={loc.id} action={setActiveLocationAction.bind(null, loc.id)}>
+          <form
+            key={loc.id}
+            className="min-w-0"
+            action={setActiveLocationAction.bind(null, loc.id)}
+          >
             <button
               type="submit"
-              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-bold transition ${
+              className={`flex max-w-full min-w-0 items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-bold transition ${
                 active ? activeColor : 'text-slate-600 hover:text-slate-800'
               }`}
               title={`Switch to ${loc.name}`}
             >
-              {loc.type === 'clinic' ? '🏥' : '💅'} {loc.name}
+              <span aria-hidden="true">{loc.type === 'clinic' ? '🏥' : '💅'}</span>
+              <span className="truncate">{loc.name}</span>
             </button>
           </form>
         );
