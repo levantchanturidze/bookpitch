@@ -88,7 +88,7 @@ export async function recordCronHeartbeat(
            last_expected_units, last_failed_units)
         VALUES
           (${job},
-           CASE WHEN ${outcome} = 'success' THEN NOW() ELSE '-infinity'::timestamptz END,
+           CASE WHEN ${outcome} = 'success' THEN NOW() ELSE NULL END,
            ${processed}, ${outcome}, NOW(), ${expected}, ${failed})
         ON CONFLICT (job) DO UPDATE SET
           last_succeeded_at   = CASE WHEN ${outcome} = 'success'

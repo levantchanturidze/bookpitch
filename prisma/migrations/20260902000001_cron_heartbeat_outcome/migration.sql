@@ -31,6 +31,15 @@
 --   the monitor treats a null outcome as "this deployment predates the metric"
 --   rather than as a failure.
 
+-- `last_succeeded_at` becomes nullable, and NULL means "never succeeded".
+--
+-- The first draft used '-infinity'::timestamptz as that sentinel. It is a
+-- valid timestamptz, but Prisma maps it to a JS Date of -Infinity — an Invalid
+-- Date — so the first `prisma.cronHeartbeat.findMany()` anyone writes would
+-- get a value that silently fails every comparison. NULL is what "no such
+-- timestamp" already means everywhere else in this schema.
+ALTER TABLE public.cron_heartbeat ALTER COLUMN last_succeeded_at DROP NOT NULL;
+
 ALTER TABLE public.cron_heartbeat
   ADD COLUMN IF NOT EXISTS last_outcome        text        NOT NULL DEFAULT 'unknown',
   ADD COLUMN IF NOT EXISTS last_attempted_at   timestamptz,

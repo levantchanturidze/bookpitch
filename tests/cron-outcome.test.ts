@@ -133,9 +133,7 @@ describe('the heartbeat uses the database clock and only advances on success', (
 
 async function successAt(job: string): Promise<string | null> {
   const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ t: Date | null }>>(
-    `SELECT CASE WHEN last_succeeded_at > '-infinity'::timestamptz
-                 THEN last_succeeded_at END AS t
-       FROM cron_heartbeat WHERE job = $1`,
+    `SELECT last_succeeded_at AS t FROM cron_heartbeat WHERE job = $1`,
     job,
   );
   const t = rows[0]?.t;

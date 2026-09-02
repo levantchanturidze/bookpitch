@@ -611,11 +611,12 @@ model RateLimit {
 /// organization_id and no RLS policy. Overwritten in place: it is a heartbeat,
 /// not a history.
 model CronHeartbeat {
-  job             String   @id
-  lastSucceededAt DateTime @map("last_succeeded_at") @db.Timestamptz(6)
+  job             String    @id
+  /// NULL until the job has succeeded at least once. Only a success sets it.
+  lastSucceededAt DateTime? @map("last_succeeded_at") @db.Timestamptz(6)
   /// Units of work the last run handled (organizations, rows) — small,
   /// numeric and non-identifying, so "ran and did nothing" is visible.
-  lastUnits       Int      @default(0) @map("last_units")
+  lastUnits       Int       @default(0) @map("last_units")
 
   /// success | partial | failure | unknown. `lastSucceededAt` advances only on
   /// success, so a failed run leaves the previous success timestamp alone and

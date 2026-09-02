@@ -923,9 +923,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       }>
     >`
         SELECT job,
-               CASE WHEN last_succeeded_at > '-infinity'::timestamptz
-                    THEN EXTRACT(EPOCH FROM (NOW() - last_succeeded_at))::float / 60
-                    END AS minutes_ago,
+               EXTRACT(EPOCH FROM (NOW() - last_succeeded_at))::float / 60 AS minutes_ago,
                last_units,
                last_outcome,
                last_expected_units,
