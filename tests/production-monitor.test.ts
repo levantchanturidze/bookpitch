@@ -576,6 +576,7 @@ describe('an unobservable check is not a resolved one', () => {
         // cron-jobs-failing is omitted for a deployment that does not report
         // this field, so leaving it out measures the subset, not the set.
         jobsNotSucceeding: 0,
+        unremindedStartedAppointments: 0,
       },
     };
     const emitted = evaluateOpsMetrics(complete).map((r: { id: string }) => r.id);

@@ -295,6 +295,21 @@ export type CronHeartbeatMetrics = {
   remindersAttemptMinutesAgo: number | null;
   /** Jobs whose most recent attempt was not a success. */
   jobsNotSucceeding: number | null;
+  /**
+   * Appointments that have already STARTED without any reminder ever being
+   * logged, inside the window their organization's lead time covered.
+   *
+   * This is the one reminder failure a sliding window cannot heal. The window
+   * is [now, now + reminderLeadHours] recomputed each tick, so a scheduler gap
+   * shorter than the lead time is harmless for FUTURE appointments — a later
+   * tick's window still contains them. But an appointment that starts DURING
+   * the gap leaves the window permanently, and no later tick can catch it.
+   *
+   * It cannot be undone, so it must at least be visible. Counting it directly
+   * is the only honest check: heartbeat freshness, cron success and workflow
+   * conclusions can all be green while this is non-zero.
+   */
+  unremindedStartedAppointments: number | null;
 };
 
 export type OpsMetrics = {
@@ -681,6 +696,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
     ciphertextRows,
     partitionRows,
     heartbeatRows,
+    unremindedRows,
   ] = await Promise.all([
     unsafePrismaAdmin.$queryRaw<
       Array<{
@@ -928,6 +944,26 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       if (isUndefinedTableError(err)) return [];
       throw err;
     }),
+    // Reminders that can never be sent: the appointment has already started and
+    // no message_log row was ever created for it. Bounded to the recent past so
+    // the count is about the current failure, not all history.
+    unsafePrismaAdmin.$queryRaw<Array<{ unreminded: bigint }>>`
+        SELECT count(*) AS unreminded
+          FROM appointments a
+          JOIN organizations o ON o.id = a.organization_id
+         WHERE a.starts_at < NOW()
+           AND a.starts_at > NOW() - interval '48 hours'
+           AND a.status NOT IN ('cancelled', 'completed')
+           -- Only appointments that existed early enough for the lead window
+           -- to have covered them; one booked ten minutes beforehand was never
+           -- eligible and is not evidence of a missed run.
+           AND a.created_at < a.starts_at - make_interval(hours => o.reminder_lead_hours)
+           AND NOT EXISTS (
+             SELECT 1 FROM message_log m
+              WHERE m.appointment_id = a.id
+                AND m.state IN ('queued', 'sent', 'delivered')
+           )
+      `,
   ]);
 
   const o = outboxRows[0] ?? {};
@@ -1014,6 +1050,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         jobsNotSucceeding: (heartbeatRows ?? []).filter(
           (row) => row.last_outcome !== 'success' && row.last_outcome !== 'unknown',
         ).length,
+        unremindedStartedAppointments: num(unremindedRows?.[0]?.unreminded),
       };
     })(),
     config: collectConfigMetrics(),

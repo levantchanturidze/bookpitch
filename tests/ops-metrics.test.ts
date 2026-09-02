@@ -102,6 +102,7 @@ describe('collectOpsMetrics against a real database', () => {
       'remindersLastUnits',
       'remindersMinutesAgo',
       'retentionMinutesAgo',
+      'unremindedStartedAppointments',
     ]);
     // P15-003: the digest metric carries two numbers now. The monitor needs
     // both to tell "nothing due yet" apart from "the weekly job never ran".

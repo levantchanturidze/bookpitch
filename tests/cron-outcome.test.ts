@@ -230,3 +230,38 @@ describe('the monitor cannot report a failing job as healthy', () => {
     expect(OPS_DERIVED_CHECK_IDS).toContain('cron-jobs-failing');
   });
 });
+
+// -----------------------------------------------------------------------------
+// The monitor side of §6. The database side — that the count actually moves
+// when an appointment is missed, and does not when one was booked inside its
+// own lead window — is in tests/reminder-gap-recovery.test.ts.
+// -----------------------------------------------------------------------------
+describe('the monitor surfaces a reminder that can never be sent', () => {
+  const check = (cronHeartbeat: Record<string, number | null>) =>
+    evaluateOpsMetrics({ config: {}, cronHeartbeat }).find(
+      (r: { id: string }) => r.id === 'reminders-missed',
+    );
+
+  it('fails when an appointment started unreminded', () => {
+    // Every other signal can be green here: fresh heartbeat, successful cron
+    // run, green workflow — and a customer was not reminded. This is counted
+    // from the appointments themselves rather than inferred from job health.
+    const r = check({ unremindedStartedAppointments: 3 });
+    expect(r!.ok).toBe(false);
+    expect(r!.detail).toMatch(/cannot be retried/);
+  });
+
+  it('passes at zero', () => {
+    expect(check({ unremindedStartedAppointments: 0 })!.ok).toBe(true);
+  });
+
+  it('is omitted rather than green on a deployment predating the metric', () => {
+    expect(
+      evaluateOpsMetrics({ config: {} }).find((r: { id: string }) => r.id === 'reminders-missed'),
+    ).toBeUndefined();
+  });
+
+  it('is registered against monitor blindness', () => {
+    expect(OPS_DERIVED_CHECK_IDS).toContain('reminders-missed');
+  });
+});

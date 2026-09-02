@@ -546,6 +546,33 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
     });
   }
 
+  // The one reminder failure a sliding window cannot heal.
+  //
+  // [now, now + reminderLeadHours] is recomputed each tick, so a scheduler gap
+  // shorter than the lead time is harmless for FUTURE appointments — a later
+  // tick's window still contains them. An appointment that starts DURING the
+  // gap leaves the window permanently and no later tick can catch it.
+  //
+  // Every other signal can be green while this is non-zero: the heartbeat is
+  // fresh, the cron run succeeded, the workflow concluded success — and a
+  // customer was not reminded. So it is counted directly, from the
+  // appointments themselves, rather than inferred from job health.
+  if (
+    heartbeat.unremindedStartedAppointments !== undefined &&
+    heartbeat.unremindedStartedAppointments !== null
+  ) {
+    const missed = heartbeat.unremindedStartedAppointments;
+    results.push({
+      id: 'reminders-missed',
+      title: 'Appointments started without a reminder ever being sent',
+      ok: missed === 0,
+      detail:
+        `${missed} appointment(s) in the last 48h started with no reminder logged, ` +
+        'despite having been booked early enough for the lead window to cover them. ' +
+        'This cannot be retried — the appointment has already begun.',
+    });
+  }
+
   // Any job whose most recent attempt was not a success. Separate from the
   // reminders check because it covers housekeeping — which DRAINS the email
   // outbox, so a failing housekeeping run means queued mail is reaching nobody
@@ -738,6 +765,7 @@ export const OPS_DERIVED_CHECK_IDS = Object.freeze([
   'partition-maintenance',
   'cron-heartbeat-stale',
   'cron-jobs-failing',
+  'reminders-missed',
   'production-config-incomplete',
   'production-config-invalid',
   'production-provider-mocked',
