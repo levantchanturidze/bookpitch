@@ -5,8 +5,13 @@ perform. Everything here needs a human because it involves entering a password,
 solving a real CAPTCHA, reading a real mailbox, or creating real production
 records.
 
-**Nothing in this checklist has been performed.** No production account was
-created and no production data was written by Phase 15.
+**Status: partially performed — see the dated section below.** Everything that
+can be proven without a mailbox and without writing production data was
+executed against `https://bookpitch.ge` on 2026-09-02 and is recorded there.
+Everything that needs a designated mailbox remains **not performed** and is not
+claimed anywhere.
+
+No production account was created and no production data was written.
 
 ## Before you start
 
@@ -22,8 +27,10 @@ they are the ones that prove email delivery works.
 **Prerequisite 0 — the database outage is over (2026-09-01).** Production lost
 its Supabase project earlier that day and it was restored the same day.
 Migration 63 is applied, all production invariants pass, and the monitor
-reports 17/21 with 2 paused. Nothing in this checklist is blocked by it any
-more. September ledger §17.
+reports the checks live — see
+[`docs/release-state.md`](./release-state.md), which links the workflow rather
+than restating a count that goes stale. Nothing in this checklist is blocked by
+the outage any more. September ledger §17.
 
 **Prerequisite 1 — the encryption key: RESOLVED and VERIFIED 2026-09-01T14:45Z.**
 `PASS production-config-invalid — malformed: 0`, and independently a
@@ -157,3 +164,47 @@ attempt to remove them.
 | Production records left behind | |
 
 File the completed table in this repository, with all redactions applied.
+
+
+---
+
+## Executed against production — 2026-09-02
+
+Everything below was run against `https://bookpitch.ge` and left **no trace**:
+verified afterwards against the production database as `outbox status=sent:1`
+(unchanged), `verification_tokens=0`, and zero audit rows in the preceding 30
+minutes.
+
+### Passed
+
+| Check | Evidence |
+|---|---|
+| Canonical redirects | `http://bookpitch.ge` → 308 → `https://bookpitch.ge/`; `https://www.bookpitch.ge` → 308 → apex |
+| Root requires auth | `https://bookpitch.ge` → 307 → `/signin` |
+| Health endpoint | `/api/health` → 200, body exactly `{"ok":true}` |
+| TLS | valid to 2026-11-10; `strict-transport-security: max-age=63072000; includeSubDomains; preload` |
+| Security headers | CSP with `frame-ancestors 'none'`, `object-src 'none'`; `x-frame-options: DENY`; `x-content-type-options: nosniff` |
+| **Tokenless onboarding rejected** | `POST /api/onboard` with no Turnstile token → **400** `{"error":"invalid request"}` |
+| **Oversized payload rejected** | `POST /api/onboard` with a ~2 MB body → **413** `{"error":"request too large"}` |
+| **Real Turnstile works in a real browser** | `/signup` in Chrome: Cloudflare's script loaded (`window.turnstile` exposes `render`/`execute`/`getResponse`), a genuine 773-character token was issued (prefix `1.kgpb`) into `input[name="cf-turnstile-response"]`, and the **Create workspace button went from disabled to enabled**. This is the complement to the 400 above: the endpoint refuses a request without a token, and the browser really can obtain one |
+| Reset enumeration resistance (partial) | Two unknown addresses and one malformed address all returned **202** `{"ok":true}` — identical status and body. No `verification_tokens` row was created, which is the correct behaviour for an unknown address |
+
+### Not performed — needs a designated mailbox
+
+These are the sections that prove **delivery**, and a 200 from a provider is not
+delivery. None of them is claimed as done anywhere in this repository.
+
+- Successful onboarding through the real signup form
+- Email verification / onboarding email receipt, sender and recipient
+- Links in that mail pointing at the production domain
+- SPF / DKIM / DMARC results on a received message
+- Authenticated login, session persistence and expiry, role landing
+- Forbidden-page boundaries and cross-tenant denial as a signed-in user
+- Reset enumeration resistance for a **known** address (the unknown half is
+  proven above; the pair is what makes it a test)
+
+The last item is the clearest example of why the mailbox blocks this: a reset
+for a known address would queue and attempt real delivery. Aiming that at one
+of the four reserved-TLD addresses in production would produce a dead letter,
+which would then correctly trip `outbox-dead-letters` and block the soak. There
+is no safe substitute for an address someone actually controls.
