@@ -1,6 +1,6 @@
 # Release state — the one current-state document
 
-**Snapshot: 2026-09-02, post-remediation.** This file is the single place that says
+**Snapshot: 2026-09-02T11:40Z, post-remediation-deploy.** This file is the single place that says
 what is true *now*. Every phase ledger is a historical record of what was true when it was
 written; where a ledger and this file disagree about the present, this file
 wins and the ledger is wrong only in tense, not in fact.
@@ -17,6 +17,51 @@ stale the moment it is written. Those live in:
 ---
 
 ## This release — measured, not asserted
+
+> These are **timestamped observations, not a claim of currency**. Merging this
+> very file produces a newer commit and a newer deployment, so the SHA below is
+> the one that was verified, not necessarily the one serving traffic when you
+> read this. For anything that moves, follow the workflow links at the top.
+
+### Remediation round — merged 2026-09-02
+
+| | |
+|---|---|
+| PR | **#50**, merged as `8f06c9474392f7cb3776e32854a297802a453e8d` (7 commits) |
+| CI on the merged head | run [33624814410](https://github.com/levantchanturidze/bookpitch/actions/runs/33624814410) — 115 files / 1551 unit+integration tests, 265 Playwright passed across all 9 required suites, 0 vulnerabilities, build clean |
+| Migrations | run [33624814278](https://github.com/levantchanturidze/bookpitch/actions/runs/33624814278) — **66 applied**, no drift |
+| Invariants | same run: 21 tenant relations, **exactly one permissive FOR ALL `tenant_isolation` policy per relation whose `USING` and `WITH CHECK` match the expected predicate exactly** |
+| Deployment | `8f06c94`, Production, state `success`; `bookpitch.ge` 200 and `www.bookpitch.ge` 308 → 200 |
+| Backup | run [33625072107](https://github.com/levantchanturidze/bookpitch/actions/runs/33625072107), artifact `production-backup-33625072107-1` (id 9844468433), fingerprint `5c9f75110f30141f`, verified in a separate job |
+| Restore drill | run [33625237297](https://github.com/levantchanturidze/bookpitch/actions/runs/33625237297) against that exact artifact — 66 migrations, 28 tables, 10 organizations, append-only enforced, 13 partitions, 21 RLS policies |
+| Monitor | run [33625461452](https://github.com/levantchanturidze/bookpitch/actions/runs/33625461452) — **22/25 passed, 2 paused, 1 informational**; Sentry the only failure |
+
+### Proven in production, not only in CI
+
+**A `housekeeping` dispatch without confirmation now delivers nothing.** Run
+[33625380776](https://github.com/levantchanturidze/bookpitch/actions/runs/33625380776):
+
+```
+dispatch-guard: failure
+housekeeping:   skipped      <- the outbox was NOT drained
+reminders:      skipped
+retention:      skipped
+audit-digest:   skipped
+db-partitions:  skipped
+```
+
+Before this, `housekeeping` was the *default* and ran with no confirmation —
+and it is the job that calls `drainEmailOutbox()`.
+
+**The non-mailing path still works unconfirmed.** Run
+[33625425589](https://github.com/levantchanturidze/bookpitch/actions/runs/33625425589):
+`db-partitions: success`.
+
+**A failed manual dispatch did not pollute scheduled evidence.** Immediately
+after the failure above, `cron-failures` still read
+`0/10 recent SCHEDULED cron runs failed (manual dispatches excluded)`.
+
+### Earlier round — merged 2026-09-02
 
 | | |
 |---|---|
@@ -161,7 +206,7 @@ otherwise would destroy the record of how they were found.
 | "MARKETING still holds `client.read:contact`" | until migration 63 applied | **False.** Verified absent in production; the two reporting grants remain, which is the complement that stops the check being vacuous |
 | "`FIELD_ENCRYPTION_KEY` is malformed" | P15-010 / R-16, until 2026-08-22 | **False.** `production-config-invalid — malformed: 0`, corroborated by an encrypted `email_outbox` row that could not exist unless `encryptField()` succeeded |
 | "Nothing is merged" | Phase 16 freeze window | **False.** Phases 16 and 17 merged 2026-09-01 |
-| "Production monitor 18/18" / "17/21" / "18/21" | each true on its date | **Stale by construction.** See the workflow link above. the gate count is now **23** plus one informational line, and the latest run is 20/23 with 2 paused |
+| "Production monitor 18/18" / "17/21" / "18/21" | each true on its date | **Stale by construction.** See the workflow link above. the gate count is now **25** plus one informational line |
 
 ---
 
