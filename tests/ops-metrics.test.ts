@@ -89,9 +89,16 @@ describe('collectOpsMetrics against a real database', () => {
     ]);
     // Application-side proof of COMPLETION, as opposed to the GitHub Actions
     // run list's proof of INVOCATION. null until the job has run once.
+    // The outcome fields were added because age alone cannot see a job that is
+    // attempted every 15 minutes and fails every time.
     expect(Object.keys(metrics.cronHeartbeat).sort()).toEqual([
       'auditDigestMinutesAgo',
       'housekeepingMinutesAgo',
+      'jobsNotSucceeding',
+      'remindersAttemptMinutesAgo',
+      'remindersExpectedUnits',
+      'remindersFailedUnits',
+      'remindersLastOutcome',
       'remindersLastUnits',
       'remindersMinutesAgo',
       'retentionMinutesAgo',

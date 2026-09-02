@@ -692,15 +692,23 @@ describe('scheduled crons can be dispatched one job at a time', () => {
 // -----------------------------------------------------------------------------
 describe('manual cron dispatch is safe by default', () => {
   const { doc, raw } = readWorkflow('cron.yml');
-  const CONFIRM = 'SEND-REMINDERS-TO-CUSTOMERS';
+  const CONFIRM = 'DELIVER-EMAIL-TO-REAL-RECIPIENTS';
   const dispatch = (doc.on as Record<string, { inputs?: Record<string, Record<string, unknown>> }>)
     .workflow_dispatch;
   const only = dispatch?.inputs?.only;
 
-  // Jobs that can reach a customer. docs/operations.md carries the same list
-  // for humans; this is the one the tests reason about.
-  const CUSTOMER_CONTACTING = ['reminders'];
-  const ALL_JOBS = ['reminders', 'housekeeping', 'retention', 'audit-digest', 'db-partitions'];
+  // Jobs that deliver or queue real email, classified by TRANSITIVE runtime
+  // behaviour rather than by what the job's name suggests:
+  //
+  //   reminders     sends email and SMS directly
+  //   housekeeping  runs drainEmailOutbox() — it DELIVERS everything queued
+  //   audit-digest  queues owner mail into email_outbox
+  //
+  // housekeeping was previously classified as safe AND made the default,
+  // which is how the delivery worker became the one-click option.
+  const MAILING = ['reminders', 'housekeeping', 'audit-digest'];
+  const NON_MAILING = ['retention', 'db-partitions'];
+  const ALL_JOBS = [...MAILING, ...NON_MAILING];
 
   // ---------------------------------------------------------------------
   // A tiny evaluator for the subset of GitHub expression syntax these `if:`
@@ -815,8 +823,13 @@ describe('manual cron dispatch is safe by default', () => {
     expect(options).not.toContain('');
     expect(options.every((o) => o.trim().length > 0)).toBe(true);
     expect(options).toContain(only?.default as string);
-    expect(CUSTOMER_CONTACTING).not.toContain(only?.default as string);
-    expect(only?.default).not.toBe('all');
+    // The default must be a NON-OPERATIONAL sentinel, not a real job. Picking
+    // any real job as the default makes the least deliberate use of the
+    // workflow do something, and the last time that was `housekeeping` — the
+    // outbox delivery worker.
+    expect(only?.default).toBe('none');
+    expect(MAILING).not.toContain(only?.default as string);
+    expect(NON_MAILING).not.toContain(only?.default as string);
   });
 
   it('THE REGRESSION: a blank selection now starts nothing', () => {
@@ -825,10 +838,24 @@ describe('manual cron dispatch is safe by default', () => {
     expect(onDispatch('')).toEqual([]);
   });
 
-  it('pressing the button with the default selection cannot mail anyone', () => {
-    const started = onDispatch(String(only?.default));
-    expect(started).not.toContain('reminders');
-    expect(started).toEqual([String(only?.default)]);
+  it('pressing the button with the default selection starts NOTHING', () => {
+    // Not "starts something harmless" — starts nothing. dispatch-guard then
+    // fails the run so the non-selection is visible.
+    expect(onDispatch('none')).toEqual([]);
+  });
+
+  it('THE REGRESSION: housekeeping is treated as customer-contacting', () => {
+    // runHousekeeping() calls drainEmailOutbox(), which delivers every queued
+    // message. It was previously confirmation-free AND the default.
+    expect(onDispatch('housekeeping')).toEqual([]);
+    expect(onDispatch('housekeeping', 'yes')).toEqual([]);
+    expect(onDispatch('housekeeping', CONFIRM)).toEqual(['housekeeping']);
+  });
+
+  it('audit-digest is treated as email-producing', () => {
+    // It queues owner mail into email_outbox; housekeeping then delivers it.
+    expect(onDispatch('audit-digest')).toEqual([]);
+    expect(onDispatch('audit-digest', CONFIRM)).toEqual(['audit-digest']);
   });
 
   it('reminders needs the typed confirmation, not just the selection', () => {
@@ -838,15 +865,25 @@ describe('manual cron dispatch is safe by default', () => {
     expect(onDispatch('reminders', CONFIRM)).toEqual(['reminders']);
   });
 
+  it('every mailing job requires confirmation, and no non-mailing one does', () => {
+    for (const job of MAILING) {
+      expect(onDispatch(job), `${job} ran without confirmation`).toEqual([]);
+      expect(onDispatch(job, CONFIRM), `${job} blocked with confirmation`).toEqual([job]);
+    }
+    for (const job of NON_MAILING) {
+      expect(onDispatch(job), `${job} should not need confirmation`).toEqual([job]);
+    }
+  });
+
   it('"all" starts nothing without confirmation, and everything with it', () => {
     expect(onDispatch('all')).toEqual([]);
     expect(onDispatch('all', CONFIRM)).toEqual([...ALL_JOBS].sort());
   });
 
-  it('every housekeeping job runs alone, and needs no confirmation', () => {
-    for (const job of ['housekeeping', 'retention', 'audit-digest', 'db-partitions']) {
-      expect(onDispatch(job), `${job} is not individually dispatchable`).toEqual([job]);
-    }
+  it('every job is still individually dispatchable', () => {
+    // Removing the blank default must not bring back "you cannot run one job".
+    for (const job of NON_MAILING) expect(onDispatch(job)).toEqual([job]);
+    for (const job of MAILING) expect(onDispatch(job, CONFIRM)).toEqual([job]);
   });
 
   it('a customer-contacting selection without confirmation FAILS the run', () => {
@@ -860,7 +897,9 @@ describe('manual cron dispatch is safe by default', () => {
     const run = (guard?.steps ?? []).map((s) => s.run ?? '').join('\n');
     expect(run).toMatch(/exit 1/);
     expect(run).toMatch(new RegExp(CONFIRM));
-    for (const job of CUSTOMER_CONTACTING) expect(run).toMatch(new RegExp(`"${job}"`));
+    // And it must fail on a non-selection too, not just on a missing confirm.
+    expect(run).toMatch(/No job selected/);
+    for (const job of MAILING) expect(run).toMatch(new RegExp(job));
   });
 
   it('the guard never runs on a scheduled delivery', () => {
@@ -894,7 +933,10 @@ describe('manual cron dispatch is safe by default', () => {
   it('documents which jobs can contact customers', () => {
     // The warning has to be where the operator is looking — on the input
     // description in the dispatch form, not only in a doc they will not open.
-    expect(String(only?.description ?? '')).toMatch(/CONTACT REAL CUSTOMERS/);
+    expect(String(only?.description ?? '')).toMatch(/DELIVER OR QUEUE REAL EMAIL/);
+    // The reason housekeeping counts has to be written down where someone
+    // changing this file will read it.
+    expect(raw).toMatch(/drainEmailOutbox/);
     expect(raw).toMatch(/reminderLeadHours|reminder_lead_hours/);
   });
 });

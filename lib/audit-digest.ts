@@ -190,11 +190,11 @@ export function isoWeekKey(date: Date): string {
  * newly enqueued — `0` means a digest for this week already exists, which is
  * the normal outcome on every run after the first in a given week.
  */
-export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }> {
+export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number; failed: number }> {
   // Gate checked here as well as in runDigestForAllOrgs(): this function is
   // exported and called directly by tests and could be called by future code.
   // A gate that only guards one caller is a gate with a hole in it.
-  if (!isAuditDigestDeliveryEnabled()) return { sent: 0 };
+  if (!isAuditDigestDeliveryEnabled()) return { sent: 0, failed: 0 };
 
   const owners = await withoutRls((tx) =>
     tx.membership.findMany({
@@ -210,6 +210,7 @@ export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }
   const week = isoWeekKey(new Date(d.windowEnd));
 
   let sent = 0;
+  let failed = 0;
   for (const m of owners) {
     const email = m.user.email;
     if (!email) continue;
@@ -236,14 +237,31 @@ export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }
         }),
       );
       sent += 1;
-    } catch {
-      // Unique violation = already queued this week. Any other failure is also
-      // non-fatal for the remaining owners; the outbox drain owns delivery, and
-      // a stuck queue surfaces through the outbox-backlog monitor check rather
-      // than here. No address or body is logged.
+    } catch (err) {
+      // ONLY the idempotency collision is benign, and only that one.
+      //
+      // This used to be a bare `catch {}` documented as "any other failure is
+      // also non-fatal". It is not. encryptField() throwing on a malformed
+      // FIELD_ENCRYPTION_KEY — the exact P15-010 production incident — was
+      // swallowed here, so the digest queued nothing and reported success. So
+      // was a missing column, a lost connection, and a constraint violation on
+      // any other field.
+      //
+      // P2002 is Prisma's unique-constraint violation, which here means "this
+      // owner already has a digest queued for this ISO week". That is what
+      // makes running hourly safe, and it is the only thing tolerated.
+      const code = (err as { code?: string } | null)?.code;
+      if (code === 'P2002') continue;
+
+      failed += 1;
+      // The error message may name a column but never an address or a body.
+      log.error('audit_digest.queue_failed', {
+        organizationId: d.organizationId,
+        code: code ?? 'unknown',
+      });
     }
   }
-  return { sent };
+  return { sent, failed };
 }
 
 /**
@@ -257,6 +275,9 @@ export async function sendDigestToOwners(d: OrgDigest): Promise<{ sent: number }
 export async function runDigestForAllOrgs(): Promise<{
   orgs: number;
   emails: number;
+  /** Owners whose digest could not be queued for a reason other than the
+   *  weekly idempotency collision. Non-zero means the run did NOT complete. */
+  failed: number;
   mode: DigestDeliveryMode;
   skipped: boolean;
 }> {
@@ -266,16 +287,18 @@ export async function runDigestForAllOrgs(): Promise<{
     // no digest construction, no encryption, no outbox row. Being paused must
     // cost nothing and leave no trace beyond this log line.
     log.info('audit_digest.skipped', { mode });
-    return { orgs: 0, emails: 0, mode, skipped: true };
+    return { orgs: 0, emails: 0, failed: 0, mode, skipped: true };
   }
 
   const orgs = await withoutRls((tx) => tx.organization.findMany({ select: { id: true } }));
   let emails = 0;
+  let failed = 0;
   for (const org of orgs) {
     const d = await buildDigest(org.id);
     const r = await sendDigestToOwners(d);
     emails += r.sent;
+    failed += r.failed;
   }
-  log.info('audit_digest.run', { orgs: orgs.length, emails });
-  return { orgs: orgs.length, emails, mode, skipped: false };
+  log.info('audit_digest.run', { orgs: orgs.length, emails, failed });
+  return { orgs: orgs.length, emails, failed, mode, skipped: false };
 }

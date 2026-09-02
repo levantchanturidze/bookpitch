@@ -617,6 +617,20 @@ model CronHeartbeat {
   /// numeric and non-identifying, so "ran and did nothing" is visible.
   lastUnits       Int      @default(0) @map("last_units")
 
+  /// success | partial | failure | unknown. `lastSucceededAt` advances only on
+  /// success, so a failed run leaves the previous success timestamp alone and
+  /// the monitor keeps ageing from the last time the job genuinely worked.
+  lastOutcome String @default("unknown") @map("last_outcome")
+
+  /// When the job last RAN, regardless of outcome. Distinguishes "attempted
+  /// and failed" from "never attempted".
+  lastAttemptedAt DateTime? @map("last_attempted_at") @db.Timestamptz(6)
+
+  /// Units the run was supposed to handle, and how many failed. Null on rows
+  /// predating outcome tracking — unknown, not zero.
+  lastExpectedUnits Int? @map("last_expected_units")
+  lastFailedUnits   Int? @map("last_failed_units")
+
   @@map("cron_heartbeat")
 }
 

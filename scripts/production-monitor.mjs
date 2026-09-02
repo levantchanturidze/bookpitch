@@ -506,17 +506,59 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
   if (heartbeat.remindersMinutesAgo !== undefined) {
     const ago = heartbeat.remindersMinutesAgo;
     const limit = opts.reminderHeartbeatMaxMinutes;
+    const outcome = heartbeat.remindersLastOutcome ?? null;
+    const expected = heartbeat.remindersExpectedUnits;
+    const failedUnits = heartbeat.remindersFailedUnits;
+    const attemptAgo = heartbeat.remindersAttemptMinutesAgo ?? null;
+
+    // Age alone is not enough, and the first version of this check only had
+    // age. A job attempted every 15 minutes that fails every time simply stops
+    // advancing last_succeeded_at, and for the whole six-hour limit that is
+    // indistinguishable from a healthy quiet period. The outcome of the most
+    // recent ATTEMPT is the signal that fires immediately.
+    const outcomeBad = outcome !== null && outcome !== 1;
+    const stale = ago === null || ago > limit;
+
+    let detail;
+    if (outcomeBad) {
+      detail =
+        `the last reminders attempt ${outcome === 0 ? 'PARTIALLY FAILED' : 'FAILED'}` +
+        (attemptAgo !== null ? ` ${(attemptAgo / 60).toFixed(1)}h ago` : '') +
+        ` — ${heartbeat.remindersLastUnits ?? 0} of ${expected ?? '?'} organization(s) processed, ` +
+        `${failedUnits ?? '?'} failed. Last SUCCESS was ` +
+        (ago === null ? 'never' : `${(ago / 60).toFixed(1)}h ago`);
+    } else if (ago === null) {
+      detail =
+        'the reminders job has never recorded a successful completion — it has not ' +
+        'succeeded once since this table existed, whatever the workflow run list says';
+    } else {
+      detail =
+        `reminders last succeeded ${(ago / 60).toFixed(1)}h ago (limit ${(limit / 60).toFixed(1)}h), ` +
+        `handling ${heartbeat.remindersLastUnits ?? 0} organization(s)` +
+        (outcome === null ? ' (deployment predates outcome tracking)' : '');
+    }
+
     results.push({
       id: 'cron-heartbeat-stale',
-      title: 'The reminders job has not completed recently',
-      ok: ago !== null && ago <= limit,
+      title: 'The reminders job is not completing successfully',
+      ok: !outcomeBad && !stale,
+      detail,
+    });
+  }
+
+  // Any job whose most recent attempt was not a success. Separate from the
+  // reminders check because it covers housekeeping — which DRAINS the email
+  // outbox, so a failing housekeeping run means queued mail is reaching nobody
+  // — as well as retention and the digest.
+  if (heartbeat.jobsNotSucceeding !== undefined && heartbeat.jobsNotSucceeding !== null) {
+    results.push({
+      id: 'cron-jobs-failing',
+      title: 'A scheduled job is attempting work and failing',
+      ok: heartbeat.jobsNotSucceeding === 0,
       detail:
-        ago === null
-          ? 'the reminders job has never recorded a completion — it has not run once ' +
-            'since this table existed, whatever the workflow run list says'
-          : `reminders last completed ${(ago / 60).toFixed(1)}h ago ` +
-            `(limit ${(limit / 60).toFixed(1)}h), handling ` +
-            `${heartbeat.remindersLastUnits ?? 0} organization(s)`,
+        `${heartbeat.jobsNotSucceeding} job(s) whose most recent attempt did not succeed ` +
+        '(reminders, housekeeping, retention, audit-digest; "unknown" rows predating outcome ' +
+        'tracking are not counted)',
     });
   }
 
@@ -695,6 +737,7 @@ export const OPS_DERIVED_CHECK_IDS = Object.freeze([
   'audit-digest-stalled',
   'partition-maintenance',
   'cron-heartbeat-stale',
+  'cron-jobs-failing',
   'production-config-incomplete',
   'production-config-invalid',
   'production-provider-mocked',

@@ -272,12 +272,29 @@ export type ConfigMetrics = {
  * deployment, or a job that has genuinely never completed.
  */
 export type CronHeartbeatMetrics = {
+  /** Minutes since each job last SUCCEEDED. Only a success advances this. */
   remindersMinutesAgo: number | null;
   housekeepingMinutesAgo: number | null;
   retentionMinutesAgo: number | null;
   auditDigestMinutesAgo: number | null;
-  /** Organizations the last reminder tick handled. 0 means "ran, did nothing". */
+  /** Units the last reminder tick completed. */
   remindersLastUnits: number | null;
+  /**
+   * Outcome of the last reminders ATTEMPT, as a number so the response stays
+   * numeric-only: 1 success, 0 partial, -1 failure, null unknown/absent.
+   *
+   * Age alone cannot see a job that is attempted every 15 minutes and fails
+   * every time — `last_succeeded_at` simply stops moving, and for the first
+   * six hours that is indistinguishable from a healthy quiet period.
+   */
+  remindersLastOutcome: number | null;
+  /** Units the last reminders attempt expected, and how many failed. */
+  remindersExpectedUnits: number | null;
+  remindersFailedUnits: number | null;
+  /** Minutes since the last reminders ATTEMPT, successful or not. */
+  remindersAttemptMinutesAgo: number | null;
+  /** Jobs whose most recent attempt was not a success. */
+  jobsNotSucceeding: number | null;
 };
 
 export type OpsMetrics = {
@@ -879,11 +896,25 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
     // every other age here: a serverless instance with a skewed clock must
     // not be able to make a dead job look alive.
     unsafePrismaAdmin.$queryRaw<
-      Array<{ job: string; minutes_ago: number | null; last_units: number }>
+      Array<{
+        job: string;
+        minutes_ago: number | null;
+        last_units: number;
+        last_outcome: string;
+        last_expected_units: number | null;
+        last_failed_units: number | null;
+        attempt_minutes_ago: number | null;
+      }>
     >`
         SELECT job,
-               EXTRACT(EPOCH FROM (NOW() - last_succeeded_at))::float / 60 AS minutes_ago,
-               last_units
+               CASE WHEN last_succeeded_at > '-infinity'::timestamptz
+                    THEN EXTRACT(EPOCH FROM (NOW() - last_succeeded_at))::float / 60
+                    END AS minutes_ago,
+               last_units,
+               last_outcome,
+               last_expected_units,
+               last_failed_units,
+               EXTRACT(EPOCH FROM (NOW() - last_attempted_at))::float / 60 AS attempt_minutes_ago
           FROM cron_heartbeat
       `.catch((err: unknown) => {
       // Tolerates the table not existing, and NOTHING else. Vercel builds
@@ -966,12 +997,23 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
     cronHeartbeat: (() => {
       const by = new Map((heartbeatRows ?? []).map((row) => [row.job, row] as const));
       const ago = (job: string) => numOrNull(by.get(job)?.minutes_ago);
+      // Numeric so the response stays numbers-and-null only.
+      const outcomeCode = (o: string | undefined) =>
+        o === 'success' ? 1 : o === 'partial' ? 0 : o === 'failure' ? -1 : null;
+      const r = by.get('reminders');
       return {
         remindersMinutesAgo: ago('reminders'),
         housekeepingMinutesAgo: ago('housekeeping'),
         retentionMinutesAgo: ago('retention'),
         auditDigestMinutesAgo: ago('audit-digest'),
-        remindersLastUnits: numOrNull(by.get('reminders')?.last_units),
+        remindersLastUnits: numOrNull(r?.last_units),
+        remindersLastOutcome: outcomeCode(r?.last_outcome),
+        remindersExpectedUnits: numOrNull(r?.last_expected_units),
+        remindersFailedUnits: numOrNull(r?.last_failed_units),
+        remindersAttemptMinutesAgo: numOrNull(r?.attempt_minutes_ago),
+        jobsNotSucceeding: (heartbeatRows ?? []).filter(
+          (row) => row.last_outcome !== 'success' && row.last_outcome !== 'unknown',
+        ).length,
       };
     })(),
     config: collectConfigMetrics(),

@@ -95,7 +95,11 @@ describe('the monitor can tell a queued workflow from work actually done', () =>
     );
 
   it('a recent completion passes and says how much work it did', () => {
-    const r = check({ remindersMinutesAgo: 20, remindersLastUnits: 6 });
+    const r = check({
+      remindersMinutesAgo: 20,
+      remindersLastUnits: 6,
+      remindersLastOutcome: 1,
+    });
     expect(r!.ok).toBe(true);
     expect(r!.detail).toMatch(/handling 6 organization/);
   });
@@ -103,15 +107,19 @@ describe('the monitor can tell a queued workflow from work actually done', () =>
   it('THE CASE NOTHING COULD SEE: schedule arriving, endpoint doing nothing', () => {
     // cron-staleness is green here — GitHub delivered, curl exited 0 — and the
     // application has not completed a tick in nine hours.
-    const r = check({ remindersMinutesAgo: 9 * 60, remindersLastUnits: 0 });
+    const r = check({
+      remindersMinutesAgo: 9 * 60,
+      remindersLastUnits: 0,
+      remindersLastOutcome: 1,
+    });
     expect(r!.ok).toBe(false);
-    expect(r!.detail).toMatch(/last completed 9\.0h ago/);
+    expect(r!.detail).toMatch(/last succeeded 9\.0h ago/);
   });
 
   it('never having completed is a failure, not a fresh-deployment excuse', () => {
     const r = check({ remindersMinutesAgo: null, remindersLastUnits: null });
     expect(r!.ok).toBe(false);
-    expect(r!.detail).toMatch(/has never recorded a completion/);
+    expect(r!.detail).toMatch(/has never recorded a successful completion/);
     expect(r!.detail).toMatch(/whatever the workflow run list says/);
   });
 

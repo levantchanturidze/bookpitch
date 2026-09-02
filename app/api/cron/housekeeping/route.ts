@@ -17,12 +17,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const result = await runHousekeeping();
-  // Proof of completion, not merely of invocation. See lib/cron-heartbeat.ts.
-  await recordCronHeartbeat(
-    'housekeeping',
-    Object.values(result)
-      .filter((v) => typeof v === 'number')
-      .reduce((n, v) => n + (v as number), 0),
-  );
-  return NextResponse.json({ ok: true, ...result });
+  // Proof of what the run DID, not merely that it was invoked.
+  //
+  // The units are the outbox rows housekeeping attempted to DELIVER — this is
+  // the job that drains email_outbox. outboxFailed is a real failure: those
+  // messages reached nobody. Summing every numeric field, as this used to,
+  // made pruned rate-limit rows cancel out failed deliveries.
+  const outcome = await recordCronHeartbeat('housekeeping', {
+    expected: (result.outboxSent ?? 0) + (result.outboxFailed ?? 0),
+    processed: result.outboxSent ?? 0,
+    failed: result.outboxFailed ?? 0,
+  });
+  const status = outcome === 'success' ? 200 : 500;
+  return NextResponse.json({ ok: outcome === 'success', outcome, ...result }, { status });
 }
