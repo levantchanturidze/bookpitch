@@ -1,4 +1,4 @@
-import { unsafePrismaAdmin, withoutRls } from '@/lib/db';
+import { unsafePrismaAdmin } from '@/lib/db';
 import { log } from '@/lib/logger';
 import type { HeartbeatJob } from '@/lib/cron-heartbeat-jobs';
 
@@ -80,27 +80,29 @@ export async function recordCronHeartbeat(
     // this replaces. `last_succeeded_at` advances ONLY on a success; on a
     // partial or failed run the previous success timestamp is preserved, so
     // the monitor keeps ageing from the last time the job genuinely worked.
-    await withoutRls(
-      () =>
-        unsafePrismaAdmin.$executeRaw`
-        INSERT INTO cron_heartbeat
-          (job, last_succeeded_at, last_units, last_outcome, last_attempted_at,
-           last_expected_units, last_failed_units)
-        VALUES
-          (${job},
-           CASE WHEN ${outcome} = 'success' THEN NOW() ELSE NULL END,
-           ${processed}, ${outcome}, NOW(), ${expected}, ${failed})
-        ON CONFLICT (job) DO UPDATE SET
-          last_succeeded_at   = CASE WHEN ${outcome} = 'success'
-                                     THEN NOW()
-                                     ELSE cron_heartbeat.last_succeeded_at END,
-          last_units          = ${processed},
-          last_outcome        = ${outcome},
-          last_attempted_at   = NOW(),
-          last_expected_units = ${expected},
-          last_failed_units   = ${failed}
-      `,
-    );
+    // Straight to unsafePrismaAdmin rather than through withoutRls(): that
+    // opens a transaction and hands back a tx client, and wrapping one
+    // statement in one while ignoring the tx is just a slower way to run it.
+    // cron_heartbeat has no organization_id and no RLS policy, so there is no
+    // tenant scope to step outside of here.
+    await unsafePrismaAdmin.$executeRaw`
+      INSERT INTO cron_heartbeat
+        (job, last_succeeded_at, last_units, last_outcome, last_attempted_at,
+         last_expected_units, last_failed_units)
+      VALUES
+        (${job},
+         CASE WHEN ${outcome} = 'success' THEN NOW() ELSE NULL END,
+         ${processed}, ${outcome}, NOW(), ${expected}, ${failed})
+      ON CONFLICT (job) DO UPDATE SET
+        last_succeeded_at   = CASE WHEN ${outcome} = 'success'
+                                   THEN NOW()
+                                   ELSE cron_heartbeat.last_succeeded_at END,
+        last_units          = ${processed},
+        last_outcome        = ${outcome},
+        last_attempted_at   = NOW(),
+        last_expected_units = ${expected},
+        last_failed_units   = ${failed}
+    `;
   } catch (err) {
     log.error('cron.heartbeat_write_failed', {
       job,
