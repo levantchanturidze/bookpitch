@@ -80,9 +80,10 @@ function healthyEvidence(over: Record<string, unknown> = {}) {
     historyComplete: true,
     sentry: {
       configured: true,
+      ok: true,
       serverEventId: 'srv-abc',
       browserEventId: 'brw-def',
-      sourceMapsResolved: true,
+      problems: [],
     },
     outboxDead: 0,
     unhealthyJobs: [],
@@ -328,20 +329,13 @@ describe('unreadable is not healthy', () => {
     const r = evaluateSoak({
       state: state(),
       evidence: healthyEvidence({
-        sentry: {
-          configured: false,
-          serverEventId: null,
-          browserEventId: null,
-          sourceMapsResolved: false,
-        },
+        sentry: { configured: false, ok: false, serverEventId: null, browserEventId: null },
       }),
       now: NOW,
     });
     expect(r.status).not.toBe('success');
     expect(gate(r, 'observability').ok).toBe(false);
-    expect(gate(r, 'observability').detail).toMatch(
-      /uncaught exceptions in production are discarded/,
-    );
+    expect(gate(r, 'observability').detail).toMatch(/uncaught exceptions are discarded/);
   });
 
   it('Sentry configured but never RECEIPT-verified is not enough', () => {
@@ -353,15 +347,16 @@ describe('unreadable is not healthy', () => {
       evidence: healthyEvidence({
         sentry: {
           configured: true,
+          ok: false,
           serverEventId: null,
           browserEventId: null,
-          sourceMapsResolved: false,
+          problems: ['need BOTH a server and a browser event id'],
         },
       }),
       now: NOW,
     });
     expect(gate(r, 'observability').ok).toBe(false);
-    expect(gate(r, 'observability').detail).toMatch(/need BOTH a server and a browser event id/);
+    expect(gate(r, 'observability').detail).toMatch(/receipt not valid/);
   });
 });
 
@@ -561,10 +556,12 @@ describe('Sentry receipt is machine-verified, not asserted', () => {
       evidence: healthyEvidence({
         sentry: {
           configured: true,
+          // No boolean can satisfy the gate any more; only a validated receipt.
           receiptVerified: true,
+          ok: false,
           serverEventId: null,
           browserEventId: null,
-          sourceMapsResolved: true,
+          problems: ['no event was retrievable from Sentry'],
         },
       }),
       now: NOW,
@@ -579,9 +576,10 @@ describe('Sentry receipt is machine-verified, not asserted', () => {
       evidence: healthyEvidence({
         sentry: {
           configured: true,
+          ok: false,
           serverEventId: 'srv-abc',
           browserEventId: null,
-          sourceMapsResolved: true,
+          problems: ['browser: no event was retrievable from Sentry'],
         },
       }),
       now: NOW,
@@ -595,15 +593,16 @@ describe('Sentry receipt is machine-verified, not asserted', () => {
       evidence: healthyEvidence({
         sentry: {
           configured: true,
+          ok: false,
           serverEventId: 'srv-abc',
           browserEventId: 'brw-def',
-          sourceMapsResolved: false,
+          problems: ['no stack frame in either event resolved to original source'],
         },
       }),
       now: NOW,
     });
     expect(gate(r, 'observability').ok).toBe(false);
-    expect(gate(r, 'observability').detail).toMatch(/do not resolve through/);
+    expect(gate(r, 'observability').detail).toMatch(/resolved to original source/);
   });
 });
 

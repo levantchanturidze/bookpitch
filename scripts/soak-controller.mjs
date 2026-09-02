@@ -101,10 +101,10 @@ const HOUR = 3_600_000;
  *     incidents: Array<{number: number, createdAt: string, state: string}>,
  *     deployment: {sha: string, id: string, state?: string|null,
  *                  environment?: string|null, aliases?: string[]} | null,
- *     sentry: {configured: boolean, serverEventId: string|null, browserEventId: string|null,
- *              sourceMapsResolved: boolean} | null,
+ *     sentry: {configured: boolean, ok: boolean, serverEventId: string|null,
+ *              browserEventId: string|null, problems?: string[]} | null,
  *     outboxDead: number | null,
- *     jobsNotSucceeding?: number | null,
+ *     unhealthyJobs?: string[] | null,
  *     historyComplete?: boolean,
  *   },
  *   now?: Date,
@@ -433,27 +433,22 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
     },
     {
       id: 'observability',
-      // Receipt is a fact about Sentry's API, recorded with event ids. It is
-      // NOT a boolean an operator can set: the previous version accepted
-      // SOAK_SENTRY_RECEIPT_VERIFIED=true from the workflow input, which made
-      // the gate a checkbox.
-      ok: Boolean(
-        evidence.sentry?.configured &&
-        evidence.sentry?.serverEventId &&
-        evidence.sentry?.browserEventId &&
-        evidence.sentry?.sourceMapsResolved,
-      ),
-      detail: !evidence.sentry?.configured
-        ? 'Sentry is not configured — uncaught exceptions in production are discarded, ' +
-          'so an unobserved window proves nothing'
-        : !evidence.sentry?.serverEventId || !evidence.sentry?.browserEventId
-          ? 'Sentry receipt not verified: need BOTH a server and a browser event id ' +
-            'confirmed visible through the Sentry API'
-          : !evidence.sentry?.sourceMapsResolved
-            ? 'Sentry has the events but production stack frames do not resolve through ' +
-              'uploaded source maps'
-            : `Sentry receipt verified (server ${evidence.sentry.serverEventId}, ` +
-              `browser ${evidence.sentry.browserEventId}), source maps resolve`,
+      // Receipt is revalidated against Sentry on EVERY tick, not trusted from
+      // persisted state. Losing the DSNs, losing API access, or the receipt
+      // ageing out all fail this gate — and a failing gate puts the soak into
+      // awaiting-recovery, so the window restarts rather than coasting on a
+      // verification done a day earlier.
+      ok: Boolean(evidence.sentry?.ok),
+      detail: !evidence.sentry
+        ? 'Sentry evidence could not be read — not evidence of health'
+        : !evidence.sentry.configured
+          ? 'production has no Sentry DSN configured — uncaught exceptions are discarded, ' +
+            'so an unobserved window proves nothing'
+          : evidence.sentry.ok
+            ? `receipt revalidated: server ${String(evidence.sentry.serverEventId).slice(0, 12)}, ` +
+              `browser ${String(evidence.sentry.browserEventId).slice(0, 12)}, ` +
+              'at least one frame resolved to original source'
+            : `receipt not valid: ${(evidence.sentry.problems ?? ['unknown']).join('; ')}`,
     },
   ];
 
