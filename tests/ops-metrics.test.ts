@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { NextRequest } from 'next/server';
-import { collectOpsMetrics, assertMetricsAreNumericOnly } from '@/lib/ops-metrics';
+import {
+  collectOpsMetrics,
+  assertMetricsAreNumericOnly,
+  isUndefinedTableError,
+} from '@/lib/ops-metrics';
 import { GET } from '@/app/api/health/ops/route';
 import { isPublicPath } from '@/auth.config';
 // Tests are exempt from the no-restricted-imports SEC-007 rule; the outbox has
@@ -77,10 +81,20 @@ describe('collectOpsMetrics against a real database', () => {
       'auditDigest',
       'ciphertext',
       'config',
+      'cronHeartbeat',
       'housekeeping',
       'outbox',
       'partitions',
       'retention',
+    ]);
+    // Application-side proof of COMPLETION, as opposed to the GitHub Actions
+    // run list's proof of INVOCATION. null until the job has run once.
+    expect(Object.keys(metrics.cronHeartbeat).sort()).toEqual([
+      'auditDigestMinutesAgo',
+      'housekeepingMinutesAgo',
+      'remindersLastUnits',
+      'remindersMinutesAgo',
+      'retentionMinutesAgo',
     ]);
     // P15-003: the digest metric carries two numbers now. The monitor needs
     // both to tell "nothing due yet" apart from "the weekly job never ran".
@@ -108,13 +122,21 @@ describe('collectOpsMetrics against a real database', () => {
     // 2026-09-01 split the provider adapters out of invalidSecurityEnv: a
     // gateway on `mock` before launch is a decision, a malformed encryption key
     // is a P0, and one number could not mean both.
+    // The four provider fields were added with PROVIDER_CONTRACT. Before them
+    // PAYMENT_GATEWAY and SMS_PROVIDER were in no required-variable set at
+    // all, so unsetting either left every count at zero while the resolver
+    // threw on the first call.
     expect(Object.keys(metrics.config).sort()).toEqual([
+      'deferredProviderEnv',
       'invalidSecurityEnv',
       'missingEmailEnv',
       'missingObservabilityEnv',
+      'missingProviderCredentialEnv',
+      'missingProviderEnv',
       'missingSecurityEnv',
       'missingSignupEnv',
       'mockedProviderEnv',
+      'undeclaredMockProviderEnv',
       'unrecognisedProviderEnv',
     ]);
 
@@ -384,5 +406,74 @@ describe('public health endpoint stays minimal', () => {
     const route = await import('@/app/api/health/ops/route');
     const res = await route.GET(new Request('http://x/api/health/ops') as never);
     expect(res.status).toBe(401);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The heartbeat metric must not be able to take the whole endpoint down.
+//
+// Vercel builds the merge commit and migrate.yml applies the migration from the
+// SAME push. They race, and Vercel usually wins — so for a minute or two the
+// deployed code queries a table that does not exist yet. Without tolerance for
+// that, /api/health/ops 500s, the monitor's ops probe fails, and every
+// ops-derived check goes UNOBSERVABLE. That is the exact shape of incident #26,
+// where the monitor read its own blindness as an all-clear.
+//
+// Tested through the predicate rather than by renaming the table. An
+// `ALTER TABLE ... RENAME` takes an ACCESS EXCLUSIVE lock, and inside the full
+// serial suite it contends with the shared Prisma pool: measured 2026-09-02,
+// three such tests took the suite from 56s to 1901s and produced two unrelated
+// timeout failures. The end-to-end behaviour was verified separately by
+// renaming the table and observing all 25 ops-metrics tests still pass; what is
+// locked in here is the decision that makes it work.
+// -----------------------------------------------------------------------------
+describe('a missing table degrades the heartbeat instead of 500ing the endpoint', () => {
+  it('recognises 42P01 however Prisma happens to surface it', () => {
+    // Three shapes, all seen from this client depending on version: a bare
+    // Postgres code, a PrismaClientKnownRequestError wrapping it in meta, and
+    // a message with nothing machine-readable at all.
+    expect(isUndefinedTableError({ code: '42P01' })).toBe(true);
+    expect(isUndefinedTableError({ code: 'P2010', meta: { code: '42P01' } })).toBe(true);
+    expect(isUndefinedTableError({ message: 'relation "cron_heartbeat" does not exist' })).toBe(
+      true,
+    );
+  });
+
+  it('COMPLEMENT: does not swallow anything else', () => {
+    // If this widened to "any error", a genuinely broken heartbeat query would
+    // report null forever and look exactly like a fresh deployment — a failure
+    // that reports health, which is the whole class this repo keeps hitting.
+    expect(isUndefinedTableError({ code: '42703' })).toBe(false); // undefined_column
+    expect(isUndefinedTableError({ code: '28P01' })).toBe(false); // bad password
+    expect(isUndefinedTableError({ message: 'connection terminated' })).toBe(false);
+    expect(isUndefinedTableError(new Error('timeout'))).toBe(false);
+    expect(isUndefinedTableError(null)).toBe(false);
+    expect(isUndefinedTableError(undefined)).toBe(false);
+  });
+
+  it('reads a real heartbeat back, so null is not the only value it can return', async () => {
+    // Without this, the metric could be permanently null and both cases above
+    // would still pass. No DDL, so no lock.
+    await unsafePrismaAdmin.$executeRawUnsafe(
+      `INSERT INTO cron_heartbeat (job, last_succeeded_at, last_units)
+       VALUES ('reminders', NOW(), 7)
+       ON CONFLICT (job) DO UPDATE SET last_succeeded_at = NOW(), last_units = 7`,
+    );
+    try {
+      const metrics = await collectOpsMetrics();
+      expect(metrics.cronHeartbeat.remindersMinutesAgo).not.toBeNull();
+      expect(metrics.cronHeartbeat.remindersMinutesAgo!).toBeLessThan(1);
+      expect(metrics.cronHeartbeat.remindersLastUnits).toBe(7);
+      expect(() => assertMetricsAreNumericOnly(metrics)).not.toThrow();
+    } finally {
+      await unsafePrismaAdmin.$executeRawUnsafe(
+        `DELETE FROM cron_heartbeat WHERE job = 'reminders'`,
+      );
+    }
+  });
+
+  it('reports null for a job that has never run', async () => {
+    const metrics = await collectOpsMetrics();
+    expect(metrics.cronHeartbeat.retentionMinutesAgo).toBeNull();
   });
 });

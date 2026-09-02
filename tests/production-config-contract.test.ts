@@ -4,6 +4,8 @@ import path from 'node:path';
 import {
   REQUIRED_SIGNUP_ENV,
   REQUIRED_EMAIL_ENV,
+  requiredProviderCredentials,
+  PROVIDER_CONTRACT,
   REQUIRED_SECURITY_ENV,
   missingEnv,
   collectConfigMetrics,
@@ -54,9 +56,22 @@ describe('the required-production-env contract names the variables that broke si
   });
 
   it('covers email and security configuration too', () => {
-    expect(REQUIRED_EMAIL_ENV).toEqual(
-      expect.arrayContaining(['EMAIL_PROVIDER', 'RESEND_API_KEY', 'RESEND_FROM']),
-    );
+    // REQUIRED_EMAIL_ENV used to hard-code Resend's two variables. That was
+    // wrong in both directions once Postmark became selectable: it demanded
+    // RESEND_* from a Postmark deployment that would never read them, and
+    // never asked for POSTMARK_API_TOKEN, which the first send would throw
+    // on. The provider variable itself is the fixed part of the contract; the
+    // credentials are resolved against whichever adapter is chosen. See
+    // requiredProviderCredentials() and the provider-contract suite.
+    expect(REQUIRED_EMAIL_ENV).toEqual(expect.arrayContaining(['EMAIL_PROVIDER']));
+    expect(requiredProviderCredentials('EMAIL_PROVIDER', { EMAIL_PROVIDER: 'resend' })).toEqual([
+      'RESEND_API_KEY',
+      'RESEND_FROM',
+    ]);
+    expect(requiredProviderCredentials('EMAIL_PROVIDER', { EMAIL_PROVIDER: 'postmark' })).toEqual([
+      'POSTMARK_API_TOKEN',
+      'POSTMARK_FROM',
+    ]);
     expect(REQUIRED_SECURITY_ENV).toEqual(
       expect.arrayContaining(['AUTH_SECRET', 'FIELD_ENCRYPTION_KEY', 'CRON_SECRET']),
     );
@@ -68,6 +83,10 @@ describe('the required-production-env contract names the variables that broke si
       ...REQUIRED_SIGNUP_ENV,
       ...REQUIRED_EMAIL_ENV,
       ...REQUIRED_SECURITY_ENV,
+      // Every adapter's credentials, not just the one currently selected: the
+      // point of .env.example is to tell someone what they would need.
+      ...Object.keys(PROVIDER_CONTRACT),
+      ...Object.values(PROVIDER_CONTRACT).flatMap((c) => Object.values(c.adapters).flat()),
     ].filter((name) => !example.includes(name));
     expect(undocumented, 'required env vars missing from .env.example').toEqual([]);
   });

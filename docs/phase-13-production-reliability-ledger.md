@@ -1,5 +1,12 @@
 # Phase 13 — Production Validation and Operational Reliability Ledger
 
+> **Current state: see [`docs/release-state.md`](./release-state.md) (2026-09-02).**
+> This ledger is a **historical record** of what was measured when it was
+> written. Statements below are in the present tense of their own date, not of
+> today; where they disagree with `release-state.md` about the present,
+> `release-state.md` is correct. Nothing here is edited to pretend an incident
+> did not happen.
+
 **Status: PHASE 13 COMPLETE** — 2026-08-17T20:09Z, after a full 24-hour
 production soak with zero failures. Verdict and evidence in § 13.9.
 

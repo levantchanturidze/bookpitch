@@ -13,33 +13,76 @@ on:
     - cron: '30 1 1 * *'
   workflow_dispatch:
     inputs:
+      # A manual dispatch used to default to BLANK, and blank ran all five
+      # jobs. "Drain the outbox by hand" was therefore impossible without also
+      # firing reminders at every tenant, and the most likely way to run this
+      # workflow — open it, press the button, change nothing — was the most
+      # dangerous one. `runReminderTick` selects appointments in
+      # [now, now + reminderLeadHours], so that dispatch really can send mail
+      # and SMS to a real customer whose appointment falls in the window.
+      #
+      # There is now no implicit default. A job must be named, and the two
+      # choices that can reach a customer additionally require the confirm box
+      # below to be typed out. Getting it wrong FAILS the run rather than
+      # quietly doing nothing — a green run that performed no work is the same
+      # class of useless signal this repository keeps finding.
       only:
-        # A manual dispatch used to run all five jobs, which made "drain the
-        # outbox by hand" impossible without also firing reminders at every
-        # tenant. That is not a safe operation to have to perform during an
-        # incident: `runReminderTick` selects [now, now + leadHours], so a
-        # dispatch really can send mail to a real customer whose appointment
-        # happens to fall in the window.
-        #
-        # Blank keeps the previous behaviour — all five — so nothing that
-        # relied on it changes.
-        description: 'Run only this job (blank = all five, the previous behaviour)'
-        required: false
-        default: ''
+        description: 'Which job to run. "reminders" and "all" CONTACT REAL CUSTOMERS and also need the confirm box.'
+        required: true
         type: choice
+        default: housekeeping
         options:
-          - ''
-          - reminders
+          # Ordered least-dangerous first, so a mis-click lands on a job that
+          # cannot contact anyone.
           - housekeeping
           - retention
-          - audit-digest
           - db-partitions
+          - audit-digest
+          - reminders
+          - all
+      confirm:
+        description: 'Required for "reminders" and "all". Type exactly: SEND-REMINDERS-TO-CUSTOMERS'
+        required: false
+        default: ''
+        type: string
 
 jobs:
+  # Fails the dispatch when a customer-contacting job was selected without the
+  # confirmation. Without this the run would be GREEN and would have done
+  # nothing, because every `if:` would simply be false — a healthy signal that
+  # means nothing, which is the failure mode CLAUDE.md exists to prevent.
+  #
+  # Runs only on workflow_dispatch, so it never appears on a scheduled run and
+  # cannot affect scheduled reliability.
+  dispatch-guard:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require confirmation for jobs that can contact customers
+        env:
+          ONLY: ${{ inputs.only }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          echo "requested job: $ONLY"
+          if [ "$ONLY" = "reminders" ] || [ "$ONLY" = "all" ]; then
+            if [ "$CONFIRM" != "SEND-REMINDERS-TO-CUSTOMERS" ]; then
+              echo "::error::'$ONLY' sends reminders to real customers. Re-run and type"
+              echo "::error::SEND-REMINDERS-TO-CUSTOMERS in the confirm box to proceed."
+              exit 1
+            fi
+            echo "confirmation accepted — reminders WILL be sent"
+          else
+            echo "'$ONLY' cannot contact a customer; no confirmation required"
+          fi
+
   reminders:
     if: >-
       github.event.schedule == '*/15 * * * *' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.only == '' || inputs.only == 'reminders'))
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.only == 'reminders' || inputs.only == 'all') &&
+       inputs.confirm == 'SEND-REMINDERS-TO-CUSTOMERS')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -56,7 +99,9 @@ jobs:
   housekeeping:
     if: >-
       github.event.schedule == '3 * * * *' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.only == '' || inputs.only == 'housekeeping'))
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.only == 'housekeeping' ||
+        (inputs.only == 'all' && inputs.confirm == 'SEND-REMINDERS-TO-CUSTOMERS')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -75,7 +120,9 @@ jobs:
     # Organization.customerRetentionYears.
     if: >-
       github.event.schedule == '17 2 * * *' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.only == '' || inputs.only == 'retention'))
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.only == 'retention' ||
+        (inputs.only == 'all' && inputs.confirm == 'SEND-REMINDERS-TO-CUSTOMERS')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -102,7 +149,9 @@ jobs:
     if: >-
       github.event.schedule == '0 8 * * 1' ||
       github.event.schedule == '3 * * * *' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.only == '' || inputs.only == 'audit-digest'))
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.only == 'audit-digest' ||
+        (inputs.only == 'all' && inputs.confirm == 'SEND-REMINDERS-TO-CUSTOMERS')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -122,7 +171,9 @@ jobs:
     # partition. bp_create_monthly_partition() is idempotent.
     if: >-
       github.event.schedule == '30 1 1 * *' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.only == '' || inputs.only == 'db-partitions'))
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.only == 'db-partitions' ||
+        (inputs.only == 'all' && inputs.confirm == 'SEND-REMINDERS-TO-CUSTOMERS')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

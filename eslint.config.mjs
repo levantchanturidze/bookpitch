@@ -50,6 +50,10 @@ const UNSAFE_DB_ALLOWLIST = [
   // organization_id and no RLS policy, and the immediate-delivery claim races
   // the housekeeping worker, which is itself session-less.
   'lib/messaging/outbox.ts',
+  // Cron heartbeat: cron_heartbeat has no organization_id and no RLS policy —
+  // a tick spans every organization, so there is no org context to scope to.
+  // One row per job, overwritten in place, holding a timestamp and a count.
+  'lib/cron-heartbeat.ts',
   'lib/billing/service.ts',
   'lib/payments/service.ts',
 

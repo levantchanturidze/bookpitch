@@ -1,5 +1,12 @@
 # Phase 16 — pre-pilot product reconciliation
 
+> **Current state: see [`docs/release-state.md`](./release-state.md) (2026-09-02).**
+> This ledger is a **historical record** of what was measured when it was
+> written. Statements below are in the present tense of their own date, not of
+> today; where they disagree with `release-state.md` about the present,
+> `release-state.md` is correct. Nothing here is edited to pretend an incident
+> did not happen.
+
 **Branch:** `agent/phase-16-prepilot-product-refinement`
 **Baseline:** `5c8fb77353869d29cc8378f7a83e6d23a75e55ef` (frozen Phase 15 `main`)
 **Status:** `MERGED AND PRODUCTION-VERIFIED` — 2026-09-01.
@@ -403,6 +410,11 @@ was selected.
 | Total memberships in Production (context) | 14 |
 
 The permission row still exists in Production — migration 63 is local only — but
+**[SUPERSEDED 2026-09-01]** migration 63 was applied to production in run
+`33509215538`, and the production invariant check now proves the grant is
+absent while both reporting grants remain. The paragraph below is kept as the
+reasoning at the time.
+
 no membership holds the role, so nobody can exercise it. The finding is real and
 the fix is correct; the exposure is latent, not active.
 

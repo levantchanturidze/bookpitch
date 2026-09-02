@@ -3,31 +3,18 @@
 The single ordered list for taking Bookpitch from "engineering complete" to
 "live with a pilot organisation". Items are ticked only against evidence.
 
-Current state (2026-09-01, 14:45Z): **ENGINEERING COMPLETE, MERGED, DEPLOYED
-AND PRODUCTION-VERIFIED — LAUNCH BLOCKED ON HUMAN AND EXTERNAL ITEMS ONLY.**
+Current state: see **[`docs/release-state.md`](./release-state.md)** — one
+document, dated, that says what is true now. Monitor results and incident state
+are deliberately not copied here; a number written into a checklist is stale the
+moment it is written. The live sources are linked from that file.
 
-The database outage earlier that day is resolved: the Supabase project was
-restored, migration 63 applied, and the monitor reports **17/21 checks passed,
-2 paused by configuration**. Backup and restore are both proven against the
-restored database, and RPO is back to ~24 hours.
+**Launch is blocked on three human items and nothing else:** a Sentry
+workspace (issue #44), legal sign-off (`LEGAL_DOCUMENT_STATUS` is `'draft'` and
+`OPERATOR_IDENTITY` is unset), and a nominated test mailbox. No engineering
+work is outstanding.
 
-Two things are not green, and neither is engineering:
-
-- **No Sentry DSN exists** (`production-observability-unconfigured`, issue #44).
-  Every uncaught exception in production is discarded. This is also what
-  prevents the 24-hour soak from starting — see the September ledger §18.
-- **`cron-failures`** counts four pre-restore failures in its last-ten window
-  and clears on its own.
-
-The email/DNS and legal blockers recorded below are unchanged and still human:
-no designated test mailbox has been nominated, and `LEGAL_DOCUMENT_STATUS` is
-still `'draft'` with `OPERATOR_IDENTITY` unset. Neither is claimed as done.
-Evidence for everything above:
-[`docs/phase-17-september-release-ledger.md`](./phase-17-september-release-ledger.md) §17.
-
-The engineering counts in section A are from Phase 15 and have since grown; the
-current figures are 1362 unit/integration tests across 109 files, 268 Playwright
-tests across 9 projects, and 63 migrations.
+The engineering counts in section A are Phase 15 figures, kept as the record of
+that phase. Current figures live in `docs/release-state.md`.
 
 ## A. Engineering — done
 
@@ -51,9 +38,11 @@ tests across 9 projects, and 63 migrations.
       `recipientsOther` from `/api/health/ops`; digests stay OFF until then
 - [ ] Decide whether to enable `AUDIT_DIGEST_ENABLED=true` (default: leave off)
 
-- [ ] `FIELD_ENCRYPTION_KEY` set to `<key-id>:<64-hex-chars>` (R-16). Today it
-      has no key-id prefix, so signup, patient clinical fields and MFA
-      enrolment all return 500.
+- [x] `FIELD_ENCRYPTION_KEY` set to `<key-id>:<64-hex-chars>` (R-16).
+      **Corrected and verified 2026-09-01**: `production-config-invalid —
+      malformed: 0`, corroborated by an encrypted `email_outbox` row that could
+      not exist unless `encryptField()` succeeded. It previously had no key-id
+      prefix, so signup, clinical fields and MFA enrolment all returned 500.
 - [ ] Confirm by `POST /api/cron/audit-digest` returning 200
 - [ ] Confirm the monitor's `production-config-invalid` check is green
 

@@ -4,6 +4,7 @@ import { withoutRls } from '@/lib/db';
 import { runReminderTick } from '@/lib/messaging/reminders';
 import { cronOrgConcurrency, mapWithConcurrency } from '@/lib/concurrency';
 import { log } from '@/lib/logger';
+import { recordCronHeartbeat } from '@/lib/cron-heartbeat';
 
 // POST /api/cron/reminders
 //
@@ -62,6 +63,12 @@ export async function POST(req: NextRequest) {
   for (const f of failures) {
     log.error('cron.reminders.org_failed', f);
   }
+
+  // Application-side proof of COMPLETION, as opposed to the GitHub Actions run
+  // list's proof of INVOCATION. Written only when the tick got this far, and
+  // only counting organizations that actually succeeded — a run where every
+  // org threw must not look like a healthy tick.
+  await recordCronHeartbeat('reminders', reports.length);
 
   return NextResponse.json({
     orgs: reports.length,

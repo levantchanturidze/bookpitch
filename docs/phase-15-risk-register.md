@@ -116,6 +116,24 @@ mitigation in place. **Accepted risk** = proceed, informed.
 
 ## R-08 · GitHub delivers scheduled workflows hours late — **measured 2026-09-01**
 
+> **[RESOLVED-AS-BOUNDED 2026-09-02]** The delay is real and unchanged, but it
+> is now bounded against the thing that actually matters. Measured worst gap
+> **4h40m**; the reminder window is a sliding `[now, now + reminderLeadHours]`,
+> so what matters is whether a tick lands inside the lead time, not whether it
+> lands on the declared cadence. At the 24h default — which all ten production
+> organizations use — that is roughly five times the margin needed.
+>
+> The live risk was at the other end: `saveLeadHoursAction` accepted a lead
+> time as low as **1 hour**, below which the window steps straight over an
+> appointment and it is never reminded at all. `MIN_REMINDER_LEAD_HOURS` (8)
+> now floors it, and `cron-heartbeat-stale` observes the application actually
+> completing a tick rather than GitHub merely queueing one.
+>
+> **Residual:** an organization needing a sub-8-hour lead time cannot be served
+> by GitHub Actions scheduling. Supabase `pg_cron`/`pg_net` are available and
+> were verified installable on 2026-09-01; Vercel Cron on the Hobby plan is
+> daily-only. **Launch: Accepted. Pilot: Accepted.**
+
 > **Update 2026-09-01: this is not limited to low-frequency schedules, and the
 > delay is hours, not minutes.** Every scheduled event delivered to this
 > repository on 2026-09-01, from the API:

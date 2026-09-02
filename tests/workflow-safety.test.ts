@@ -610,14 +610,22 @@ describe('scheduled crons can be dispatched one job at a time', () => {
   const { raw, doc: cron } = readWorkflow('cron.yml');
   const JOBS = ['reminders', 'housekeeping', 'retention', 'audit-digest', 'db-partitions'];
 
-  it('offers exactly the five jobs, plus blank for the previous behaviour', () => {
+  // Updated for §4.6. This used to assert `['', ...JOBS]` — the blank option
+  // being the "previous behaviour" escape hatch that ran all five jobs. Blank
+  // is gone: it was the default, so the least deliberate way to use the
+  // workflow was the one that mailed customers. The five jobs are still each
+  // individually selectable, which is what this test was protecting, and
+  // `all` replaces blank behind a typed confirmation.
+  it('offers exactly the five jobs plus a guarded "all", and no blank', () => {
     const options = (
       cron as unknown as {
         on?: { workflow_dispatch?: { inputs?: Record<string, { options?: string[] }> } };
       }
     ).on?.workflow_dispatch?.inputs?.only?.options;
     expect(options, 'the dispatch has no job selector').toBeDefined();
-    expect(options).toEqual(['', ...JOBS]);
+    expect(options).not.toContain('');
+    for (const job of JOBS) expect(options).toContain(job);
+    expect(options).toContain('all');
   });
 
   it('every job gates its dispatch clause on inputs.only', () => {
@@ -630,7 +638,9 @@ describe('scheduled crons can be dispatched one job at a time', () => {
         condition,
         `${job} still runs on any dispatch, so a single-job dispatch fires it too`,
       ).toContain(`inputs.only == '${job}'`);
-      expect(condition).toContain("inputs.only == ''");
+      // …and no longer on a blank selection. See the truth-table suite below
+      // for what each dispatch actually starts.
+      expect(condition, `${job} still runs on a blank dispatch`).not.toContain("inputs.only == ''");
     }
   });
 
@@ -665,5 +675,226 @@ describe('scheduled crons can be dispatched one job at a time', () => {
     for (const schedule of ['*/15 * * * *', '3 * * * *', '17 2 * * *', '0 8 * * 1', '30 1 1 * *']) {
       expect(raw).toContain(`- cron: '${schedule}'`);
     }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4.6 — a manual cron dispatch cannot accidentally mail every customer.
+//
+// The `only` input used to default to BLANK, and blank ran all five jobs. So
+// the most likely way to use this workflow — open it, press the green button,
+// change nothing — was also the most dangerous: `runReminderTick` selects
+// appointments in [now, now + reminderLeadHours] and really would send mail and
+// SMS to real customers. "Drain the outbox by hand" was impossible without it.
+//
+// These tests assert the properties, not the wording, so a future edit that
+// reintroduces an implicit default fails here rather than in someone's inbox.
+// -----------------------------------------------------------------------------
+describe('manual cron dispatch is safe by default', () => {
+  const { doc, raw } = readWorkflow('cron.yml');
+  const CONFIRM = 'SEND-REMINDERS-TO-CUSTOMERS';
+  const dispatch = (doc.on as Record<string, { inputs?: Record<string, Record<string, unknown>> }>)
+    .workflow_dispatch;
+  const only = dispatch?.inputs?.only;
+
+  // Jobs that can reach a customer. docs/operations.md carries the same list
+  // for humans; this is the one the tests reason about.
+  const CUSTOMER_CONTACTING = ['reminders'];
+  const ALL_JOBS = ['reminders', 'housekeeping', 'retention', 'audit-digest', 'db-partitions'];
+
+  // ---------------------------------------------------------------------
+  // A tiny evaluator for the subset of GitHub expression syntax these `if:`
+  // conditions use: string equality, && , || and parentheses.
+  //
+  // Asserting on the TEXT of a condition is how a safety test goes vacuous:
+  // it passes on a shape rather than on behaviour, and the next legitimate
+  // refactor either breaks it or, worse, keeps it green while the meaning
+  // changed. So the conditions are actually evaluated, and the assertions
+  // below are a truth table over "which jobs would GitHub start".
+  // ---------------------------------------------------------------------
+  type Ctx = { eventName: string; schedule?: string; only?: string; confirm?: string };
+
+  function evaluateIf(expr: string, ctx: Ctx): boolean {
+    const tokens = expr.match(/\(|\)|\|\||&&|==|'[^']*'|[A-Za-z_][\w.]*/g) ?? [];
+    let i = 0;
+    const peek = () => tokens[i];
+    const take = () => tokens[i++];
+
+    const lookup = (name: string): string | undefined => {
+      switch (name) {
+        case 'github.event_name':
+          return ctx.eventName;
+        case 'github.event.schedule':
+          return ctx.schedule;
+        case 'inputs.only':
+          return ctx.only;
+        case 'inputs.confirm':
+          return ctx.confirm;
+        default:
+          throw new Error(`unhandled reference in cron.yml condition: ${name}`);
+      }
+    };
+
+    const value = (tok: string): string | undefined =>
+      tok.startsWith("'") ? tok.slice(1, -1) : lookup(tok);
+
+    function primary(): boolean {
+      if (peek() === '(') {
+        take();
+        const v = orExpr();
+        if (take() !== ')') throw new Error('unbalanced parentheses');
+        return v;
+      }
+      const left = value(take()!);
+      if (peek() === '==') {
+        take();
+        return left === value(take()!);
+      }
+      return Boolean(left);
+    }
+    function andExpr(): boolean {
+      let v = primary();
+      while (peek() === '&&') {
+        take();
+        // No short-circuit: every operand must still parse, so a malformed
+        // condition fails loudly instead of being skipped.
+        const r = primary();
+        v = v && r;
+      }
+      return v;
+    }
+    function orExpr(): boolean {
+      let v = andExpr();
+      while (peek() === '||') {
+        take();
+        const r = andExpr();
+        v = v || r;
+      }
+      return v;
+    }
+    const result = orExpr();
+    if (i !== tokens.length) throw new Error(`trailing tokens in condition: ${tokens.slice(i)}`);
+    return result;
+  }
+
+  /** Which jobs GitHub would start for a given trigger. */
+  function jobsStartedBy(ctx: Ctx): string[] {
+    return Object.entries(doc.jobs ?? {})
+      .filter(([, job]) => evaluateIf(String(job.if ?? 'true'), ctx))
+      .map(([name]) => name)
+      .sort();
+  }
+
+  const onDispatch = (o: string, confirm = '') =>
+    jobsStartedBy({ eventName: 'workflow_dispatch', only: o, confirm }).filter(
+      (j) => j !== 'dispatch-guard',
+    );
+
+  it('the evaluator understands every condition in the file', () => {
+    // Guards the guard: if a condition grows syntax the evaluator cannot
+    // parse, every assertion below would silently stop meaning anything.
+    for (const [name, job] of Object.entries(doc.jobs ?? {})) {
+      expect(
+        () =>
+          evaluateIf(String(job.if ?? 'true'), {
+            eventName: 'workflow_dispatch',
+            only: 'housekeeping',
+            confirm: '',
+          }),
+        `${name} has an unparseable if:`,
+      ).not.toThrow();
+    }
+  });
+
+  it('requires an explicit job selection', () => {
+    expect(only?.required).toBe(true);
+  });
+
+  it('offers no blank option, so "run everything" cannot be the default', () => {
+    const options = (only?.options ?? []) as string[];
+    expect(options).not.toContain('');
+    expect(options.every((o) => o.trim().length > 0)).toBe(true);
+    expect(options).toContain(only?.default as string);
+    expect(CUSTOMER_CONTACTING).not.toContain(only?.default as string);
+    expect(only?.default).not.toBe('all');
+  });
+
+  it('THE REGRESSION: a blank selection now starts nothing', () => {
+    // This is the exact old behaviour — blank ran all five, reminders
+    // included.
+    expect(onDispatch('')).toEqual([]);
+  });
+
+  it('pressing the button with the default selection cannot mail anyone', () => {
+    const started = onDispatch(String(only?.default));
+    expect(started).not.toContain('reminders');
+    expect(started).toEqual([String(only?.default)]);
+  });
+
+  it('reminders needs the typed confirmation, not just the selection', () => {
+    expect(onDispatch('reminders')).toEqual([]);
+    expect(onDispatch('reminders', 'yes')).toEqual([]);
+    expect(onDispatch('reminders', CONFIRM.toLowerCase())).toEqual([]);
+    expect(onDispatch('reminders', CONFIRM)).toEqual(['reminders']);
+  });
+
+  it('"all" starts nothing without confirmation, and everything with it', () => {
+    expect(onDispatch('all')).toEqual([]);
+    expect(onDispatch('all', CONFIRM)).toEqual([...ALL_JOBS].sort());
+  });
+
+  it('every housekeeping job runs alone, and needs no confirmation', () => {
+    for (const job of ['housekeeping', 'retention', 'audit-digest', 'db-partitions']) {
+      expect(onDispatch(job), `${job} is not individually dispatchable`).toEqual([job]);
+    }
+  });
+
+  it('a customer-contacting selection without confirmation FAILS the run', () => {
+    // Silently starting nothing would be a green run that did no work — the
+    // "healthy signal that means nothing" this repository keeps rediscovering.
+    const guard = doc.jobs?.['dispatch-guard'];
+    expect(guard, 'no dispatch-guard job').toBeDefined();
+    expect(
+      jobsStartedBy({ eventName: 'workflow_dispatch', only: 'reminders', confirm: '' }),
+    ).toContain('dispatch-guard');
+    const run = (guard?.steps ?? []).map((s) => s.run ?? '').join('\n');
+    expect(run).toMatch(/exit 1/);
+    expect(run).toMatch(new RegExp(CONFIRM));
+    for (const job of CUSTOMER_CONTACTING) expect(run).toMatch(new RegExp(`"${job}"`));
+  });
+
+  it('the guard never runs on a scheduled delivery', () => {
+    expect(jobsStartedBy({ eventName: 'schedule', schedule: '3 * * * *' })).not.toContain(
+      'dispatch-guard',
+    );
+  });
+
+  it('scheduled behaviour is unchanged — every cron entry still starts a job', () => {
+    const schedules = ((doc.on as Record<string, Array<{ cron: string }>>).schedule ?? []).map(
+      (s) => s.cron,
+    );
+    expect(schedules.length).toBeGreaterThan(0);
+    for (const cron of schedules) {
+      const started = jobsStartedBy({ eventName: 'schedule', schedule: cron });
+      expect(started.length, `cron '${cron}' starts no job`).toBeGreaterThan(0);
+    }
+  });
+
+  it('only the 15-minute schedule sends reminders', () => {
+    const schedules = ((doc.on as Record<string, Array<{ cron: string }>>).schedule ?? []).map(
+      (s) => s.cron,
+    );
+    for (const cron of schedules) {
+      const started = jobsStartedBy({ eventName: 'schedule', schedule: cron });
+      if (cron === '*/15 * * * *') expect(started).toContain('reminders');
+      else expect(started, `${cron} unexpectedly sends reminders`).not.toContain('reminders');
+    }
+  });
+
+  it('documents which jobs can contact customers', () => {
+    // The warning has to be where the operator is looking — on the input
+    // description in the dispatch form, not only in a doc they will not open.
+    expect(String(only?.description ?? '')).toMatch(/CONTACT REAL CUSTOMERS/);
+    expect(raw).toMatch(/reminderLeadHours|reminder_lead_hours/);
   });
 });

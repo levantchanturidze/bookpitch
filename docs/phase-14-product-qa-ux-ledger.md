@@ -1,5 +1,12 @@
 # Phase 14 — Product QA, UX, Accessibility and Cross-Browser Ledger
 
+> **Current state: see [`docs/release-state.md`](./release-state.md) (2026-09-02).**
+> This ledger is a **historical record** of what was measured when it was
+> written. Statements below are in the present tense of their own date, not of
+> today; where they disagree with `release-state.md` about the present,
+> `release-state.md` is correct. Nothing here is edited to pretend an incident
+> did not happen.
+
 **Branch:** `agent/phase-14-product-qa-ux`
 **Baseline SHA:** `5ae878c34bc5414a42581c0599a24db730edddf1` (= `origin/main` at start)
 **Status: PHASE 14 COMPLETE** — 2026-08-18T07:40Z. Verdict and evidence in §14.16.

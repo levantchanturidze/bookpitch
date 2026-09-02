@@ -229,6 +229,55 @@ export type ConfigMetrics = {
    * nothing earlier says so.
    */
   unrecognisedProviderEnv: number;
+  /**
+   * Provider variables that are UNSET.
+   *
+   * PAYMENT_GATEWAY and SMS_PROVIDER belonged to no required-variable set, so
+   * unsetting either was completely invisible: every `missing*` count stayed 0
+   * and the monitor called the configuration complete. Meanwhile getGateway()
+   * and getSmsProvider() throw in production on an unset variable, so the
+   * feature was dead and the only report of it was a 500 nobody would read.
+   */
+  missingProviderEnv: number;
+  /**
+   * Credentials the SELECTED adapter reads and does not have.
+   *
+   * EMAIL_PROVIDER=postmark used to satisfy every check while
+   * POSTMARK_API_TOKEN was unset, because the email requirement list was
+   * hard-coded to Resend. Resolved against the chosen adapter now.
+   */
+  missingProviderCredentialEnv: number;
+  /**
+   * Providers on `mock` where deferral IS an accepted decision.
+   *
+   * The only state that may be reported as PAUSED.
+   */
+  deferredProviderEnv: number;
+  /**
+   * Providers on `mock` where deferral is NOT accepted.
+   *
+   * A fault. Email is the case that matters: a mocked email provider means
+   * nobody can complete signup, and inferring "this is fine, it is pre-launch"
+   * from the value `mock` is how that would be reported as a deliberate pause.
+   */
+  undeclaredMockProviderEnv: number;
+};
+
+/**
+ * Minutes since each cron job last COMPLETED, as recorded by the job itself.
+ *
+ * Distinct from the GitHub Actions run list, which reports invocation: a
+ * workflow can be queued, curl can exit 0, and the endpoint can have processed
+ * nothing. null means the job has never written a heartbeat — a fresh
+ * deployment, or a job that has genuinely never completed.
+ */
+export type CronHeartbeatMetrics = {
+  remindersMinutesAgo: number | null;
+  housekeepingMinutesAgo: number | null;
+  retentionMinutesAgo: number | null;
+  auditDigestMinutesAgo: number | null;
+  /** Organizations the last reminder tick handled. 0 means "ran, did nothing". */
+  remindersLastUnits: number | null;
 };
 
 export type OpsMetrics = {
@@ -238,6 +287,7 @@ export type OpsMetrics = {
   auditDigest: AuditDigestMetrics;
   ciphertext: CiphertextMetrics;
   partitions: PartitionMetrics;
+  cronHeartbeat: CronHeartbeatMetrics;
   config: ConfigMetrics;
 };
 
@@ -265,7 +315,19 @@ export const REQUIRED_SIGNUP_ENV = [
   'NEXT_PUBLIC_TURNSTILE_SITE_KEY',
 ] as const;
 
-export const REQUIRED_EMAIL_ENV = ['EMAIL_PROVIDER', 'RESEND_API_KEY', 'RESEND_FROM'] as const;
+/**
+ * Outbound email.
+ *
+ * This used to be a flat `['EMAIL_PROVIDER', 'RESEND_API_KEY', 'RESEND_FROM']`,
+ * which is wrong in both directions the moment Postmark is selected:
+ * getEmailProvider() accepts `postmark` and then requires POSTMARK_API_TOKEN
+ * and POSTMARK_FROM, neither of which was checked, while two Resend variables
+ * that nothing would read were reported as missing. The check disagreed with
+ * the resolver, and the resolver is the one that runs.
+ *
+ * Resolved against the selected provider instead — see PROVIDER_CONTRACT.
+ */
+export const REQUIRED_EMAIL_ENV = ['EMAIL_PROVIDER'] as const;
 
 /**
  * P17-007. Sentry initialises only when a DSN is present — every Sentry.init()
@@ -290,8 +352,11 @@ export const REQUIRED_SECURITY_ENV = [
 ] as const;
 
 /** Names of the required variables that are unset or empty. Server-side only. */
-export function missingEnv(names: readonly string[]): string[] {
-  return names.filter((name) => !(process.env[name] ?? '').trim());
+export function missingEnv(
+  names: readonly string[],
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string[] {
+  return names.filter((name) => !(env[name] ?? '').trim());
 }
 
 /**
@@ -349,6 +414,122 @@ export const PROVIDER_ENV_VALIDATORS: Readonly<Record<string, (value: string) =>
 };
 
 /**
+ * The full outbound-provider contract: which adapters exist, what each one
+ * needs, and whether the product is allowed to launch without it.
+ *
+ * Three gaps this closes, all of which let production look configured while a
+ * resolver would fail closed at the first real send:
+ *
+ *   1. PAYMENT_GATEWAY and SMS_PROVIDER were in NO required-variable set, so
+ *      unsetting either was invisible. `missingSignupEnv/Email/Security` all
+ *      stayed 0 and the monitor reported the configuration complete, while
+ *      getGateway() and getSmsProvider() throw in production on an unset
+ *      variable ("refusing to default to the mock provider").
+ *   2. Nothing checked the credentials the SELECTED adapter actually reads.
+ *      EMAIL_PROVIDER=postmark passed every check with POSTMARK_API_TOKEN
+ *      unset; the first send would throw.
+ *   3. `mock` was treated as an acceptable pre-launch state for any provider,
+ *      inferred from the value alone. Whether a feature may ship deferred is a
+ *      product decision, not something to read off an environment variable.
+ *      `deferrable` records that decision here and is the only thing that
+ *      permits a PAUSED status; docs/deferred-features.md § Outbound providers
+ *      is the authoritative statement it mirrors.
+ */
+export const PROVIDER_CONTRACT: Readonly<
+  Record<
+    string,
+    {
+      /** Adapter name → the variables that adapter reads. */
+      readonly adapters: Readonly<Record<string, readonly string[]>>;
+      /**
+       * Whether shipping on the `mock` adapter is an accepted deferral.
+       * False means `mock` is a FAULT, not a pause.
+       */
+      readonly deferrable: boolean;
+      /** Where the deferral decision is recorded, for the operator. */
+      readonly decision: string;
+    }
+  >
+> = {
+  EMAIL_PROVIDER: {
+    adapters: {
+      resend: ['RESEND_API_KEY', 'RESEND_FROM'],
+      postmark: ['POSTMARK_API_TOKEN', 'POSTMARK_FROM'],
+    },
+    // Email is not deferrable: signup verification, password reset and the
+    // audit digest all go through it. A mocked email provider in production
+    // means nobody can complete signup.
+    deferrable: false,
+    decision: 'docs/deferred-features.md § Outbound providers',
+  },
+  SMS_PROVIDER: {
+    adapters: { smsoffice: ['SMSOFFICE_API_KEY', 'SMSOFFICE_SENDER'] },
+    deferrable: true,
+    decision: 'docs/deferred-features.md § Outbound providers',
+  },
+  PAYMENT_GATEWAY: {
+    adapters: {
+      bog: ['BOG_CLIENT_ID', 'BOG_CLIENT_SECRET', 'BOG_WEBHOOK_PUBLIC_KEY'],
+      bog_ipay: ['BOG_CLIENT_ID', 'BOG_CLIENT_SECRET', 'BOG_WEBHOOK_PUBLIC_KEY'],
+      tbc: ['TBC_API_KEY', 'TBC_CLIENT_ID', 'TBC_CLIENT_SECRET', 'TBC_WEBHOOK_SECRET'],
+      tbc_ecommerce: ['TBC_API_KEY', 'TBC_CLIENT_ID', 'TBC_CLIENT_SECRET', 'TBC_WEBHOOK_SECRET'],
+    },
+    deferrable: true,
+    decision: 'docs/deferred-features.md § Outbound providers',
+  },
+};
+
+/** How a provider variable is set, which decides how it must be reported. */
+export type ProviderState =
+  /** Unset or empty. The resolver throws in production. */
+  | 'missing'
+  /** Literally `mock`. A decision if deferrable, a fault otherwise. */
+  | 'mock'
+  /** Names an adapter the resolver implements. */
+  | 'real'
+  /** Set to something no resolver knows. A typo; throws at first send. */
+  | 'unrecognised';
+
+export function providerState(
+  name: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ProviderState {
+  const raw = (env[name] ?? '').trim().toLowerCase();
+  if (!raw) return 'missing';
+  if (raw === 'mock') return 'mock';
+  const contract = PROVIDER_CONTRACT[name];
+  if (contract && Object.prototype.hasOwnProperty.call(contract.adapters, raw)) return 'real';
+  return 'unrecognised';
+}
+
+/**
+ * The variables the SELECTED adapter will actually read.
+ *
+ * Empty for every state but `real`: there is no point demanding Postmark
+ * credentials from a deployment that has chosen Resend, and a provider that is
+ * missing or mocked is reported by its own state rather than by a pile of
+ * credential variables nothing would read.
+ */
+export function requiredProviderCredentials(
+  name: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): readonly string[] {
+  if (providerState(name, env) !== 'real') return [];
+  const adapter = (env[name] ?? '').trim().toLowerCase();
+  return PROVIDER_CONTRACT[name]?.adapters[adapter] ?? [];
+}
+
+/** Every provider variable, plus the credentials whichever adapter is selected needs. */
+export function providerRequiredEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string[] {
+  return Object.keys(PROVIDER_CONTRACT).flatMap((name) => [
+    name,
+    ...requiredProviderCredentials(name, env),
+  ]);
+}
+
+/**
  * Both tables together.
  *
  * Kept so a caller that wants "every structural validator" still has one name
@@ -403,17 +584,33 @@ export function mockedProviders(
   );
 }
 
-export function collectConfigMetrics(): ConfigMetrics {
+export function collectConfigMetrics(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ConfigMetrics {
+  const names = Object.keys(PROVIDER_CONTRACT);
+  const stateOf = (n: string) => providerState(n, env);
+  const mocked = names.filter((n) => stateOf(n) === 'mock');
+
   return {
-    missingSignupEnv: missingEnv(REQUIRED_SIGNUP_ENV).length,
-    missingEmailEnv: missingEnv(REQUIRED_EMAIL_ENV).length,
-    missingSecurityEnv: missingEnv(REQUIRED_SECURITY_ENV).length,
-    missingObservabilityEnv: missingEnv(REQUIRED_OBSERVABILITY_ENV).length,
+    missingSignupEnv: missingEnv(REQUIRED_SIGNUP_ENV, env).length,
+    // Provider-aware: EMAIL_PROVIDER plus whatever the selected adapter reads.
+    missingEmailEnv: missingEnv(
+      [...REQUIRED_EMAIL_ENV, ...requiredProviderCredentials('EMAIL_PROVIDER', env)],
+      env,
+    ).length,
+    missingSecurityEnv: missingEnv(REQUIRED_SECURITY_ENV, env).length,
+    missingObservabilityEnv: missingEnv(REQUIRED_OBSERVABILITY_ENV, env).length,
     // Secrets only. This is the number the P0 check reads, and folding the
     // providers into it is what made that check permanently red.
-    invalidSecurityEnv: invalidEnv(SECRET_ENV_VALIDATORS).length,
-    mockedProviderEnv: mockedProviders().length,
-    unrecognisedProviderEnv: invalidEnv(PROVIDER_ENV_VALIDATORS).length - mockedProviders().length,
+    invalidSecurityEnv: invalidEnv(SECRET_ENV_VALIDATORS, env).length,
+    mockedProviderEnv: mocked.length,
+    unrecognisedProviderEnv: names.filter((n) => stateOf(n) === 'unrecognised').length,
+    missingProviderEnv: names.filter((n) => stateOf(n) === 'missing').length,
+    missingProviderCredentialEnv: names.flatMap((n) =>
+      missingEnv(requiredProviderCredentials(n, env), env),
+    ).length,
+    deferredProviderEnv: mocked.filter((n) => PROVIDER_CONTRACT[n].deferrable).length,
+    undeclaredMockProviderEnv: mocked.filter((n) => !PROVIDER_CONTRACT[n].deferrable).length,
   };
 }
 
@@ -431,24 +628,54 @@ function numOrNull(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * True when an error is Postgres 42P01 (undefined_table).
+ *
+ * Checked in three places because Prisma does not present a raw Postgres error
+ * consistently: depending on client version it surfaces as `code` on the
+ * error, as `meta.code` inside a PrismaClientKnownRequestError (P2010), or
+ * only in the message text. Matching just one would silently stop working on a
+ * client upgrade — and it would fail OPEN, which is the worse direction: a
+ * genuinely broken query would be reported as an empty table forever.
+ *
+ * Deliberately narrow. Anything that is not a missing table is a real failure
+ * and must reach the caller.
+ */
+export function isUndefinedTableError(err: unknown): boolean {
+  const e = err as { code?: string; meta?: { code?: string }; message?: string } | null;
+  if (!e) return false;
+  return (
+    e.code === '42P01' ||
+    e.meta?.code === '42P01' ||
+    /\b42P01\b|relation "?[a-z_]+"? does not exist/i.test(String(e.message ?? ''))
+  );
+}
+
 export async function collectOpsMetrics(): Promise<OpsMetrics> {
   // One statement per concern, all using the DB clock. Node's clock is not
   // authoritative for anything time-based in this project (see CLAUDE.md and
   // the reauth-expiry memory): a skewed runner must not be able to invent a
   // healthy-looking age.
-  const [outboxRows, housekeepingRows, retentionRows, digestRows, ciphertextRows, partitionRows] =
-    await Promise.all([
-      unsafePrismaAdmin.$queryRaw<
-        Array<{
-          pending: bigint;
-          processing: bigint;
-          dead: bigint;
-          stale_claims: bigint;
-          oldest_pending_age_seconds: number | null;
-          dead_last_24h: bigint;
-          dead_exhausted: bigint;
-        }>
-      >`
+  const [
+    outboxRows,
+    housekeepingRows,
+    retentionRows,
+    digestRows,
+    ciphertextRows,
+    partitionRows,
+    heartbeatRows,
+  ] = await Promise.all([
+    unsafePrismaAdmin.$queryRaw<
+      Array<{
+        pending: bigint;
+        processing: bigint;
+        dead: bigint;
+        stale_claims: bigint;
+        oldest_pending_age_seconds: number | null;
+        dead_last_24h: bigint;
+        dead_exhausted: bigint;
+      }>
+    >`
         SELECT
           count(*) FILTER (WHERE status = 'pending')                                  AS pending,
           count(*) FILTER (WHERE status = 'processing')                               AS processing,
@@ -462,9 +689,9 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         FROM email_outbox
       `,
 
-      unsafePrismaAdmin.$queryRaw<
-        Array<{ overdue_rate_limit: bigint; overdue_tokens: bigint; overdue_reauth: bigint }>
-      >`
+    unsafePrismaAdmin.$queryRaw<
+      Array<{ overdue_rate_limit: bigint; overdue_tokens: bigint; overdue_reauth: bigint }>
+    >`
         SELECT
           (SELECT count(*) FROM rate_limit WHERE window_start < NOW() - interval '2 days')
             AS overdue_rate_limit,
@@ -476,10 +703,10 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
             AS overdue_reauth
       `,
 
-      // Mirrors lib/gdpr.ts runRetentionTick: stale by updated_at against the
-      // org's own window, not yet redacted, and with no appointment inside the
-      // window. Counted, never selected.
-      unsafePrismaAdmin.$queryRaw<Array<{ overdue_customers: bigint }>>`
+    // Mirrors lib/gdpr.ts runRetentionTick: stale by updated_at against the
+    // org's own window, not yet redacted, and with no appointment inside the
+    // window. Counted, never selected.
+    unsafePrismaAdmin.$queryRaw<Array<{ overdue_customers: bigint }>>`
         SELECT count(*) AS overdue_customers
         FROM customers c
         JOIN organizations o ON o.id = c.organization_id
@@ -492,22 +719,22 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           )
       `,
 
-      unsafePrismaAdmin.$queryRaw<
-        Array<{
-          hours_since: number | null;
-          oldest_eligible_org_age_hours: number | null;
-          eligible_owner_memberships: number;
-          eligible_organizations: number;
-          distinct_normalized_recipient_addresses: number;
-          expected_digest_messages_per_run: number;
-          known_fixture_domain: number;
-          reserved_tld_non_fixture: number;
-          other_unclassified: number;
-          other_at_operator_domain: number;
-          other_distinct_domains: number;
-          eligible_organizations_with_no_customers: number;
-        }>
-      >`
+    unsafePrismaAdmin.$queryRaw<
+      Array<{
+        hours_since: number | null;
+        oldest_eligible_org_age_hours: number | null;
+        eligible_owner_memberships: number;
+        eligible_organizations: number;
+        distinct_normalized_recipient_addresses: number;
+        expected_digest_messages_per_run: number;
+        known_fixture_domain: number;
+        reserved_tld_non_fixture: number;
+        other_unclassified: number;
+        other_at_operator_domain: number;
+        other_distinct_domains: number;
+        eligible_organizations_with_no_customers: number;
+      }>
+    >`
         -- float8, not numeric: Prisma maps PostgreSQL numeric to a Decimal
         -- object, which would survive the numeric-only assertion below as an
         -- object and then serialise to something the monitor cannot compare.
@@ -612,11 +839,11 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           )::int AS eligible_organizations_with_no_customers
       `,
 
-      // P15-010: counts only. No encrypted value, address or identifier is
-      // selected — the question is "does any ciphertext exist", nothing more.
-      unsafePrismaAdmin.$queryRaw<
-        Array<{ customer_fields: bigint; outbox_rows: bigint; mfa_secrets: bigint }>
-      >`
+    // P15-010: counts only. No encrypted value, address or identifier is
+    // selected — the question is "does any ciphertext exist", nothing more.
+    unsafePrismaAdmin.$queryRaw<
+      Array<{ customer_fields: bigint; outbox_rows: bigint; mfa_secrets: bigint }>
+    >`
         SELECT
           (
             SELECT count(*) FROM customers
@@ -632,7 +859,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           ) AS mfa_secrets
       `,
 
-      unsafePrismaAdmin.$queryRaw<Array<{ months_ahead: bigint; default_rows: bigint }>>`
+    unsafePrismaAdmin.$queryRaw<Array<{ months_ahead: bigint; default_rows: bigint }>>`
 
         SELECT
           (
@@ -648,7 +875,29 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           ) AS months_ahead,
           (SELECT count(*) FROM audit_log_default) AS default_rows
       `,
-    ]);
+    // Heartbeats, aged against the DATABASE clock for the same reason as
+    // every other age here: a serverless instance with a skewed clock must
+    // not be able to make a dead job look alive.
+    unsafePrismaAdmin.$queryRaw<
+      Array<{ job: string; minutes_ago: number | null; last_units: number }>
+    >`
+        SELECT job,
+               EXTRACT(EPOCH FROM (NOW() - last_succeeded_at))::float / 60 AS minutes_ago,
+               last_units
+          FROM cron_heartbeat
+      `.catch((err: unknown) => {
+      // Tolerates the table not existing, and NOTHING else. Vercel builds
+      // the merge commit and migrate.yml applies the migration from the same
+      // push; they race, and Vercel usually wins. Without this the whole ops
+      // endpoint 500s for the minute or two between them, the monitor's ops
+      // probe fails, and every ops-derived check goes UNOBSERVABLE for no
+      // reason. An absent table yields no rows, which the monitor already
+      // reads as "this deployment predates the metric" rather than a fault.
+      //
+      if (isUndefinedTableError(err)) return [];
+      throw err;
+    }),
+  ]);
 
   const o = outboxRows[0] ?? {};
   const h = housekeepingRows[0] ?? {};
@@ -714,6 +963,17 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       monthsAhead: num((p as Record<string, unknown>).months_ahead),
       defaultPartitionRows: num((p as Record<string, unknown>).default_rows),
     },
+    cronHeartbeat: (() => {
+      const by = new Map((heartbeatRows ?? []).map((row) => [row.job, row] as const));
+      const ago = (job: string) => numOrNull(by.get(job)?.minutes_ago);
+      return {
+        remindersMinutesAgo: ago('reminders'),
+        housekeepingMinutesAgo: ago('housekeeping'),
+        retentionMinutesAgo: ago('retention'),
+        auditDigestMinutesAgo: ago('audit-digest'),
+        remindersLastUnits: numOrNull(by.get('reminders')?.last_units),
+      };
+    })(),
     config: collectConfigMetrics(),
   };
 }

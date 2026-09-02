@@ -4,6 +4,7 @@ import { withoutRls } from '@/lib/db';
 import { runRetentionTick } from '@/lib/gdpr';
 import { cronOrgConcurrency, mapWithConcurrency } from '@/lib/concurrency';
 import { log } from '@/lib/logger';
+import { recordCronHeartbeat } from '@/lib/cron-heartbeat';
 
 // POST /api/cron/retention
 //
@@ -53,6 +54,9 @@ export async function POST(req: NextRequest) {
   for (const f of failures) {
     log.error('cron.retention.org_failed', f);
   }
+
+  // Proof of completion, not merely of invocation. See lib/cron-heartbeat.ts.
+  await recordCronHeartbeat('retention', reports.length);
 
   return NextResponse.json({
     orgs: reports.length,

@@ -43,6 +43,16 @@ error caught and logged; invitation URL still returned to caller).
 > **Restore the ✅ only on genuine proof** — a real signup observed reaching
 > `/onboard/success`, or the production monitor reporting a healthy
 > `production-config-invalid` check once Actions billing is restored.
+>
+> **[UPDATE 2026-09-01] Half of that arrived; the other half has not.** Actions
+> billing was restored and the monitor reports `production-config-invalid —
+> malformed: 0`, corroborated by an encrypted `email_outbox` row that cannot
+> exist unless `encryptField()` succeeded. So the *key* is proven good.
+>
+> A real signup reaching `/onboard/success` is still **not** observed, because
+> no designated test mailbox has been nominated — see
+> `docs/release-state.md`. The ✅ stays down: a working encryption key is a
+> necessary condition for onboarding, not a demonstration of it.
 
 #### Original 2026-08-10 verification (superseded)
 Trace path:

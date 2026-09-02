@@ -306,6 +306,8 @@ const MAX_APPOINTMENTS_PER_TICK = Math.max(
   Number(process.env.REMINDER_MAX_APPOINTMENTS_PER_TICK ?? 200),
 );
 
+export { MIN_REMINDER_LEAD_HOURS } from './reminder-window';
+
 export async function runReminderTick(organizationId: string): Promise<TickReport> {
   const now = new Date();
 
