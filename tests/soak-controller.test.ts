@@ -35,7 +35,7 @@ const NOW = new Date('2026-09-02T01:00:00Z'); // 25h after START
 
 const state = (over: Record<string, unknown> = {}) => ({
   releaseSha: SHA,
-  deploymentId: 'dpl_test',
+  deploymentId: '6221617929',
   startedAt: START,
   effectiveWindowStart: START,
   restarts: [],
@@ -44,10 +44,17 @@ const state = (over: Record<string, unknown> = {}) => ({
 
 const DEPLOYMENT = {
   sha: SHA,
-  id: 'dpl_test',
+  // The GitHub Deployment record id — numeric in reality. The workflow input
+  // used to be labelled "Vercel deployment id" while the controller compared
+  // it with this, so a real Vercel id could never match and blank disabled the
+  // check.
+  id: '6221617929',
   state: 'success',
   environment: 'Production',
-  aliases: ['bookpitch.ge', 'www.bookpitch.ge'],
+  // Which release each canonical host is ACTUALLY serving, read from the
+  // x-bookpitch-release header after redirects. The previous shape was a list
+  // of hosts that answered 200, which any deployment satisfies.
+  aliasReleases: { 'bookpitch.ge': SHA, 'www.bookpitch.ge': SHA },
 };
 
 const run = (
@@ -78,7 +85,7 @@ function healthyEvidence(over: Record<string, unknown> = {}) {
       sourceMapsResolved: true,
     },
     outboxDead: 0,
-    jobsNotSucceeding: 0,
+    unhealthyJobs: [],
     ...over,
   };
 }
@@ -98,7 +105,7 @@ describe('a healthy 24-hour window succeeds', () => {
     expect(r.evidenceIds.monitorRuns.length).toBeGreaterThanOrEqual(SOAK_DEFAULTS.minObservations);
     expect(r.evidenceIds.backupRuns).toContain(200);
     expect(r.evidenceIds.cronRuns).toContain(300);
-    expect(renderReport(state(), r)).toMatch(/FINAL SUCCESS/);
+    expect(renderReport(state(), r)).toMatch(/SOAK SUCCESS/);
   });
 });
 
@@ -182,7 +189,10 @@ describe('manual runs are not soak evidence', () => {
 });
 
 describe('a release-critical failure restarts the window rather than being averaged away', () => {
-  it('a failing observation resets the clock to the moment of failure', () => {
+  it('a failing observation starts the clock at RECOVERY, not at the failure', () => {
+    // The unhealthy stretch is discarded, not counted. Restarting at the
+    // failure and immediately accruing time would count the hours during which
+    // production was still broken toward the 24.
     const r = evaluateSoak({
       state: state(),
       evidence: healthyEvidence({
@@ -190,9 +200,8 @@ describe('a release-critical failure restarts the window rather than being avera
       }),
       now: NOW,
     });
-    expect(r.status).toBe('restarted');
     expect(new Date(r.windowStart).toISOString()).toBe(
-      new Date(new Date(START).getTime() + 20 * 3_600_000).toISOString(),
+      new Date(new Date(START).getTime() + 21 * 3_600_000).toISOString(),
     );
     // …and the elapsed time is measured from there, not from the original start.
     expect(r.elapsedHours).toBeLessThan(SOAK_DEFAULTS.windowHours);
@@ -208,11 +217,11 @@ describe('a release-critical failure restarts the window rather than being avera
       now: NOW,
     });
     // The fixture has eight clean observations spread over 24 hours. After a
-    // failure at hour 23 only the one at hour 24 is still inside the window —
-    // the other seven describe a stretch that is no longer uninterrupted.
-    expect(gate(r, 'monitor-observations').detail).toMatch(/^1 natural monitor observations/);
+    // failure at hour 23 the window restarts at the hour-24 recovery run, so
+    // nothing before it counts and the recovery run itself is the boundary.
+    expect(gate(r, 'monitor-observations').detail).toMatch(/^0 natural monitor observations/);
     expect(gate(r, 'monitor-observations').ok).toBe(false);
-    expect(r.evidenceIds.monitorRuns).toEqual([108]);
+    expect(r.evidenceIds.monitorRuns).toEqual([]);
   });
 
   it('an incident opened during the window restarts it too', () => {
@@ -278,7 +287,12 @@ describe('a soak measures exactly one deployment', () => {
     const r = evaluateSoak({
       state: state(),
       evidence: healthyEvidence({
-        deployment: { ...DEPLOYMENT, sha: 'b'.repeat(40), id: 'dpl_other' },
+        deployment: {
+          ...DEPLOYMENT,
+          sha: 'b'.repeat(40),
+          id: '9999999999',
+          aliasReleases: { 'bookpitch.ge': 'b'.repeat(40), 'www.bookpitch.ge': 'b'.repeat(40) },
+        },
       }),
       now: NOW,
     });
@@ -383,9 +397,10 @@ describe('the window start is persisted, not re-derived', () => {
       }),
       now: NOW,
     });
-    expect(first.status).toBe('restarted');
+    // A failure at hour 20, and the next healthy scheduled observation is the
+    // fixture's hour-21 run. The window starts there.
     expect(first.effectiveWindowStart).toBe(
-      new Date(new Date(START).getTime() + 20 * 3_600_000).toISOString(),
+      new Date(new Date(START).getTime() + 21 * 3_600_000).toISOString(),
     );
 
     // Tick 2, a day later. The failing run is no longer in the fetched
@@ -394,7 +409,10 @@ describe('the window start is persisted, not re-derived', () => {
     // had never held uninterrupted.
     const later = new Date(new Date(START).getTime() + 49 * 3_600_000);
     const second = evaluateSoak({
-      state: state({ effectiveWindowStart: first.effectiveWindowStart }),
+      state: state({
+        effectiveWindowStart: first.effectiveWindowStart,
+        awaitingRecoverySince: first.awaitingRecoverySince ?? null,
+      }),
       evidence: healthyEvidence({
         monitorRuns: [21, 24, 27, 30, 33, 36, 39, 42].map((h) => run(700 + h, h)),
         backupRuns: [run(200, 30)],
@@ -403,8 +421,9 @@ describe('the window start is persisted, not re-derived', () => {
       now: later,
     });
     expect(second.effectiveWindowStart).toBe(first.effectiveWindowStart);
-    // 49h since START, but only 29h since the restart — and that is what counts.
-    expect(second.elapsedHours).toBeCloseTo(29, 0);
+    // 49h since START, but only 28h since the recovery observation at hour 21 —
+    // and that is what counts.
+    expect(second.elapsedHours).toBeCloseTo(28, 0);
   });
 
   it('records the last processed monitor run so continuity is auditable', () => {
@@ -479,22 +498,57 @@ describe('deployment evidence fails closed', () => {
   it('a deployment id that is not the pinned one is refused', () => {
     const r = evaluateSoak({
       state: state(),
-      evidence: healthyEvidence({ deployment: { ...DEPLOYMENT, id: 'dpl_someone_else' } }),
+      evidence: healthyEvidence({ deployment: { ...DEPLOYMENT, id: '1234567890' } }),
       now: NOW,
     });
     expect(r.status).toBe('superseded');
-    expect(r.summary).toMatch(/not the pinned dpl_test/);
+    expect(r.summary).toMatch(/not the pinned 6221617929/);
   });
 
-  it('a canonical alias that does not resolve to it is refused', () => {
-    // READY, newest, right SHA — and www is served by something else.
+  it('THE REGRESSION: an alias serving a DIFFERENT release is refused', () => {
+    // READY, newest, right SHA on the deployment record — and www is actually
+    // serving something else. The previous check accepted any HTTP 200 and
+    // ignored the expected SHA it was handed, so this passed.
     const r = evaluateSoak({
       state: state(),
-      evidence: healthyEvidence({ deployment: { ...DEPLOYMENT, aliases: ['bookpitch.ge'] } }),
+      evidence: healthyEvidence({
+        deployment: {
+          ...DEPLOYMENT,
+          aliasReleases: { 'bookpitch.ge': SHA, 'www.bookpitch.ge': 'c'.repeat(40) },
+        },
+      }),
       now: NOW,
     });
     expect(r.status).toBe('superseded');
-    expect(r.summary).toMatch(/alias www\.bookpitch\.ge does not resolve/);
+    expect(r.summary).toMatch(/alias www\.bookpitch\.ge serves ccccccc/);
+  });
+
+  it('an alias that reports no release at all is refused', () => {
+    // No header means no evidence, which must not read as agreement.
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        deployment: {
+          ...DEPLOYMENT,
+          aliasReleases: { 'bookpitch.ge': SHA, 'www.bookpitch.ge': null },
+        },
+      }),
+      now: NOW,
+    });
+    expect(r.status).toBe('superseded');
+    expect(r.summary).toMatch(/alias www\.bookpitch\.ge did not report a release/);
+  });
+
+  it('THE REGRESSION: a missing pinned deployment id fails closed', () => {
+    // The guards used to be `state.deploymentId && d.id && ...`, so leaving the
+    // pin blank skipped the check it was meant to enforce.
+    const r = evaluateSoak({
+      state: state({ deploymentId: null }),
+      evidence: healthyEvidence(),
+      now: NOW,
+    });
+    expect(r.status).toBe('superseded');
+    expect(r.summary).toMatch(/no deployment id was pinned/);
   });
 });
 
@@ -557,7 +611,7 @@ describe('cron outcomes gate the soak too', () => {
   it('a job whose last attempt failed blocks the window', () => {
     const r = evaluateSoak({
       state: state(),
-      evidence: healthyEvidence({ jobsNotSucceeding: 1 }),
+      evidence: healthyEvidence({ unhealthyJobs: ['retention'] }),
       now: NOW,
     });
     expect(r.status).not.toBe('success');
@@ -567,11 +621,11 @@ describe('cron outcomes gate the soak too', () => {
   it('an unreadable outcome is not health', () => {
     const r = evaluateSoak({
       state: state(),
-      evidence: healthyEvidence({ jobsNotSucceeding: null }),
+      evidence: healthyEvidence({ unhealthyJobs: null }),
       now: NOW,
     });
     expect(gate(r, 'cron-outcomes').ok).toBe(false);
-    expect(gate(r, 'cron-outcomes').detail).toMatch(/not evidence of health/);
+    expect(gate(r, 'cron-outcomes').detail).toMatch(/could not be read — not evidence of health/);
   });
 });
 
@@ -590,5 +644,144 @@ describe('state corruption is refused rather than papered over', () => {
       now: NOW,
     });
     expect(r.effectiveWindowStart).toBe(new Date(START).toISOString());
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4 — written as an attacker would: how do I make an unhealthy window green?
+//
+// Each of these is a route to a soak that certifies time production was not
+// actually healthy for. The previous controller conceded most of them.
+// -----------------------------------------------------------------------------
+describe('adversarial: routes to a falsely successful window', () => {
+  it('a failed scheduled BACKUP inside the window invalidates it', () => {
+    // The old controller restarted only for monitor failures and incidents, so
+    // a failed backup sat inside the window while the backup gate passed on a
+    // different, successful run.
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        backupRuns: [run(201, 6, 'failure'), run(202, 12)],
+      }),
+      now: NOW,
+    });
+    expect(r.status).not.toBe('success');
+    expect(r.restarts.some((x: { reason: string }) => /backup run 201/.test(x.reason))).toBe(true);
+  });
+
+  it('a failed scheduled CRON inside the window invalidates it', () => {
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        cronRuns: [run(301, 4, 'failure'), run(302, 8), run(303, 14), run(304, 20), run(305, 23)],
+      }),
+      now: NOW,
+    });
+    expect(r.status).not.toBe('success');
+    expect(r.restarts.some((x: { reason: string }) => /cron run 301/.test(x.reason))).toBe(true);
+  });
+
+  it('THE POINT: the unhealthy recovery period is NOT counted as healthy time', () => {
+    // Failure at hour 2; recovery not until hour 23. The old controller
+    // restarted AT hour 2 and counted the 21 broken hours toward the 24.
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        monitorRuns: [run(500, 2, 'failure'), run(501, 23), run(502, 24)],
+      }),
+      now: NOW,
+    });
+    expect(r.status).not.toBe('success');
+    // Window begins at the hour-23 recovery, so ~2h have elapsed, not ~23.
+    expect(r.elapsedHours).toBeLessThan(3);
+  });
+
+  it('with no healthy observation after a failure, NO time accrues at all', () => {
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        monitorRuns: [...healthyEvidence().monitorRuns, run(999, 24, 'failure')],
+      }),
+      now: NOW,
+    });
+    expect(r.status).toBe('awaiting-recovery');
+    expect(r.summary).toMatch(/no time is accruing/);
+  });
+
+  it('awaiting-recovery persists across ticks, so a quiet period cannot heal it', () => {
+    // Tick 2 with the failing run no longer visible in history. Without
+    // persisted awaitingRecoverySince the controller would see a clean window.
+    const failedAt = new Date(new Date(START).getTime() + 24 * 3_600_000).toISOString();
+    const r = evaluateSoak({
+      state: state({ awaitingRecoverySince: failedAt }),
+      evidence: healthyEvidence({ monitorRuns: [] }),
+      now: new Date(new Date(START).getTime() + 60 * 3_600_000),
+    });
+    expect(r.status).toBe('awaiting-recovery');
+  });
+
+  it('a cancelled monitor run counts as unhealthy, not merely "not success"', () => {
+    // `conclusion !== 'success'` on purpose: cancelled, timed_out and
+    // action_required are all absences of evidence.
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        monitorRuns: [...healthyEvidence().monitorRuns, run(998, 22, 'cancelled')],
+      }),
+      now: NOW,
+    });
+    expect(r.status).not.toBe('success');
+  });
+
+  it('six observations bunched at one end do not make a watched window', () => {
+    // Count satisfied, continuity not: 20 hours unobserved in the middle.
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        monitorRuns: [20, 21, 22, 23, 24, 25].map((h) => run(600 + h, h)),
+      }),
+      now: NOW,
+    });
+    expect(r.status).not.toBe('success');
+    expect(gate(r, 'observation-gap').ok).toBe(false);
+    expect(gate(r, 'observation-gap').detail).toMatch(/largest gap/);
+  });
+
+  it('an incident opened AND closed inside the window still invalidates it', () => {
+    // And recovery is required after the close, not after the open.
+    const opened = new Date(new Date(START).getTime() + 10 * 3_600_000).toISOString();
+    const closed = new Date(new Date(START).getTime() + 12 * 3_600_000).toISOString();
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        incidents: [{ number: 77, createdAt: opened, closedAt: closed, state: 'closed' }],
+      }),
+      now: NOW,
+    });
+    expect(r.status).not.toBe('success');
+    expect(
+      r.restarts.some((x: { at: string }) => x.at === closed),
+      'recovery must be required after the incident CLOSED, not when it opened',
+    ).toBe(true);
+  });
+
+  it('a per-job heartbeat failure blocks the window', () => {
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({ unhealthyJobs: ['retention'] }),
+      now: NOW,
+    });
+    expect(r.status).not.toBe('success');
+    expect(gate(r, 'cron-outcomes').detail).toMatch(/retention/);
+  });
+
+  it('technical completion says SOAK SUCCESS, never FINAL SUCCESS', () => {
+    // Overall final success additionally requires legal and mailbox/UAT
+    // approval, which this controller cannot observe and must not imply.
+    const r = evaluateSoak({ state: state(), evidence: healthyEvidence(), now: NOW });
+    expect(r.status).toBe('success');
+    const report = renderReport(state(), r);
+    expect(report).toMatch(/SOAK SUCCESS/);
+    expect(report).not.toMatch(/FINAL SUCCESS/);
   });
 });

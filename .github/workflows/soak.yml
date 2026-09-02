@@ -21,8 +21,13 @@ on:
     - cron: '20,50 * * * *'
   workflow_dispatch:
     inputs:
+      dry_run:
+        description: 'Validate permissions and evidence collectors. Creates nothing, changes nothing.'
+        required: false
+        type: boolean
+        default: false
       start:
-        description: 'Start a NEW soak. Requires release_sha.'
+        description: 'Start a NEW soak. Requires release_sha and deployment_id.'
         required: true
         type: boolean
         default: false
@@ -31,9 +36,25 @@ on:
         required: false
         type: string
         default: ''
+      # THE GITHUB DEPLOYMENT RECORD ID, not the Vercel `dpl_...` id.
+      #
+      # This input used to be described as "Vercel deployment id" while the
+      # controller compared it against GitHub's numeric Deployment record id.
+      # So a genuine Vercel id could never match, and the only way to make a
+      # soak start was to leave it blank — which disabled the check entirely.
+      # Two ways to get it wrong, no way to get it right.
+      #
+      # One authoritative identity model now: the GitHub Deployment record,
+      # because that is what the controller can read, verify the status of, and
+      # tie to a SHA. Find it with:
+      #
+      #   gh api "repos/OWNER/REPO/deployments?environment=Production&per_page=1" --jq '.[0].id'
+      #
+      # The Vercel id is evidence a human may record in the issue, but it is
+      # not what the gate compares.
       deployment_id:
-        description: 'Vercel deployment id serving that SHA (evidence only).'
-        required: false
+        description: 'GitHub Deployment record id (numeric, NOT the Vercel dpl_... id). Required.'
+        required: true
         type: string
         default: ''
       # There is deliberately NO sentry_receipt_verified input any more. It was
@@ -45,8 +66,16 @@ on:
 
 permissions:
   contents: read
-  # The controller writes its state and evidence to an issue. It has no write
-  # access to the repository itself, so it can never push to main.
+  # The controller reads workflow-run history for the monitor, backup and cron
+  # workflows. Without this every runsFor() call 403s and the controller
+  # reports "0 natural observations" — indistinguishable from a quiet window,
+  # which is the worst possible failure for a soak.
+  actions: read
+  # It reads the Production Deployment record and its status to pin the release
+  # under soak. Without this the deployment gate cannot be evaluated at all.
+  deployments: read
+  # It writes its state and evidence to an issue. No repository write access,
+  # so it can never push to main.
   issues: write
 
 concurrency:
@@ -61,10 +90,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Refuse to start a soak without a SHA
-        if: ${{ inputs.start == true && inputs.release_sha == '' }}
+      - name: Refuse to start a soak without a pinned SHA and deployment id
+        if: ${{ inputs.start == true && (inputs.release_sha == '' || inputs.deployment_id == '') }}
         run: |
-          echo "::error::start=true requires release_sha — a soak with no pinned SHA measures nothing."
+          echo "::error::start=true requires BOTH release_sha and deployment_id."
+          echo "::error::A soak that cannot name the exact deployment it measures is not evidence."
+          echo "::error::deployment_id is the numeric GitHub Deployment record id, not a Vercel dpl_... id:"
+          echo "::error::  gh api \"repos/\$GITHUB_REPOSITORY/deployments?environment=Production&per_page=1\" --jq '.[0].id'"
           exit 1
 
       - name: Soak tick
@@ -72,6 +104,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           MONITOR_PRODUCTION_URL: https://bookpitch.ge
+          SOAK_DRY_RUN: ${{ inputs.dry_run }}
           SOAK_START: ${{ inputs.start }}
           SOAK_RELEASE_SHA: ${{ inputs.release_sha }}
           SOAK_DEPLOYMENT_ID: ${{ inputs.deployment_id }}

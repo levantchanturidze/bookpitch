@@ -3,6 +3,11 @@
 // reports on this import, and an unused disable is itself a lint warning.
 import { unsafePrismaAdmin } from '@/lib/db';
 import { auditDigestDeliveryMode, isAuditDigestDeliveryEnabled } from '@/lib/audit-digest';
+import {
+  HEARTBEAT_JOBS,
+  HEARTBEAT_MAX_AGE_MINUTES,
+  HEARTBEAT_METRIC_KEY,
+} from '@/lib/cron-heartbeat-jobs';
 
 // -----------------------------------------------------------------------------
 // Operational metrics for the production monitor.
@@ -293,8 +298,31 @@ export type CronHeartbeatMetrics = {
   remindersFailedUnits: number | null;
   /** Minutes since the last reminders ATTEMPT, successful or not. */
   remindersAttemptMinutesAgo: number | null;
-  /** Jobs whose most recent attempt was not a success. */
+  /** Jobs whose most recent attempt was not a success. Kept for older monitors. */
   jobsNotSucceeding: number | null;
+  /**
+   * Per-job state, one entry for EVERY required job whether or not a row
+   * exists. Numeric-only, like everything else here.
+   *
+   * `present` 0 means the job has never written a heartbeat at all — which the
+   * previous scalar could not express, because it counted only existing rows
+   * with a bad outcome. A missing row read as healthy.
+   */
+  jobs: Record<
+    string,
+    {
+      present: number;
+      /** 1 success, 0 partial, -1 failure, null unknown/absent. */
+      outcome: number | null;
+      successMinutesAgo: number | null;
+      attemptMinutesAgo: number | null;
+      expectedUnits: number | null;
+      processedUnits: number | null;
+      failedUnits: number | null;
+      /** The cadence limit this job is held to, in minutes. */
+      maxAgeMinutes: number;
+    }
+  > | null;
   /**
    * Appointments that have already STARTED without any reminder ever being
    * logged, inside the window their organization's lead time covered.
@@ -743,12 +771,16 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         SELECT count(*) AS overdue_customers
         FROM customers c
         JOIN organizations o ON o.id = c.organization_id
-        WHERE c.updated_at < NOW() - (o.customer_retention_years * interval '1 year')
+        -- Same expression the executor uses, so the monitor cannot report a
+        -- backlog retention was never going to clear. See lib/retention-window.ts.
+        WHERE c.updated_at < ((date_trunc('day', (NOW() AT TIME ZONE 'UTC')) AT TIME ZONE 'UTC')
+                              - make_interval(years => o.customer_retention_years))
           AND c.name NOT LIKE 'Redacted Customer #%'
           AND NOT EXISTS (
             SELECT 1 FROM appointments a
             WHERE a.customer_id = c.id
-              AND a.starts_at >= NOW() - (o.customer_retention_years * interval '1 year')
+              AND a.starts_at >= ((date_trunc('day', (NOW() AT TIME ZONE 'UTC')) AT TIME ZONE 'UTC')
+                                  - make_interval(years => o.customer_retention_years))
           )
       `,
 
@@ -1048,6 +1080,24 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         jobsNotSucceeding: (heartbeatRows ?? []).filter(
           (row) => row.last_outcome !== 'success' && row.last_outcome !== 'unknown',
         ).length,
+        jobs: Object.fromEntries(
+          HEARTBEAT_JOBS.map((job) => {
+            const row = by.get(job);
+            return [
+              HEARTBEAT_METRIC_KEY[job],
+              {
+                present: row ? 1 : 0,
+                outcome: outcomeCode(row?.last_outcome),
+                successMinutesAgo: numOrNull(row?.minutes_ago),
+                attemptMinutesAgo: numOrNull(row?.attempt_minutes_ago),
+                expectedUnits: numOrNull(row?.last_expected_units),
+                processedUnits: numOrNull(row?.last_units),
+                failedUnits: numOrNull(row?.last_failed_units),
+                maxAgeMinutes: HEARTBEAT_MAX_AGE_MINUTES[job],
+              },
+            ];
+          }),
+        ),
         unremindedStartedAppointments: num(unremindedRows?.[0]?.unreminded),
       };
     })(),

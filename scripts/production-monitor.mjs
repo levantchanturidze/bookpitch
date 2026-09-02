@@ -573,19 +573,112 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
     });
   }
 
-  // Any job whose most recent attempt was not a success. Separate from the
-  // reminders check because it covers housekeeping — which DRAINS the email
-  // outbox, so a failing housekeeping run means queued mail is reaching nobody
-  // — as well as retention and the digest.
-  if (heartbeat.jobsNotSucceeding !== undefined && heartbeat.jobsNotSucceeding !== null) {
+  // Every required job, evaluated individually against its own cadence.
+  //
+  // This replaced a scalar count of rows that already existed with a
+  // partial/failure outcome. Three ways that read green while a job was dead:
+  //
+  //   * a job that had NEVER written a heartbeat had no row, so it counted 0;
+  //   * a row still at outcome 'unknown' was explicitly excluded;
+  //   * only reminders had any freshness gate at all, so retention could stop
+  //     for a week and the count stayed zero.
+  //
+  // Four reminder runs prove nothing about retention, housekeeping or the
+  // digest, so each is now its own line with its own limit.
+  const jobs = heartbeat.jobs ?? null;
+  if (jobs) {
+    for (const [job, j] of Object.entries(jobs)) {
+      const limit = j.maxAgeMinutes;
+      let ok;
+      let detail;
+      if (!j.present) {
+        // NOT VERIFIED, reported as a failure rather than passed over. A job
+        // that has never run is the case the old aggregate was blindest to.
+        ok = false;
+        detail = `no heartbeat has ever been recorded for ${job} — it has not completed once`;
+      } else if (j.outcome === null) {
+        // The row predates outcome tracking. Explicitly NOT a pass: it is an
+        // absence of evidence, and it resolves itself on the next run.
+        ok = false;
+        detail =
+          `${job} has a heartbeat but no outcome recorded (row predates outcome tracking) — ` +
+          'NOT VERIFIED until the job next completes';
+      } else if (j.outcome !== 1) {
+        ok = false;
+        detail =
+          `${job}'s last attempt ${j.outcome === 0 ? 'PARTIALLY FAILED' : 'FAILED'} — ` +
+          `${j.processedUnits ?? '?'} of ${j.expectedUnits ?? '?'} units, ${j.failedUnits ?? '?'} failed`;
+      } else if (j.successMinutesAgo === null || j.successMinutesAgo > limit) {
+        ok = false;
+        detail =
+          j.successMinutesAgo === null
+            ? `${job} reports a successful outcome but no success timestamp`
+            : `${job} last succeeded ${(j.successMinutesAgo / 60).toFixed(1)}h ago, limit ${(limit / 60).toFixed(1)}h`;
+      } else if (
+        j.expectedUnits !== null &&
+        j.processedUnits !== null &&
+        j.processedUnits < j.expectedUnits
+      ) {
+        // Coherence: a "success" that processed fewer units than it expected
+        // is not one, whatever the stored outcome says.
+        ok = false;
+        detail = `${job} reports success but processed ${j.processedUnits} of ${j.expectedUnits} units`;
+      } else {
+        ok = true;
+        detail =
+          `${job} last succeeded ${((j.successMinutesAgo ?? 0) / 60).toFixed(1)}h ago ` +
+          `(limit ${(limit / 60).toFixed(1)}h), ${j.processedUnits ?? 0} unit(s)`;
+      }
+      // The metric key is camelCase; the check id keeps the job's own spelling
+      // so an incident raised against `cron-job-audit-digest` survives.
+      const jobId = job === 'auditDigest' ? 'audit-digest' : job;
+      results.push({
+        id: `cron-job-${jobId}`,
+        title: `Scheduled job ${job} is not completing successfully`,
+        ok,
+        detail,
+      });
+    }
+  }
+
+  // The one reminder failure a sliding window cannot heal.
+  //
+  // [now, now + reminderLeadHours] is recomputed each tick, so a scheduler gap
+  // shorter than the lead time is harmless for FUTURE appointments — a later
+  // tick's window still contains them. An appointment that starts DURING the
+  // gap leaves the window permanently and no later tick can catch it.
+  //
+  // Every other signal can be green while this is non-zero: the heartbeat is
+  // fresh, the cron run succeeded, the workflow concluded success — and a
+  // customer was not reminded. So it is counted directly, from the
+  // appointments themselves, rather than inferred from job health.
+  if (
+    heartbeat.unremindedStartedAppointments !== undefined &&
+    heartbeat.unremindedStartedAppointments !== null
+  ) {
+    const missed = heartbeat.unremindedStartedAppointments;
+    results.push({
+      id: 'reminders-missed',
+      title: 'Appointments started without a reminder ever being sent',
+      ok: missed === 0,
+      detail:
+        `${missed} appointment(s) in the last 48h started with no reminder logged, ` +
+        'despite having been booked early enough for the lead window to cover them. ' +
+        'This cannot be retried — the appointment has already begun.',
+    });
+  }
+
+  // A deployment that reports the old scalar but not the per-job map. Reported
+  // as NOT VERIFIED rather than green: the scalar cannot see a job that has
+  // never run, so treating it as evidence is what this replaced.
+  if (!jobs && heartbeat.jobsNotSucceeding !== undefined) {
     results.push({
       id: 'cron-jobs-failing',
-      title: 'A scheduled job is attempting work and failing',
-      ok: heartbeat.jobsNotSucceeding === 0,
+      title: 'Per-job heartbeat evaluation is unavailable',
+      ok: false,
       detail:
-        `${heartbeat.jobsNotSucceeding} job(s) whose most recent attempt did not succeed ` +
-        '(reminders, housekeeping, retention, audit-digest; "unknown" rows predating outcome ' +
-        'tracking are not counted)',
+        'this deployment reports only an aggregate count of failing jobs, which cannot ' +
+        'distinguish "never ran" from "healthy". Redeploy to enable per-job evaluation.',
     });
   }
 
@@ -764,6 +857,13 @@ export const OPS_DERIVED_CHECK_IDS = Object.freeze([
   'audit-digest-stalled',
   'partition-maintenance',
   'cron-heartbeat-stale',
+  // One per required job. Kept explicit rather than generated so a renamed job
+  // shows up as a drift failure in tests/production-monitor.test.ts rather
+  // than silently losing its incident.
+  'cron-job-reminders',
+  'cron-job-housekeeping',
+  'cron-job-retention',
+  'cron-job-audit-digest',
   'cron-jobs-failing',
   'reminders-missed',
   'production-config-incomplete',

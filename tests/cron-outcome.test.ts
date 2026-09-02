@@ -213,21 +213,11 @@ describe('the monitor cannot report a failing job as healthy', () => {
     expect(r!.detail).toMatch(/predates outcome tracking/);
   });
 
-  it('any job failing is surfaced, not just reminders', () => {
-    // housekeeping DRAINS the email outbox: a failing housekeeping run means
-    // queued mail is reaching nobody.
-    const r = check({ jobsNotSucceeding: 2 }, 'cron-jobs-failing');
-    expect(r!.ok).toBe(false);
-    expect(r!.detail).toMatch(/2 job\(s\)/);
-  });
-
-  it('COMPLEMENT: zero failing jobs passes', () => {
-    expect(check({ jobsNotSucceeding: 0 }, 'cron-jobs-failing')!.ok).toBe(true);
-  });
-
-  it('both new checks are registered against monitor blindness', () => {
+  it('the per-job checks are registered against monitor blindness', () => {
     expect(OPS_DERIVED_CHECK_IDS).toContain('cron-heartbeat-stale');
-    expect(OPS_DERIVED_CHECK_IDS).toContain('cron-jobs-failing');
+    for (const job of ['reminders', 'housekeeping', 'retention', 'audit-digest']) {
+      expect(OPS_DERIVED_CHECK_IDS).toContain(`cron-job-${job}`);
+    }
   });
 });
 
@@ -282,10 +272,15 @@ describe('a failed message is not a failed job', () => {
       path.resolve(__dirname, '..', 'app', 'api', 'cron', 'housekeeping', 'route.ts'),
       'utf8',
     );
-    // The heartbeat call must not pass outboxFailed through as `failed`.
-    expect(src).toMatch(/failed: 0,/);
+    // Delivery failures must not reach the heartbeat's `failed` count…
     expect(src).not.toMatch(/failed: result\.outboxFailed/);
     expect(src).toMatch(/outbox-dead-letters/);
+    // …but a failure to RUN the sweep must. Those are different things, and
+    // collapsing them either way is a bug: counting delivery failures 500s the
+    // hourly job on one bad address, and ignoring infra failures makes a total
+    // inability to send mail look like an empty queue.
+    expect(src).toMatch(/failed: infraFailed/);
+    expect(src).toMatch(/outboxInfraFailed/);
   });
 
   it('a drain that delivered nothing is still a completed sweep', () => {
@@ -299,5 +294,129 @@ describe('a failed message is not a failed job', () => {
       outbox: { dead: 2, pending: 0, processing: 0, staleClaims: 0, deadLast24h: 2 },
     }).find((x: { id: string }) => x.id === 'outbox-dead-letters');
     expect(r!.ok).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §8 — every required job evaluated on its own, against its own cadence.
+//
+// The previous aggregate counted rows that already existed with a
+// partial/failure outcome. Three ways that read green while a job was dead:
+//
+//   * a job that had NEVER written a heartbeat had no row, so it counted 0;
+//   * a row still at outcome 'unknown' was explicitly excluded;
+//   * only reminders had a freshness gate, so retention could stop for a week
+//     and the count stayed zero.
+//
+// Four reminder runs prove nothing about retention, housekeeping or the digest.
+// -----------------------------------------------------------------------------
+describe('each required job is evaluated individually', () => {
+  const job = (over: Record<string, number | null> = {}) => ({
+    present: 1,
+    outcome: 1,
+    successMinutesAgo: 10,
+    attemptMinutesAgo: 10,
+    expectedUnits: 3,
+    processedUnits: 3,
+    failedUnits: 0,
+    maxAgeMinutes: 360,
+    ...over,
+  });
+  const jobsCheck = (jobs: Record<string, unknown>, name: string) =>
+    evaluateOpsMetrics({ config: {}, cronHeartbeat: { jobs } }).find(
+      (r: { id: string }) => r.id === `cron-job-${name}`,
+    );
+  const allHealthy = () => ({
+    reminders: job(),
+    housekeeping: job(),
+    retention: job({ maxAgeMinutes: 1800 }),
+    auditDigest: job({ maxAgeMinutes: 1800 }),
+  });
+
+  it('every required job gets its own check', () => {
+    const results = evaluateOpsMetrics({ config: {}, cronHeartbeat: { jobs: allHealthy() } });
+    for (const name of ['reminders', 'housekeeping', 'retention', 'audit-digest']) {
+      expect(results.find((r: { id: string }) => r.id === `cron-job-${name}`)).toBeDefined();
+    }
+  });
+
+  it('THE REGRESSION: a job that has NEVER run fails', () => {
+    // No row at all. The old scalar counted zero and reported healthy.
+    const r = jobsCheck({ ...allHealthy(), retention: job({ present: 0 }) }, 'retention');
+    expect(r!.ok).toBe(false);
+    expect(r!.detail).toMatch(/has not completed once/);
+  });
+
+  it("THE REGRESSION: an 'unknown' outcome is NOT VERIFIED, not a pass", () => {
+    const r = jobsCheck({ ...allHealthy(), housekeeping: job({ outcome: null }) }, 'housekeeping');
+    expect(r!.ok).toBe(false);
+    expect(r!.detail).toMatch(/NOT VERIFIED/);
+  });
+
+  it('THE REGRESSION: retention stale for a week fails on its own cadence', () => {
+    // Reminders can be perfectly healthy throughout.
+    const jobs = {
+      ...allHealthy(),
+      retention: job({ successMinutesAgo: 7 * 24 * 60, maxAgeMinutes: 1800 }),
+    };
+    expect(jobsCheck(jobs, 'retention')!.ok).toBe(false);
+    expect(jobsCheck(jobs, 'reminders')!.ok, 'reminders is unaffected').toBe(true);
+  });
+
+  it('a failed or partial outcome fails, with the unit arithmetic', () => {
+    const failed = jobsCheck(
+      {
+        ...allHealthy(),
+        reminders: job({ outcome: -1, processedUnits: 0, failedUnits: 10, expectedUnits: 10 }),
+      },
+      'reminders',
+    );
+    expect(failed!.ok).toBe(false);
+    expect(failed!.detail).toMatch(/FAILED — 0 of 10 units, 10 failed/);
+
+    const partial = jobsCheck(
+      {
+        ...allHealthy(),
+        reminders: job({ outcome: 0, processedUnits: 6, failedUnits: 4, expectedUnits: 10 }),
+      },
+      'reminders',
+    );
+    expect(partial!.ok).toBe(false);
+    expect(partial!.detail).toMatch(/PARTIALLY FAILED/);
+  });
+
+  it('an incoherent success — fewer units processed than expected — fails', () => {
+    // Whatever the stored outcome says. A "success" that did 2 of 10 is not one.
+    const r = jobsCheck(
+      { ...allHealthy(), housekeeping: job({ outcome: 1, processedUnits: 2, expectedUnits: 10 }) },
+      'housekeeping',
+    );
+    expect(r!.ok).toBe(false);
+    expect(r!.detail).toMatch(/reports success but processed 2 of 10/);
+  });
+
+  it('a success with no success timestamp fails', () => {
+    const r = jobsCheck(
+      { ...allHealthy(), reminders: job({ successMinutesAgo: null }) },
+      'reminders',
+    );
+    expect(r!.ok).toBe(false);
+  });
+
+  it('all four healthy passes', () => {
+    for (const name of ['reminders', 'housekeeping', 'retention', 'audit-digest']) {
+      expect(jobsCheck(allHealthy(), name)!.ok, `${name} should be healthy`).toBe(true);
+    }
+  });
+
+  it('a deployment reporting only the old scalar is NOT VERIFIED', () => {
+    // Not green. The scalar cannot distinguish "never ran" from "healthy", so
+    // trusting it would reinstate exactly what this replaced.
+    const r = evaluateOpsMetrics({
+      config: {},
+      cronHeartbeat: { jobsNotSucceeding: 0 },
+    }).find((x: { id: string }) => x.id === 'cron-jobs-failing');
+    expect(r!.ok).toBe(false);
+    expect(r!.detail).toMatch(/cannot distinguish "never ran" from "healthy"/);
   });
 });

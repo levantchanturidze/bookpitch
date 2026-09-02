@@ -30,10 +30,23 @@ export async function POST(req: NextRequest) {
   // What housekeeping is responsible for is COMPLETING the sweep. Units are
   // the messages it actually delivered, reported for visibility. If
   // runHousekeeping() itself throws, the route 500s without reaching here.
+  // Three states, and the middle one is the reason this is not a one-liner:
+  //
+  //   empty sweep            nothing to send. SUCCESS — it completed.
+  //   delivery failures      routine. The outbox retries with backoff and
+  //                          dead-letters; `outbox-dead-letters` is the alarm.
+  //                          NOT counted here — one undeliverable address must
+  //                          not fail the hourly job forever.
+  //   infrastructure failure the sweep did not RUN: provider init threw, or
+  //                          claim/recovery/sweep failed. FAILURE. This used to
+  //                          return zeroes and be indistinguishable from an
+  //                          empty queue, so a total inability to send mail
+  //                          wrote a successful heartbeat and answered 200.
+  const infraFailed = result.outboxInfraFailed ?? 0;
   const outcome = await recordCronHeartbeat('housekeeping', {
-    expected: result.outboxSent ?? 0,
+    expected: (result.outboxSent ?? 0) + infraFailed,
     processed: result.outboxSent ?? 0,
-    failed: 0,
+    failed: infraFailed,
   });
   const status = outcome === 'success' ? 200 : 500;
   return NextResponse.json({ ok: outcome === 'success', outcome, ...result }, { status });

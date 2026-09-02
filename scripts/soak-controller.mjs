@@ -51,6 +51,15 @@ export const SOAK_DEFAULTS = {
   minScheduledBackups: 1,
   /** Cron must keep being delivered, unattended, for the whole window. */
   minScheduledCronRuns: 4,
+  /**
+   * Largest tolerable hole between natural monitor observations.
+   *
+   * Six observations satisfy a count and can still leave most of a day
+   * unwatched. 4h clears GitHub's measured worst-case delivery gap (4h40m is
+   * the cron figure; the monitor's own 30-minute schedule is delivered more
+   * reliably) while refusing a window with a hole big enough to hide an outage.
+   */
+  maxObservationGapHours: 5,
   /** Both canonical hosts must resolve to the deployment under soak. */
   requiredAliases: ['bookpitch.ge', 'www.bookpitch.ge'],
 };
@@ -125,6 +134,7 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
     elapsedHours: (now.getTime() - windowStart.getTime()) / 3_600_000,
     restarts,
     restartedThisTick: null,
+    awaitingRecoverySince: state.awaitingRecoverySince ?? null,
     gates: [],
     observations: [],
     evidenceIds: { monitorRuns: [], backupRuns: [], cronRuns: [] },
@@ -150,28 +160,58 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
 
   const d = evidence.deployment;
   const identityProblems = [];
-  if (d.sha !== state.releaseSha) {
+
+  // Every field is REQUIRED. The previous version guarded each comparison on
+  // both sides being truthy — `state.deploymentId && d.id && ...` — so a
+  // missing pin silently skipped the check it was supposed to enforce. Absent
+  // evidence is not agreement.
+  if (!state.deploymentId) {
+    identityProblems.push('no deployment id was pinned when the soak started');
+  } else if (String(d.id ?? '') !== String(state.deploymentId)) {
+    identityProblems.push(
+      `deployment is ${d.id ?? '(none)'}, not the pinned ${state.deploymentId}`,
+    );
+  }
+  if (!d.sha) {
+    identityProblems.push('the deployment record carries no SHA');
+  } else if (d.sha !== state.releaseSha) {
     identityProblems.push(
       `production serves ${String(d.sha).slice(0, 7)}, not the soak's ${String(state.releaseSha).slice(0, 7)}`,
     );
   }
-  if (state.deploymentId && d.id && String(d.id) !== String(state.deploymentId)) {
-    identityProblems.push(`deployment is ${d.id}, not the pinned ${state.deploymentId}`);
-  }
-  if (d.state && d.state !== 'success' && d.state !== 'READY') {
+  if (!d.state) {
+    identityProblems.push('the deployment has no status');
+  } else if (d.state !== 'success' && d.state !== 'READY') {
     identityProblems.push(`deployment state is ${d.state}, not success/READY`);
   }
-  if (d.environment && d.environment.toLowerCase() !== 'production') {
+  if (!d.environment) {
+    identityProblems.push('the deployment names no environment');
+  } else if (d.environment.toLowerCase() !== 'production') {
     identityProblems.push(`environment is ${d.environment}, not Production`);
   }
-  // Both canonical hosts must resolve to this deployment. A soak on a
-  // deployment that is live but not the one serving customers proves nothing.
-  const aliases = (d.aliases ?? []).map((a) => String(a).toLowerCase());
-  for (const required of opts.requiredAliases) {
-    if (!aliases.some((a) => a === required || a === `https://${required}`)) {
-      identityProblems.push(`alias ${required} does not resolve to this deployment`);
+
+  // Aliases must be serving THIS release, not merely answering 200.
+  //
+  // resolveAliases() used to accept any HTTP 200 and ignore the expected SHA
+  // entirely, so a healthy response from a completely different deployment
+  // satisfied the gate. Each host now reports the release it is actually
+  // serving, read after redirects, and must match.
+  const aliasResults = d.aliasReleases ?? null;
+  if (aliasResults === null) {
+    identityProblems.push('canonical alias evidence could not be read');
+  } else {
+    for (const host of opts.requiredAliases) {
+      const seen = aliasResults[host];
+      if (!seen) {
+        identityProblems.push(`alias ${host} did not report a release`);
+      } else if (seen !== state.releaseSha) {
+        identityProblems.push(
+          `alias ${host} serves ${String(seen).slice(0, 7)}, not ${String(state.releaseSha).slice(0, 7)}`,
+        );
+      }
     }
   }
+
   if (identityProblems.length > 0) {
     return fail(
       'superseded',
@@ -180,39 +220,95 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
     );
   }
 
-  // --- Restart conditions ---------------------------------------------------
+  // --- Unhealthy intervals invalidate the window -----------------------------
   //
-  // Incidents count if they were OPENED during the window, whether or not they
-  // were subsequently closed. An incident that opened and auto-closed still
-  // means production was unhealthy for part of the window, and the window is a
-  // claim about an UNINTERRUPTED healthy stretch.
-  const failedObservations = after(scheduled(evidence.monitorRuns), windowStart).filter(
-    (r) => r.conclusion !== 'success',
-  );
+  // The previous version restarted only for failed monitor observations and
+  // incidents, and it restarted AT the moment the failure began — then counted
+  // the recovery period as healthy time. Two problems:
+  //
+  //   * a failed scheduled BACKUP or CRON run could sit inside the window while
+  //     the gate passed on other successful runs;
+  //   * restarting at the failure and immediately accruing time means the hours
+  //     during which production was still broken counted toward the 24.
+  //
+  // So: any release-critical unhealthy event puts the soak into
+  // AWAITING-RECOVERY, and the new window begins only at the first subsequent
+  // fully healthy natural monitor observation. No healthy observation, no
+  // window — elapsed time cannot accrue on hope.
+  const criticalMoments = [];
+
+  const addFailures = (runs, label) => {
+    for (const r of after(scheduled(runs), windowStart)) {
+      if (r.conclusion !== 'success') {
+        criticalMoments.push({
+          at: r.completedAt,
+          reason: `scheduled ${label} run ${r.runId} concluded ${String(r.conclusion).toUpperCase()}`,
+        });
+      }
+    }
+  };
+  addFailures(evidence.monitorRuns, 'monitor');
+  addFailures(evidence.backupRuns, 'backup');
+  addFailures(evidence.cronRuns, 'cron');
+
+  // Incidents opened during the window count even if later closed: production
+  // was unhealthy for part of a window that claims to be uninterrupted.
+  // `closedAt` is retained so recovery can be required after it.
   const incidentsInWindow = (evidence.incidents ?? []).filter(
     (i) => new Date(i.createdAt) > windowStart,
   );
+  for (const i of incidentsInWindow) {
+    criticalMoments.push({
+      at: i.closedAt && new Date(i.closedAt) > new Date(i.createdAt) ? i.closedAt : i.createdAt,
+      reason:
+        `production incident #${i.number} opened at ${i.createdAt}` +
+        (i.closedAt ? ` and closed at ${i.closedAt}` : ' and is still open'),
+    });
+  }
   const stillOpenIncidents = (evidence.incidents ?? []).filter((i) => i.state === 'open');
 
-  const criticalMoments = [
-    ...failedObservations.map((r) => ({
-      at: r.completedAt,
-      reason: `production monitor run ${r.runId} concluded ${String(r.conclusion).toUpperCase()}`,
-    })),
-    ...incidentsInWindow.map((i) => ({
-      at: i.createdAt,
-      reason: `production incident #${i.number} opened during the window (state now ${i.state})`,
-    })),
-  ].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  criticalMoments.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 
   let restartedThisTick = null;
+  let awaitingRecoverySince = state.awaitingRecoverySince ?? null;
+
   if (criticalMoments.length > 0) {
     const last = criticalMoments[criticalMoments.length - 1];
-    if (new Date(last.at) > windowStart) {
-      windowStart = new Date(last.at);
+    if (!awaitingRecoverySince || new Date(last.at) > new Date(awaitingRecoverySince)) {
+      awaitingRecoverySince = last.at;
       restartedThisTick = last;
       restarts.push(last);
     }
+  }
+
+  if (awaitingRecoverySince) {
+    // Recovery is a fully successful SCHEDULED monitor observation strictly
+    // after the unhealthy moment — and nothing else. A quiet period is not
+    // recovery; neither is a manual run.
+    const recovery = scheduled(evidence.monitorRuns)
+      .filter(
+        (r) =>
+          r.conclusion === 'success' && new Date(r.completedAt) > new Date(awaitingRecoverySince),
+      )
+      .sort((a, b) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime())[0];
+
+    if (!recovery) {
+      return {
+        ...fail(
+          'awaiting-recovery',
+          `production was unhealthy at ${awaitingRecoverySince} (${
+            restarts[restarts.length - 1]?.reason ?? 'unknown'
+          }). The window restarts at the first fully healthy scheduled monitor ` +
+            'observation after that moment; none has arrived yet, so no time is accruing.',
+        ),
+        awaitingRecoverySince,
+        restartedThisTick,
+      };
+    }
+    // Recovered: the window starts at the healthy observation, not at the
+    // failure. The unhealthy stretch is discarded rather than counted.
+    windowStart = new Date(recovery.completedAt);
+    awaitingRecoverySince = null;
   }
 
   // --- Gates ----------------------------------------------------------------
@@ -225,6 +321,19 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
     (r) => r.conclusion === 'success',
   );
   const elapsedHours = (now.getTime() - windowStart.getTime()) / 3_600_000;
+
+  // Largest hole between consecutive natural observations, including the tail
+  // from the last observation to now. Six observations spread over 24 hours
+  // satisfy a count but not continuity.
+  const obsTimes = [
+    windowStart.getTime(),
+    ...observations.map((r) => new Date(r.completedAt).getTime()),
+    now.getTime(),
+  ].sort((a, b) => a - b);
+  let maxGapHours = 0;
+  for (let i = 1; i < obsTimes.length; i++) {
+    maxGapHours = Math.max(maxGapHours, (obsTimes[i] - obsTimes[i - 1]) / 3_600_000);
+  }
 
   // Continuity: the history fetched must reach back past the window start, or
   // a failure could have aged out unseen and the gates below would be
@@ -275,6 +384,17 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
         `(need ${opts.minScheduledCronRuns}); manual dispatches excluded`,
     },
     {
+      id: 'observation-gap',
+      // A window with a 9-hour hole in the middle is not observed, even if the
+      // observations either side are clean and numerous enough.
+      ok: maxGapHours <= opts.maxObservationGapHours,
+      detail:
+        observations.length < 2
+          ? `too few observations to measure a gap (${observations.length})`
+          : `largest gap between natural observations ${maxGapHours.toFixed(1)}h ` +
+            `(limit ${opts.maxObservationGapHours}h)`,
+    },
+    {
       id: 'no-incident-in-window',
       ok: incidentsInWindow.length === 0 && stillOpenIncidents.length === 0,
       detail:
@@ -301,11 +421,15 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
     },
     {
       id: 'cron-outcomes',
-      ok: evidence.jobsNotSucceeding === 0,
-      detail:
-        evidence.jobsNotSucceeding === null || evidence.jobsNotSucceeding === undefined
-          ? 'cron outcome state could not be read — not evidence of health'
-          : `${evidence.jobsNotSucceeding} scheduled job(s) whose last attempt did not succeed`,
+      // Per-job, not a scalar. A count of "jobs currently failing" cannot see a
+      // job that has never run — it has no row to count — and that is exactly
+      // the job most worth catching.
+      ok: Array.isArray(evidence.unhealthyJobs) && evidence.unhealthyJobs.length === 0,
+      detail: !Array.isArray(evidence.unhealthyJobs)
+        ? 'per-job cron outcome state could not be read — not evidence of health'
+        : evidence.unhealthyJobs.length === 0
+          ? 'every required scheduled job has a fresh successful heartbeat'
+          : `not healthy: ${evidence.unhealthyJobs.join(', ')}`,
     },
     {
       id: 'observability',
@@ -342,6 +466,7 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
     elapsedHours,
     restarts,
     restartedThisTick,
+    awaitingRecoverySince: null,
     gates,
     observations: observations.map((r) => ({
       runId: r.runId,
@@ -369,12 +494,20 @@ export function renderReport(state, result) {
   const mark = (g) => (g.ok ? '✅' : '⏳');
   const lines = [
     result.status === 'success'
-      ? '## FINAL SUCCESS — 24-hour soak complete'
+      ? '## SOAK SUCCESS — 24 uninterrupted hours on one deployment\n\n' +
+        '> This is the TECHNICAL gate only, and it is the ONLY thing this\n' +
+        '> controller can attest to. Releasing additionally requires legal\n' +
+        '> approval and designated-mailbox UAT, neither of which is observable\n' +
+        '> from here. A green soak is not a green release.'
       : result.status === 'superseded'
         ? '## Soak ended — the deployment it was measuring was replaced'
-        : result.status === 'restarted'
-          ? '## Soak window RESTARTED'
-          : '## Soak in progress',
+        : result.status === 'blocked'
+          ? '## Soak BLOCKED — evidence could not be read'
+          : result.status === 'awaiting-recovery'
+            ? '## Soak AWAITING RECOVERY — no time is accruing'
+            : result.status === 'restarted'
+              ? '## Soak window RESTARTED'
+              : '## Soak in progress',
     '',
     `- **Release SHA:** \`${state.releaseSha}\``,
     `- **Deployment:** \`${state.deploymentId}\``,
@@ -498,31 +631,37 @@ async function currentDeployment(repo, token) {
     state: st?.state ?? null,
     environment: dep.environment ?? null,
     environmentUrl: st?.environment_url ?? null,
-    // Filled in by the caller from the alias probe below.
-    aliases: [],
+    // Filled in by the caller: host -> release SHA actually being served.
+    aliasReleases: null,
   };
 }
 
 /**
- * Which canonical hosts actually serve the deployment under soak.
+ * Which release each canonical host is ACTUALLY serving.
  *
- * Probed rather than assumed: a deployment can be READY, be the newest
- * Production record, and still not be what bookpitch.ge resolves to.
+ * The previous version accepted any HTTP 200 and ignored the expected SHA it
+ * was handed, so a healthy response from a completely different deployment
+ * satisfied the alias gate — which is most of what the gate existed to catch.
+ *
+ * Follows redirects on purpose: `www.bookpitch.ge` answers 308 to the apex, so
+ * what matters is the release at the FINAL destination. Returns a map of
+ * host -> release SHA, with null for a host that could not be read at all, so
+ * the caller can tell "serving the wrong release" from "no evidence".
  */
-async function resolveAliases(hosts, expectedSha) {
-  const resolved = [];
+async function resolveAliasReleases(hosts) {
+  const out = {};
   for (const host of hosts) {
     try {
       const res = await fetch(`https://${host}/api/health`, {
         redirect: 'follow',
         signal: AbortSignal.timeout(15_000),
       });
-      if (res.ok) resolved.push(host);
+      out[host] = res.ok ? res.headers.get('x-bookpitch-release') || null : null;
     } catch {
-      /* unreachable host simply does not resolve; the gate reports it */
+      out[host] = null;
     }
   }
-  return { resolved, expectedSha };
+  return out;
 }
 
 /**
@@ -580,12 +719,121 @@ async function verifySentryReceipt(persisted) {
   };
 }
 
+/**
+ * Exercise every read the controller depends on, and change nothing.
+ *
+ * §13 forbids starting a soak merely to test it, and the previous round shipped
+ * a controller whose workflow lacked `actions: read` and `deployments: read`.
+ * Every runsFor() call would have 403'd and the controller would have reported
+ * "0 natural observations" — indistinguishable from a quiet window, which is
+ * the worst way for a soak to fail.
+ *
+ * This mode proves the permissions and the collectors. It creates no issue,
+ * writes no state, and posts no comment. It exits non-zero if any read fails,
+ * so a missing scope is a red run rather than a silent zero.
+ */
+async function dryRun(repo, token) {
+  const since = new Date(Date.now() - 26 * 3_600_000).toISOString();
+  const findings = [];
+  const ok = (name, detail) => findings.push({ name, ok: true, detail });
+  const bad = (name, detail) => findings.push({ name, ok: false, detail });
+
+  for (const [name, wf] of [
+    ['actions:read production-monitor.yml', 'production-monitor.yml'],
+    ['actions:read production-backup.yml', 'production-backup.yml'],
+    ['actions:read cron.yml', 'cron.yml'],
+  ]) {
+    try {
+      const { runs, complete } = await runsFor(repo, token, wf, 'schedule', since);
+      ok(name, `${runs.length} scheduled runs since ${since}, history complete=${complete}`);
+    } catch (err) {
+      bad(name, err instanceof Error ? err.message : 'unknown');
+    }
+  }
+
+  try {
+    const dep = await currentDeployment(repo, token);
+    if (!dep) bad('deployments:read', 'no Production deployment record found');
+    else
+      ok(
+        'deployments:read',
+        `deployment ${dep.id} sha=${String(dep.sha).slice(0, 7)} state=${dep.state} env=${dep.environment}`,
+      );
+
+    const aliases = await resolveAliasReleases(SOAK_DEFAULTS.requiredAliases);
+    const unreadable = Object.entries(aliases)
+      .filter(([, v]) => !v)
+      .map(([h]) => h);
+    if (unreadable.length)
+      bad('alias release header', `no release reported by: ${unreadable.join(', ')}`);
+    else {
+      const matches = dep ? Object.values(aliases).every((v) => v === dep.sha) : false;
+      (matches ? ok : bad)(
+        'alias release header',
+        Object.entries(aliases)
+          .map(([h, v]) => `${h}=${String(v).slice(0, 7)}`)
+          .join(' '),
+      );
+    }
+  } catch (err) {
+    bad('deployments:read', err instanceof Error ? err.message : 'unknown');
+  }
+
+  try {
+    const issues = await gh(
+      `/repos/${repo}/issues?state=all&labels=ops-incident&per_page=100`,
+      token,
+    );
+    ok('issues:read ops-incident', `${(issues ?? []).length} incident issues visible`);
+  } catch (err) {
+    bad('issues:read ops-incident', err instanceof Error ? err.message : 'unknown');
+  }
+
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) {
+    bad('ops metrics', 'CRON_SECRET is not set, so outbox and heartbeat evidence cannot be read');
+  } else {
+    try {
+      const target = process.env.MONITOR_PRODUCTION_URL ?? 'https://bookpitch.ge';
+      const res = await fetch(`${target}/api/health/ops`, {
+        headers: { authorization: `Bearer ${cronSecret}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) bad('ops metrics', `HTTP ${res.status}`);
+      else {
+        const m = (await res.json())?.metrics ?? {};
+        ok(
+          'ops metrics',
+          `outboxDead=${m?.outbox?.dead ?? 'null'} jobs=${JSON.stringify(m?.cronHeartbeat?.jobs ?? null).slice(0, 80)}`,
+        );
+      }
+    } catch (err) {
+      bad('ops metrics', err instanceof Error ? err.message : 'unknown');
+    }
+  }
+
+  console.log('=== soak controller dry run — no state created or modified ===');
+  for (const f of findings) console.log(`${f.ok ? 'OK  ' : 'FAIL'}  ${f.name} — ${f.detail}`);
+  const failed = findings.filter((f) => !f.ok);
+  console.log(`\n${findings.length - failed.length}/${findings.length} reads succeeded`);
+  if (failed.length) {
+    console.log('The controller would not be able to collect complete evidence.');
+    process.exit(1);
+  }
+  console.log('Every read the controller depends on works. No soak was started.');
+}
+
 async function main() {
   const token = process.env.GITHUB_TOKEN;
   const repo = process.env.GITHUB_REPOSITORY;
   if (!token || !repo) {
     console.error('soak: GITHUB_TOKEN and GITHUB_REPOSITORY are required');
     process.exit(1);
+  }
+
+  if (process.env.SOAK_DRY_RUN === 'true') {
+    await dryRun(repo, token);
+    return;
   }
 
   const issues = await gh(
@@ -647,6 +895,7 @@ async function main() {
       deploymentId: process.env.SOAK_DEPLOYMENT_ID ?? null,
       startedAt,
       effectiveWindowStart: startedAt,
+      awaitingRecoverySince: null,
       restarts: [],
       lastProcessedMonitorRun: null,
       sentry: {
@@ -680,8 +929,7 @@ async function main() {
   try {
     deployment = await currentDeployment(repo, token);
     if (deployment) {
-      const { resolved } = await resolveAliases(SOAK_DEFAULTS.requiredAliases, deployment.sha);
-      deployment.aliases = resolved;
+      deployment.aliasReleases = await resolveAliasReleases(SOAK_DEFAULTS.requiredAliases);
     }
   } catch {
     /* null → the evaluator blocks, which is the point */
@@ -736,6 +984,7 @@ async function main() {
 
   const nextState = {
     ...state,
+    awaitingRecoverySince: result.awaitingRecoverySince ?? null,
     // The whole point: the restarted window is written down, so the next tick
     // starts from here even after the failing run ages out of history.
     effectiveWindowStart: result.effectiveWindowStart ?? windowStart,
