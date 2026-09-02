@@ -130,7 +130,9 @@ export function verifyReceipt(
   if (!eventId) problems.push('the event carries no id');
 
   if (event.environment !== expect.environment) {
-    problems.push(`environment is ${event.environment ?? '(none)'}, expected ${expect.environment}`);
+    problems.push(
+      `environment is ${event.environment ?? '(none)'}, expected ${expect.environment}`,
+    );
   }
   if (event.release !== expect.releaseSha) {
     problems.push(
@@ -164,10 +166,11 @@ export function verifyReceipt(
  * Requires distinct event ids: emitting once through the Node SDK and reusing
  * the id for both fields is exactly what the previous implementation did.
  */
-export function verifyReceiptPair(input: {
-  server: ReceiptVerdict;
-  browser: ReceiptVerdict;
-}): { ok: boolean; problems: string[]; symbolicated: boolean } {
+export function verifyReceiptPair(input: { server: ReceiptVerdict; browser: ReceiptVerdict }): {
+  ok: boolean;
+  problems: string[];
+  symbolicated: boolean;
+} {
   const problems = [
     ...input.server.problems.map((p) => `server: ${p}`),
     ...input.browser.problems.map((p) => `browser: ${p}`),

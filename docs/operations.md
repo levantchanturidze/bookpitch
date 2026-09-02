@@ -417,6 +417,32 @@ tenant's customers.
   nothing. A green run that performed no work is the same useless signal this
   runbook exists to prevent.
 
+### Canonical domains and the release header
+
+`bookpitch.ge` serves the deployment directly. **`www.bookpitch.ge` returns a
+308 redirect to the apex** — it does not serve the application itself, so any
+check against it must follow redirects and read the FINAL response.
+
+`GET /api/health` carries `x-bookpitch-release`, the commit the deployment was
+built from (`VERCEL_GIT_COMMIT_SHA`). The response BODY stays exactly
+`{"ok":true}`: the monitor treats any extra field there as a leak. The header
+exists because the soak controller has to prove the canonical hosts are serving
+the exact deployment under soak — before it, the check accepted any HTTP 200,
+so a healthy response from a completely different deployment passed.
+
+### audit_log partitions are not reachable by the application role
+
+Row-level security does not inherit downwards. `bookpitch_app` holds **no**
+privileges on `audit_log_YYYY_MM` or `audit_log_default`, and each partition
+carries its own `tenant_isolation` policy as a second layer. The application
+always goes through the parent; PostgreSQL checks privileges on the relation
+named in the query, so this costs nothing.
+
+Do not grant on a partition to "make a query work" — it reopens a cross-tenant
+read of every organization's audit records. `bp_create_monthly_partition()`
+applies both layers at creation; the production invariant check fails if either
+is missing.
+
 ### Scheduler reliability, and why the lead time has a floor
 
 GitHub does not guarantee scheduled delivery, and this account routinely sees
