@@ -61,7 +61,41 @@ type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 // limiter, as they were, so a skipped send never spends a token.
 // -----------------------------------------------------------------------------
 
-export type SendOutcome = 'sent' | 'skipped_duplicate' | 'skipped_missing_contact' | 'failed';
+export type SendOutcome =
+  'sent' | 'skipped_duplicate' | 'skipped_missing_contact' | 'rate_limited' | 'failed';
+
+/**
+ * How long a `queued` message_log row is treated as a live claim.
+ *
+ * claim() commits the row as `queued` BEFORE the provider call, and
+ * alreadyReminded() treated `queued` as proof of delivery. A crash between the
+ * two therefore created a reminder that was never sent, never retried — the
+ * stale row deduped every later attempt — and never reported missed, because
+ * the missed-reminder metric also counted `queued` as delivered. Silent,
+ * permanent, and invisible from all three directions at once.
+ *
+ * A row older than this is an abandoned claim: it no longer blocks a retry and
+ * is settled as `failed` so it stops accumulating and becomes visible.
+ * Comfortably longer than a tick's provider round-trips, so a live claim is
+ * never stolen from a worker still running.
+ */
+export const REMINDER_CLAIM_TTL_MINUTES = 15;
+
+/** Channels a reminder is attempted on. Both are required. */
+export const CHANNELS: readonly MessageChannel[] = ['sms', 'email'] as const;
+
+/** Per-tick channel accounting. Every field is a count; no PII, no raw errors. */
+export type TickTally = {
+  appointmentsExpected: number;
+  appointmentsProcessed: number;
+  channelsExpected: number;
+  sent: number;
+  duplicates: number;
+  missingContact: number;
+  rateLimited: number;
+  providerFailed: number;
+  unprocessed: number;
+};
 export type ChannelReport = { channel: MessageChannel; outcome: SendOutcome; error?: string };
 
 async function alreadyReminded(
@@ -69,11 +103,31 @@ async function alreadyReminded(
   appointmentId: string,
   channel: MessageChannel,
 ): Promise<boolean> {
-  const existing = await tx.messageLog.findFirst({
-    where: { appointmentId, channel, state: { in: ['queued', 'sent', 'delivered'] } },
+  // Genuinely delivered. These dedupe forever.
+  const delivered = await tx.messageLog.findFirst({
+    where: { appointmentId, channel, state: { in: ['sent', 'delivered'] } },
     select: { id: true },
   });
-  return !!existing;
+  if (delivered) return true;
+
+  // A live claim by another worker. Bounded by a lease: this used to include
+  // every `queued` row regardless of age, so one crash between claim() and
+  // settle blocked the reminder permanently.
+  const cutoff = new Date(Date.now() - REMINDER_CLAIM_TTL_MINUTES * 60_000);
+  const live = await tx.messageLog.findFirst({
+    where: { appointmentId, channel, state: 'queued', createdAt: { gte: cutoff } },
+    select: { id: true },
+  });
+  if (live) return true;
+
+  // Anything still `queued` here is an abandoned claim. Settle it as failed so
+  // it stops deduping, stops accumulating, and shows up in the failure counts
+  // instead of being invisible.
+  await tx.messageLog.updateMany({
+    where: { appointmentId, channel, state: 'queued', createdAt: { lt: cutoff } },
+    data: { state: 'failed' },
+  });
+  return false;
 }
 
 function toDateTimeParts(startsAt: Date, timezone: string): { date: string; time: string } {
@@ -218,7 +272,14 @@ export async function sendForAppointment(
   // of SMS billable to the org. Outside the transaction: it opens its own on
   // the prismaApp pool, and nesting the two is what made three slow sends
   // enough to starve both pools.
-  await RateLimit.messaging(prepared.organizationId);
+  try {
+    await RateLimit.messaging(prepared.organizationId);
+  } catch {
+    // Reported as its own outcome rather than thrown. Throwing here aborted
+    // the whole organization's tick, so one rate-limited appointment took the
+    // rest of that organization's reminders with it.
+    return { channel, outcome: 'rate_limited' };
+  }
 
   const logId = await claim(appointmentId, channel, prepared);
   if (logId === null) return { channel, outcome: 'skipped_duplicate' };
@@ -291,6 +352,8 @@ export type TickReport = {
   windowFrom: string;
   windowTo: string;
   attempts: Array<{ appointmentId: string; reports: ChannelReport[] }>;
+  /** Channel-level counts. See TickTally. */
+  tally: TickTally;
   /** Set when the org's window was truncated by REMINDER_MAX_APPOINTMENTS_PER_TICK. */
   truncated?: boolean;
 };
@@ -341,8 +404,7 @@ export async function runReminderTick(organizationId: string): Promise<TickRepor
   const attempts: TickReport['attempts'] = [];
   for (const a of batch) {
     const reports: ChannelReport[] = [];
-    reports.push(await sendForAppointment(a.id, 'sms'));
-    reports.push(await sendForAppointment(a.id, 'email'));
+    for (const channel of CHANNELS) reports.push(await sendForAppointment(a.id, channel));
     attempts.push({ appointmentId: a.id, reports });
   }
 
@@ -353,11 +415,31 @@ export async function runReminderTick(organizationId: string): Promise<TickRepor
     });
   }
 
+  // Channel-level accounting. The route used to count an organization as
+  // "processed" whenever runReminderTick() resolved — and it resolves normally
+  // when every provider send fails, because sendForAppointment() returns a
+  // report rather than throwing. So a tick in which nothing reached anyone was
+  // a fully successful organization.
+  const flat = attempts.flatMap((a) => a.reports);
+  const tally = {
+    appointmentsExpected: appts.length,
+    appointmentsProcessed: batch.length,
+    channelsExpected: batch.length * CHANNELS.length,
+    sent: flat.filter((r) => r.outcome === 'sent').length,
+    duplicates: flat.filter((r) => r.outcome === 'skipped_duplicate').length,
+    missingContact: flat.filter((r) => r.outcome === 'skipped_missing_contact').length,
+    rateLimited: flat.filter((r) => r.outcome === 'rate_limited').length,
+    providerFailed: flat.filter((r) => r.outcome === 'failed').length,
+    // Appointments the limit stopped this tick from reaching at all.
+    unprocessed: Math.max(0, appts.length - batch.length),
+  };
+
   return {
     organizationId,
     windowFrom: windowFrom.toISOString(),
     windowTo: windowTo.toISOString(),
     attempts,
+    tally,
     ...(truncated ? { truncated: true } : {}),
   };
 }

@@ -983,15 +983,34 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           JOIN organizations o ON o.id = a.organization_id
          WHERE a.starts_at < NOW()
            AND a.starts_at > NOW() - interval '48 hours'
-           AND a.status NOT IN ('cancelled', 'completed')
+           -- Cancelled appointments were never owed a reminder. COMPLETED ones
+           -- WERE: the appointment happened, and the customer should have been
+           -- reminded beforehand. Excluding them hid exactly the cases where a
+           -- missed reminder had already cost something.
+           AND a.status <> 'cancelled'
            -- Only appointments that existed early enough for the lead window
            -- to have covered them; one booked ten minutes beforehand was never
            -- eligible and is not evidence of a missed run.
            AND a.created_at < a.starts_at - make_interval(hours => o.reminder_lead_hours)
-           AND NOT EXISTS (
-             SELECT 1 FROM message_log m
-              WHERE m.appointment_id = a.id
-                AND m.state IN ('queued', 'sent', 'delivered')
+           -- Only GENUINELY delivered states count as a reminder.
+           --
+           -- The 'queued' state used to be included here, and it is written
+           -- BEFORE the provider call. A crash in between therefore produced a
+           -- reminder that was never sent, could never be retried (the stale
+           -- row deduped every later attempt), and was invisible to this
+           -- metric — silent from all three directions at once.
+           --
+           -- Per channel, not per appointment: one successful email must not
+           -- hide a failed SMS. An appointment is counted as missed when ANY
+           -- required channel has no delivery.
+           AND EXISTS (
+             SELECT 1 FROM unnest(ARRAY['sms', 'email']::message_channel[]) AS ch(channel)
+              WHERE NOT EXISTS (
+                SELECT 1 FROM message_log m
+                 WHERE m.appointment_id = a.id
+                   AND m.channel = ch.channel
+                   AND m.state IN ('sent', 'delivered')
+              )
            )
       `,
   ]);
