@@ -382,13 +382,19 @@ the day it was taken, not of `main`.
 
 `.github/workflows/cron.yml`, all bearer-authenticated with `CRON_SECRET`:
 
-| Job | Schedule (UTC) | Endpoint | Contacts customers? | Visible symptom if it stops |
+| Job | Schedule (UTC) | Endpoint | Produces outbound email? | Visible symptom if it stops |
 | --- | --- | --- | --- | --- |
-| reminders | every 15 min | `/api/cron/reminders` | **YES — email and SMS** | reminders stop going out |
-| housekeeping | hourly at :03 | `/api/cron/housekeeping` | no | outbox stops draining; stale rows accumulate |
+| reminders | every 15 min | `/api/cron/reminders` | **YES — sends email and SMS directly** | reminders stop going out |
+| housekeeping | hourly at :03 | `/api/cron/housekeeping` | **YES — `drainEmailOutbox()` DELIVERS everything queued** | outbox stops draining; stale rows accumulate |
 | retention | 02:17 daily | `/api/cron/retention` | no | customers past their window keep PII |
-| audit-digest | Mon 08:00 | `/api/cron/audit-digest` | no — owners only, and gated off | owners stop getting the weekly rollup |
+| audit-digest | Mon 08:00 | `/api/cron/audit-digest` | **YES — queues owner mail into `email_outbox`** | owners stop getting the weekly rollup |
 | db-partitions | 01:30 on the 1st | `/api/cron/db-partitions` | no | rows fall into `audit_log_default` |
+
+> **`housekeeping` was previously listed here as "no".** That was wrong, and
+> the error was load-bearing: on the strength of it, housekeeping was given no
+> confirmation requirement and made the dispatch **default**, so the least
+> deliberate use of the workflow ran the outbox delivery worker. Classification
+> is by transitive runtime behaviour, not by what the job's name suggests.
 
 ### Dispatching a cron job by hand
 
@@ -397,11 +403,13 @@ and blank ran all five jobs — so the most likely way to use the workflow (open
 it, press the button, change nothing) was also the one that mailed every
 tenant's customers.
 
-- The four jobs marked "no" above run on their own, with no confirmation.
-  This is what you want during an incident: draining the outbox must not
-  require also firing reminders.
-- **`reminders` and `all` additionally require typing
-  `SEND-REMINDERS-TO-CUSTOMERS` into the confirm box.** `runReminderTick`
+- Only `retention` and `db-partitions` run without confirmation.
+- `only` defaults to **`none`**, which starts nothing and fails the run. There
+  is deliberately no operational default: every previous default — blank, then
+  `housekeeping` — turned "press the button and change nothing" into an action
+  that mailed people.
+- **`reminders`, `housekeeping`, `audit-digest` and `all` require typing
+  `DELIVER-EMAIL-TO-REAL-RECIPIENTS` into the confirm box.** `runReminderTick`
   selects appointments in `[now, now + reminderLeadHours]`, so a dispatch
   really can send mail and SMS to a real customer whose appointment falls in
   that window.

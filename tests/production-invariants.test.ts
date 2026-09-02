@@ -300,7 +300,7 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
         sql('DROP POLICY tenant_isolation ON payments');
         const broken = runVerifier();
         expect(broken.ok).toBe(false);
-        expect(broken.output).toMatch(/payments \(no tenant_isolation policy\)/);
+        expect(broken.output).toMatch(/payments has 0 permissive policies/);
       } finally {
         sql(paymentsPolicy);
       }
@@ -312,7 +312,7 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
     injects(
       'a tenant policy weakened to USING (true) is caught',
       ['ALTER POLICY tenant_isolation ON services USING (true)'],
-      /services \(USING clause does not reference current_org_id\(\)\)/,
+      /services USING clause is .* but must be exactly/,
       ['ALTER POLICY tenant_isolation ON services USING (organization_id = current_org_id())'],
     );
 
@@ -321,8 +321,63 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
     injects(
       'a tenant policy that loses its WITH CHECK is caught',
       ['ALTER POLICY tenant_isolation ON staff WITH CHECK (true)'],
-      /staff \(WITH CHECK clause does not reference current_org_id\(\)\)/,
+      /staff WITH CHECK clause is .* but must be exactly/,
       ['ALTER POLICY tenant_isolation ON staff WITH CHECK (organization_id = current_org_id())'],
+    );
+
+    // The cases the old substring check could not see. Every one of these
+    // mentions current_org_id() somewhere and isolates nothing.
+    injects(
+      'THE REGRESSION: a tautology that still mentions current_org_id() is caught',
+      [
+        'ALTER POLICY tenant_isolation ON services USING (organization_id = current_org_id() OR true)',
+      ],
+      /USING clause is .* but must be exactly/,
+      ['ALTER POLICY tenant_isolation ON services USING (organization_id = current_org_id())'],
+    );
+
+    injects(
+      'THE REGRESSION: an EXTRA permissive policy is caught',
+      [
+        // Postgres ORs permissive policies together, so this one overrides
+        // tenant_isolation entirely while tenant_isolation still reads fine.
+        'CREATE POLICY bp_fixture_bypass ON customers FOR ALL USING (true) WITH CHECK (true)',
+      ],
+      /permissive policies are ORed together/,
+      ['DROP POLICY IF EXISTS bp_fixture_bypass ON customers'],
+    );
+
+    injects(
+      'a policy narrowed to SELECT leaves writes unrestricted, and is caught',
+      [
+        'DROP POLICY IF EXISTS tenant_isolation ON waitlist',
+        'CREATE POLICY tenant_isolation ON waitlist FOR SELECT USING (organization_id = current_org_id())',
+      ],
+      /is FOR .*, not FOR ALL — writes are unrestricted/,
+      [
+        'DROP POLICY IF EXISTS tenant_isolation ON waitlist',
+        'CREATE POLICY tenant_isolation ON waitlist FOR ALL USING (organization_id = current_org_id()) WITH CHECK (organization_id = current_org_id())',
+      ],
+    );
+
+    injects(
+      'a policy scoped to a role the app does not use is caught',
+      [
+        'DROP POLICY IF EXISTS tenant_isolation ON notifications',
+        'CREATE POLICY tenant_isolation ON notifications FOR ALL TO bookpitch_app USING (organization_id = current_org_id()) WITH CHECK (organization_id = current_org_id())',
+      ],
+      /applies to roles .* rather than PUBLIC/,
+      [
+        'DROP POLICY IF EXISTS tenant_isolation ON notifications',
+        'CREATE POLICY tenant_isolation ON notifications FOR ALL USING (organization_id = current_org_id()) WITH CHECK (organization_id = current_org_id())',
+      ],
+    );
+
+    injects(
+      'a renamed policy is caught even when its predicate is correct',
+      ['ALTER POLICY tenant_isolation ON message_log RENAME TO tenant_isolation_v2'],
+      /is named tenant_isolation_v2, not tenant_isolation/,
+      ['ALTER POLICY tenant_isolation_v2 ON message_log RENAME TO tenant_isolation'],
     );
 
     injects(

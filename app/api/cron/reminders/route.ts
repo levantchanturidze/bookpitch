@@ -64,17 +64,40 @@ export async function POST(req: NextRequest) {
     log.error('cron.reminders.org_failed', f);
   }
 
-  // Application-side proof of COMPLETION, as opposed to the GitHub Actions run
-  // list's proof of INVOCATION. Written only when the tick got this far, and
-  // only counting organizations that actually succeeded — a run where every
-  // org threw must not look like a healthy tick.
-  await recordCronHeartbeat('reminders', reports.length);
-
-  return NextResponse.json({
-    orgs: reports.length,
-    concurrency,
-    ...(truncated ? { truncated: true, limit: MAX_ORGS_PER_RUN } : {}),
-    ...(failures.length ? { failed: failures.length, failures } : {}),
-    reports,
+  // Application-side proof of what the tick DID, as opposed to the GitHub
+  // Actions run list's proof that it was invoked.
+  //
+  // This used to pass `reports.length` — the count of organizations that
+  // happened to succeed — into an unconditional success write. A tick in which
+  // every organization threw wrote a fresh `last_succeeded_at` with units 0,
+  // and the monitor reported a healthy job. `truncated` counts too: taking a
+  // fixed prefix of an ordered list means organizations past the limit are
+  // never reached, which is not a completed tick.
+  const outcome = await recordCronHeartbeat('reminders', {
+    expected: orgs.length,
+    processed: reports.length,
+    failed: failures.length,
   });
+
+  // A cron endpoint that returns 200 after failing its work is the reason the
+  // workflow run list was never trustworthy evidence. 500 so the workflow step
+  // fails too, and the failure is visible in three places instead of none.
+  const status = outcome === 'success' ? 200 : 500;
+
+  return NextResponse.json(
+    {
+      ok: outcome === 'success',
+      outcome,
+      // `orgs` is fetched with take: MAX + 1, so when truncated this exceeds
+      // what was processed and the run is classified partial — which is
+      // correct: organizations past the limit were never reached.
+      expected: orgs.length,
+      orgs: reports.length,
+      concurrency,
+      ...(truncated ? { truncated: true, limit: MAX_ORGS_PER_RUN } : {}),
+      ...(failures.length ? { failed: failures.length, failures } : {}),
+      reports,
+    },
+    { status },
+  );
 }

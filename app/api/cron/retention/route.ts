@@ -55,15 +55,28 @@ export async function POST(req: NextRequest) {
     log.error('cron.retention.org_failed', f);
   }
 
-  // Proof of completion, not merely of invocation. See lib/cron-heartbeat.ts.
-  await recordCronHeartbeat('retention', reports.length);
-
-  return NextResponse.json({
-    orgs: reports.length,
-    concurrency,
-    totalAnonymized: reports.reduce((n, r) => n + r.anonymizedCount, 0),
-    ...(truncated ? { truncated: true, limit: MAX_ORGS_PER_RUN } : {}),
-    ...(failures.length ? { failed: failures.length, failures } : {}),
-    reports,
+  // Proof of what the run DID, not merely that it was invoked. Retention
+  // anonymises PII past its window; a run that silently skipped organizations
+  // leaves that PII in place, so a partial run must not read as healthy.
+  const outcome = await recordCronHeartbeat('retention', {
+    expected: orgs.length,
+    processed: reports.length,
+    failed: failures.length,
   });
+  const status = outcome === 'success' ? 200 : 500;
+
+  return NextResponse.json(
+    {
+      ok: outcome === 'success',
+      outcome,
+      expected: orgs.length,
+      orgs: reports.length,
+      concurrency,
+      totalAnonymized: reports.reduce((n, r) => n + r.anonymizedCount, 0),
+      ...(truncated ? { truncated: true, limit: MAX_ORGS_PER_RUN } : {}),
+      ...(failures.length ? { failed: failures.length, failures } : {}),
+      reports,
+    },
+    { status },
+  );
 }

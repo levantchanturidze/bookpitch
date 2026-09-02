@@ -569,7 +569,15 @@ describe('an unobservable check is not a resolved one', () => {
         deferredProviderEnv: 0,
         undeclaredMockProviderEnv: 0,
       },
-      cronHeartbeat: { remindersMinutesAgo: 0, remindersLastUnits: 0 },
+      cronHeartbeat: {
+        remindersMinutesAgo: 0,
+        remindersLastUnits: 0,
+        remindersLastOutcome: 1,
+        // cron-jobs-failing is omitted for a deployment that does not report
+        // this field, so leaving it out measures the subset, not the set.
+        jobsNotSucceeding: 0,
+        unremindedStartedAppointments: 0,
+      },
     };
     const emitted = evaluateOpsMetrics(complete).map((r: { id: string }) => r.id);
     expect([...OPS_DERIVED_CHECK_IDS].sort()).toEqual([...emitted].sort());

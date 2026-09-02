@@ -162,7 +162,15 @@ DECLARE
   exempt_rels CONSTANT text[] := ARRAY['roles', 'impersonation_sessions'];
   missing text;
   unprotected text;
-  bad_policy text;
+  rec record;
+  n_permissive int;
+  n_policies int;
+  pol_name text;
+  pol_cmd text;
+  pol_permissive bool;
+  pol_qual text;
+  pol_check text;
+  pol_roles text;
   unclassified text;
   exempt_drift text;
   n_required int;
@@ -195,36 +203,102 @@ BEGIN
     RAISE EXCEPTION 'production-verify: tenant relation(s) without enforced RLS: % — tenant rows are readable across organizations', unprotected;
   END IF;
 
-  -- 4c. Each one still carries a usable tenant_isolation policy. A policy
-  --     rewritten to USING (true), or one that lost its WITH CHECK (which is
-  --     what stops a cross-tenant INSERT), leaves relrowsecurity true and
-  --     every row exposed. Presence is not enough; the predicate must still
-  --     reference current_org_id() on both sides.
-  SELECT string_agg(c.relname || ' (' || reason || ')', ', ' ORDER BY c.relname)
-    INTO bad_policy
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    CROSS JOIN LATERAL (
-      SELECT CASE
-        WHEN p.polname IS NULL THEN 'no tenant_isolation policy'
-        WHEN p.polcmd <> '*' THEN 'policy is not FOR ALL'
-        WHEN p.polqual IS NULL
-          OR pg_get_expr(p.polqual, p.polrelid) NOT LIKE '%current_org_id()%'
-          THEN 'USING clause does not reference current_org_id()'
-        WHEN p.polwithcheck IS NULL
-          OR pg_get_expr(p.polwithcheck, p.polrelid) NOT LIKE '%current_org_id()%'
-          THEN 'WITH CHECK clause does not reference current_org_id()'
-        ELSE NULL
-      END AS reason
-        FROM (SELECT 1) AS _
-        LEFT JOIN pg_policy p
-          ON p.polrelid = c.oid AND p.polname = 'tenant_isolation'
-    ) AS chk
-   WHERE n.nspname = 'public' AND c.relname = ANY(required_rels)
-     AND c.relkind IN ('r', 'p') AND chk.reason IS NOT NULL;
-  IF bad_policy IS NOT NULL THEN
-    RAISE EXCEPTION 'production-verify: tenant relation(s) with a missing or malformed tenant_isolation policy: %', bad_policy;
-  END IF;
+  -- 4c. Each one carries EXACTLY the policy it is supposed to, and no other.
+  --
+  -- The previous version asked whether the policy text CONTAINED
+  -- `current_org_id()`. That is not a security property. All of these contain
+  -- it and none of them isolate anything:
+  --
+  --     USING (organization_id = current_org_id() OR true)
+  --     USING (current_org_id() IS NOT NULL)
+  --     USING (true) -- plus a second policy mentioning current_org_id()
+  --
+  -- Postgres ORs permissive policies together, so ONE extra permissive policy
+  -- on a table defeats every other policy on it. Substring matching cannot see
+  -- that, and neither could the old check.
+  --
+  -- So the expected expression is stated exactly, per relation, and anything
+  -- else fails — including an additional policy that looks harmless. A
+  -- deliberate policy change must update this table, which is the point: the
+  -- expectation lives outside the thing being audited.
+  FOR rec IN
+    SELECT * FROM (VALUES
+      ('appointments',        '(organization_id = current_org_id())'),
+      ('assistant_usage',     '(organization_id = current_org_id())'),
+      ('audit_log',           '((organization_id = current_org_id()) OR (organization_id IS NULL))'),
+      ('branches',            '(organization_id = current_org_id())'),
+      ('customers',           '(organization_id = current_org_id())'),
+      ('invitations',         '(organization_id = current_org_id())'),
+      ('locations',           '(organization_id = current_org_id())'),
+      ('membership_branches', '(branch_id IN ( SELECT branches.id FROM branches WHERE (branches.organization_id = current_org_id())))'),
+      ('memberships',         '(organization_id = current_org_id())'),
+      ('message_log',         '(organization_id = current_org_id())'),
+      ('message_templates',   '(organization_id = current_org_id())'),
+      ('notifications',       '(organization_id = current_org_id())'),
+      ('organizations',       '(id = current_org_id())'),
+      ('ownership_transfers', '(organization_id = current_org_id())'),
+      ('payments',            '(organization_id = current_org_id())'),
+      ('rate_limit',          '(organization_id = current_org_id())'),
+      ('services',            '(organization_id = current_org_id())'),
+      ('staff',               '(organization_id = current_org_id())'),
+      ('staff_availability',  '(staff_id IN ( SELECT staff.id FROM staff WHERE (staff.organization_id = current_org_id())))'),
+      ('treatment_history',   '(customer_id IN ( SELECT customers.id FROM customers WHERE (customers.organization_id = current_org_id())))'),
+      ('waitlist',            '(organization_id = current_org_id())')
+    ) AS t(relname, expected_qual)
+  LOOP
+    SELECT count(*) FILTER (WHERE p.polpermissive),
+           count(*)
+      INTO n_permissive, n_policies
+      FROM pg_policy p
+      JOIN pg_class c ON c.oid = p.polrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relname = rec.relname;
+
+    -- One permissive policy, and only one. A second one is ORed in and makes
+    -- the first irrelevant.
+    IF n_permissive <> 1 THEN
+      RAISE EXCEPTION 'production-verify: % has % permissive policies (expected exactly 1) — permissive policies are ORed together, so any extra one overrides tenant isolation',
+        rec.relname, n_permissive;
+    END IF;
+    IF n_policies <> 1 THEN
+      RAISE EXCEPTION 'production-verify: % has % policies (expected exactly 1: tenant_isolation)',
+        rec.relname, n_policies;
+    END IF;
+
+    SELECT p.polname, p.polcmd::text, p.polpermissive,
+           regexp_replace(coalesce(pg_get_expr(p.polqual, p.polrelid), ''), '\s+', ' ', 'g'),
+           regexp_replace(coalesce(pg_get_expr(p.polwithcheck, p.polrelid), ''), '\s+', ' ', 'g'),
+           coalesce((SELECT string_agg(r.rolname, ',' ORDER BY r.rolname)
+                       FROM pg_roles r WHERE r.oid = ANY(p.polroles)), 'PUBLIC')
+      INTO pol_name, pol_cmd, pol_permissive, pol_qual, pol_check, pol_roles
+      FROM pg_policy p
+      JOIN pg_class c ON c.oid = p.polrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relname = rec.relname;
+
+    IF pol_name <> 'tenant_isolation' THEN
+      RAISE EXCEPTION 'production-verify: %s single policy is named %, not tenant_isolation', rec.relname, pol_name;
+    END IF;
+    -- FOR ALL. A policy scoped to SELECT leaves INSERT/UPDATE/DELETE
+    -- unrestricted, which no read-side probe would ever notice.
+    IF pol_cmd <> '*' THEN
+      RAISE EXCEPTION 'production-verify: % policy is FOR %, not FOR ALL — writes are unrestricted', rec.relname, pol_cmd;
+    END IF;
+    -- PUBLIC. A policy scoped to a role the app does not use applies to nobody.
+    IF pol_roles <> 'PUBLIC' THEN
+      RAISE EXCEPTION 'production-verify: % policy applies to roles % rather than PUBLIC — it does not constrain the application role', rec.relname, pol_roles;
+    END IF;
+    IF pol_qual <> rec.expected_qual THEN
+      RAISE EXCEPTION 'production-verify: % USING clause is % but must be exactly % — a predicate that merely mentions current_org_id() can still be a tautology',
+        rec.relname, pol_qual, rec.expected_qual;
+    END IF;
+    -- WITH CHECK is what blocks a cross-tenant INSERT. Losing it leaves reads
+    -- isolated and writes wide open.
+    IF pol_check <> rec.expected_qual THEN
+      RAISE EXCEPTION 'production-verify: % WITH CHECK clause is % but must be exactly % — cross-tenant writes would be accepted',
+        rec.relname, coalesce(nullif(pol_check, ''), '(absent)'), rec.expected_qual;
+    END IF;
+  END LOOP;
 
   -- 4d. Nothing carrying organization_id escapes classification. A tenant
   --     table added by a later migration and never given RLS lands here
@@ -258,7 +332,7 @@ BEGIN
   END IF;
 
   n_required := array_length(required_rels, 1);
-  RAISE NOTICE 'ok: all % required tenant relations have RLS enabled, FORCED, and a tenant_isolation policy using current_org_id(); % declared exemptions intact',
+  RAISE NOTICE 'ok: all % required tenant relations have RLS enabled, FORCED, and exactly one permissive FOR ALL tenant_isolation policy whose USING and WITH CHECK match the expected predicate exactly; % declared exemptions intact',
     n_required, array_length(exempt_rels, 1);
 END $$;
 

@@ -272,12 +272,44 @@ export type ConfigMetrics = {
  * deployment, or a job that has genuinely never completed.
  */
 export type CronHeartbeatMetrics = {
+  /** Minutes since each job last SUCCEEDED. Only a success advances this. */
   remindersMinutesAgo: number | null;
   housekeepingMinutesAgo: number | null;
   retentionMinutesAgo: number | null;
   auditDigestMinutesAgo: number | null;
-  /** Organizations the last reminder tick handled. 0 means "ran, did nothing". */
+  /** Units the last reminder tick completed. */
   remindersLastUnits: number | null;
+  /**
+   * Outcome of the last reminders ATTEMPT, as a number so the response stays
+   * numeric-only: 1 success, 0 partial, -1 failure, null unknown/absent.
+   *
+   * Age alone cannot see a job that is attempted every 15 minutes and fails
+   * every time — `last_succeeded_at` simply stops moving, and for the first
+   * six hours that is indistinguishable from a healthy quiet period.
+   */
+  remindersLastOutcome: number | null;
+  /** Units the last reminders attempt expected, and how many failed. */
+  remindersExpectedUnits: number | null;
+  remindersFailedUnits: number | null;
+  /** Minutes since the last reminders ATTEMPT, successful or not. */
+  remindersAttemptMinutesAgo: number | null;
+  /** Jobs whose most recent attempt was not a success. */
+  jobsNotSucceeding: number | null;
+  /**
+   * Appointments that have already STARTED without any reminder ever being
+   * logged, inside the window their organization's lead time covered.
+   *
+   * This is the one reminder failure a sliding window cannot heal. The window
+   * is [now, now + reminderLeadHours] recomputed each tick, so a scheduler gap
+   * shorter than the lead time is harmless for FUTURE appointments — a later
+   * tick's window still contains them. But an appointment that starts DURING
+   * the gap leaves the window permanently, and no later tick can catch it.
+   *
+   * It cannot be undone, so it must at least be visible. Counting it directly
+   * is the only honest check: heartbeat freshness, cron success and workflow
+   * conclusions can all be green while this is non-zero.
+   */
+  unremindedStartedAppointments: number | null;
 };
 
 export type OpsMetrics = {
@@ -664,6 +696,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
     ciphertextRows,
     partitionRows,
     heartbeatRows,
+    unremindedRows,
   ] = await Promise.all([
     unsafePrismaAdmin.$queryRaw<
       Array<{
@@ -879,11 +912,23 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
     // every other age here: a serverless instance with a skewed clock must
     // not be able to make a dead job look alive.
     unsafePrismaAdmin.$queryRaw<
-      Array<{ job: string; minutes_ago: number | null; last_units: number }>
+      Array<{
+        job: string;
+        minutes_ago: number | null;
+        last_units: number;
+        last_outcome: string;
+        last_expected_units: number | null;
+        last_failed_units: number | null;
+        attempt_minutes_ago: number | null;
+      }>
     >`
         SELECT job,
                EXTRACT(EPOCH FROM (NOW() - last_succeeded_at))::float / 60 AS minutes_ago,
-               last_units
+               last_units,
+               last_outcome,
+               last_expected_units,
+               last_failed_units,
+               EXTRACT(EPOCH FROM (NOW() - last_attempted_at))::float / 60 AS attempt_minutes_ago
           FROM cron_heartbeat
       `.catch((err: unknown) => {
       // Tolerates the table not existing, and NOTHING else. Vercel builds
@@ -897,6 +942,26 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
       if (isUndefinedTableError(err)) return [];
       throw err;
     }),
+    // Reminders that can never be sent: the appointment has already started and
+    // no message_log row was ever created for it. Bounded to the recent past so
+    // the count is about the current failure, not all history.
+    unsafePrismaAdmin.$queryRaw<Array<{ unreminded: bigint }>>`
+        SELECT count(*) AS unreminded
+          FROM appointments a
+          JOIN organizations o ON o.id = a.organization_id
+         WHERE a.starts_at < NOW()
+           AND a.starts_at > NOW() - interval '48 hours'
+           AND a.status NOT IN ('cancelled', 'completed')
+           -- Only appointments that existed early enough for the lead window
+           -- to have covered them; one booked ten minutes beforehand was never
+           -- eligible and is not evidence of a missed run.
+           AND a.created_at < a.starts_at - make_interval(hours => o.reminder_lead_hours)
+           AND NOT EXISTS (
+             SELECT 1 FROM message_log m
+              WHERE m.appointment_id = a.id
+                AND m.state IN ('queued', 'sent', 'delivered')
+           )
+      `,
   ]);
 
   const o = outboxRows[0] ?? {};
@@ -966,12 +1031,24 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
     cronHeartbeat: (() => {
       const by = new Map((heartbeatRows ?? []).map((row) => [row.job, row] as const));
       const ago = (job: string) => numOrNull(by.get(job)?.minutes_ago);
+      // Numeric so the response stays numbers-and-null only.
+      const outcomeCode = (o: string | undefined) =>
+        o === 'success' ? 1 : o === 'partial' ? 0 : o === 'failure' ? -1 : null;
+      const r = by.get('reminders');
       return {
         remindersMinutesAgo: ago('reminders'),
         housekeepingMinutesAgo: ago('housekeeping'),
         retentionMinutesAgo: ago('retention'),
         auditDigestMinutesAgo: ago('audit-digest'),
-        remindersLastUnits: numOrNull(by.get('reminders')?.last_units),
+        remindersLastUnits: numOrNull(r?.last_units),
+        remindersLastOutcome: outcomeCode(r?.last_outcome),
+        remindersExpectedUnits: numOrNull(r?.last_expected_units),
+        remindersFailedUnits: numOrNull(r?.last_failed_units),
+        remindersAttemptMinutesAgo: numOrNull(r?.attempt_minutes_ago),
+        jobsNotSucceeding: (heartbeatRows ?? []).filter(
+          (row) => row.last_outcome !== 'success' && row.last_outcome !== 'unknown',
+        ).length,
+        unremindedStartedAppointments: num(unremindedRows?.[0]?.unreminded),
       };
     })(),
     config: collectConfigMetrics(),
