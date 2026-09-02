@@ -1,7 +1,7 @@
 # Release state — the one current-state document
 
-**Snapshot: 2026-09-02.** This file is the single place that says what is true
-*now*. Every phase ledger is a historical record of what was true when it was
+**Snapshot: 2026-09-02, post-deploy.** This file is the single place that says
+what is true *now*. Every phase ledger is a historical record of what was true when it was
 written; where a ledger and this file disagree about the present, this file
 wins and the ledger is wrong only in tense, not in fact.
 
@@ -13,6 +13,54 @@ stale the moment it is written. Those live in:
 - **Soak** — the open `soak`-labelled issue, updated every 30 minutes by
   `.github/workflows/soak.yml`
 - **Open incidents** — [`ops-incident` label](https://github.com/levantchanturidze/bookpitch/issues?q=is%3Aissue+label%3Aops-incident)
+
+---
+
+## This release — measured, not asserted
+
+| | |
+|---|---|
+| `main` | **`ffd42c1e2acb7c48f22a04f98c37ad23d428a10b`** (merge of PR #46) |
+| CI on the exact merged head | run [33591959823](https://github.com/levantchanturidze/bookpitch/actions/runs/33591959823) — success |
+| Migrations | run [33591959724](https://github.com/levantchanturidze/bookpitch/actions/runs/33591959724) — **65 applied**, 0 unfinished, 0 rolled back, `Database schema is up to date!` |
+| Production invariants | same run, read-only: **21 tenant relations** RLS enabled + FORCED + `tenant_isolation` using `current_org_id()`; MARKETING has no `client.read:contact` and keeps both reporting grants; 2026-09 and the next 3 months exist with correct bounds; `audit_log_default` empty |
+| Deployment | `dpl_2W1ncgkgXWfxqeYbw21x3cV2qJ3u`, built from `ffd42c1`, aliased to `bookpitch.ge` and `www.bookpitch.ge` |
+| Deployed app exercised | `/api/health` 200 `{"ok":true}`; `/signin` `/signup` `/privacy` 200; tokenless `/api/onboard` 400; `/api/health/ops` 401 |
+| Backup | run [33595021207](https://github.com/levantchanturidze/bookpitch/actions/runs/33595021207), artifact `production-backup-33595021207-1` (id 9833092217), 307,464 encrypted bytes, identity fingerprint `5c9f75110f30141f`, 565 restorable entries, decrypted and verified **in a separate job** |
+| Restore drill | run [33597695162](https://github.com/levantchanturidze/bookpitch/actions/runs/33597695162) against that exact artifact — 65 migrations, 28 required tables, 10 organizations, append-only triggers present and `UPDATE` rejected, 13 partitions, 21 RLS policies, `bp_create_monthly_partition()` present |
+| Monitor | run [33597697501](https://github.com/levantchanturidze/bookpitch/actions/runs/33597697501) — **20/23 passed, 2 paused by configuration, 1 informational**; the single failing check is Sentry |
+
+### The two fixes that had to be proven in production, not just in CI
+
+**A manual cron dispatch no longer runs everything.** Dispatch
+[33596343699](https://github.com/levantchanturidze/bookpitch/actions/runs/33596343699)
+with `only=housekeeping`:
+
+```
+dispatch-guard: success
+housekeeping:   success
+reminders:      skipped     <- the whole point
+retention:      skipped
+audit-digest:   skipped
+db-partitions:  skipped
+```
+
+Before this, a blank selection ran all five, reminders included.
+
+**The heartbeat distinguishes invocation from completion.** Scheduled run
+[33596375712](https://github.com/levantchanturidze/bookpitch/actions/runs/33596375712)
+wrote `reminders | units=10`, and the monitor read it back:
+
+```
+PASS  cron-heartbeat-stale  reminders last completed 0.3h ago (limit 6.0h), handling 10 organization(s)
+```
+
+**Incidents.** #47 (`cron-staleness`) and #48 (`cron-heartbeat-stale`) opened on
+the first post-deploy run and were auto-closed on the next once a scheduled
+cron arrived — the new check working, then recovering, unattended. #38 closed
+on `0/10 recent SCHEDULED cron runs failed`, replacing the 2026-09-01 close that
+had been made on evidence displaced by five manual dispatches. **#44 (Sentry)
+remains open and is the only failing check.**
 
 ---
 
@@ -32,7 +80,8 @@ The single biggest source of contradiction across the ledgers is that
 | **soak-verified** | it survived an uninterrupted 24h window under §13 |
 | **human-approved** | a person with the authority signed it off |
 
-Nothing is soak-verified. Nothing has been human-approved.
+Nothing is soak-verified — the soak has not started, and must not while #44 is
+open. Nothing has been human-approved.
 
 ---
 
@@ -55,12 +104,12 @@ otherwise would destroy the record of how they were found.
 |---|---|---|
 | "Production has no database" | 2026-09-01, ~00:00–12:40Z | **False.** Supabase `cglqphbebckvpeyisqqb` restored 2026-09-01. Identity proven by the backup manifest fingerprint `5c9f75110f30141f`, matching pre-loss and post-restore |
 | "Actions billing is suspended" | until 2026-08-31T20:55Z | **False.** Restored; real step counts from 2026-09-01T00:05Z |
-| "62 migrations" | until 2026-09-01T12:43Z | **False.** 63 applied in production (run `33509215538`); `main` will carry **65** once PR #46 merges |
+| "62 migrations" | until 2026-09-01T12:43Z | **False.** 63 applied in production (run `33509215538`); `main` carries **65** |
 | "Migration 63 is local only" | until 2026-09-01T12:43Z | **False.** Applied to production exactly once |
 | "MARKETING still holds `client.read:contact`" | until migration 63 applied | **False.** Verified absent in production; the two reporting grants remain, which is the complement that stops the check being vacuous |
 | "`FIELD_ENCRYPTION_KEY` is malformed" | P15-010 / R-16, until 2026-08-22 | **False.** `production-config-invalid — malformed: 0`, corroborated by an encrypted `email_outbox` row that could not exist unless `encryptField()` succeeded |
 | "Nothing is merged" | Phase 16 freeze window | **False.** Phases 16 and 17 merged 2026-09-01 |
-| "Production monitor 18/18" / "17/21" / "18/21" | each true on its date | **Stale by construction.** See the workflow link above. PR #46 moves the gate count to **23** plus one informational line |
+| "Production monitor 18/18" / "17/21" / "18/21" | each true on its date | **Stale by construction.** See the workflow link above. the gate count is now **23** plus one informational line, and the latest run is 20/23 with 2 paused |
 
 ---
 
