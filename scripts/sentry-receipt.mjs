@@ -17,60 +17,15 @@
 // This module is the judgement, kept pure so it can be tested against captured
 // Sentry API fixtures rather than against a live project. The IO lives in
 // scripts/verify-sentry.mjs and the soak controller.
+//
+// Deliberately .mjs, not .ts: scripts/soak-controller.mjs runs under plain Node
+// in a workflow, and Node cannot import a .ts file. An earlier draft had the
+// controller do `await import('../lib/sentry-receipt.ts')`, which type-checks
+// and passes every unit test — and would have thrown the first time the
+// workflow ran, in the one code path nothing else exercises.
 // -----------------------------------------------------------------------------
 
-export type SentryRuntime = 'server' | 'browser';
-
-/** The subset of a Sentry event payload this check reads. */
-export type SentryEvent = {
-  id?: string;
-  eventID?: string;
-  dateCreated?: string;
-  environment?: string;
-  release?: string;
-  tags?: Array<{ key: string; value: string }>;
-  entries?: Array<{
-    type: string;
-    data?: {
-      values?: Array<{
-        stacktrace?: { frames?: SentryFrame[] };
-      }>;
-    };
-  }>;
-};
-
-export type SentryFrame = {
-  filename?: string;
-  absPath?: string;
-  function?: string;
-  lineNo?: number;
-  /** Sentry sets this when the frame was resolved through an uploaded map. */
-  inApp?: boolean;
-  /** Present only when Sentry could map the frame back to original source. */
-  context?: Array<[number, string]>;
-};
-
-export type ReceiptExpectation = {
-  runtime: SentryRuntime;
-  /** Exact release the deployment is serving. */
-  releaseSha: string;
-  /** Exact production environment name. */
-  environment: string;
-  /** Unique per verification run, so an old event cannot satisfy a new check. */
-  nonce: string;
-  /** Events older than this were not produced by this verification. */
-  notBefore: Date;
-};
-
-export type ReceiptVerdict = {
-  ok: boolean;
-  eventId: string | null;
-  /** Derived from the event's own frames, never supplied by a caller. */
-  symbolicated: boolean;
-  problems: string[];
-};
-
-function tag(event: SentryEvent, key: string): string | undefined {
+function tag(event, key) {
   return event.tags?.find((t) => t.key === key)?.value;
 }
 
@@ -87,7 +42,7 @@ function tag(event: SentryEvent, key: string): string | undefined {
  * Frames from the bundle itself are also excluded: a `.js` chunk path with
  * context lines is the minified file, not original source.
  */
-export function isSymbolicated(event: SentryEvent): boolean {
+export function isSymbolicated(event) {
   const frames =
     event.entries
       ?.filter((e) => e.type === 'exception')
@@ -112,11 +67,8 @@ export function isSymbolicated(event: SentryEvent): boolean {
  * the runtime tag the same event satisfies both server and browser; without
  * release and environment an event from staging or a previous deploy counts.
  */
-export function verifyReceipt(
-  event: SentryEvent | null,
-  expect: ReceiptExpectation,
-): ReceiptVerdict {
-  const problems: string[] = [];
+export function verifyReceipt(event, expect) {
+  const problems = [];
   if (!event) {
     return {
       ok: false,
@@ -166,11 +118,7 @@ export function verifyReceipt(
  * Requires distinct event ids: emitting once through the Node SDK and reusing
  * the id for both fields is exactly what the previous implementation did.
  */
-export function verifyReceiptPair(input: { server: ReceiptVerdict; browser: ReceiptVerdict }): {
-  ok: boolean;
-  problems: string[];
-  symbolicated: boolean;
-} {
+export function verifyReceiptPair(input) {
   const problems = [
     ...input.server.problems.map((p) => `server: ${p}`),
     ...input.browser.problems.map((p) => `browser: ${p}`),

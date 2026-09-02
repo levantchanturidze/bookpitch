@@ -26,8 +26,10 @@ export const dynamic = 'force-dynamic';
 //     reached at all on a deployment that has not deliberately turned it on;
 //   * a caller-supplied nonce is required and echoed into the event, so a
 //     verification run can prove the event is its own and not a cached one;
-//   * in-process rate limit — one probe per minute — so it cannot be used to
-//     flood the Sentry quota even by someone holding the secret;
+//   * in-process rate limit — one probe per minute. Honest about its limits:
+//     serverless instances do not share memory, so this bounds a single
+//     instance rather than the deployment. It is a backstop behind the enable
+//     flag and the bearer secret, not the primary control;
 //   * no PII, no request data, no stack from the caller. The error is
 //     constructed here, in this file, and its stack is this file.
 //

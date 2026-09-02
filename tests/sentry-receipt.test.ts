@@ -1,10 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import {
-  verifyReceipt,
-  verifyReceiptPair,
-  isSymbolicated,
-  type SentryEvent,
-} from '@/lib/sentry-receipt';
+import { verifyReceipt, verifyReceiptPair, isSymbolicated } from '../scripts/sentry-receipt.mjs';
+
+/** Shape of the Sentry API event payload these tests build. */
+type SentryEvent = Record<string, unknown>;
 
 // -----------------------------------------------------------------------------
 // §3 — what counts as Sentry RECEIPT evidence.

@@ -611,6 +611,36 @@ async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
  * The production deployment, with everything needed to prove it is the one
  * serving customers — not merely one that exists.
  */
+/**
+ * Every ops-incident issue, paginated.
+ *
+ * A single `per_page=100` page is not the whole history, and the gap is a false
+ * positive rather than a false negative: an old incident that is STILL OPEN
+ * falling off page one makes the window pass when it should not. Workflow runs
+ * were paginated in the previous round and incidents were not, which is the
+ * kind of asymmetry that survives review because nobody states it.
+ */
+async function allIncidents(repo, token, maxPages = 10) {
+  const out = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const batch = await gh(
+      `/repos/${repo}/issues?state=all&labels=ops-incident&per_page=100&page=${page}`,
+      token,
+    );
+    if (!batch || batch.length === 0) break;
+    out.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return out.map((i) => ({
+    number: i.number,
+    createdAt: i.created_at,
+    // Retained so recovery can be required after the incident CLOSED rather
+    // than when it opened.
+    closedAt: i.closed_at ?? null,
+    state: i.state,
+  }));
+}
+
 async function currentDeployment(repo, token) {
   const deployments = await gh(
     `/repos/${repo}/deployments?environment=Production&per_page=1`,
@@ -660,73 +690,88 @@ async function resolveAliasReleases(hosts) {
 }
 
 /**
- * Sentry receipt, verified against Sentry's own API.
+ * Re-verify the persisted Sentry receipt against Sentry's own API, every tick.
  *
- * This replaces SOAK_SENTRY_RECEIPT_VERIFIED, a workflow boolean an operator
- * ticked. A checkbox is not evidence that an error would reach a human, and it
- * is exactly the kind of self-asserted signal the rest of this project exists
- * to remove.
+ * The previous version read SOAK_SENTRY_RECEIPT_VERIFIED — a boolean an
+ * operator ticked in the workflow form. This fetches both persisted event ids
+ * and re-checks them with the same judgement scripts/verify-sentry.mjs uses
+ * (lib/sentry-receipt.ts), so losing the DSNs, losing API access, or the
+ * receipt no longer matching the deployed release all fail the gate — and a
+ * failing gate puts the window into awaiting-recovery rather than coasting on
+ * a verification done a day earlier.
  *
- * Requires the event ids recorded by scripts/verify-sentry.mjs and confirms
- * each is retrievable from the intended organization/project. Returns nulls
- * when the credentials are absent, which fails the gate.
+ * Returns `{ ok: false }` with a reason whenever anything is missing. Absence
+ * is never agreement.
  */
-async function verifySentryReceipt(persisted) {
+async function verifySentryReceipt({ persisted, configured, releaseSha }) {
+  const base = {
+    configured,
+    ok: false,
+    serverEventId: persisted?.serverEventId ?? null,
+    browserEventId: persisted?.browserEventId ?? null,
+    problems: [],
+  };
+  if (!configured) {
+    return { ...base, problems: ['production has no Sentry DSN configured'] };
+  }
   const token = process.env.SENTRY_AUTH_TOKEN;
   const org = process.env.SENTRY_ORG;
   const project = process.env.SENTRY_PROJECT;
-  const serverId = persisted?.serverEventId;
-  const browserId = persisted?.browserEventId;
-  if (!token || !org || !project || !serverId || !browserId) {
+  if (!token || !org || !project) {
     return {
-      configured: Boolean(persisted?.configured),
-      serverEventId: null,
-      browserEventId: null,
-      sourceMapsResolved: false,
-      reason: !token
-        ? 'SENTRY_AUTH_TOKEN is not set'
-        : !org || !project
-          ? 'SENTRY_ORG / SENTRY_PROJECT are not set'
-          : 'no verified event ids are persisted — run scripts/verify-sentry.mjs',
+      ...base,
+      problems: ['SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT are not set'],
     };
   }
-  const seen = {};
-  for (const [key, id] of [
-    ['serverEventId', serverId],
-    ['browserEventId', browserId],
-  ]) {
+  if (!persisted?.serverEventId || !persisted?.browserEventId || !persisted?.nonce) {
+    return {
+      ...base,
+      problems: [
+        'no verified server+browser event ids and nonce are persisted — run scripts/verify-sentry.mjs',
+      ],
+    };
+  }
+
+  const { verifyReceipt, verifyReceiptPair } = await import('./sentry-receipt.mjs');
+  const fetchEvent = async (id) => {
     try {
       const res = await fetch(`https://sentry.io/api/0/projects/${org}/${project}/events/${id}/`, {
         headers: { authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(20_000),
       });
-      seen[key] = res.ok ? id : null;
+      return res.ok ? await res.json() : null;
     } catch {
-      seen[key] = null;
+      return null;
     }
-  }
+  };
+
+  const expectation = {
+    releaseSha,
+    environment: process.env.SENTRY_ENVIRONMENT ?? 'production',
+    nonce: persisted.nonce,
+    // The receipt must have been produced for THIS release. Re-verification
+    // does not re-run the probe, so freshness is bounded by the recorded time.
+    notBefore: new Date(persisted.verifiedAt ?? 0),
+  };
+  const server = verifyReceipt(await fetchEvent(persisted.serverEventId), {
+    ...expectation,
+    runtime: 'server',
+  });
+  const browser = verifyReceipt(await fetchEvent(persisted.browserEventId), {
+    ...expectation,
+    runtime: 'browser',
+  });
+  const pair = verifyReceiptPair({ server, browser });
+
   return {
     configured: true,
-    serverEventId: seen.serverEventId ?? null,
-    browserEventId: seen.browserEventId ?? null,
-    sourceMapsResolved: Boolean(persisted?.sourceMapsResolved),
-    reason: null,
+    ok: pair.ok,
+    serverEventId: server.eventId,
+    browserEventId: browser.eventId,
+    problems: pair.problems,
   };
 }
 
-/**
- * Exercise every read the controller depends on, and change nothing.
- *
- * §13 forbids starting a soak merely to test it, and the previous round shipped
- * a controller whose workflow lacked `actions: read` and `deployments: read`.
- * Every runsFor() call would have 403'd and the controller would have reported
- * "0 natural observations" — indistinguishable from a quiet window, which is
- * the worst way for a soak to fail.
- *
- * This mode proves the permissions and the collectors. It creates no issue,
- * writes no state, and posts no comment. It exits non-zero if any read fails,
- * so a missing scope is a red run rather than a silent zero.
- */
 async function dryRun(repo, token) {
   const since = new Date(Date.now() - 26 * 3_600_000).toISOString();
   const findings = [];
@@ -775,11 +820,8 @@ async function dryRun(repo, token) {
   }
 
   try {
-    const issues = await gh(
-      `/repos/${repo}/issues?state=all&labels=ops-incident&per_page=100`,
-      token,
-    );
-    ok('issues:read ops-incident', `${(issues ?? []).length} incident issues visible`);
+    const issues = await allIncidents(repo, token);
+    ok('issues:read ops-incident', `${issues.length} incident issues visible (paginated)`);
   } catch (err) {
     bad('issues:read ops-incident', err instanceof Error ? err.message : 'unknown');
   }
@@ -917,7 +959,7 @@ async function main() {
     runsFor(repo, token, 'production-monitor.yml', 'schedule', windowStart),
     runsFor(repo, token, 'production-backup.yml', 'schedule', windowStart),
     runsFor(repo, token, 'cron.yml', 'schedule', windowStart),
-    gh(`/repos/${repo}/issues?state=all&labels=ops-incident&per_page=100`, token),
+    allIncidents(repo, token),
   ]);
 
   let deployment = null;
@@ -931,7 +973,7 @@ async function main() {
   }
 
   let outboxDead = null;
-  let jobsNotSucceeding = null;
+  let unhealthyJobs = null;
   let sentryConfigured = false;
   const cronSecret = process.env.CRON_SECRET;
   const target = process.env.MONITOR_PRODUCTION_URL ?? 'https://bookpitch.ge';
@@ -945,17 +987,44 @@ async function main() {
         const body = await res.json();
         const m = body?.metrics ?? body;
         outboxDead = m?.outbox?.dead ?? null;
-        jobsNotSucceeding = m?.cronHeartbeat?.jobsNotSucceeding ?? null;
         sentryConfigured = (m?.config?.missingObservabilityEnv ?? null) === 0;
+
+        // Per-job, not the old scalar. `unhealthyJobs` stays NULL when the map
+        // is absent, and the gate reads null as "could not be read" rather than
+        // as zero problems — a deployment that predates per-job reporting must
+        // not certify a window.
+        const jobs = m?.cronHeartbeat?.jobs ?? null;
+        if (jobs) {
+          unhealthyJobs = Object.entries(jobs)
+            .filter(([, j]) => {
+              if (!j || !j.present) return true;
+              if (j.outcome !== 1) return true;
+              if (j.successMinutesAgo === null || j.successMinutesAgo > j.maxAgeMinutes)
+                return true;
+              if (
+                j.expectedUnits !== null &&
+                j.processedUnits !== null &&
+                j.processedUnits < j.expectedUnits
+              ) {
+                return true;
+              }
+              return false;
+            })
+            .map(([name]) => name);
+        }
       }
     } catch {
       /* null → gates read it as "not evidence of health" */
     }
   }
 
+  // Revalidated against Sentry on every tick, using the persisted event ids and
+  // the same pure judgement the verification script uses. Trusting a persisted
+  // boolean is what the previous version did.
   const sentry = await verifySentryReceipt({
-    ...(state.sentry ?? {}),
+    persisted: state.sentry ?? null,
     configured: sentryConfigured,
+    releaseSha: state.releaseSha,
   });
 
   const result = evaluateSoak({
@@ -965,15 +1034,11 @@ async function main() {
       backupRuns: backup.runs,
       cronRuns: cron.runs,
       historyComplete: monitor.complete && backup.complete && cron.complete,
-      incidents: (incidents ?? []).map((i) => ({
-        number: i.number,
-        createdAt: i.created_at,
-        state: i.state,
-      })),
+      incidents: incidents ?? [],
       deployment,
       sentry,
       outboxDead,
-      jobsNotSucceeding,
+      unhealthyJobs,
     },
   });
 

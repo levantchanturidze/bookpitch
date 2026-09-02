@@ -364,6 +364,10 @@ BEGIN
     JOIN pg_class c ON c.oid = i.inhrelid
     JOIN pg_namespace n ON n.oid = p.relnamespace
    WHERE n.nspname = 'public' AND p.relname = 'audit_log'
+     -- has_table_privilege() accounts for privileges reaching bookpitch_app
+     -- through PUBLIC and through role membership, so `GRANT SELECT ON
+     -- audit_log_2026_09 TO PUBLIC` is caught here too. Verified rather than
+     -- assumed.
      AND (has_table_privilege('bookpitch_app', c.oid, 'SELECT')
        OR has_table_privilege('bookpitch_app', c.oid, 'INSERT')
        OR has_table_privilege('bookpitch_app', c.oid, 'UPDATE')
