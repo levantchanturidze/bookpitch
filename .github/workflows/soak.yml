@@ -36,11 +36,12 @@ on:
         required: false
         type: string
         default: ''
-      sentry_receipt_verified:
-        description: 'Set true ONLY after scripts/verify-sentry.mjs reached level 4 (RECEIVED).'
-        required: false
-        type: boolean
-        default: false
+      # There is deliberately NO sentry_receipt_verified input any more. It was
+      # a boolean an operator ticked, which is not evidence that an error would
+      # reach a human — it is a self-asserted claim of exactly the kind the
+      # rest of this project exists to remove. Receipt is now verified against
+      # Sentry's own API using persisted event ids, and needs SENTRY_AUTH_TOKEN,
+      # SENTRY_ORG and SENTRY_PROJECT.
 
 permissions:
   contents: read
@@ -74,5 +75,7 @@ jobs:
           SOAK_START: ${{ inputs.start }}
           SOAK_RELEASE_SHA: ${{ inputs.release_sha }}
           SOAK_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
-          SOAK_SENTRY_RECEIPT_VERIFIED: ${{ inputs.sentry_receipt_verified }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
         run: node scripts/soak-controller.mjs
