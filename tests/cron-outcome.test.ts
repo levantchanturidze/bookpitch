@@ -1,4 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { classifyRun, recordCronHeartbeat } from '@/lib/cron-heartbeat';
 import { collectOpsMetrics } from '@/lib/ops-metrics';
 import { unsafePrismaAdmin } from '@/lib/db';
@@ -261,5 +263,41 @@ describe('the monitor surfaces a reminder that can never be sent', () => {
 
   it('is registered against monitor blindness', () => {
     expect(OPS_DERIVED_CHECK_IDS).toContain('reminders-missed');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The boundary between "the job failed" and "a message failed".
+//
+// Getting this wrong is a self-inflicted outage: a single undeliverable address
+// among the outbox rows would 500 the hourly housekeeping endpoint forever.
+// The outbox retries with exponential backoff and dead-letters after
+// max_attempts, and `outbox-dead-letters` is the alarm for mail that never
+// lands. Housekeeping is responsible for completing the sweep, not for
+// guaranteeing every recipient exists.
+// -----------------------------------------------------------------------------
+describe('a failed message is not a failed job', () => {
+  it('housekeeping does not count outbox send failures against itself', () => {
+    const src = readFileSync(
+      path.resolve(__dirname, '..', 'app', 'api', 'cron', 'housekeeping', 'route.ts'),
+      'utf8',
+    );
+    // The heartbeat call must not pass outboxFailed through as `failed`.
+    expect(src).toMatch(/failed: 0,/);
+    expect(src).not.toMatch(/failed: result\.outboxFailed/);
+    expect(src).toMatch(/outbox-dead-letters/);
+  });
+
+  it('a drain that delivered nothing is still a completed sweep', () => {
+    // An empty queue is not a failure.
+    expect(classifyRun({ expected: 0, processed: 0, failed: 0 })).toBe('success');
+  });
+
+  it('COMPLEMENT: dead letters are still surfaced, by their own check', () => {
+    const r = evaluateOpsMetrics({
+      config: {},
+      outbox: { dead: 2, pending: 0, processing: 0, staleClaims: 0, deadLast24h: 2 },
+    }).find((x: { id: string }) => x.id === 'outbox-dead-letters');
+    expect(r!.ok).toBe(false);
   });
 });
