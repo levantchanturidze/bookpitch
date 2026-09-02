@@ -628,6 +628,29 @@ function numOrNull(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * True when an error is Postgres 42P01 (undefined_table).
+ *
+ * Checked in three places because Prisma does not present a raw Postgres error
+ * consistently: depending on client version it surfaces as `code` on the
+ * error, as `meta.code` inside a PrismaClientKnownRequestError (P2010), or
+ * only in the message text. Matching just one would silently stop working on a
+ * client upgrade — and it would fail OPEN, which is the worse direction: a
+ * genuinely broken query would be reported as an empty table forever.
+ *
+ * Deliberately narrow. Anything that is not a missing table is a real failure
+ * and must reach the caller.
+ */
+export function isUndefinedTableError(err: unknown): boolean {
+  const e = err as { code?: string; meta?: { code?: string }; message?: string } | null;
+  if (!e) return false;
+  return (
+    e.code === '42P01' ||
+    e.meta?.code === '42P01' ||
+    /\b42P01\b|relation "?[a-z_]+"? does not exist/i.test(String(e.message ?? ''))
+  );
+}
+
 export async function collectOpsMetrics(): Promise<OpsMetrics> {
   // One statement per concern, all using the DB clock. Node's clock is not
   // authoritative for anything time-based in this project (see CLAUDE.md and
@@ -862,7 +885,18 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
                EXTRACT(EPOCH FROM (NOW() - last_succeeded_at))::float / 60 AS minutes_ago,
                last_units
           FROM cron_heartbeat
-      `,
+      `.catch((err: unknown) => {
+      // Tolerates the table not existing, and NOTHING else. Vercel builds
+      // the merge commit and migrate.yml applies the migration from the same
+      // push; they race, and Vercel usually wins. Without this the whole ops
+      // endpoint 500s for the minute or two between them, the monitor's ops
+      // probe fails, and every ops-derived check goes UNOBSERVABLE for no
+      // reason. An absent table yields no rows, which the monitor already
+      // reads as "this deployment predates the metric" rather than a fault.
+      //
+      if (isUndefinedTableError(err)) return [];
+      throw err;
+    }),
   ]);
 
   const o = outboxRows[0] ?? {};
