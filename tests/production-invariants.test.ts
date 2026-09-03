@@ -173,7 +173,17 @@ function runVerifier(): VerifyResult {
  * restore is incomplete the next case would inherit a broken fixture, and the
  * "passes again" assertion catches that immediately.
  */
-function injects(name: string, breakSql: string[], expected: RegExp, restoreSql: string[]) {
+function injects(
+  name: string,
+  breakSql: string[],
+  expected: RegExp,
+  // A thunk when the restore depends on something captured in beforeAll. An
+  // array literal is evaluated when the describe body RUNS, which is before
+  // any hook has assigned anything, so `[capturedDefinition]` would silently
+  // be `['']` — psql accepts an empty statement, the fixture stays broken, and
+  // the failure surfaces in the NEXT test as "fixture must be clean".
+  restoreSql: string[] | (() => string[]),
+) {
   it(name, () => {
     expect(runVerifier().ok, 'fixture must be clean before injection').toBe(true);
     try {
@@ -182,7 +192,11 @@ function injects(name: string, breakSql: string[], expected: RegExp, restoreSql:
       expect(broken.ok, `verifier did NOT fail after: ${breakSql.join('; ')}`).toBe(false);
       expect(broken.output).toMatch(expected);
     } finally {
-      for (const s of restoreSql) sql(s);
+      const statements = typeof restoreSql === 'function' ? restoreSql() : restoreSql;
+      for (const s of statements) {
+        if (!s.trim()) throw new Error(`${name}: restore statement is empty`);
+        sql(s);
+      }
     }
     expect(runVerifier().ok, 'verifier must pass again once restored').toBe(true);
   });
@@ -203,6 +217,7 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
   // Captured so a DROP can be undone exactly rather than approximately.
   let paymentsPolicy = '';
   let partitionFnDef = '';
+  let orgIdFnDef = '';
 
   beforeAll(() => {
     pgEnv = buildPgEnv(ADMIN_URL);
@@ -230,6 +245,14 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
       `SELECT pg_get_functiondef(p.oid) FROM pg_proc p
         JOIN pg_namespace n ON n.oid=p.pronamespace
        WHERE n.nspname='public' AND p.proname='bp_create_monthly_partition'`,
+    ).trim();
+
+    // Check 7's injections rewrite this function in place, so the exact
+    // original text has to come back afterwards — not an approximation of it.
+    orgIdFnDef = sql(
+      `SELECT pg_get_functiondef(p.oid) FROM pg_proc p
+        JOIN pg_namespace n ON n.oid=p.pronamespace
+       WHERE n.nspname='public' AND p.proname='current_org_id'`,
     ).trim();
 
     // Fail once, with the reason, rather than nineteen times with "fixture
@@ -609,6 +632,88 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
       ['ALTER ROLE bookpitch_app BYPASSRLS'],
       /bookpitch_app has BYPASSRLS/,
       ['ALTER ROLE bookpitch_app NOBYPASSRLS'],
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Check 7 — current_org_id() itself.
+  //
+  // Everything above verifies that the POLICIES say `= current_org_id()`. None
+  // of it looks at the function. Each injection below leaves all 21 policies
+  // textually perfect and tenant isolation gone, which is the only reason this
+  // check is worth having.
+  //
+  // `CREATE OR REPLACE` cannot change a function's return type while policies
+  // depend on it, so the returns-text and overload cases are proven against
+  // probe functions in tests/rls-current-org-id.test.ts rather than by dropping
+  // every policy here.
+  // ---------------------------------------------------------------------------
+  describe('current_org_id() itself', () => {
+    // Restoring from the captured `pg_get_functiondef` output puts back the
+    // exact original, including anything a future migration adds to it.
+    const restore = () => [orgIdFnDef];
+
+    injects(
+      'a constant body — every tenant reads one organization',
+      [
+        `CREATE OR REPLACE FUNCTION public.current_org_id() RETURNS uuid
+           LANGUAGE sql STABLE AS $f$
+           SELECT '00000000-0000-0000-0000-000000000001'::uuid; $f$`,
+      ],
+      /current_org_id\(\) body is/,
+      restore,
+    );
+
+    injects(
+      'SECURITY DEFINER',
+      [
+        `CREATE OR REPLACE FUNCTION public.current_org_id() RETURNS uuid
+           LANGUAGE sql STABLE SECURITY DEFINER AS $f$
+           SELECT NULLIF(current_setting('app.current_org_id', true), '')::uuid; $f$`,
+      ],
+      /is SECURITY DEFINER/,
+      restore,
+    );
+
+    injects(
+      'VOLATILE rather than STABLE',
+      [
+        `CREATE OR REPLACE FUNCTION public.current_org_id() RETURNS uuid
+           LANGUAGE sql VOLATILE AS $f$
+           SELECT NULLIF(current_setting('app.current_org_id', true), '')::uuid; $f$`,
+      ],
+      /is not STABLE/,
+      restore,
+    );
+
+    injects(
+      'a settings override baked into the function',
+      [
+        `CREATE OR REPLACE FUNCTION public.current_org_id() RETURNS uuid
+           LANGUAGE sql STABLE SET search_path = pg_catalog AS $f$
+           SELECT NULLIF(current_setting('app.current_org_id', true), '')::uuid; $f$`,
+      ],
+      /carries a settings override/,
+      restore,
+    );
+
+    injects(
+      'a shadowing copy in another schema — public.current_org_id stays perfect',
+      [
+        `CREATE SCHEMA IF NOT EXISTS bp_shadow`,
+        `CREATE OR REPLACE FUNCTION bp_shadow.current_org_id() RETURNS uuid
+           LANGUAGE sql STABLE AS $f$
+           SELECT '00000000-0000-0000-0000-000000000002'::uuid; $f$`,
+      ],
+      /definition\(s\) of current_org_id\(\) exist/,
+      ['DROP SCHEMA bp_shadow CASCADE'],
+    );
+
+    injects(
+      'the app role given CREATE on public — it could replace the function that gates it',
+      ['GRANT CREATE ON SCHEMA public TO bookpitch_app'],
+      /has CREATE on schema public/,
+      ['REVOKE CREATE ON SCHEMA public FROM bookpitch_app'],
     );
   });
 });
