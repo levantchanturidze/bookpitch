@@ -187,8 +187,14 @@ describe('cron workflow health', () => {
   });
 
   it('fails when the last success is older than the allowed gap', () => {
-    const results = evaluateCronHealth([run(200, 'success', 1)], NOW);
-    expect(results.find((r) => r.id === 'cron-staleness')!.ok).toBe(false);
+    // 200 minutes trips the delivery-lag warning but not the outage gate; 400
+    // trips both. Asserting each on its own check keeps the split honest.
+    const lagOnly = evaluateCronHealth([run(200, 'success', 1)], NOW);
+    expect(lagOnly.find((r) => r.id === 'cron-delivery-lag')!.ok).toBe(false);
+    expect(lagOnly.find((r) => r.id === 'cron-staleness')!.ok).toBe(true);
+
+    const both = evaluateCronHealth([run(400, 'success', 1)], NOW);
+    expect(both.find((r) => r.id === 'cron-staleness')!.ok).toBe(false);
   });
 
   it('fails on repeated failures even when the latest run is green', () => {
@@ -915,15 +921,20 @@ describe('mocked providers are separated from malformed secrets', () => {
 // -----------------------------------------------------------------------------
 // A stale cron has two causes that need opposite responses.
 //
-// Measured on this repository 2026-09-01: `*/15 * * * *` was delivered at
-// 00:05, 00:27, 05:07, 06:07, 06:24, 07:49, 10:05 and 12:26 UTC — gaps of up
-// to 4h39m against a declared 15 minutes. The 90-minute limit encodes
-// "reminders run every 15 minutes, so a 90-minute gap means something broke",
-// and that premise no longer holds.
+// Measured on this repository 2026-09-01: the 15-minute schedule was delivered
+// at 00:05, 00:27, 05:07, 06:07, 06:24, 07:49, 10:05 and 12:26 UTC — gaps of up
+// to 4h39m against a declared 15 minutes. The wider sample (191 scheduled runs
+// over 12.5 days) puts p99 at 3.02h.
 //
-// The threshold is deliberately NOT raised: reminders really are late, which is
-// a real product impact for a booking system. What the check must do is say
-// whether the operator should fix the app or accept GitHub's queue.
+// This suite originally asserted that the 90-minute limit must never move,
+// which was right about the customer impact and wrong about what a gate is for:
+// 13.7% of measured gaps exceed it, so as a release-blocking check it opened
+// and closed an incident every seventh interval and nothing could be done about
+// any of them.
+//
+// The observation survives at 90 minutes as `cron-delivery-lag`, informational.
+// `cron-staleness` keeps the diagnosis logic and now trips where a delivery lag
+// stops being a plausible explanation. Both are asserted below.
 // -----------------------------------------------------------------------------
 describe('a stale cron says which failure it is', () => {
   const NOW = new Date('2026-09-01T14:20:00Z');
@@ -937,8 +948,9 @@ describe('a stale cron says which failure it is', () => {
   }
 
   it('names schedule delivery when the most recent run succeeded', () => {
-    const check = staleness([run(33507668170, 'success', '2026-09-01T12:26:30Z')]);
-    expect(check!.ok, 'reminders are late; this is still a failure').toBe(false);
+    // 7h54m ago: past the outage threshold, so this is the gate speaking.
+    const check = staleness([run(33507668170, 'success', '2026-09-01T06:26:30Z')]);
+    expect(check!.ok, 'a gap this size is no longer an ordinary delivery lag').toBe(false);
     expect(check!.detail).toMatch(/SUCCEEDED/);
     expect(check!.detail).toMatch(/GitHub has not delivered the schedule/);
     expect(check!.detail).toMatch(/the application is not broken/);
@@ -946,8 +958,8 @@ describe('a stale cron says which failure it is', () => {
 
   it('names the application when the most recent run failed', () => {
     const check = staleness([
-      run(2, 'failure', '2026-09-01T12:30:00Z'),
-      run(1, 'success', '2026-09-01T09:00:00Z'),
+      run(2, 'failure', '2026-09-01T06:30:00Z'),
+      run(1, 'success', '2026-09-01T02:00:00Z'),
     ]);
     expect(check!.ok).toBe(false);
     expect(check!.detail).toMatch(/FAILURE/);
@@ -962,12 +974,22 @@ describe('a stale cron says which failure it is', () => {
     expect(check!.detail).not.toMatch(/not schedule delivery/);
   });
 
-  it('COMPLEMENT: the 90-minute limit is unchanged', () => {
-    // The cause clause must not become a way to widen the window. 89 minutes
-    // passes, 91 does not.
-    expect(staleness([run(4, 'success', '2026-09-01T12:52:00Z')])!.ok).toBe(true);
-    expect(staleness([run(5, 'success', '2026-09-01T12:48:00Z')])!.ok).toBe(false);
-    expect(DEFAULTS.cronMaxAgeMinutes).toBe(90);
+  it('COMPLEMENT: the 90-minute observation survives, on the warning line', () => {
+    // What must not happen is the tighter signal disappearing. It did not move
+    // — it moved CHECKS. 89 minutes passes, 91 does not, exactly as before.
+    const lag = (runs: ReturnType<typeof run>[]) =>
+      evaluateCronHealth(runs, NOW).find((r: { id: string }) => r.id === 'cron-delivery-lag');
+    expect(lag([run(4, 'success', '2026-09-01T12:52:00Z')])!.ok).toBe(true);
+    expect(lag([run(5, 'success', '2026-09-01T12:48:00Z')])!.ok).toBe(false);
+    expect(DEFAULTS.cronDeliveryLagMinutes).toBe(90);
+  });
+
+  it('COMPLEMENT: the gate boundary is exactly where it claims to be', () => {
+    // 5h59m passes, 6h01m does not. A threshold nobody probes is a number in a
+    // comment.
+    expect(staleness([run(6, 'success', '2026-09-01T08:21:00Z')])!.ok).toBe(true);
+    expect(staleness([run(7, 'success', '2026-09-01T08:19:00Z')])!.ok).toBe(false);
+    expect(DEFAULTS.cronMaxAgeMinutes).toBe(360);
   });
 
   it('no runs at all still reports the original message', () => {
@@ -1064,11 +1086,11 @@ describe('manual dispatches cannot stand in for scheduled evidence', () => {
   });
 
   it('a manual success does not refresh cron-staleness', () => {
-    // One scheduled run 4 hours ago (beyond the 90-minute limit), and a manual
-    // run one minute ago. Staleness must read 4 hours, not one minute.
+    // One scheduled run 8 hours ago (beyond the outage threshold), and a manual
+    // run one minute ago. Staleness must read 8 hours, not one minute.
     const runs = [
       manual(999, 'success', '2026-09-01T18:44:00Z'),
-      scheduled(888, 'success', '2026-09-01T14:45:00Z'),
+      scheduled(888, 'success', '2026-09-01T10:45:00Z'),
     ];
     const stale = check(runs, 'cron-staleness');
     expect(stale.ok).toBe(false);
@@ -1158,13 +1180,17 @@ describe('manual dispatches cannot stand in for scheduled evidence', () => {
 
   // List/evaluator parity: every id the evaluator emits is accounted for, and
   // the reliability ids are exactly the two that gate the run.
-  it('emits exactly the three cron ids, two gating and one informational', () => {
+  it('emits exactly the four cron ids, two gating and two informational', () => {
     const results = evaluateCronHealth(REAL_HISTORY, NOW);
-    expect(results.map((r: { id: string }) => r.id)).toEqual([
-      'cron-staleness',
+    expect(results.map((r: { id: string }) => r.id).sort()).toEqual([
+      'cron-delivery-lag',
       'cron-failures',
       'cron-manual-verification',
+      'cron-staleness',
     ]);
+    // The gating half is what the pass/fail count and the incident reconciler
+    // see. `cron-delivery-lag` must stay out of it: it reports a condition
+    // nobody can act on, and 13.7% of measured intervals trip it.
     expect(
       results
         .filter((r: { informational?: boolean }) => !r.informational)
@@ -1371,5 +1397,99 @@ describe('the monitor decides which jobs it expects, not production', () => {
     );
     expect(jobChecks).toHaveLength(4);
     expect(jobChecks.every((r) => r.ok)).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4.9 — two different questions were sharing one threshold.
+//
+// `cron-staleness` fires when no SCHEDULED cron run has succeeded within
+// `cronMaxAgeMinutes`, and that number was 90: "reminders run every 15 minutes,
+// so a 90-minute gap means something broke". Measured over the last 191
+// scheduled runs of `*/15 * * * *` on this account (12.5 days):
+//
+//   p50 0.44h   p90 2.08h   p95 2.44h   p99 3.02h
+//   gaps > 1.5h: 26 of 190 = 13.7%
+//   gaps > 6.0h: 1 of 190  — the 7-day Actions billing suspension, an outage
+//
+// So the premise is false on this account. A 90-minute gap is the ordinary
+// behaviour of GitHub's scheduler, and the check opened and closed an incident
+// on roughly one interval in seven (#60 was the most recent). An alarm that
+// fires that often on a healthy system does not defend the customer; it teaches
+// the operator to close it unread, and the next one is the real one.
+//
+// The 90-minute observation is NOT deleted, because the customer impact is
+// real: reminders genuinely are late. It becomes a warning that is reported and
+// never opens an incident. The release-blocking threshold moves to where it
+// actually discriminates an outage from a delivery lag.
+//
+// This is not a threshold raised to go green. Both signals still exist, both
+// are still emitted, and the tighter one is still visible on every run.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('cron delivery lag and cron outage are different claims', () => {
+  const at = (hoursAgo: number) => new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString();
+  const run = (over: Record<string, unknown> = {}) => ({
+    runId: 1,
+    status: 'completed',
+    conclusion: 'success',
+    completedAt: at(0.2),
+    event: 'schedule',
+    ...over,
+  });
+  const byId = (runs: ReturnType<typeof run>[], id: string) =>
+    evaluateCronHealth(runs, NOW).find((r) => r.id === id);
+
+  it('THE DEFECT: a 2h delivery gap does not open an incident', () => {
+    // p90 on this account. Nothing is broken and nothing is actionable.
+    const stale = byId([run({ completedAt: at(2) })], 'cron-staleness');
+    expect(stale!.ok, 'a p90 delivery gap must not be a release-blocking failure').toBe(true);
+  });
+
+  it('…but it is still REPORTED — the customer impact does not disappear', () => {
+    const lag = byId([run({ completedAt: at(2) })], 'cron-delivery-lag');
+    expect(lag, 'the 90-minute observation must still be emitted').toBeDefined();
+    expect(lag!.ok).toBe(false);
+    expect(lag!.detail).toMatch(/late/i);
+  });
+
+  it('the lag warning is informational, so it can never open or close an incident', () => {
+    const lag = byId([run({ completedAt: at(2) })], 'cron-delivery-lag');
+    expect(lag!.informational).toBe(true);
+    // Belt and braces: prove it through the reconciler, not just the flag.
+    const plan = reconcileIncidents([lag!], []);
+    expect(plan.toOpen).toEqual([]);
+  });
+
+  it('a gap beyond the outage threshold IS release-blocking', () => {
+    const stale = byId([run({ completedAt: at(7) })], 'cron-staleness');
+    expect(stale!.ok, '7h exceeds anything measured short of an outage').toBe(false);
+  });
+
+  it('a normal gap trips neither', () => {
+    const results = evaluateCronHealth([run({ completedAt: at(0.4) })], NOW);
+    expect(results.find((r) => r.id === 'cron-staleness')!.ok).toBe(true);
+    expect(results.find((r) => r.id === 'cron-delivery-lag')!.ok).toBe(true);
+  });
+
+  it('a FAILED scheduled run is still the application, at either threshold', () => {
+    // The distinction the delivery/outage split must not blur: if the schedule
+    // arrived and the run failed, that is not a delivery problem at all.
+    const stale = byId([run({ completedAt: at(2), conclusion: 'failure' })], 'cron-staleness');
+    expect(stale!.ok, 'a failed scheduled run is not excused by the delivery window').toBe(false);
+    expect(stale!.detail).toMatch(/not schedule delivery|application or the endpoint/i);
+  });
+
+  it('no scheduled run at all is release-blocking regardless of gap size', () => {
+    const stale = byId([run({ event: 'workflow_dispatch' })], 'cron-staleness');
+    expect(stale!.ok).toBe(false);
+    expect(stale!.detail).toMatch(/no SCHEDULED run/i);
+  });
+
+  it('both ids are registered so neither is an orphan to the reconciler', () => {
+    const ids = evaluateCronHealth([run()], NOW).map((r) => r.id);
+    expect(ids).toContain('cron-staleness');
+    expect(ids).toContain('cron-delivery-lag');
   });
 });

@@ -34,6 +34,7 @@
 // -----------------------------------------------------------------------------
 
 import process from 'node:process';
+import { unhealthyJobsFrom } from './heartbeat-contract.mjs';
 
 export const SOAK_DEFAULTS = {
   /** An uninterrupted healthy window shorter than this is not a soak. */
@@ -102,6 +103,7 @@ export function parseState(body) {
  *     sentry: {configured: boolean, ok: boolean, serverEventId: string|null,
  *              browserEventId: string|null, problems?: string[]} | null,
  *     outboxDead: number | null,
+ *     retentionSuccessMinutesAgo?: number | null,
  *     unhealthyJobs?: string[] | null,
  *     historyComplete?: boolean,
  *   },
@@ -428,6 +430,42 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
         : evidence.unhealthyJobs.length === 0
           ? 'every required scheduled job has a fresh successful heartbeat'
           : `not healthy: ${evidence.unhealthyJobs.join(', ')}`,
+    },
+    {
+      id: 'retention-in-window',
+      // The reason the window is 24 hours and not 2.
+      //
+      // `cron-outcomes` asks whether retention's last success is inside its
+      // freshness limit, and that limit is 30 hours — it runs nightly and
+      // GitHub's delivery is unreliable (R-08). 30 hours is LONGER THAN THE
+      // WINDOW, so a sweep from 26 hours ago satisfies it for the entire soak,
+      // and a full 24 hours could be certified in which the nightly job never
+      // ran once. A window that does not contain the daily work is not a soak
+      // of a system that does daily work.
+      //
+      // Compared as an INSTANT against the effective window start, so a restart
+      // invalidates evidence from before it rather than inheriting it.
+      ...(() => {
+        const mins = evidence.retentionSuccessMinutesAgo;
+        if (typeof mins !== 'number' || !Number.isFinite(mins) || mins < 0) {
+          return {
+            ok: false,
+            detail:
+              'retention success age could not be read — absence of evidence is not evidence ' +
+              'that the nightly sweep ran',
+          };
+        }
+        const at = new Date(now.getTime() - mins * 60_000);
+        const inWindow = at >= windowStart;
+        return {
+          ok: inWindow,
+          detail: inWindow
+            ? `retention last succeeded ${at.toISOString()}, inside the effective window`
+            : `retention last succeeded ${at.toISOString()}, which is BEFORE the window ` +
+              `began at ${windowStart.toISOString()} — the nightly sweep has not run in ` +
+              'this window',
+        };
+      })(),
     },
     {
       id: 'observability',
@@ -953,10 +991,23 @@ async function dryRun(repo, token) {
       if (!res.ok) bad('ops metrics', `HTTP ${res.status}`);
       else {
         const m = (await res.json())?.metrics ?? {};
+        const unhealthy = unhealthyJobsFrom(m?.cronHeartbeat?.jobs ?? null);
+        const retentionMins = m?.cronHeartbeat?.jobs?.retention?.successMinutesAgo ?? null;
         ok(
           'ops metrics',
-          `outboxDead=${m?.outbox?.dead ?? 'null'} jobs=${JSON.stringify(m?.cronHeartbeat?.jobs ?? null).slice(0, 80)}`,
+          `outboxDead=${m?.outbox?.dead ?? 'null'} ` +
+            `unhealthyJobs=${unhealthy === null ? 'UNREADABLE' : JSON.stringify(unhealthy)} ` +
+            `retentionSuccessMinutesAgo=${retentionMins ?? 'null'}`,
         );
+        // A dry run must exercise the JUDGEMENT, not only the fetch. Reporting
+        // the raw map proved the endpoint answered; it did not prove the
+        // contract could read it.
+        if (unhealthy === null) {
+          bad(
+            'ops metrics',
+            'the heartbeat job map is absent or unusable — the soak could not start',
+          );
+        }
       }
     } catch (err) {
       bad('ops metrics', err instanceof Error ? err.message : 'unknown');
@@ -1120,6 +1171,7 @@ async function main() {
 
   let outboxDead = null;
   let unhealthyJobs = null;
+  let retentionSuccessMinutesAgo = null;
   let sentryConfigured = false;
   const cronSecret = process.env.CRON_SECRET;
   const target = process.env.MONITOR_PRODUCTION_URL ?? 'https://bookpitch.ge';
@@ -1139,25 +1191,26 @@ async function main() {
         // is absent, and the gate reads null as "could not be read" rather than
         // as zero problems — a deployment that predates per-job reporting must
         // not certify a window.
-        const jobs = m?.cronHeartbeat?.jobs ?? null;
-        if (jobs) {
-          unhealthyJobs = Object.entries(jobs)
-            .filter(([, j]) => {
-              if (!j || !j.present) return true;
-              if (j.outcome !== 1) return true;
-              if (j.successMinutesAgo === null || j.successMinutesAgo > j.maxAgeMinutes)
-                return true;
-              if (
-                j.expectedUnits !== null &&
-                j.processedUnits !== null &&
-                j.processedUnits < j.expectedUnits
-              ) {
-                return true;
-              }
-              return false;
-            })
-            .map(([name]) => name);
-        }
+        // Judged against the SHARED contract (scripts/heartbeat-contract.mjs),
+        // not against the keys and limits this response happens to carry.
+        //
+        // This used to iterate Object.entries(jobs) and compare against
+        // j.maxAgeMinutes — the same defect the monitor had, on the gate that
+        // decides whether a whole 24-hour window counts. A deployment that
+        // stopped reporting `retention` dropped it silently from the soak's
+        // health check, and one reporting a generous limit was graded against
+        // its own generosity for a day.
+        unhealthyJobs = unhealthyJobsFrom(m?.cronHeartbeat?.jobs ?? null);
+
+        // The nightly sweep's success age, kept as a number so the gate can
+        // turn it into an instant and compare it against the effective window
+        // start. `cron-outcomes` only asks whether it is inside retention's
+        // 30-hour freshness limit, and 30 hours is longer than the window.
+        const retentionEntry = m?.cronHeartbeat?.jobs?.retention ?? null;
+        retentionSuccessMinutesAgo =
+          retentionEntry && typeof retentionEntry.successMinutesAgo === 'number'
+            ? retentionEntry.successMinutesAgo
+            : null;
       }
     } catch {
       /* null → gates read it as "not evidence of health" */
@@ -1185,6 +1238,7 @@ async function main() {
       sentry,
       outboxDead,
       unhealthyJobs,
+      retentionSuccessMinutesAgo,
     },
   });
 

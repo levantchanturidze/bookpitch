@@ -128,12 +128,28 @@ describe('the monitor can tell a queued workflow from work actually done', () =>
     expect(results.find((r: { id: string }) => r.id === 'cron-heartbeat-stale')).toBeUndefined();
   });
 
-  it('the heartbeat limit is looser than the schedule-delivery limit', () => {
+  it('the heartbeat limit is looser than the delivery-lag warning', () => {
     // Otherwise it would just restate the same delivery complaint in a second
     // colour, and go red every time GitHub was late while the app was fine.
-    expect(DEFAULTS.reminderHeartbeatMaxMinutes).toBeGreaterThan(DEFAULTS.cronMaxAgeMinutes);
+    //
+    // This used to compare against cronMaxAgeMinutes, which was 90 and was the
+    // delivery complaint. That threshold has since split: the 90-minute
+    // observation is now `cron-delivery-lag` (informational), and
+    // cronMaxAgeMinutes is the release-blocking outage bound. The property
+    // being asserted is unchanged — it just has to name the right constant.
+    expect(DEFAULTS.reminderHeartbeatMaxMinutes).toBeGreaterThan(DEFAULTS.cronDeliveryLagMinutes);
     // …and it must still clear the measured worst-case delivery gap.
     expect(DEFAULTS.reminderHeartbeatMaxMinutes).toBeGreaterThan(4.7 * 60);
+  });
+
+  it('the two 6h limits are separate constants, not one shared number', () => {
+    // They coincide today for different reasons — one bounds GitHub's delivery,
+    // the other bounds the application's own work. Collapsing them into one
+    // constant would mean improving the scheduler silently loosened the check
+    // that watches the app.
+    expect(DEFAULTS.reminderHeartbeatMaxMinutes).toBe(360);
+    expect(DEFAULTS.cronMaxAgeMinutes).toBe(360);
+    expect(DEFAULTS.cronDeliveryLagMinutes).toBe(90);
   });
 
   it('is registered, so monitor blindness cannot close its incident', () => {

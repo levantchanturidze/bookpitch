@@ -89,6 +89,10 @@ function healthyEvidence(over: Record<string, unknown> = {}) {
     },
     outboxDead: 0,
     unhealthyJobs: [],
+    // The nightly sweep, inside the window. 12 hours ago against a window that
+    // began 25 hours ago — see the `retention-in-window` gate for why "fresh"
+    // is not the same question as "inside the window".
+    retentionSuccessMinutesAgo: 13 * 60,
     ...over,
   };
 }
@@ -946,5 +950,137 @@ describe('a verified receipt can be seeded into soak state automatically', () =>
   it('no receipt at all yields null — absence is not a seeded receipt', () => {
     expect(seedSentryState(undefined)).toBeNull();
     expect(seedSentryState('')).toBeNull();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4.3 — the daily jobs must run INSIDE the window, not merely look fresh.
+//
+// `cron-outcomes` asks whether each job's last success is within its contract
+// limit. For retention that limit is 1800 minutes — 30 hours — because it runs
+// nightly at 02:17 and GitHub's delivery is unreliable (R-08).
+//
+// 30 hours is longer than the soak window. So a retention success from 25 hours
+// before the soak started satisfies `cron-outcomes` for the entire 24 hours,
+// and the soak can certify a full window in which the nightly sweep never ran
+// once. The whole reason the window is 24 hours rather than 2 is to cover the
+// daily jobs; a 24-hour window that does not contain one is 24 hours of
+// nothing.
+//
+// The evidence has to be an INSTANT compared against the effective window
+// start, and it has to move when a recovery restarts the window.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the daily sweep must land inside the effective window', () => {
+  const NOW = new Date('2026-09-05T12:00:00Z');
+  const startedAt = '2026-09-04T11:00:00Z';
+
+  /** Healthy everything, so the retention gate is the only thing under test. */
+  const evidence = (over: Record<string, unknown> = {}) => ({
+    // Hourly for the whole 25-hour window: enough observations AND no gap
+    // wider than the 5-hour limit. A fixture that satisfies the count but not
+    // the spacing would leave this suite testing the wrong gate.
+    monitorRuns: Array.from({ length: 25 }, (_, i) => ({
+      runId: 100 + i,
+      event: 'schedule',
+      conclusion: 'success',
+      completedAt: new Date(Date.parse(startedAt) + (i + 1) * 3_600_000).toISOString(),
+    })),
+    backupRuns: [
+      {
+        runId: 7,
+        event: 'schedule',
+        conclusion: 'success',
+        completedAt: '2026-09-05T01:40:00Z',
+      },
+    ],
+    cronRuns: Array.from({ length: 8 }, (_, i) => ({
+      runId: 200 + i,
+      event: 'schedule',
+      conclusion: 'success',
+      completedAt: new Date(Date.parse(startedAt) + (i + 1) * 5_400_000).toISOString(),
+    })),
+    incidents: [],
+    deployment: {
+      sha: 'a'.repeat(40),
+      id: '555',
+      state: 'success',
+      environment: 'Production',
+      // Which release each host is ACTUALLY serving, not a list of hosts that
+      // answered 200 — see the DEPLOYMENT fixture above.
+      aliasReleases: { 'bookpitch.ge': 'a'.repeat(40), 'www.bookpitch.ge': 'a'.repeat(40) },
+    },
+    sentry: { configured: true, ok: true, serverEventId: 's1', browserEventId: 'b1' },
+    outboxDead: 0,
+    unhealthyJobs: [],
+    historyComplete: true,
+    ...over,
+  });
+
+  const state = { releaseSha: 'a'.repeat(40), deploymentId: '555', startedAt, restarts: [] };
+  const gate = (ev: Record<string, unknown>) =>
+    evaluateSoak({ state, evidence: ev as never, now: NOW }).gates.find(
+      (g: { id: string }) => g.id === 'retention-in-window',
+    );
+
+  it('THE DEFECT: a retention success from BEFORE the window does not count', () => {
+    // 26 hours ago: inside retention's 30-hour freshness limit, and an hour
+    // before the soak began. `cron-outcomes` is perfectly happy with it.
+    const g = gate(evidence({ retentionSuccessMinutesAgo: 26 * 60 }));
+    expect(g, 'there must be a gate for this at all').toBeDefined();
+    expect(g!.ok, 'a sweep that ran before the window did not run in the window').toBe(false);
+    expect(g!.detail).toMatch(/before the window/i);
+  });
+
+  it('a retention success inside the window counts', () => {
+    // 10 hours ago, window started 25 hours ago.
+    expect(gate(evidence({ retentionSuccessMinutesAgo: 10 * 60 }))!.ok).toBe(true);
+  });
+
+  it('unreadable retention evidence is not health', () => {
+    for (const bad of [null, undefined, 'soon', NaN, -1]) {
+      const g = gate(evidence({ retentionSuccessMinutesAgo: bad }));
+      expect(g!.ok, `retentionSuccessMinutesAgo=${String(bad)}`).toBe(false);
+    }
+  });
+
+  it('THE DEFECT: a restart moves the bar — evidence before the NEW start is stale', () => {
+    // The window restarted 2 hours ago after a failure. A retention success
+    // from 10 hours ago was inside the ORIGINAL window and is now outside the
+    // effective one; crediting it would let a restart inherit the evidence the
+    // restart exists to invalidate.
+    const restarted = {
+      ...state,
+      effectiveWindowStart: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
+    };
+    const g = evaluateSoak({
+      state: restarted,
+      evidence: evidence({ retentionSuccessMinutesAgo: 10 * 60 }) as never,
+      now: NOW,
+    }).gates.find((x: { id: string }) => x.id === 'retention-in-window');
+    expect(g!.ok).toBe(false);
+  });
+
+  it('the gate is one of the gates that must all pass for success', () => {
+    const result = evaluateSoak({
+      state,
+      evidence: evidence({ retentionSuccessMinutesAgo: 26 * 60 }) as never,
+      now: NOW,
+    });
+    expect(result.status).not.toBe('success');
+    expect(result.summary).toMatch(/retention-in-window/);
+  });
+
+  it('COMPLEMENT: with retention inside the window everything else still passes', () => {
+    // Otherwise this suite would prove only that something fails.
+    const result = evaluateSoak({
+      state,
+      evidence: evidence({ retentionSuccessMinutesAgo: 10 * 60 }) as never,
+      now: NOW,
+    });
+    const failing = result.gates.filter((g: { ok: boolean }) => !g.ok).map((g) => g.id);
+    expect(failing).toEqual([]);
+    expect(result.status).toBe('success');
   });
 });
