@@ -940,3 +940,63 @@ describe('manual cron dispatch is safe by default', () => {
     expect(raw).toMatch(/reminderLeadHours|reminder_lead_hours/);
   });
 });
+
+// -----------------------------------------------------------------------------
+// The soak can only be started with real Sentry evidence.
+//
+// The observability gate re-verifies persisted event ids against Sentry's API
+// every tick. That is only worth anything if there is exactly ONE way for those
+// ids to get into the state, and it is a document a verification run produced —
+// not a field an operator fills in.
+//
+// Before this round there was no way at all: verifySentryReceipt() required a
+// nonce nothing ever wrote, so the gate could not pass by any supported route.
+// The pressure that creates is the dangerous part — the obvious "fix" under
+// deadline is to hand-edit the ids into the issue body, which is the ticked
+// checkbox this replaced, wearing a JSON costume.
+// -----------------------------------------------------------------------------
+describe('the soak refuses to start without Sentry receipt', () => {
+  const soakPath = path.join(process.cwd(), '.github', 'workflows', 'soak.yml');
+  const raw = readFileSync(soakPath, 'utf8');
+  const doc = load(raw) as Record<string, unknown>;
+  // `on:` is the YAML boolean `true` after parsing, which is a recurring trap
+  // in this file — js-yaml 1.1 semantics.
+  const dispatch = ((doc[true as unknown as string] ?? doc.on) as Record<string, never>)
+    .workflow_dispatch as unknown as { inputs: Record<string, { description?: string }> };
+  const steps = (doc.jobs as Record<string, { steps: Array<Record<string, string>> }>).tick.steps;
+
+  it('takes the receipt as an input and passes it to the controller', () => {
+    expect(Object.keys(dispatch.inputs)).toContain('sentry_receipt');
+    const tick = steps.find((s) => s.name === 'Soak tick') as unknown as {
+      env: Record<string, string>;
+    };
+    expect(tick.env.SOAK_SENTRY_RECEIPT).toBe('${{ inputs.sentry_receipt }}');
+  });
+
+  it('has a guard step that fails a start with an empty receipt', () => {
+    const guard = steps.find((s) => /Sentry receipt/i.test(String(s.name ?? '')));
+    expect(guard, 'no guard step for a missing receipt').toBeDefined();
+    expect(String(guard!.if)).toMatch(/inputs\.start == true/);
+    expect(String(guard!.if)).toMatch(/inputs\.sentry_receipt == ''/);
+    expect(String(guard!.run)).toMatch(/exit 1/);
+  });
+
+  it('the old ticked-boolean input has not come back', () => {
+    expect(Object.keys(dispatch.inputs)).not.toContain('sentry_receipt_verified');
+    expect(raw).not.toMatch(/SOAK_SENTRY_RECEIPT_VERIFIED/);
+  });
+
+  it('the controller itself refuses too — the workflow guard is not the only one', () => {
+    // A guard that only exists in the workflow is bypassed by anyone running
+    // the script directly, which is exactly how a soak would get started in a
+    // hurry.
+    const controller = readFileSync(
+      path.join(process.cwd(), 'scripts', 'soak-controller.mjs'),
+      'utf8',
+    );
+    expect(controller).toMatch(/refusing to start without a Sentry receipt/);
+    // …and refuses a receipt for a different release, which is the subtler
+    // mistake: re-using yesterday's receipt after a redeploy.
+    expect(controller).toMatch(/seededSentry\.releaseSha !== sha/);
+  });
+});
