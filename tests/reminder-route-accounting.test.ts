@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 
 // Reminders code reaches @/auth transitively; next-auth's env module cannot
 // resolve next/server under vitest. Same stub as tests/reminders.test.ts.
@@ -298,6 +298,99 @@ describe('a crash after claiming does not silence the reminder forever', () => {
       tx.messageLog.count({ where: { appointmentId: apptId, channel: 'email' } }),
     );
     expect(emails, 'an old delivered reminder must not be sent again').toBe(1);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The claim lease and the claim timestamp must be read from the SAME clock.
+//
+// `created_at` is defaulted by PostgreSQL. The lease cutoff was computed in
+// Node. Those are two machines — the application runs on Vercel, the database
+// on Supabase — with two independent NTP disciplines, and nothing keeps them in
+// step. This is the third instance of the same class in this project: retention
+// and the cron heartbeat both had it, and both were moved into SQL.
+//
+// The skew below is deliberately larger than the lease so the direction of
+// failure is unmistakable in a test. In production the dangerous magnitude is
+// much smaller: ANY skew moves the boundary, and every appointment whose claim
+// age lands near it is decided by the wrong clock.
+// -----------------------------------------------------------------------------
+describe('the claim lease is measured on the database clock', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('THE DEFECT: a fast Node clock steals a live claim and sends twice', async () => {
+    await withoutRls((tx) => tx.messageLog.deleteMany({ where: { organizationId: orgId } }));
+    // A claim created by the DATABASE's clock, this instant. The freshest a
+    // claim can possibly be: another worker is mid-send right now.
+    const live = await withoutRls((tx) =>
+      tx.messageLog.create({
+        data: {
+          organizationId: orgId,
+          appointmentId: apptId,
+          channel: 'email',
+          toAddress: 'route@invalid.test',
+          body: 'live claim, held by another worker',
+          state: 'queued',
+        },
+        select: { id: true },
+      }),
+    );
+
+    // Node believes it is later than the database does.
+    const skewMs = (REMINDER_CLAIM_TTL_MINUTES + 15) * 60_000;
+    const realNow = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow + skewMs);
+
+    await POST(req());
+
+    const after = await withoutRls((tx) =>
+      tx.messageLog.findUnique({ where: { id: live.id }, select: { state: true } }),
+    );
+    expect(after?.state, 'a claim made seconds ago must not be declared abandoned').toBe('queued');
+
+    const attempts = await withoutRls((tx) =>
+      tx.messageLog.count({ where: { appointmentId: apptId, channel: 'email' } }),
+    );
+    expect(attempts, 'the live claim must not be duplicated into a second send').toBe(1);
+  });
+
+  it('a slow Node clock does not keep an abandoned claim alive forever', async () => {
+    // The other direction, and the reason this cannot be fixed by widening the
+    // lease: a Node clock behind the database makes genuinely abandoned claims
+    // look live, and the reminder is never retried.
+    await withoutRls((tx) => tx.messageLog.deleteMany({ where: { organizationId: orgId } }));
+    const stale = await withoutRls((tx) =>
+      tx.messageLog.create({
+        data: {
+          organizationId: orgId,
+          appointmentId: apptId,
+          channel: 'email',
+          toAddress: 'route@invalid.test',
+          body: 'abandoned claim',
+          state: 'queued',
+        },
+        select: { id: true },
+      }),
+    );
+    await unsafePrismaAdmin.$executeRawUnsafe(
+      `UPDATE message_log SET created_at = NOW() - make_interval(mins => $1) WHERE id = $2::uuid`,
+      REMINDER_CLAIM_TTL_MINUTES + 5,
+      stale.id,
+    );
+
+    const realNow = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(
+      () => realNow - (REMINDER_CLAIM_TTL_MINUTES + 15) * 60_000,
+    );
+
+    await POST(req());
+
+    const after = await withoutRls((tx) =>
+      tx.messageLog.findUnique({ where: { id: stale.id }, select: { state: true } }),
+    );
+    expect(after?.state, 'an abandoned claim must be settled on the database clock').toBe('failed');
   });
 });
 

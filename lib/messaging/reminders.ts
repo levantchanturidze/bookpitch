@@ -113,20 +113,37 @@ async function alreadyReminded(
   // A live claim by another worker. Bounded by a lease: this used to include
   // every `queued` row regardless of age, so one crash between claim() and
   // settle blocked the reminder permanently.
-  const cutoff = new Date(Date.now() - REMINDER_CLAIM_TTL_MINUTES * 60_000);
-  const live = await tx.messageLog.findFirst({
-    where: { appointmentId, channel, state: 'queued', createdAt: { gte: cutoff } },
-    select: { id: true },
-  });
-  if (live) return true;
+  //
+  // The cutoff is computed IN SQL, deliberately. `created_at` is defaulted by
+  // PostgreSQL (`DEFAULT CURRENT_TIMESTAMP`, migration 20260721220810), so a
+  // cutoff derived from `Date.now()` compares a database timestamp against a
+  // Node one. The application runs on Vercel and the database on Supabase —
+  // two machines, two NTP disciplines, nothing keeping them in step. Skew in
+  // one direction steals a live claim and sends the customer a second
+  // reminder; skew in the other keeps an abandoned claim alive so the reminder
+  // is never retried. Same class as the retention cutoff (lib/retention-window
+  // .ts) and the cron heartbeat, both already moved to the database clock.
+  const live = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT id
+      FROM message_log
+     WHERE appointment_id = ${appointmentId}::uuid
+       AND channel = ${channel}::message_channel
+       AND state = 'queued'::message_state
+       AND created_at >= NOW() - make_interval(mins => ${REMINDER_CLAIM_TTL_MINUTES}::int)
+     LIMIT 1`;
+  if (live.length > 0) return true;
 
   // Anything still `queued` here is an abandoned claim. Settle it as failed so
   // it stops deduping, stops accumulating, and shows up in the failure counts
-  // instead of being invisible.
-  await tx.messageLog.updateMany({
-    where: { appointmentId, channel, state: 'queued', createdAt: { lt: cutoff } },
-    data: { state: 'failed' },
-  });
+  // instead of being invisible. Same clock, necessarily: this statement and
+  // the one above must not be able to disagree about which rows are stale.
+  await tx.$executeRaw`
+    UPDATE message_log
+       SET state = 'failed'::message_state
+     WHERE appointment_id = ${appointmentId}::uuid
+       AND channel = ${channel}::message_channel
+       AND state = 'queued'::message_state
+       AND created_at < NOW() - make_interval(mins => ${REMINDER_CLAIM_TTL_MINUTES}::int)`;
   return false;
 }
 
