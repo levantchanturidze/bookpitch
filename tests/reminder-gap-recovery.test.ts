@@ -239,6 +239,106 @@ describe('reminders after a scheduler gap', () => {
     expect(afterCount).toBe(beforeCount);
   });
 
+  // ---------------------------------------------------------------------------
+  // Defect found by the final false-green review: the eligibility clause and
+  // the runtime disagree about which appointments were owed a reminder.
+  //
+  //   runtime   selects starts_at IN [now, now + lead]. No condition on
+  //             created_at at all — an appointment booked 8 hours before it
+  //             starts is inside a 24-hour window the moment it exists, and
+  //             every tick from then on attempts it.
+  //   metric    counted only created_at < starts_at - lead.
+  //
+  // So for every appointment booked INSIDE its own lead window the runtime
+  // tried, failed, and the metric reported zero. That is the entire population
+  // of same-day bookings — for a clinic, most of them — and the one signal that
+  // was supposed to be un-fool-able was blind to all of it.
+  //
+  // Written to FAIL first.
+  // ---------------------------------------------------------------------------
+  it('THE DEFECT: an appointment the runtime ATTEMPTED and failed is counted', async () => {
+    const before = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+    // Booked 8 hours ahead with a 24-hour lead: inside its own lead window at
+    // creation, so the very next tick attempted it. Each of these tests uses a
+    // distinct slot: `no_staff_double_booking` is an exclusion constraint, and
+    // one fixture staff member cannot be in two overlapping appointments.
+    const startsAt = new Date(Date.now() - 7 * 3_600_000);
+    const id = await makeAppointment(startsAt, new Date(startsAt.getTime() - 8 * 3_600_000));
+    // The attempt happened and every channel failed — the provider was down.
+    for (const channel of ['sms', 'email'] as const) {
+      await withoutRls((tx) =>
+        tx.messageLog.create({
+          data: {
+            organizationId: orgId,
+            appointmentId: id,
+            channel,
+            toAddress: 'gap@invalid.test',
+            body: 'attempted, provider refused',
+            state: 'failed',
+          },
+        }),
+      );
+    }
+    const after = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+    expect(after, 'the runtime attempted this one and nobody was reminded').toBe(before + 1);
+  });
+
+  it('an attempted appointment that WAS delivered is still not counted', async () => {
+    const before = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+    const startsAt = new Date(Date.now() - 8 * 3_600_000);
+    const id = await makeAppointment(startsAt, new Date(startsAt.getTime() - 8 * 3_600_000));
+    for (const channel of ['sms', 'email'] as const) {
+      await withoutRls((tx) =>
+        tx.messageLog.create({
+          data: {
+            organizationId: orgId,
+            appointmentId: id,
+            channel,
+            toAddress: 'gap@invalid.test',
+            body: 'delivered',
+            state: 'sent',
+          },
+        }),
+      );
+    }
+    const after = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+    expect(after).toBe(before);
+  });
+
+  it('one delivered channel does not hide the other failing', async () => {
+    const before = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+    const startsAt = new Date(Date.now() - 9 * 3_600_000);
+    const id = await makeAppointment(startsAt, new Date(startsAt.getTime() - 8 * 3_600_000));
+    await withoutRls((tx) =>
+      tx.messageLog.create({
+        data: {
+          organizationId: orgId,
+          appointmentId: id,
+          channel: 'email',
+          toAddress: 'gap@invalid.test',
+          body: 'email got through',
+          state: 'sent',
+        },
+      }),
+    );
+    const after = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+    expect(after, 'SMS was never delivered').toBe(before + 1);
+  });
+
+  it('a NEVER-attempted booking too recent for any tick is still not counted', async () => {
+    // The complement, and the reason eligibility cannot simply be dropped. No
+    // message_log row exists, and the appointment was created two hours before
+    // it started — inside the measured worst-case scheduler delivery gap. There
+    // is no evidence a tick was ever owed, so counting it would make the metric
+    // permanently non-zero for any clinic taking same-day bookings, and a
+    // permanently non-zero alarm is an ignored one.
+    const before = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+    const startsAt = new Date(Date.now() - 10 * 3_600_000);
+    await makeAppointment(startsAt, new Date(startsAt.getTime() - 2 * 3_600_000));
+    const after = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+    expect(after).toBe(before);
+  });
+
   it('a cancelled appointment is not counted as missed', async () => {
     const beforeCount =
       (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
