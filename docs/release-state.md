@@ -1,6 +1,6 @@
 # Release state — the one current-state document
 
-**Snapshot: 2026-09-03, corrective round 2 (pre-merge).** This file is the single place that says
+**Snapshot: 2026-09-03T10:40Z, corrective round 2 deployed.** This file is the single place that says
 what is true *now*. Every phase ledger is a historical record of what was true when it was
 written; where a ledger and this file disagree about the present, this file
 wins and the ledger is wrong only in tense, not in fact.
@@ -123,6 +123,54 @@ genuine scheduled successes had accumulated, and because a manual dispatch can
 no longer contribute to it or close an incident at all.
 
 **#44 (Sentry) remains open and is the only failing check.**
+
+---
+
+## Corrective round 2 — deployed and verified
+
+| | |
+|---|---|
+| PR | **#53**, merged as `dc2a09fe8a946d76501a25cc5652e39808aa0cd9` (11 commits) |
+| CI on the exact head | run [33686594686](https://github.com/levantchanturidze/bookpitch/actions/runs/33686594686) — 118 files / 1597 tests, all scanners, 0 vulnerabilities |
+| Migrations | run [33744129121](https://github.com/levantchanturidze/bookpitch/actions/runs/33744129121) — **67 applied**, no drift |
+| Deployment | GitHub Deployment record **6241882559**, sha `dc2a09f`, Production, `success` |
+| Release identity | `bookpitch.ge` and `www.bookpitch.ge` both return `x-bookpitch-release: dc2a09fe…` after redirects |
+| Backup | run [33744963354](https://github.com/levantchanturidze/bookpitch/actions/runs/33744963354), artifact `production-backup-33744963354-1` (id 9889255865), fingerprint `5c9f75110f30141f` |
+| Restore drill | run [33745143206](https://github.com/levantchanturidze/bookpitch/actions/runs/33745143206) — 67 migrations, **34 RLS policies** (was 21; the 13 partition policies survive a restore) |
+| Soak dry-run | run [33744879487](https://github.com/levantchanturidze/bookpitch/actions/runs/33744879487) — **7/7 reads succeeded, no soak started** |
+
+### The security fix, verified in production
+
+Before migration 67, `bookpitch_app` could read every organization's audit
+records by naming a partition. After it, measured against production:
+
+```
+audit_log_2026_01 | SELECT=false | INSERT=false | rls=true | force=true | policy=1
+audit_log_2026_02 | SELECT=false | INSERT=false | rls=true | force=true | policy=1
+...
+```
+
+The invariant check that now passes **failed against production an hour
+earlier**, naming all 13 partitions. Two independent layers: no direct
+privileges, and each partition carries its own `tenant_isolation` policy so a
+future GRANT filters rather than exposes.
+
+### The soak controller's permissions, proven rather than assumed
+
+```
+OK  actions:read production-monitor.yml — 100 scheduled runs, history complete=true
+OK  actions:read production-backup.yml  — 18 scheduled runs, history complete=true
+OK  actions:read cron.yml               — 100 scheduled runs, history complete=true
+OK  deployments:read — deployment 6241882559 sha=dc2a09f state=success env=Production
+OK  alias release header — bookpitch.ge=dc2a09f www.bookpitch.ge=dc2a09f
+OK  issues:read ops-incident — 12 incident issues visible (paginated)
+OK  ops metrics — outboxDead=0 jobs={...}
+7/7 reads succeeded. No soak was started.
+```
+
+Before this round the workflow lacked `actions: read` and `deployments: read`,
+so every one of those would have returned 403 and the controller would have
+reported "0 natural observations" — indistinguishable from a quiet window.
 
 ---
 
