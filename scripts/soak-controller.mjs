@@ -85,8 +85,6 @@ export function parseState(body) {
   }
 }
 
-const HOUR = 3_600_000;
-
 /**
  * Decide where the soak stands.
  *
@@ -481,6 +479,122 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
       failing.length === 0
         ? 'every gate satisfied over an uninterrupted window'
         : `${failing.length} gate(s) not yet satisfied: ${failing.map((g) => g.id).join(', ')}`,
+  };
+}
+
+/**
+ * The Sentry receipt to persist for the next tick.
+ *
+ * Pure, and exported, because two fields here MUST NOT change and nothing else
+ * was checking that:
+ *
+ *   nonce       the receipt is worthless without it — verifySentryReceipt()
+ *               requires it, and an earlier version simply did not carry it
+ *               forward, so the very next tick reported "no verified event ids
+ *               and nonce are persisted";
+ *   verifiedAt  it is the `notBefore` freshness bound. An earlier version
+ *               rewrote it to now() on every successful tick, which made the
+ *               events — created once, at probe time — "predate this
+ *               verification run" and fail.
+ *
+ * Either alone made a valid receipt self-destruct on tick two, and under the
+ * corrected state machine that puts the whole soak into awaiting-recovery. A
+ * soak that cannot survive its own second tick is not a soak.
+ *
+ * A FAILED revalidation preserves the receipt rather than erasing it: a
+ * transient Sentry API outage must invalidate the soak INTERVAL, not destroy
+ * the evidence and force the probe to be re-run.
+ */
+export function nextSentryState(persisted, verdict) {
+  return {
+    // Immutable identity of the verification run.
+    nonce: persisted?.nonce ?? null,
+    verifiedAt: persisted?.verifiedAt ?? null,
+    releaseSha: persisted?.releaseSha ?? null,
+    environment: persisted?.environment ?? null,
+    // Event ids are preserved through a failed revalidation for the same
+    // reason: losing them loses the only thing a later tick could re-check.
+    serverEventId: verdict?.serverEventId ?? persisted?.serverEventId ?? null,
+    browserEventId: verdict?.browserEventId ?? persisted?.browserEventId ?? null,
+    // The only fields a tick may update: what it observed this time.
+    configured: Boolean(verdict?.configured),
+    lastRevalidationOk: Boolean(verdict?.ok),
+    lastRevalidationAt: new Date().toISOString(),
+    lastProblems: verdict?.problems ?? [],
+  };
+}
+
+/**
+ * Turn a receipt produced by scripts/verify-sentry.mjs into persisted soak
+ * state. The supported — and only — way evidence gets in.
+ *
+ * Before this existed, verifySentryReceipt() required `persisted.nonce` and
+ * nothing in the system ever wrote one. The observability gate could therefore
+ * never pass, and the only way to make it pass would have been to hand-edit the
+ * JSON in the soak issue body: an operator typing event ids, which is precisely
+ * the ticked-boolean evidence the gate was built to replace. A gate that can
+ * only be satisfied by forgery is not a gate.
+ *
+ * `notBefore` — not `verifiedAt` — becomes the persisted freshness bound. The
+ * probe fires first and the receipt is written after, so the events are always
+ * a little OLDER than the moment verification finished. Using the finish time
+ * would make every receipt reject the very events it had just proved.
+ *
+ * Throws on anything incomplete. A half-seeded receipt would fail later, in a
+ * tick, where it reads as a production problem rather than a setup mistake.
+ *
+ * @param {string|undefined|null} json  the receipt document, or nothing
+ * @returns {{nonce: string, verifiedAt: string, releaseSha: string,
+ *            environment: string, serverEventId: string, browserEventId: string,
+ *            configured: boolean, lastRevalidationOk: boolean,
+ *            lastRevalidationAt: string|null, lastProblems: string[]}|null}
+ *   state to persist, or null when no receipt was supplied
+ */
+export function seedSentryState(json) {
+  if (json === undefined || json === null || String(json).trim() === '') return null;
+
+  let r;
+  try {
+    r = JSON.parse(String(json));
+  } catch (err) {
+    throw new Error(`Sentry receipt is not valid JSON: ${err.message}`);
+  }
+
+  const required = [
+    'notBefore',
+    'nonce',
+    'releaseSha',
+    'environment',
+    'serverEventId',
+    'browserEventId',
+  ];
+  const missing = required.filter((k) => !r?.[k] || typeof r[k] !== 'string');
+  if (missing.length) {
+    throw new Error(`Sentry receipt is incomplete — missing ${missing.join(', ')}`);
+  }
+  if (r.serverEventId === r.browserEventId) {
+    throw new Error(
+      'Sentry receipt names the same event id for both runtimes — one event cannot ' +
+        'prove two SDKs',
+    );
+  }
+  if (!Number.isFinite(Date.parse(r.notBefore))) {
+    throw new Error('Sentry receipt has an unparseable notBefore');
+  }
+
+  return {
+    nonce: r.nonce,
+    // The freshness bound, deliberately the START of the verification run.
+    verifiedAt: new Date(Date.parse(r.notBefore)).toISOString(),
+    releaseSha: r.releaseSha,
+    environment: r.environment,
+    serverEventId: r.serverEventId,
+    browserEventId: r.browserEventId,
+    // Nothing has been revalidated yet; the first tick does that.
+    configured: false,
+    lastRevalidationOk: false,
+    lastRevalidationAt: null,
+    lastProblems: [],
   };
 }
 
@@ -926,6 +1040,43 @@ async function main() {
       );
       process.exit(1);
     }
+    // The Sentry receipt is seeded HERE, at start, from the document
+    // scripts/verify-sentry.mjs produced against this very release. It is the
+    // only supported way evidence enters soak state — see seedSentryState().
+    let seededSentry = null;
+    const inlineReceipt = process.env.SOAK_SENTRY_RECEIPT;
+    const receiptFile = process.env.SOAK_SENTRY_RECEIPT_FILE;
+    try {
+      const raw =
+        inlineReceipt && inlineReceipt.trim() !== ''
+          ? inlineReceipt
+          : receiptFile
+            ? (await import('node:fs')).readFileSync(receiptFile, 'utf8')
+            : null;
+      seededSentry = seedSentryState(raw);
+    } catch (err) {
+      console.error(`soak: refusing to start — ${err.message}`);
+      process.exit(1);
+    }
+    if (!seededSentry) {
+      console.error(
+        'soak: refusing to start without a Sentry receipt. Run scripts/verify-sentry.mjs\n' +
+          'against this release and pass the result as SOAK_SENTRY_RECEIPT. Starting without\n' +
+          'one produces a window whose observability gate can never pass.',
+      );
+      process.exit(1);
+    }
+    // A receipt from a DIFFERENT release proves observability for code that is
+    // no longer deployed. Caught here rather than on tick one, where it would
+    // read as a production fault.
+    if (seededSentry.releaseSha !== sha) {
+      console.error(
+        `soak: the Sentry receipt was produced for ${seededSentry.releaseSha.slice(0, 12)} but ` +
+          `this soak is for ${sha.slice(0, 12)}. Re-run the probe against the deployed release.`,
+      );
+      process.exit(1);
+    }
+
     const startedAt = new Date().toISOString();
     state = {
       releaseSha: sha,
@@ -935,12 +1086,7 @@ async function main() {
       awaitingRecoverySince: null,
       restarts: [],
       lastProcessedMonitorRun: null,
-      sentry: {
-        configured: false,
-        serverEventId: null,
-        browserEventId: null,
-        sourceMapsResolved: false,
-      },
+      sentry: seededSentry,
       lastTickAt: null,
     };
     issue = await gh(`/repos/${repo}/issues`, token, {
@@ -1051,13 +1197,7 @@ async function main() {
     restarts: result.restarts,
     lastProcessedMonitorRun:
       result.lastProcessedMonitorRun ?? state.lastProcessedMonitorRun ?? null,
-    sentry: {
-      configured: sentry.configured,
-      serverEventId: sentry.serverEventId,
-      browserEventId: sentry.browserEventId,
-      sourceMapsResolved: sentry.sourceMapsResolved,
-      verifiedAt: sentry.serverEventId && sentry.browserEventId ? new Date().toISOString() : null,
-    },
+    sentry: nextSentryState(state.sentry ?? null, sentry),
     lastTickAt: new Date().toISOString(),
   };
 

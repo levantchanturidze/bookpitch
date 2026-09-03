@@ -63,6 +63,20 @@ on:
       # rest of this project exists to remove. Receipt is now verified against
       # Sentry's own API using persisted event ids, and needs SENTRY_AUTH_TOKEN,
       # SENTRY_ORG and SENTRY_PROJECT.
+      #
+      # What replaces it is a DOCUMENT, not a claim: the receipt written by
+      # `npm run verify:sentry` (SENTRY_RECEIPT_OUT). It names the nonce, the
+      # release, the environment and the two event ids — one per runtime — and
+      # every tick re-fetches those ids from Sentry and re-checks them.
+      #
+      # The controller refuses to start without one, and refuses one produced
+      # for a different release. That is the ONLY supported way evidence enters
+      # soak state; there is no path that involves typing an event id.
+      sentry_receipt:
+        description: 'Contents of the receipt from `npm run verify:sentry` (JSON). Required when start=true.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -99,6 +113,19 @@ jobs:
           echo "::error::  gh api \"repos/\$GITHUB_REPOSITORY/deployments?environment=Production&per_page=1\" --jq '.[0].id'"
           exit 1
 
+      # Checked here as well as in the controller so the failure is legible in
+      # the run summary rather than only in a log line, and so a mistyped
+      # dispatch costs nothing.
+      - name: Refuse to start a soak without a Sentry receipt
+        if: ${{ inputs.start == true && inputs.sentry_receipt == '' }}
+        run: |
+          echo "::error::start=true requires sentry_receipt."
+          echo "::error::Run: SENTRY_RECEIPT_OUT=receipt.json npm run verify:sentry"
+          echo "::error::against the exact release being soaked, then paste the file's contents."
+          echo "::error::Without it the observability gate can never pass, and a soak whose"
+          echo "::error::observability gate cannot pass is 24 hours that prove nothing."
+          exit 1
+
       - name: Soak tick
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -108,6 +135,9 @@ jobs:
           SOAK_START: ${{ inputs.start }}
           SOAK_RELEASE_SHA: ${{ inputs.release_sha }}
           SOAK_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          # Read only when a soak STARTS; afterwards the receipt lives in the
+          # issue state and is re-verified against Sentry on every tick.
+          SOAK_SENTRY_RECEIPT: ${{ inputs.sentry_receipt }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
