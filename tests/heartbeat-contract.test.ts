@@ -150,7 +150,7 @@ describe('the whole map is judged against the contract, not its own keys', () =>
   });
 
   it('an empty map fails every required job', () => {
-    expect(unhealthyJobsFrom({}).sort()).toEqual(
+    expect(unhealthyJobsFrom({})!.sort()).toEqual(
       [...EXPECTED_HEARTBEAT_JOBS].map((j) => j.metricKey).sort(),
     );
   });

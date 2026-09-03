@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   nextSentryState,
   seedSentryState,
+  SOAK_HEALTH_GATES,
+  SOAK_PROGRESS_GATES,
   evaluateSoak,
   parseState,
   renderState,
@@ -136,9 +138,46 @@ describe('time alone never satisfies the soak', () => {
       evidence: healthyEvidence({ monitorRuns: [run(1, 3), run(2, 9)] }),
       now: NOW,
     });
-    expect(r.status).toBe('running');
+    // Two observations across 25 hours leaves holes far wider than the 5-hour
+    // continuity limit, so this is also a stretch nobody was watching — which
+    // is a health failure, not merely slow progress. Either way it is not
+    // success, and the count gate is the one under test here.
+    expect(r.status).not.toBe('success');
     expect(gate(r, 'monitor-observations').ok).toBe(false);
     expect(gate(r, 'monitor-observations').detail).toMatch(/need 6/);
+  });
+
+  it('few observations but no long gap is PROGRESS, not a health failure', () => {
+    // The complement, and the reason `monitor-observations` is a progress gate
+    // while `observation-gap` is a health gate: a young window legitimately has
+    // few observations and must be allowed to keep accruing.
+    const young = state({
+      effectiveWindowStart: new Date(NOW.getTime() - 3 * 3_600_000).toISOString(),
+    });
+    const r = evaluateSoak({
+      state: young,
+      evidence: healthyEvidence({
+        monitorRuns: [
+          {
+            runId: 1,
+            event: 'schedule',
+            conclusion: 'success',
+            completedAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
+          },
+          {
+            runId: 2,
+            event: 'schedule',
+            conclusion: 'success',
+            completedAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
+          },
+        ],
+        historyComplete: true,
+      }),
+      now: NOW,
+    });
+    expect(r.status).toBe('running');
+    expect(gate(r, 'monitor-observations').ok).toBe(false);
+    expect(gate(r, 'observation-gap').ok).toBe(true);
   });
 
   it('a window shorter than 24h is not yet a soak, however clean', () => {
@@ -245,7 +284,11 @@ describe('a release-critical failure restarts the window rather than being avera
       }),
       now: NOW,
     });
-    expect(r.status).toBe('restarted');
+    // Awaiting recovery rather than `restarted`: incident #77 is still OPEN, so
+    // production is unhealthy right now and there is nothing to restart into.
+    // A window cannot begin while the thing that ended the last one is ongoing.
+    expect(r.status).toBe('awaiting-recovery');
+    expect(r.awaitingRecoverySince).toBeTruthy();
     expect(gate(r, 'no-incident-in-window').ok).toBe(false);
     expect(gate(r, 'no-incident-in-window').detail).toMatch(/#77/);
   });
@@ -268,8 +311,16 @@ describe('a release-critical failure restarts the window rather than being avera
       }),
       now: NOW,
     });
+    // #78 opened inside the original window and closed, so the window restarts
+    // at the first healthy observation after the closure. The gate then reads
+    // the NEW window, which the incident precedes — the restart is the record
+    // that it happened, not a permanently red gate.
     expect(r.status).toBe('restarted');
-    expect(gate(r, 'no-incident-in-window').ok).toBe(false);
+    expect(r.restartedThisTick).toBeTruthy();
+    expect(r.restarts.some((x: { reason: string }) => /#78/.test(x.reason))).toBe(true);
+    expect(new Date(r.windowStart).getTime()).toBeGreaterThan(
+      new Date(START).getTime() + 10 * 3_600_000,
+    );
   });
 
   it('an incident from BEFORE the window does not restart it', () => {
@@ -472,8 +523,11 @@ describe('deployment evidence fails closed', () => {
       evidence: healthyEvidence({ deployment: null }),
       now: NOW,
     });
-    expect(r.status).toBe('blocked');
-    expect(r.summary).toMatch(/cannot name the code it is measuring/);
+    // Not `blocked`: an unreadable deployment record is a failed API call, not
+    // a misconfigured soak. It must stop the clock without ending the soak —
+    // a thirty-second GitHub outage should not be fatal to a 24-hour window.
+    expect(r.status).toBe('awaiting-recovery');
+    expect(r.summary).toMatch(/could not be read/);
   });
 
   it('a deployment that is not READY is refused', () => {
@@ -482,7 +536,9 @@ describe('deployment evidence fails closed', () => {
       evidence: healthyEvidence({ deployment: { ...DEPLOYMENT, state: 'failure' } }),
       now: NOW,
     });
-    expect(r.status).toBe('superseded');
+    // A deployment whose STATUS is not success is production being unhealthy,
+    // not production being a different release — so it can recover.
+    expect(r.status).toBe('awaiting-recovery');
     expect(r.summary).toMatch(/state is failure/);
   });
 
@@ -536,7 +592,9 @@ describe('deployment evidence fails closed', () => {
       }),
       now: NOW,
     });
-    expect(r.status).toBe('superseded');
+    // No header means no evidence, and no evidence is not a verdict about which
+    // release is live. Transient, so the soak survives it.
+    expect(r.status).toBe('awaiting-recovery');
     expect(r.summary).toMatch(/alias www\.bookpitch\.ge did not report a release/);
   });
 
@@ -548,7 +606,10 @@ describe('deployment evidence fails closed', () => {
       evidence: healthyEvidence(),
       now: NOW,
     });
-    expect(r.status).toBe('superseded');
+    // `blocked`, not `superseded`: a soak with no pin was set up wrong, and
+    // waiting cannot fix a setup error. Distinguishing the two is the point —
+    // one needs a new soak, the other needs a person.
+    expect(r.status).toBe('blocked');
     expect(r.summary).toMatch(/no deployment id was pinned/);
   });
 });
@@ -1082,5 +1143,226 @@ describe('the daily sweep must land inside the effective window', () => {
     const failing = result.gates.filter((g: { ok: boolean }) => !g.ok).map((g) => g.id);
     expect(failing).toEqual([]);
     expect(result.status).toBe('success');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4.1 — one documented rule for what invalidates a window, and a correct
+// four-way split between the states a tick can be in.
+//
+// Two defects, opposite in direction.
+//
+// UNHEALTHY TIME STAYED CREDITED. Only three things fed the recovery state:
+// failed scheduled monitor/backup/cron runs, and in-window incidents. Every
+// other release-critical gate — Sentry receipt revalidation, outbox dead
+// letters, unhealthy required jobs, unreadable evidence — failed the tick and
+// left the window untouched. So a Sentry outage at hour 23 produced one failing
+// tick, and hour 24 reported SOAK SUCCESS on a window that contained a
+// release-blocking failure. "Uninterrupted" was measured only against the three
+// signals that happened to be wired.
+//
+// TRANSIENT UNREADABILITY WAS TERMINAL. Every identity problem returned
+// `superseded`, including "canonical alias evidence could not be read". One
+// failed HTTPS request while reading a release header permanently ended the
+// soak with "the deployment under soak is not the one serving production" —
+// a statement that was not true, about a condition that would have cleared
+// itself in thirty seconds.
+//
+// The four states a tick must distinguish:
+//
+//   blocked            the soak was set up wrong. Waiting cannot fix it.
+//   superseded         a DIFFERENT release is serving. Terminal, and correct.
+//   awaiting-recovery  production is unhealthy, or its health cannot be read.
+//                      No time accrues; the window restarts at the next fully
+//                      healthy natural observation.
+//   running / success  progress.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('every release-critical failure resets the window', () => {
+  const near = () => state({ effectiveWindowStart: hoursBeforeEnd(23.5) });
+
+  // A window 23.5 hours in, with everything healthy — one tick short of
+  // success. Each case below spoils exactly one thing and must NOT be able to
+  // reach success on the following tick.
+  function hoursBeforeEnd(h: number) {
+    return new Date(NOW.getTime() - h * 3_600_000).toISOString();
+  }
+
+  const cases: Array<[string, Record<string, unknown>]> = [
+    [
+      'Sentry receipt revalidation fails',
+      { sentry: { configured: true, ok: false, problems: ['x'] } },
+    ],
+    ['Sentry API cannot be reached at all', { sentry: null }],
+    ['production has no Sentry DSN', { sentry: { configured: false, ok: false } }],
+    ['the outbox has dead letters', { outboxDead: 3 }],
+    ['the outbox count cannot be read', { outboxDead: null }],
+    ['a required job is unhealthy', { unhealthyJobs: ['retention'] }],
+    ['the heartbeat map cannot be read', { unhealthyJobs: null }],
+  ];
+
+  for (const [label, spoil] of cases) {
+    it(`THE DEFECT: ${label} → awaiting-recovery, not a passing window`, () => {
+      const result = evaluateSoak({
+        state: near(),
+        evidence: healthyEvidence(spoil),
+        now: NOW,
+      });
+      expect(result.status, `${label} must not leave the window intact`).toBe('awaiting-recovery');
+      expect(result.awaitingRecoverySince).toBeTruthy();
+    });
+  }
+
+  it('THE DEFECT: a failure at hour 23 cannot be followed by success at hour 24', () => {
+    // The controlled-clock case §4.1 asks for. Tick one is unhealthy; tick two
+    // is perfectly healthy an hour later. Without a persisted recovery state
+    // the second tick sees 24.5 elapsed hours and declares success on a window
+    // that contained a release-blocking failure.
+    const t1 = NOW;
+    const first = evaluateSoak({
+      state: state({ effectiveWindowStart: hoursBeforeEnd(23) }),
+      evidence: healthyEvidence({ outboxDead: 5 }),
+      now: t1,
+    });
+    expect(first.status).toBe('awaiting-recovery');
+
+    // One hour later, everything healthy again — but no monitor observation has
+    // arrived since the failure, so nothing has proven recovery.
+    const t2 = new Date(t1.getTime() + 3_600_000);
+    const second = evaluateSoak({
+      state: {
+        ...state({ effectiveWindowStart: hoursBeforeEnd(23) }),
+        awaitingRecoverySince: first.awaitingRecoverySince,
+      },
+      evidence: healthyEvidence(),
+      now: t2,
+    });
+    expect(second.status, 'a healthy tick is not a healthy OBSERVATION').toBe('awaiting-recovery');
+    expect(second.elapsedHours, 'no time may accrue while awaiting recovery').toBeLessThan(25);
+  });
+
+  it('recovery requires a natural monitor observation strictly after the failure', () => {
+    const failedAt = new Date(NOW.getTime() - 2 * 3_600_000).toISOString();
+    const recovered = evaluateSoak({
+      state: {
+        ...state({ effectiveWindowStart: hoursBeforeEnd(23) }),
+        awaitingRecoverySince: failedAt,
+      },
+      evidence: healthyEvidence({
+        monitorRuns: [
+          {
+            runId: 9001,
+            event: 'schedule',
+            conclusion: 'success',
+            completedAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
+          },
+        ],
+      }),
+      now: NOW,
+    });
+    // The window restarts AT that observation, so it is now ~1 hour old.
+    expect(recovered.status).not.toBe('awaiting-recovery');
+    expect(recovered.elapsedHours).toBeLessThan(2);
+  });
+
+  it('COMPLEMENT: a fully healthy 24h window still succeeds', () => {
+    // Without this, the rule above could simply be "never succeed".
+    const result = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence(),
+      now: NOW,
+    });
+    expect(result.status).toBe('success');
+  });
+});
+
+describe('unreadable evidence is transient, a different release is terminal', () => {
+  it('THE DEFECT: unreadable alias evidence is not "superseded"', () => {
+    // One failed HTTPS request while reading a release header used to end the
+    // soak permanently, with a message asserting something that was not true.
+    const result = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({ deployment: { ...DEPLOYMENT, aliasReleases: null } }),
+      now: NOW,
+    });
+    expect(result.status).toBe('awaiting-recovery');
+  });
+
+  it('THE DEFECT: a missing deployment record is transient too', () => {
+    const result = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({ deployment: null }),
+      now: NOW,
+    });
+    expect(result.status).toBe('awaiting-recovery');
+  });
+
+  it('an alias that reports no release at all is transient', () => {
+    const result = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        deployment: { ...DEPLOYMENT, aliasReleases: { 'bookpitch.ge': SHA } },
+      }),
+      now: NOW,
+    });
+    expect(result.status).toBe('awaiting-recovery');
+  });
+
+  it('but an alias serving a DIFFERENT release is superseded, terminally', () => {
+    const other = 'f'.repeat(40);
+    const result = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        deployment: {
+          ...DEPLOYMENT,
+          aliasReleases: { 'bookpitch.ge': other, 'www.bookpitch.ge': other },
+        },
+      }),
+      now: NOW,
+    });
+    expect(result.status).toBe('superseded');
+  });
+
+  it('a different deployment id is superseded', () => {
+    const result = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({ deployment: { ...DEPLOYMENT, id: '999999' } }),
+      now: NOW,
+    });
+    expect(result.status).toBe('superseded');
+  });
+
+  it('a soak started with no deployment pin is BLOCKED — waiting cannot fix setup', () => {
+    const result = evaluateSoak({
+      state: state({ deploymentId: null }),
+      evidence: healthyEvidence(),
+      now: NOW,
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.summary).toMatch(/pinned|set up|setup/i);
+  });
+});
+
+describe('every gate is classified, so a new one cannot be silently neither', () => {
+  it('each gate id is exactly one of health or progress', () => {
+    const result = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence(),
+      now: NOW,
+    });
+    const ids = result.gates.map((g: { id: string }) => g.id);
+    const health = [...SOAK_HEALTH_GATES];
+    const progress = [...SOAK_PROGRESS_GATES];
+    for (const id of ids) {
+      const inHealth = health.includes(id);
+      const inProgress = progress.includes(id);
+      expect(inHealth || inProgress, `${id} is classified as neither`).toBe(true);
+      expect(inHealth && inProgress, `${id} is classified as both`).toBe(false);
+    }
+    // …and no classification names a gate that does not exist.
+    for (const id of [...health, ...progress]) {
+      expect(ids, `${id} is classified but never emitted`).toContain(id);
+    }
   });
 });

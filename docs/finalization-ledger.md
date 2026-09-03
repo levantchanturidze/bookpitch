@@ -64,7 +64,7 @@ Observed directly, not carried over from any earlier summary.
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| A1 | Soak state machine — recovery, transient vs terminal | `NOT STARTED` | |
+| A1 | Soak state machine — recovery, transient vs terminal | `PASSED — LOCAL` | `SOAK_HEALTH_GATES` / `SOAK_PROGRESS_GATES`, every gate classified and asserted to be in exactly one; unreadable identity evidence is now transient, a different release is terminal, an unpinned soak is `blocked`; controlled-clock test proving hour-23 failure cannot become hour-24 success |
 | A2 | Authoritative heartbeat contract shared by monitor + soak | `PASSED — LOCAL` | `scripts/heartbeat-contract.mjs`; both consumers import it; 18 tests in `tests/heartbeat-contract.test.ts` incl. omitted/unknown/empty maps, remote threshold inflation and non-numeric ages |
 | A3 | Retention success strictly inside the effective window | `PASSED — LOCAL` | new `retention-in-window` soak gate; retention's 30h freshness limit is longer than the 24h window, so `cron-outcomes` alone could certify a window the sweep never ran in |
 | A4 | Exact partition-policy verification | `NOT STARTED` | parent policies exact since `dc2a09f`; children checked for RLS + privileges only |

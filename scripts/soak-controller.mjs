@@ -65,6 +65,47 @@ export const SOAK_DEFAULTS = {
   requiredAliases: ['bookpitch.ge', 'www.bookpitch.ge'],
 };
 
+/**
+ * Gates that mean PRODUCTION IS UNHEALTHY RIGHT NOW, or that its health cannot
+ * be read. Any one of them failing puts the soak into awaiting-recovery: the
+ * window stops accruing and restarts only at the next fully healthy natural
+ * monitor observation.
+ *
+ * The rule this encodes, and it is the only rule: an uninterrupted window is
+ * one in which nothing release-critical was ever wrong. Before this existed,
+ * only three signals could invalidate a window — failed scheduled monitor,
+ * backup and cron runs, plus in-window incidents. Everything else merely made
+ * one tick report `running` with a red line in it, and the window carried on.
+ * A Sentry outage at hour 23 therefore produced a SOAK SUCCESS at hour 24.
+ */
+export const SOAK_HEALTH_GATES = Object.freeze([
+  'history-continuity',
+  'monitor-clean',
+  'observation-gap',
+  'no-incident-in-window',
+  'outbox-clean',
+  'cron-outcomes',
+  'observability',
+]);
+
+/**
+ * Gates that are merely NOT YET SATISFIED. Time, counts, and the nightly sweep
+ * that has not come round again. These keep the soak `running`; they are not
+ * evidence that anything is wrong.
+ *
+ * Every emitted gate must appear in exactly one of these two lists, which
+ * tests/soak-controller.test.ts asserts — otherwise a gate added later would be
+ * silently neither, and a new release-critical failure would once again leave
+ * the window intact.
+ */
+export const SOAK_PROGRESS_GATES = Object.freeze([
+  'window-elapsed',
+  'monitor-observations',
+  'scheduled-backup',
+  'scheduled-cron',
+  'retention-in-window',
+]);
+
 /** Marker so the state block is found by content, never by issue title. */
 export const SOAK_MARKER = '<!-- bookpitch-soak-state -->';
 export const SOAK_LABEL = 'soak';
@@ -92,6 +133,7 @@ export function parseState(body) {
  * @param {{
  *   state: {releaseSha: string, deploymentId?: string|null, startedAt: string,
  *           effectiveWindowStart?: string, lastProcessedMonitorRun?: number|null,
+ *           awaitingRecoverySince?: string|null,
  *           restarts?: Array<{at: string, reason: string}>},
  *   evidence: {
  *     monitorRuns: Array<{runId: number, event: string, conclusion: string, completedAt: string}>,
@@ -150,44 +192,65 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
   // A null deployment used to skip the identity check entirely, with a comment
   // claiming a gate would read it as "not evidence of health". No gate did.
   // The soak simply stopped checking which code it was measuring.
-  if (!evidence.deployment) {
+  // A soak with no deployment PIN was set up wrong, and no amount of waiting
+  // fixes that. Checked before anything transient, because it is the one
+  // identity problem that is our fault rather than production's.
+  if (!state.deploymentId) {
     return fail(
       'blocked',
-      'deployment evidence could not be read, so there is nothing to pin the soak to. ' +
-        'A soak that cannot name the code it is measuring is not evidence.',
+      'no deployment id was pinned when the soak started, so there is nothing to compare ' +
+        'production against. This is a setup error, not a production failure: start a new ' +
+        'soak with the GitHub Deployment record id.',
     );
   }
 
   const d = evidence.deployment;
-  const identityProblems = [];
+  // TWO kinds of identity problem, and conflating them was a defect.
+  //
+  //   superseded  positive evidence that a DIFFERENT release is serving. The
+  //               soak is over; start a new one deliberately.
+  //   unreadable  the evidence could not be read this tick. That is a network
+  //               or API failure, not a statement about which code is live.
+  //
+  // Every problem used to be `superseded`, so one failed HTTPS request while
+  // reading a release header permanently ended the soak with "the deployment
+  // under soak is not the one serving production" — an assertion that was not
+  // true, about a condition that would have cleared itself in seconds.
+  const supersededProblems = [];
+  const unreadableProblems = [];
+
+  if (!d) {
+    unreadableProblems.push('the deployment record could not be read at all');
+  }
 
   // Every field is REQUIRED. The previous version guarded each comparison on
   // both sides being truthy — `state.deploymentId && d.id && ...` — so a
   // missing pin silently skipped the check it was supposed to enforce. Absent
   // evidence is not agreement.
-  if (!state.deploymentId) {
-    identityProblems.push('no deployment id was pinned when the soak started');
-  } else if (String(d.id ?? '') !== String(state.deploymentId)) {
-    identityProblems.push(
-      `deployment is ${d.id ?? '(none)'}, not the pinned ${state.deploymentId}`,
-    );
-  }
-  if (!d.sha) {
-    identityProblems.push('the deployment record carries no SHA');
-  } else if (d.sha !== state.releaseSha) {
-    identityProblems.push(
-      `production serves ${String(d.sha).slice(0, 7)}, not the soak's ${String(state.releaseSha).slice(0, 7)}`,
-    );
-  }
-  if (!d.state) {
-    identityProblems.push('the deployment has no status');
-  } else if (d.state !== 'success' && d.state !== 'READY') {
-    identityProblems.push(`deployment state is ${d.state}, not success/READY`);
-  }
-  if (!d.environment) {
-    identityProblems.push('the deployment names no environment');
-  } else if (d.environment.toLowerCase() !== 'production') {
-    identityProblems.push(`environment is ${d.environment}, not Production`);
+  if (d) {
+    if (!d.id) unreadableProblems.push('the deployment record carries no id');
+    else if (String(d.id) !== String(state.deploymentId)) {
+      supersededProblems.push(`deployment is ${d.id}, not the pinned ${state.deploymentId}`);
+    }
+
+    if (!d.sha) unreadableProblems.push('the deployment record carries no SHA');
+    else if (d.sha !== state.releaseSha) {
+      supersededProblems.push(
+        `production serves ${String(d.sha).slice(0, 7)}, not the soak's ${String(state.releaseSha).slice(0, 7)}`,
+      );
+    }
+
+    // A deployment whose status is not success is production being unhealthy,
+    // not production being a different release. It can recover.
+    if (!d.state) unreadableProblems.push('the deployment has no status');
+    else if (d.state !== 'success' && d.state !== 'READY') {
+      unreadableProblems.push(`deployment state is ${d.state}, not success/READY`);
+    }
+
+    if (!d.environment) unreadableProblems.push('the deployment names no environment');
+    else if (d.environment.toLowerCase() !== 'production') {
+      supersededProblems.push(`environment is ${d.environment}, not Production`);
+    }
   }
 
   // Aliases must be serving THIS release, not merely answering 200.
@@ -196,28 +259,52 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
   // entirely, so a healthy response from a completely different deployment
   // satisfied the gate. Each host now reports the release it is actually
   // serving, read after redirects, and must match.
-  const aliasResults = d.aliasReleases ?? null;
+  const aliasResults = d?.aliasReleases ?? null;
   if (aliasResults === null) {
-    identityProblems.push('canonical alias evidence could not be read');
+    unreadableProblems.push('canonical alias evidence could not be read');
   } else {
     for (const host of opts.requiredAliases) {
       const seen = aliasResults[host];
       if (!seen) {
-        identityProblems.push(`alias ${host} did not report a release`);
+        // Silence from a host is a failed read, not a statement about what it
+        // serves.
+        unreadableProblems.push(`alias ${host} did not report a release`);
       } else if (seen !== state.releaseSha) {
-        identityProblems.push(
+        supersededProblems.push(
           `alias ${host} serves ${String(seen).slice(0, 7)}, not ${String(state.releaseSha).slice(0, 7)}`,
         );
       }
     }
   }
 
-  if (identityProblems.length > 0) {
+  // Superseded wins over unreadable: if one host demonstrably serves a
+  // different release, the soak is over whatever the other host did.
+  if (supersededProblems.length > 0) {
     return fail(
       'superseded',
-      `the deployment under soak is not the one serving production: ${identityProblems.join('; ')}. ` +
+      `the deployment under soak is not the one serving production: ${supersededProblems.join('; ')}. ` +
         'A soak measures one deployment; start a new one against the new SHA deliberately.',
     );
+  }
+
+  // Unreadable identity evidence is a health failure, not a verdict about which
+  // code is live. No time accrues, the window will restart at the next healthy
+  // observation, and the soak survives a thirty-second API outage instead of
+  // being permanently closed by one.
+  if (unreadableProblems.length > 0) {
+    const at = now.toISOString();
+    const reason = `deployment identity could not be established: ${unreadableProblems.join('; ')}`;
+    const moment = { at, reason };
+    return {
+      ...fail(
+        'awaiting-recovery',
+        `${reason}. This is unreadable evidence, not a superseded deployment — the window ` +
+          'restarts at the first fully healthy scheduled monitor observation after this moment.',
+      ),
+      restarts: [...(state.restarts ?? []), moment],
+      awaitingRecoverySince: at,
+      restartedThisTick: moment,
+    };
   }
 
   // --- Unhealthy intervals invalidate the window -----------------------------
@@ -312,6 +399,18 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
   }
 
   // --- Gates ----------------------------------------------------------------
+  //
+  // Recomputed against the FINAL window start. `incidentsInWindow` above is
+  // deliberately measured against the pre-recovery window, because that is how
+  // the unhealthy moment is found; reusing it for the gate meant the incident
+  // that caused a restart was still "in the window" afterwards. Harmless while
+  // a failing gate only coloured a tick red — and, once a failing health gate
+  // began restarting the window, a soak that could never recover from an
+  // incident at all.
+  const incidentsInFinalWindow = (evidence.incidents ?? []).filter(
+    (i) => new Date(i.createdAt) > windowStart,
+  );
+
   const observations = after(scheduled(evidence.monitorRuns), windowStart);
   const cleanObservations = observations.filter((r) => r.conclusion === 'success');
   const backups = after(scheduled(evidence.backupRuns), windowStart).filter(
@@ -396,13 +495,13 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
     },
     {
       id: 'no-incident-in-window',
-      ok: incidentsInWindow.length === 0 && stillOpenIncidents.length === 0,
+      ok: incidentsInFinalWindow.length === 0 && stillOpenIncidents.length === 0,
       detail:
-        incidentsInWindow.length === 0 && stillOpenIncidents.length === 0
+        incidentsInFinalWindow.length === 0 && stillOpenIncidents.length === 0
           ? 'no incident opened during the window, and none open now'
           : [
-              incidentsInWindow.length
-                ? `opened during window: ${incidentsInWindow.map((i) => `#${i.number}`).join(', ')}`
+              incidentsInFinalWindow.length
+                ? `opened during window: ${incidentsInFinalWindow.map((i) => `#${i.number}`).join(', ')}`
                 : null,
               stillOpenIncidents.length
                 ? `currently open: ${stillOpenIncidents.map((i) => `#${i.number}`).join(', ')}`
@@ -489,6 +588,43 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
   ];
 
   const failing = gates.filter((g) => !g.ok);
+
+  // THE RULE, applied here and nowhere else: any HEALTH gate failing means
+  // production was unhealthy — or unreadable — at this instant, so this instant
+  // is an unhealthy moment and the window stops.
+  //
+  // Progress gates (time elapsed, observation counts, the nightly sweep that
+  // has not come round again) are not failures and must not restart anything,
+  // or the window could never complete.
+  //
+  // Before this, only failed scheduled runs and in-window incidents could
+  // invalidate a window. Sentry receipt revalidation, outbox dead letters,
+  // unhealthy jobs and unreadable evidence all merely coloured one tick red and
+  // left the clock running — so a failure at hour 23 was followed by SOAK
+  // SUCCESS at hour 24.
+  const failingHealth = failing.filter((g) => SOAK_HEALTH_GATES.includes(g.id));
+  if (failingHealth.length > 0) {
+    const at = now.toISOString();
+    const reason = `release-critical gate(s) failing: ${failingHealth
+      .map((g) => `${g.id} (${g.detail})`)
+      .join('; ')}`;
+    const moment = { at, reason };
+    // Recorded in `restarts` like any other unhealthy moment, so the issue
+    // shows the whole history rather than only the run-level failures.
+    restarts.push(moment);
+    return {
+      ...fail(
+        'awaiting-recovery',
+        `production was unhealthy at ${at} — ${reason}. The window restarts at the first ` +
+          'fully healthy scheduled monitor observation after that moment; no time is accruing.',
+      ),
+      restarts,
+      awaitingRecoverySince: at,
+      restartedThisTick: moment,
+      gates,
+    };
+  }
+
   return {
     status: failing.length === 0 ? 'success' : restartedThisTick ? 'restarted' : 'running',
     windowStart: windowStart.toISOString(),
