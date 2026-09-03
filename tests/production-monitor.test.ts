@@ -1275,3 +1275,101 @@ describe('provider verdicts distinguish a decision from a fault', () => {
     expect(OPS_DERIVED_CHECK_IDS).toContain('production-provider-unconfigured');
   });
 });
+
+// -----------------------------------------------------------------------------
+// Defects found by the final false-green review: the monitor let the thing it
+// is monitoring decide what gets monitored.
+//
+// `for (const [job, j] of Object.entries(jobs))` iterates the keys PRODUCTION
+// sent, and `const limit = j.maxAgeMinutes` takes the staleness threshold from
+// the same document. So a deployment that stops reporting a job stops being
+// checked on it, and a deployment that reports a generous limit is graded
+// against its own generosity. Neither shows up as a failure; the check simply
+// is not there, and 25/29 becomes 24/28 — a number nobody is watching.
+//
+// The expected job names and their limits are properties of the CONTRACT, not
+// observations. They belong to the monitor.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the monitor decides which jobs it expects, not production', () => {
+  const ids = (metrics: Record<string, unknown>) => evaluateOpsMetrics(metrics).map((r) => r.id);
+  const find = (metrics: Record<string, unknown>, id: string) =>
+    evaluateOpsMetrics(metrics).find((r) => r.id === id);
+
+  const allJobs = () => ({
+    reminders: healthyJob(),
+    housekeeping: healthyJob(),
+    retention: healthyJob({ maxAgeMinutes: 1800 }),
+    auditDigest: healthyJob({ maxAgeMinutes: 1800 }),
+  });
+
+  it('THE DEFECT: a job production stops reporting still produces a FAILING check', () => {
+    // The dangerous shape: the app is redeployed, `retention` disappears from
+    // the heartbeat map, and the monitor quietly stops asking about it. An
+    // absent job is the case with the least evidence, not the most.
+    const jobs = allJobs();
+    delete (jobs as Record<string, unknown>).retention;
+    const check = find({ cronHeartbeat: { ageMinutes: 5, jobs } }, 'cron-job-retention');
+    expect(check, 'cron-job-retention must exist even when production omits it').toBeDefined();
+    expect(check!.ok).toBe(false);
+    expect(check!.detail).toMatch(/did not report|not reported|absent/i);
+  });
+
+  it('an entirely empty job map fails every expected job', () => {
+    const results = evaluateOpsMetrics({ cronHeartbeat: { ageMinutes: 5, jobs: {} } });
+    for (const id of [
+      'cron-job-reminders',
+      'cron-job-housekeeping',
+      'cron-job-retention',
+      'cron-job-audit-digest',
+    ]) {
+      const c = results.find((r) => r.id === id);
+      expect(c, `${id} must be evaluated`).toBeDefined();
+      expect(c!.ok, `${id} must fail on an empty map`).toBe(false);
+    }
+  });
+
+  it('THE DEFECT: a generous limit from production does not excuse a stale job', () => {
+    // 20 days old, self-graded against a 100-day limit. The monitor's own limit
+    // for reminders is 6 hours.
+    const jobs = allJobs();
+    jobs.reminders = healthyJob({ successMinutesAgo: 28_800, maxAgeMinutes: 144_000 });
+    const check = find({ cronHeartbeat: { ageMinutes: 5, jobs } }, 'cron-job-reminders');
+    expect(check!.ok, 'production must not set its own staleness threshold').toBe(false);
+  });
+
+  it('a limit tighter than the contract is also ignored — the contract is the contract', () => {
+    // The reverse: a deployment reporting an absurdly tight limit must not
+    // manufacture an incident either. Drift is drift in both directions.
+    const jobs = allJobs();
+    jobs.housekeeping = healthyJob({ successMinutesAgo: 30, maxAgeMinutes: 1 });
+    const check = find({ cronHeartbeat: { ageMinutes: 5, jobs } }, 'cron-job-housekeeping');
+    expect(check!.ok).toBe(true);
+  });
+
+  it('an unknown job key from production creates no gate', () => {
+    // Otherwise a deployment could add passing checks to its own report card.
+    const jobs = { ...allJobs(), somethingNew: healthyJob() };
+    expect(ids({ cronHeartbeat: { ageMinutes: 5, jobs } })).not.toContain('cron-job-somethingNew');
+  });
+
+  it('the emitted job ids are exactly the four in OPS_DERIVED_CHECK_IDS', () => {
+    const emitted = ids({ cronHeartbeat: { ageMinutes: 5, jobs: allJobs() } }).filter((i) =>
+      i.startsWith('cron-job-'),
+    );
+    const declared = OPS_DERIVED_CHECK_IDS.filter(
+      (i) => i.startsWith('cron-job-') && i !== 'cron-jobs-failing',
+    );
+    expect(emitted.sort()).toEqual([...declared].sort());
+  });
+
+  it('a healthy full map still passes — the fix must not fail closed on everything', () => {
+    const results = evaluateOpsMetrics({ cronHeartbeat: { ageMinutes: 5, jobs: allJobs() } });
+    const jobChecks = results.filter(
+      (r) => r.id.startsWith('cron-job-') && r.id !== 'cron-jobs-failing',
+    );
+    expect(jobChecks).toHaveLength(4);
+    expect(jobChecks.every((r) => r.ok)).toBe(true);
+  });
+});
