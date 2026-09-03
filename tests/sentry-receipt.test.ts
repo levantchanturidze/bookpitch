@@ -235,3 +235,102 @@ describe('the pair must exercise two runtimes', () => {
     expect(r.problems.join(' ')).toMatch(/^server: /);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Defects found by the final false-green review. Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('source-map proof must be original repository source', () => {
+  const withFrame = (frame: Record<string, unknown>) =>
+    event({
+      entries: [{ type: 'exception', data: { values: [{ stacktrace: { frames: [frame] } }] } }],
+    });
+
+  it('THE DEFECT: a compiled SERVER chunk with context is not source-map proof', () => {
+    // The exclusion list only covered /_next/static/chunks/ and .min.js, so a
+    // server-side build artefact with context lines passed as "original
+    // source" — which is precisely the unreadable stack the check exists to
+    // rule out, just on the other side of the app.
+    expect(
+      isSymbolicated(
+        withFrame({
+          filename: '.next/server/app/api/health/sentry-probe/route.js',
+          lineNo: 1,
+          context: [[1, 'const e=require("...")']],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('any compiled .js with context is refused, wherever it lives', () => {
+    for (const filename of [
+      '/var/task/.next/server/chunks/123.js',
+      'dist/index.js',
+      '/_next/static/abc.js',
+      'webpack-internal:///./lib/x.js',
+    ]) {
+      expect(
+        isSymbolicated(withFrame({ filename, lineNo: 1, context: [[1, 'x']] })),
+        `${filename} must not count as original source`,
+      ).toBe(false);
+    }
+  });
+
+  it('a dependency frame in node_modules is not our source map', () => {
+    expect(
+      isSymbolicated(
+        withFrame({
+          filename: 'node_modules/@sentry/node/build/cjs/index.ts',
+          lineNo: 5,
+          context: [[5, 'export function init() {}']],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('accepts .ts and .tsx repository source with context', () => {
+    for (const filename of ['app/api/health/route.ts', 'components/legal/LegalPage.tsx']) {
+      expect(
+        isSymbolicated(withFrame({ filename, lineNo: 12, context: [[12, 'const x = 1;']] })),
+        `${filename} should count`,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('each runtime must prove its OWN symbolication', () => {
+  const verdict = (over: Record<string, unknown>) => ({
+    ok: true,
+    eventId: 'x',
+    symbolicated: false,
+    problems: [] as string[],
+    ...over,
+  });
+
+  it('THE DEFECT: a symbolicated server event must not cover an unsymbolicated browser one', () => {
+    // `server.symbolicated || browser.symbolicated` meant uploading server maps
+    // alone satisfied the gate, while every browser stack stayed minified.
+    const r = verifyReceiptPair({
+      server: verdict({ eventId: 'srv-1', symbolicated: true }),
+      browser: verdict({ eventId: 'brw-2', symbolicated: false }),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.problems.join(' ')).toMatch(/browser/);
+  });
+
+  it('and the reverse', () => {
+    const r = verifyReceiptPair({
+      server: verdict({ eventId: 'srv-1', symbolicated: false }),
+      browser: verdict({ eventId: 'brw-2', symbolicated: true }),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.problems.join(' ')).toMatch(/server/);
+  });
+
+  it('both symbolicated passes', () => {
+    const r = verifyReceiptPair({
+      server: verdict({ eventId: 'srv-1', symbolicated: true }),
+      browser: verdict({ eventId: 'brw-2', symbolicated: true }),
+    });
+    expect(r.ok).toBe(true);
+  });
+});
