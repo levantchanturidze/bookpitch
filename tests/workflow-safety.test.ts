@@ -574,11 +574,52 @@ describe('production invariant check is read-only and actually wired up', () => 
   });
 
   it('runs after the apply, not before it', () => {
-    const migrate = readFileSync(path.join(WORKFLOW_DIR, 'migrate.yml'), 'utf8');
-    const apply = migrate.indexOf('prisma migrate deploy');
-    const verify = migrate.indexOf('verify-production-invariants.sql');
-    expect(apply).toBeGreaterThan(-1);
-    expect(verify).toBeGreaterThan(apply);
+    // Compared as STEPS, not as offsets in the file. This used to be
+    // `raw.indexOf(...)` on both strings, which is a proxy for order that stops
+    // being one the moment either string appears anywhere else — adding
+    // `scripts/verify-production-invariants.sql` to the workflow's `paths:`
+    // filter made the verifier "precede" the apply and failed this test for a
+    // reason that had nothing to do with step order.
+    const steps = (
+      readWorkflow('migrate.yml').doc as unknown as {
+        jobs: Record<string, { steps: Array<{ run?: string }> }>;
+      }
+    ).jobs.migrate.steps;
+    const applyAt = steps.findIndex((st) => /prisma migrate deploy/.test(st.run ?? ''));
+    const verifyAt = steps.findIndex((st) =>
+      /verify-production-invariants\.sql/.test(st.run ?? ''),
+    );
+    expect(applyAt, 'no step applies migrations').toBeGreaterThan(-1);
+    expect(verifyAt, 'no step runs the verifier').toBeGreaterThan(-1);
+    expect(
+      verifyAt,
+      'the invariants must be checked against the POST-apply schema',
+    ).toBeGreaterThan(applyAt);
+  });
+
+  it('a change to the verifier itself re-runs it against production', () => {
+    // migrate.yml is path-filtered. The filter listed prisma/migrations/**,
+    // prisma/schema.prisma and the workflow — but NOT the verifier script it
+    // runs. So adding a new invariant check merged, passed CI against the
+    // disposable CI database, and then sat unexecuted against production until
+    // somebody happened to write a migration.
+    //
+    // That is the shape this project keeps finding: a control that exists, is
+    // tested, and is not called in the path that actually runs. Check 7
+    // (current_org_id) was written, proven non-vacuous, and merged in exactly
+    // that state.
+    const migrate = readWorkflow('migrate.yml');
+    const paths =
+      (migrate.doc as unknown as { on?: { push?: { paths?: string[] } } }).on?.push?.paths ??
+      // `on:` parses as the YAML 1.1 boolean `true`.
+      (migrate.doc as unknown as Record<string, { push?: { paths?: string[] } }>)[
+        true as unknown as string
+      ]?.push?.paths ??
+      [];
+    expect(paths, 'migrate.yml declares no push path filter').not.toEqual([]);
+    expect(paths, 'a change to the invariant verifier must re-run it against production').toContain(
+      'scripts/verify-production-invariants.sql',
+    );
   });
 
   it('checks the invariants that a restore can silently break', () => {
