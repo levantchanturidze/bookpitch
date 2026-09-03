@@ -230,6 +230,34 @@ assumed:
 
 ---
 
+## Final false-green round — what corrective round 2 still got wrong
+
+Same pattern again, with one new variety worth naming. Round 2's defects were
+controls that reported health while measuring nothing. Several of this round's
+are the mirror image: controls that could **never** report health, which is the
+same amount of broken and harder to notice, because a gate stuck on ⏳ looks
+like patience.
+
+| Defect | Why it mattered |
+|---|---|
+| **Nothing could put a Sentry receipt into soak state** | `verifySentryReceipt()` required `persisted.nonce`; nothing in the system ever wrote one. The observability gate could not pass by any supported route — the only way would have been hand-editing event ids into the soak issue body, which is the ticked-checkbox evidence the gate replaced. `seedSentryState()` is now the one path in, and `soak.yml` refuses to start without a receipt for the release being soaked |
+| The receipt's freshness bound came from the wrong end of the run | The probe fires, *then* the receipt is written. Using the write time as `notBefore` made every receipt reject the very events it had just proved. The bound is now the run's **start** |
+| One event id satisfied both runtimes; one symbolicated stack satisfied both | `server.symbolicated \|\| browser.symbolicated` — uploading server maps alone passed while every browser stack stayed minified. Both now prove their own, and identical ids are rejected |
+| "Symbolicated" accepted compiled output | The exclusion list covered `/_next/static/chunks/` and `.min.js`, so `.next/server/**/route.js` with context lines counted as original source. Now an allow-list: `.ts`/`.tsx`, not `node_modules/`, not `.next/`, not `webpack-internal:` |
+| `verify-sentry.mjs` proved things about a laptop | It initialised `@sentry/node` locally and posted a hand-built envelope. It never contacted the deployment, used the Node SDK for what it labelled the *browser* event, and sent a message with no exception — so there was no stack, and symbolication could not be observed even in principle |
+| **The monitor let production decide what got monitored** | The per-job loop iterated `Object.entries(heartbeat.jobs)` and took the staleness threshold from `j.maxAgeMinutes` — the same document. A deployment that stopped reporting a job stopped being asked about it, silently, because a check that is not emitted is not a failing check. The four expected jobs and their limits now live in the monitor (`EXPECTED_HEARTBEAT_JOBS`), pinned against `lib/cron-heartbeat-jobs.ts` by a drift test |
+| The reminder claim lease used the Node clock | `created_at` is `DEFAULT CURRENT_TIMESTAMP` — PostgreSQL. The cutoff was `Date.now()` — Vercel. Skew one way steals a live claim and sends the customer a **second** reminder; the other way keeps an abandoned claim alive so the reminder is never retried. Third instance of this class here, after retention and the heartbeat; the cutoff is now computed in SQL |
+| The missed-reminder metric was blind to same-day bookings | It counted only `created_at < starts_at - lead_hours`, but `runReminderTick()` puts **no** condition on `created_at` — an appointment booked 8 hours ahead under a 24-hour lead is in the window the moment it exists. So for every booking made inside its own lead window the runtime could try, fail, and the one signal designed to be un-fool-able reported zero |
+| **Nothing verified `current_org_id()` itself** | Every one of the 21 policies is `organization_id = current_org_id()`, and the verifier checked only that text. A one-statement `CREATE OR REPLACE` returning a constant leaves all 21 policies looking perfect and every tenant reading one organization. Check 7 now pins schema, arity, return type, language, volatility, `SECURITY DEFINER`, `proconfig`, the exact body, ownership, and that `bookpitch_app` has no `CREATE` on `public` — plus fail-closed behaviour with no context |
+
+Proven non-vacuous rather than assumed: `tests/rls-current-org-id.test.ts`
+builds eight deliberately-wrong versions of the function and shows the same
+predicate rejects each one, and Check 7 was run against a live database with a
+shadowing copy present — it refused with
+`2 definition(s) of current_org_id() exist`, then passed again once dropped.
+
+---
+
 ## The seven states a change can be in
 
 The single biggest source of contradiction across the ledgers is that
@@ -270,7 +298,7 @@ otherwise would destroy the record of how they were found.
 |---|---|---|
 | "Production has no database" | 2026-09-01, ~00:00–12:40Z | **False.** Supabase `cglqphbebckvpeyisqqb` restored 2026-09-01. Identity proven by the backup manifest fingerprint `5c9f75110f30141f`, matching pre-loss and post-restore |
 | "Actions billing is suspended" | until 2026-08-31T20:55Z | **False.** Restored; real step counts from 2026-09-01T00:05Z |
-| "62 migrations" | until 2026-09-01T12:43Z | **False.** 63 applied in production (run `33509215538`); `main` carries **65** |
+| "62 migrations" | until 2026-09-01T12:43Z | **False.** 63 applied in production (run `33509215538`); `main` carries **67** (65 → 66 `cron_heartbeat_outcome` → 67 `audit_partition_rls`) |
 | "Migration 63 is local only" | until 2026-09-01T12:43Z | **False.** Applied to production exactly once |
 | "MARKETING still holds `client.read:contact`" | until migration 63 applied | **False.** Verified absent in production; the two reporting grants remain, which is the complement that stops the check being vacuous |
 | "`FIELD_ENCRYPTION_KEY` is malformed" | P15-010 / R-16, until 2026-08-22 | **False.** `production-config-invalid — malformed: 0`, corroborated by an encrypted `email_outbox` row that could not exist unless `encryptField()` succeeded |
@@ -355,11 +383,42 @@ operator's behalf, which is out of scope. This is not a configuration step
 someone forgot — there is nothing to configure against.
 
 **Needs a person to:** create or nominate a Sentry organisation and project,
-then set `SENTRY_DSN` and `NEXT_PUBLIC_SENTRY_DSN` in Vercel Production.
-Afterwards `npm run verify:sentry` proves it end to end — it distinguishes
-CONFIGURED / INITIALISED / EMITTED / **RECEIVED**, and only level 4 is
-evidence that an error would reach a human. Levels 1–3 all pass against a DSN
-pointing at a project that does not exist.
+then set, in Vercel Production, `SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_DSN` and
+`SENTRY_AUTH_TOKEN` / `SENTRY_ORG` / `SENTRY_PROJECT` (the last three are what
+uploads source maps at build time and what reads events back afterwards), and
+the same three as repository secrets so the soak can re-verify.
+
+Checked read-only on 2026-09-03: Vercel Production holds `SENTRY_ENVIRONMENT`
+and `NEXT_PUBLIC_SENTRY_ENVIRONMENT` and neither DSN; the repository holds
+**no** Sentry secret at all. Nothing here is a step somebody forgot — there is
+still nothing to configure against.
+
+Afterwards `npm run verify:sentry` proves it end to end. It was rewritten this
+round and no longer proves anything about the machine it runs on:
+
+| Level | Claim | What it now does |
+|---|---|---|
+| 1 CONFIGURED | the deployment reports a DSN | asks the **deployed app**, per runtime |
+| 2 INITIALISED | the deployed SDK made a client | server probe returns an id; the browser page reports its client |
+| 3 EMITTED | captured **and flushed** | both probes report a drained transport |
+| 4 INDEXED | retrievable through the Sentry API | polls both event ids |
+| 5 VERIFIED | it is *this run's* event, and readable | nonce, release, environment and runtime tag all match, the two ids differ, and both stacks resolve to original `.ts`/`.tsx` frames |
+
+Only level 5 is evidence that an error would reach a human in a form anyone can
+act on. Levels 1–3 pass against a DSN pointing at a project that does not
+exist; level 4 passes on a stack of unreadable minified chunks.
+
+The browser half is a real headless Chromium loading `/probe/sentry` on the
+deployed site, because nothing runnable from Node exercises
+`NEXT_PUBLIC_SENTRY_DSN`, the browser bundle or the browser source maps. The
+page is reachable only with a short-lived HMAC issued by
+`/api/health/sentry-probe/token` (bearer `CRON_SECRET`), and only while
+`SENTRY_PROBE_ENABLED` is exactly `"true"` — it 404s otherwise, and the secret
+itself never reaches client JavaScript or a URL.
+
+The script also checks the complement of source-map upload: that the `.map`
+files are **not** served from the CDN. `deleteSourcemapsAfterUpload` is a build
+option, and a build option is a claim until someone fetches the URL.
 
 ### 2. Legal review — `LEGAL_DOCUMENT_STATUS` is `'draft'`
 

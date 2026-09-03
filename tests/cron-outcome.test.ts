@@ -4,6 +4,11 @@ import path from 'node:path';
 import { classifyRun, recordCronHeartbeat } from '@/lib/cron-heartbeat';
 import { collectOpsMetrics } from '@/lib/ops-metrics';
 import { unsafePrismaAdmin } from '@/lib/db';
+import {
+  HEARTBEAT_JOBS,
+  HEARTBEAT_MAX_AGE_MINUTES,
+  HEARTBEAT_METRIC_KEY,
+} from '@/lib/cron-heartbeat-jobs';
 import { evaluateOpsMetrics, OPS_DERIVED_CHECK_IDS } from '../scripts/production-monitor.mjs';
 
 // -----------------------------------------------------------------------------
@@ -418,5 +423,35 @@ describe('each required job is evaluated individually', () => {
     }).find((x: { id: string }) => x.id === 'cron-jobs-failing');
     expect(r!.ok).toBe(false);
     expect(r!.detail).toMatch(/cannot distinguish "never ran" from "healthy"/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The monitor grades jobs against a contract it holds itself
+// (EXPECTED_HEARTBEAT_JOBS in scripts/production-monitor.mjs) rather than
+// against the limits production reports. That contract has to mirror
+// lib/cron-heartbeat-jobs.ts, and it cannot import it: the monitor is `.mjs`
+// and this is TypeScript, which Node will not load from a `.mjs` module. That
+// exact assumption already shipped once as `await import('../lib/sentry-
+// receipt.ts')` — it type-checked, passed every test, and would have thrown on
+// its first real run.
+//
+// So the duplication is deliberate, and this is what stops it drifting.
+// -----------------------------------------------------------------------------
+describe('the monitor’s job contract mirrors the application’s', () => {
+  it('same jobs, same metric keys, same limits', async () => {
+    const { EXPECTED_HEARTBEAT_JOBS } = await import('../scripts/production-monitor.mjs');
+
+    const fromApp = HEARTBEAT_JOBS.map((job) => ({
+      metricKey: HEARTBEAT_METRIC_KEY[job],
+      checkId: `cron-job-${job}`,
+      maxAgeMinutes: HEARTBEAT_MAX_AGE_MINUTES[job],
+    }));
+
+    expect(
+      [...EXPECTED_HEARTBEAT_JOBS].sort((a, b) => a.metricKey.localeCompare(b.metricKey)),
+      'scripts/production-monitor.mjs::EXPECTED_HEARTBEAT_JOBS has drifted from ' +
+        'lib/cron-heartbeat-jobs.ts',
+    ).toEqual(fromApp.sort((a, b) => a.metricKey.localeCompare(b.metricKey)));
   });
 });

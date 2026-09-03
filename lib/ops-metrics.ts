@@ -988,10 +988,32 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
            -- reminded beforehand. Excluding them hid exactly the cases where a
            -- missed reminder had already cost something.
            AND a.status <> 'cancelled'
-           -- Only appointments that existed early enough for the lead window
-           -- to have covered them; one booked ten minutes beforehand was never
-           -- eligible and is not evidence of a missed run.
-           AND a.created_at < a.starts_at - make_interval(hours => o.reminder_lead_hours)
+           -- Was a reminder ever OWED? The clause here used to be
+           --   a.created_at < a.starts_at - reminder_lead_hours
+           -- which does not describe what the runtime does. runReminderTick()
+           -- selects starts_at IN [now, now + lead] and puts NO condition on
+           -- created_at at all, so an appointment booked 8 hours ahead under a
+           -- 24-hour lead is inside the window the moment it exists and every
+           -- tick from then on attempts it. The metric excluded exactly that
+           -- population — every same-day booking — so the runtime could try,
+           -- fail, and leave the customer unreminded while the one signal that
+           -- was supposed to be un-fool-able reported zero.
+           --
+           -- Two ways to be owed one, and the first needs no inference:
+           AND (
+             -- The runtime demonstrably reached it. Any message_log row is
+             -- proof a tick attempted this appointment, whenever it was booked.
+             EXISTS (SELECT 1 FROM message_log m2 WHERE m2.appointment_id = a.id)
+             -- Or it was never attempted, but existed long enough that a
+             -- scheduled tick should have run in between. Bounded by the same
+             -- tolerance the heartbeat check uses for reminders, which is the
+             -- measured worst-case GitHub delivery gap plus margin (R-08) —
+             -- so a booking made inside that gap is not called a miss, and the
+             -- metric does not sit permanently non-zero for a clinic taking
+             -- same-day bookings.
+             OR a.starts_at - a.created_at >
+                  make_interval(mins => ${HEARTBEAT_MAX_AGE_MINUTES.reminders}::int)
+           )
            -- Only GENUINELY delivered states count as a reminder.
            --
            -- The 'queued' state used to be included here, and it is written

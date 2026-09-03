@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
+  nextSentryState,
+  seedSentryState,
   evaluateSoak,
   parseState,
   renderState,
@@ -782,5 +784,167 @@ describe('adversarial: routes to a falsely successful window', () => {
     const report = renderReport(state(), r);
     expect(report).toMatch(/SOAK SUCCESS/);
     expect(report).not.toMatch(/FINAL SUCCESS/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The receipt must survive its own persistence.
+//
+// Two defects that together made a valid Sentry receipt self-destruct after one
+// tick, found by the final false-green review:
+//
+//   * nextState.sentry did not carry the NONCE forward, and
+//     verifySentryReceipt() requires it — so the very next tick reported "no
+//     verified event ids and nonce are persisted";
+//   * verifiedAt was rewritten to now() on every successful tick, and it is the
+//     `notBefore` bound. Moving it forward makes the events — created once, at
+//     probe time — "predate this verification run" and fail freshness.
+//
+// Either alone invalidates the observability gate on tick two, which under the
+// corrected state machine puts the whole soak into awaiting-recovery. A soak
+// that can never survive its second tick is not a soak.
+// -----------------------------------------------------------------------------
+describe('persisted Sentry receipt is immutable where it must be', () => {
+  const receipt = {
+    nonce: 'probe-nonce-abcdef123456',
+    verifiedAt: '2026-09-03T10:00:00Z',
+    releaseSha: SHA,
+    environment: 'production',
+    serverEventId: 'srv-abc',
+    browserEventId: 'brw-def',
+  };
+
+  it('nextSentryState carries the nonce forward unchanged', () => {
+    const next = nextSentryState(receipt, {
+      configured: true,
+      ok: true,
+      serverEventId: 'srv-abc',
+      browserEventId: 'brw-def',
+    });
+    expect(next.nonce, 'the nonce must survive the tick').toBe(receipt.nonce);
+  });
+
+  it('THE DEFECT: verifiedAt is never advanced by a later tick', () => {
+    const next = nextSentryState(receipt, {
+      configured: true,
+      ok: true,
+      serverEventId: 'srv-abc',
+      browserEventId: 'brw-def',
+    });
+    expect(next.verifiedAt, 'verifiedAt is the notBefore bound and must not move').toBe(
+      receipt.verifiedAt,
+    );
+  });
+
+  it('release and environment are carried forward, not re-derived', () => {
+    const next = nextSentryState(receipt, {
+      configured: true,
+      ok: true,
+      serverEventId: 'srv-abc',
+      browserEventId: 'brw-def',
+    });
+    expect(next.releaseSha).toBe(SHA);
+    expect(next.environment).toBe('production');
+  });
+
+  it('a failed revalidation does not erase the receipt it was checking', () => {
+    // Otherwise a transient Sentry API outage would destroy the evidence and
+    // the soak could never recover without re-running the probe.
+    const next = nextSentryState(receipt, {
+      configured: true,
+      ok: false,
+      serverEventId: null,
+      browserEventId: null,
+      problems: ['Sentry API unreachable'],
+    });
+    expect(next.nonce).toBe(receipt.nonce);
+    expect(next.verifiedAt).toBe(receipt.verifiedAt);
+    expect(next.serverEventId).toBe('srv-abc');
+    expect(next.browserEventId).toBe('brw-def');
+  });
+
+  it('with no prior receipt there is nothing to preserve', () => {
+    const next = nextSentryState(null, { configured: false, ok: false });
+    expect(next.nonce).toBeNull();
+    expect(next.verifiedAt).toBeNull();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Defects found by the final false-green review: the receipt could never GET
+// into soak state, and its freshness bound was computed from the wrong end of
+// the verification run. Both fail closed — so instead of a false green they
+// produced a soak that could never go green at all, which is the same amount of
+// broken and harder to notice, because "⏳ observability" looks like patience.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('a verified receipt can be seeded into soak state automatically', () => {
+  const receipt = {
+    notBefore: '2026-09-03T09:00:00.000Z',
+    verifiedAt: '2026-09-03T09:02:30.000Z',
+    nonce: 'abcd1234abcd1234',
+    releaseSha: 'f'.repeat(40),
+    environment: 'production',
+    serverEventId: 'srv-1',
+    browserEventId: 'brw-2',
+  };
+
+  it('THE DEFECT: a receipt file becomes persisted sentry state', () => {
+    // Without this there is no supported path at all: nextSentryState() reads
+    // `persisted.nonce`, nothing ever wrote one, and the only way to produce it
+    // would be hand-editing the soak issue body — which is exactly the manual
+    // evidence the gate exists to replace.
+    const seeded = seedSentryState(JSON.stringify(receipt));
+    expect(seeded).not.toBeNull();
+    expect(seeded!.nonce).toBe('abcd1234abcd1234');
+    expect(seeded!.serverEventId).toBe('srv-1');
+    expect(seeded!.browserEventId).toBe('brw-2');
+    expect(seeded!.releaseSha).toBe('f'.repeat(40));
+  });
+
+  it('THE DEFECT: the freshness bound is the START of the run, not the end', () => {
+    // The probe fires, THEN the receipt is written. Using the write time as
+    // `notBefore` means the events it just proved "predate this verification
+    // run" on the very next tick.
+    const seeded = seedSentryState(JSON.stringify(receipt));
+    expect(new Date(seeded!.verifiedAt!).getTime()).toBe(Date.parse('2026-09-03T09:00:00.000Z'));
+  });
+
+  it('survives a tick: the seeded identity is carried forward unchanged', () => {
+    const seeded = seedSentryState(JSON.stringify(receipt))!;
+    const after = nextSentryState(seeded, {
+      configured: true,
+      ok: true,
+      serverEventId: 'srv-1',
+      browserEventId: 'brw-2',
+      problems: [],
+    });
+    expect(after.nonce).toBe(seeded.nonce);
+    expect(after.verifiedAt).toBe(seeded.verifiedAt);
+    expect(after.releaseSha).toBe(seeded.releaseSha);
+  });
+
+  it('an incomplete receipt is refused rather than half-seeded', () => {
+    for (const missing of ['nonce', 'serverEventId', 'browserEventId', 'releaseSha', 'notBefore']) {
+      const partial: Record<string, unknown> = { ...receipt };
+      delete partial[missing];
+      expect(() => seedSentryState(JSON.stringify(partial)), missing).toThrow();
+    }
+  });
+
+  it('the same event id for both runtimes is refused at seed time', () => {
+    expect(() => seedSentryState(JSON.stringify({ ...receipt, browserEventId: 'srv-1' }))).toThrow(
+      /same event/i,
+    );
+  });
+
+  it('malformed JSON is refused, not silently ignored', () => {
+    expect(() => seedSentryState('{not json')).toThrow();
+  });
+
+  it('no receipt at all yields null — absence is not a seeded receipt', () => {
+    expect(seedSentryState(undefined)).toBeNull();
+    expect(seedSentryState('')).toBeNull();
   });
 });
