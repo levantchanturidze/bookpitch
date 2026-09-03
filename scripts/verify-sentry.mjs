@@ -1,266 +1,397 @@
 #!/usr/bin/env node
 // -----------------------------------------------------------------------------
-// P17-007 — prove, level by level, how far Sentry actually gets.
+// Prove, level by level, how far Sentry actually gets — in the DEPLOYED
+// application, in BOTH runtimes.
 //
-//   npm run verify:sentry            # uses SENTRY_DSN from the environment
-//   SENTRY_DSN=… npm run verify:sentry
+//   APP_URL=… CRON_SECRET=… SENTRY_AUTH_TOKEN=… SENTRY_ORG=… SENTRY_PROJECT=… \
+//     npm run verify:sentry
 //
-// "Sentry is set up" is five different claims, and Phase 16 found production
-// satisfying none of them while looking like it satisfied all of them — the SDK
-// installed, config files present, instrumentation.ts exporting onRequestError,
-// SENTRY_ENVIRONMENT set, and no DSN anywhere. This script refuses to collapse
-// them:
+// ---------------------------------------------------------------------------
+// What the previous version proved, and why it was not enough.
 //
-//   1 CONFIGURED   a DSN exists and parses
-//   2 INITIALISED  Sentry.init() produced a client
-//   3 EMITTED      captureException produced an event id and the SDK flushed it
-//   4 RECEIVED     Sentry's ingest endpoint accepted an envelope (HTTP 200 +
-//                  an event id in the response body)
-//   5 INDEXED      the event is retrievable through the Sentry API
+// It imported @sentry/node ON THIS MACHINE, called init() with a DSN from the
+// local environment, and posted a hand-built envelope to Sentry's ingest. Every
+// level it reported was about a laptop:
 //
-// Only level 5 is evidence that an error would reach a human.
+//   * it never contacted the deployment, so a production build with no DSN
+//     passed;
+//   * it used the Node SDK for what it labelled the browser event, so
+//     NEXT_PUBLIC_SENTRY_DSN, the browser transport and the browser source maps
+//     were never exercised at all;
+//   * the envelope carried a message and no exception, so there was no stack —
+//     and symbolication, the thing source maps exist for, could not be observed
+//     even in principle;
+//   * the receipt it wrote named one event and took the runtime from an
+//     environment variable, so "which SDK produced this" was a claim.
 //
-//   1–3 all pass against a syntactically valid DSN pointing at a project that
-//       does not exist.
-//   4   proves the envelope was well-formed. Sentry answers 200 to envelopes it
-//       then drops on a quota, an inbound filter or a project rule, and the id
-//       in the response is the one the CLIENT generated — so a 200 with an id
-//       is not proof anything was stored.
+// This version makes the deployed application emit both events:
 //
-// With SENTRY_RECEIPT_OUT set, a verified level-5 id is written to that path.
-// The soak controller's observability gate reads those ids and re-checks them
-// against the Sentry API; it previously read a boolean an operator ticked in a
-// workflow form, which is a claim rather than evidence.
+//   server   POST /api/health/sentry-probe        (bearer CRON_SECRET)
+//   browser  GET  /probe/sentry?nonce&token&exp   (real Chromium, real bundle)
 //
-// Deliberately a script and not an endpoint. §12 allows a temporary protected
-// route, but the safest test route is the one that was never deployed: this
-// adds no attack surface, nothing to forget to remove, and no way for a
-// scanner to find it.
+// Both carry the same freshly generated nonce, so the events can be proven to
+// belong to THIS run, and both throw a real Error, so both have a real stack.
 //
-// Never prints the DSN, the public key, or the ingest host. Presence, project
-// id and the returned event id only.
+// ---------------------------------------------------------------------------
+// The ladder. Each level is a claim the one below it does not support.
+//
+//   1 CONFIGURED   the deployment answers, and reports a DSN for the runtime
+//   2 INITIALISED  the deployed SDK produced a client
+//   3 EMITTED      captureException returned an id AND the transport drained
+//   4 INDEXED      the event is retrievable through the Sentry API
+//   5 VERIFIED     the retrieved events are THIS run's — matching nonce,
+//                  release, environment and runtime tag, two distinct ids, and
+//                  original-source frames on BOTH
+//
+// Only level 5 means an error would reach a human in a readable form. Levels
+// 1-3 all pass against a valid DSN for a project that does not exist. Level 4
+// passes on an event whose stack is unreadable minified chunks.
+//
+// Plus one check that is not a level, because it is about what must NOT be
+// true: source maps must be uploaded to Sentry and absent from the CDN.
+//
+// Never prints the DSN, the auth token, CRON_SECRET, or the probe URL (which
+// carries the authorisation token). Nonce and event ids only — both are public
+// correlation identifiers.
 // -----------------------------------------------------------------------------
-import { randomBytes } from 'node:crypto';
+
+import { writeFileSync } from 'node:fs';
+import { verifyReceipt, verifyReceiptPair } from './sentry-receipt.mjs';
 
 const results = [];
 function record(level, name, ok, detail) {
   results.push({ level, name, ok, detail });
-  const mark = ok ? 'PASS' : 'FAIL';
-  console.log(`${mark}  ${level}. ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${level}. ${name}${detail ? ` — ${detail}` : ''}`);
 }
-
-// ── 1. CONFIGURED ────────────────────────────────────────────────────────────
-const dsn = process.env.SENTRY_DSN ?? '';
-if (!dsn.trim()) {
-  record(1, 'CONFIGURED', false, 'SENTRY_DSN is not set in this environment');
-  console.log('\nNothing further can be proven without a DSN.');
-  console.log('External action required: create the Sentry project, then set');
-  console.log('SENTRY_DSN (server) and NEXT_PUBLIC_SENTRY_DSN (browser).');
+function note(text) {
+  console.log(`      ${text}`);
+}
+function bail(message) {
+  console.log(`\n${message}`);
+  console.log('\nHighest level proven: 0 (NOTHING)');
   process.exit(1);
 }
 
-let parsed;
-try {
-  const u = new URL(dsn);
-  const projectId = u.pathname.replace(/^\//, '');
-  if (!u.username || !projectId) throw new Error('missing public key or project id');
-  parsed = {
-    protocol: u.protocol.replace(':', ''),
-    host: u.host,
-    publicKey: u.username,
-    projectId,
-  };
-  record(1, 'CONFIGURED', true, `DSN parses, project id ${projectId}`);
-} catch (err) {
-  record(1, 'CONFIGURED', false, `DSN is malformed: ${err.message}`);
-  process.exit(1);
+// ── Inputs ───────────────────────────────────────────────────────────────────
+const APP_URL = (process.env.APP_URL ?? '').replace(/\/+$/, '');
+const CRON_SECRET = process.env.CRON_SECRET ?? '';
+const SENTRY_AUTH_TOKEN = process.env.SENTRY_AUTH_TOKEN ?? '';
+const SENTRY_ORG = process.env.SENTRY_ORG ?? '';
+const SENTRY_PROJECT = process.env.SENTRY_PROJECT ?? '';
+const ENVIRONMENT = process.env.SENTRY_ENVIRONMENT ?? 'production';
+
+const missing = Object.entries({
+  APP_URL,
+  CRON_SECRET,
+  SENTRY_AUTH_TOKEN,
+  SENTRY_ORG,
+  SENTRY_PROJECT,
+})
+  .filter(([, v]) => !v.trim())
+  .map(([k]) => k);
+if (missing.length) {
+  bail(
+    `Cannot verify anything: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set.\n` +
+      'This script proves things about a DEPLOYMENT, so it needs the deployment\n' +
+      'URL, the credential its probes require, and API access to read the events\n' +
+      'back. Absence of any of them is not a partial pass.',
+  );
 }
 
-// ── 2. INITIALISED ───────────────────────────────────────────────────────────
-let Sentry;
+// The freshness bound, captured BEFORE anything is emitted. 120 seconds of
+// slack absorbs clock skew between this machine and Sentry's ingest; the nonce
+// is what actually excludes older events, and it is unguessable.
+const notBefore = new Date(Date.now() - 120_000);
+
+const http = (url, init = {}) =>
+  fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 20_000) });
+
+// ── Which release are we talking about ───────────────────────────────────────
+let releaseSha = null;
 try {
-  Sentry = await import('@sentry/node');
-  Sentry.init({
-    dsn,
-    environment: process.env.SENTRY_ENVIRONMENT ?? 'verification',
-    tracesSampleRate: 0,
-    sendDefaultPii: false,
-    defaultIntegrations: false,
-  });
-  const client = Sentry.getClient();
-  record(
-    2,
-    'INITIALISED',
-    Boolean(client),
-    client ? 'a client exists' : 'init() produced no client',
-  );
-} catch (err) {
-  record(2, 'INITIALISED', false, err.message);
-}
-
-// ── 3. EMITTED ───────────────────────────────────────────────────────────────
-let emittedId = null;
-try {
-  emittedId = Sentry.captureException(
-    new Error('Bookpitch Sentry verification — level 3, safe to ignore'),
-  );
-  const flushed = await Sentry.flush(8000);
-  record(
-    3,
-    'EMITTED',
-    Boolean(emittedId) && flushed,
-    `event id ${emittedId ?? 'none'}, flush ${flushed ? 'drained' : 'timed out'}`,
-  );
-} catch (err) {
-  record(3, 'EMITTED', false, err.message);
-}
-
-let acceptedEventId = null;
-
-// ── 4. RECEIVED ──────────────────────────────────────────────────────────────
-// A flushed queue is not an accepted event: the SDK drops transport errors on
-// purpose so telemetry never breaks the app. Post one envelope by hand and read
-// the status line, which is the only unambiguous answer.
-try {
-  const eventId = randomBytes(16).toString('hex');
-  const endpoint =
-    `${parsed.protocol}://${parsed.host}/api/${parsed.projectId}/envelope/` +
-    `?sentry_key=${parsed.publicKey}&sentry_version=7`;
-
-  const header = JSON.stringify({ event_id: eventId, sent_at: new Date().toISOString() });
-  const itemHeader = JSON.stringify({ type: 'event' });
-  const payload = JSON.stringify({
-    event_id: eventId,
-    level: 'info',
-    platform: 'node',
-    environment: process.env.SENTRY_ENVIRONMENT ?? 'verification',
-    logger: 'bookpitch.verify-sentry',
-    message: {
-      formatted:
-        'Bookpitch Sentry ingestion check — level 4. Synthetic, safe to resolve or delete.',
-    },
-    tags: { verification: 'true' },
-  });
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
-  let res;
-  try {
-    res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-sentry-envelope' },
-      body: `${header}\n${itemHeader}\n${payload}\n`,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const bodyText = await res.text().catch(() => '');
-  let acceptedId = null;
-  try {
-    acceptedId = JSON.parse(bodyText).id ?? null;
-  } catch {
-    /* Sentry answers 200 with a JSON id; anything else is reported as-is. */
-  }
-
-  acceptedEventId = acceptedId;
-  record(
-    4,
-    'RECEIVED',
-    res.ok && Boolean(acceptedId),
-    res.ok
-      ? `ingest accepted, event id ${acceptedId ?? '(no id in response)'}`
-      : `ingest returned HTTP ${res.status}`,
-  );
-} catch (err) {
-  record(4, 'RECEIVED', false, err.name === 'AbortError' ? 'ingest timed out' : err.message);
-}
-
-// ── 5. INDEXED ───────────────────────────────────────────────────────────────
-// Accepted by ingest is still not visible to a human. Sentry answers 200 to an
-// envelope it then drops on a quota, an inbound filter, or a project-level
-// rule, and the id it returns is the one the CLIENT generated — so a 200 with
-// an id proves the request was well-formed, not that anything was stored.
-//
-// This reads the event back through the Sentry API, which is the first point
-// at which "an error would reach a human" is actually true.
-let indexedId = null;
-try {
-  const authToken = process.env.SENTRY_AUTH_TOKEN;
-  const org = process.env.SENTRY_ORG;
-  const project = process.env.SENTRY_PROJECT;
-  if (!authToken || !org || !project) {
-    record(
-      5,
-      'INDEXED',
-      false,
-      'SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT are required to read an event back',
+  const res = await http(`${APP_URL}/api/health`);
+  releaseSha = res.headers.get('x-bookpitch-release');
+  if (!res.ok) bail(`${APP_URL}/api/health answered HTTP ${res.status}. Is the deployment live?`);
+  if (!releaseSha) {
+    bail(
+      'The deployment does not send x-bookpitch-release. Without it a Sentry event\n' +
+        'cannot be tied to the code that produced it, and the soak cannot tell a\n' +
+        'receipt for this release from one for a release that is no longer running.',
     );
-  } else if (!acceptedEventId) {
-    record(5, 'INDEXED', false, 'no accepted event id from level 4 to look up');
+  }
+  note(`deployed release ${releaseSha.slice(0, 12)}`);
+} catch (err) {
+  bail(`Could not reach ${APP_URL}/api/health: ${err.message}`);
+}
+
+// ── Authorisation for the browser probe ──────────────────────────────────────
+// The nonce is minted server-side so this run cannot be handed one that already
+// has matching events sitting in Sentry from an earlier run.
+let probeAuth = null;
+try {
+  const res = await http(`${APP_URL}/api/health/sentry-probe/token`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${CRON_SECRET}` },
+  });
+  if (res.status === 404) {
+    bail(
+      'The probe is disabled on this deployment (SENTRY_PROBE_ENABLED is not "true").\n' +
+        'Enable it for the verification window and turn it off afterwards.',
+    );
+  }
+  if (res.status === 401) bail('The deployment rejected CRON_SECRET.');
+  if (!res.ok) bail(`Probe token endpoint answered HTTP ${res.status}.`);
+  probeAuth = await res.json();
+  if (!probeAuth?.nonce || !probeAuth?.token || !probeAuth?.expiresAt) {
+    bail('Probe token endpoint returned an unusable response.');
+  }
+  note(`verification nonce ${probeAuth.nonce}`);
+} catch (err) {
+  bail(`Could not obtain a probe token: ${err.message}`);
+}
+
+// ── SERVER runtime: levels 1-3 ───────────────────────────────────────────────
+let serverEventId = null;
+try {
+  const res = await http(`${APP_URL}/api/health/sentry-probe`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${CRON_SECRET}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ nonce: probeAuth.nonce }),
+    timeoutMs: 30_000,
+  });
+  const body = await res.json().catch(() => ({}));
+
+  if (res.status === 503) {
+    record(1, 'CONFIGURED (server)', false, 'the deployment reports no SENTRY_DSN');
+    record(2, 'INITIALISED (server)', false, 'no DSN, so Sentry.init() never ran');
+    record(3, 'EMITTED (server)', false, 'nothing to emit');
+  } else if (!res.ok) {
+    record(1, 'CONFIGURED (server)', false, `probe answered HTTP ${res.status}`);
   } else {
-    // Indexing is not synchronous. Poll briefly rather than declaring failure
-    // on the first miss.
-    for (let attempt = 1; attempt <= 10; attempt++) {
-      const res = await fetch(
-        `https://sentry.io/api/0/projects/${org}/${project}/events/${acceptedEventId}/`,
-        { headers: { authorization: `Bearer ${authToken}` }, signal: AbortSignal.timeout(15_000) },
-      );
-      if (res.ok) {
-        indexedId = acceptedEventId;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 3000));
-    }
+    record(1, 'CONFIGURED (server)', true, 'the deployment reports a server DSN');
     record(
-      5,
-      'INDEXED',
-      Boolean(indexedId),
-      indexedId
-        ? `event ${indexedId} is retrievable from ${org}/${project}`
-        : `event was accepted but never became retrievable from ${org}/${project} — ` +
-            'check quota, inbound filters and project rules',
+      2,
+      'INITIALISED (server)',
+      Boolean(body.eventId),
+      body.eventId ? 'captureException returned an id' : 'no event id — the SDK is inert',
     );
+    record(
+      3,
+      'EMITTED (server)',
+      Boolean(body.eventId) && body.flushed === true,
+      body.flushed === true
+        ? `event ${body.eventId}, transport drained`
+        : 'flush() timed out — the event may never have left the function',
+    );
+    if (body.eventId && body.flushed === true) serverEventId = body.eventId;
   }
 } catch (err) {
-  record(5, 'INDEXED', false, err.message);
+  record(1, 'CONFIGURED (server)', false, `probe request failed: ${err.message}`);
 }
 
-// ── Persist, for the soak gate ───────────────────────────────────────────────
-// The soak's observability gate reads these ids and re-verifies them against
-// the Sentry API. It used to read a boolean an operator ticked in a workflow
-// form, which is a claim rather than evidence.
-if (indexedId && process.env.SENTRY_RECEIPT_OUT) {
-  const { writeFileSync } = await import('node:fs');
+// ── BROWSER runtime: levels 1-3, in a real browser ───────────────────────────
+// A headless Chromium loading the deployed page is the only thing that
+// exercises NEXT_PUBLIC_SENTRY_DSN, the browser bundle and the browser
+// transport. Nothing runnable from Node can stand in for it.
+let browserEventId = null;
+{
+  let browser = null;
+  try {
+    const { chromium } = await import('playwright');
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const consoleErrors = [];
+    page.on('console', (m) => {
+      if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 200));
+    });
+
+    const url =
+      `${APP_URL}/probe/sentry?nonce=${encodeURIComponent(probeAuth.nonce)}` +
+      `&token=${encodeURIComponent(probeAuth.token)}&exp=${probeAuth.expiresAt}`;
+    // Never logged: it carries the authorisation token.
+    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    if (!res || res.status() === 404) {
+      record(
+        1,
+        'CONFIGURED (browser)',
+        false,
+        'the probe page 404s — probe disabled, or the token was refused',
+      );
+    } else {
+      const el = page.locator('#probe-status');
+      await el.waitFor({ state: 'attached', timeout: 20_000 }).catch(() => {});
+      // The page reports through the DOM rather than the console, because a
+      // console line is not a signal that can be awaited reliably.
+      await page
+        .waitForFunction(
+          () => document.querySelector('#probe-status')?.dataset.status !== 'pending',
+          { timeout: 30_000 },
+        )
+        .catch(() => {});
+
+      const status = await el.getAttribute('data-status').catch(() => null);
+      const id = await el.getAttribute('data-event-id').catch(() => null);
+
+      record(
+        1,
+        'CONFIGURED (browser)',
+        status !== 'no-client',
+        status === 'no-client'
+          ? 'the browser bundle initialised no Sentry client — NEXT_PUBLIC_SENTRY_DSN was ' +
+              'absent at BUILD time (it is inlined, not read at runtime)'
+          : 'the browser bundle reports a client',
+      );
+      record(
+        2,
+        'INITIALISED (browser)',
+        Boolean(id),
+        id ? 'captureException returned an id' : 'no event id',
+      );
+      record(
+        3,
+        'EMITTED (browser)',
+        status === 'ok' && Boolean(id),
+        status === 'ok'
+          ? `event ${id}, transport drained`
+          : `probe status "${status ?? 'unknown'}"`,
+      );
+      if (status === 'ok' && id) browserEventId = id;
+      if (consoleErrors.length) note(`browser console errors: ${consoleErrors.length}`);
+    }
+  } catch (err) {
+    record(
+      1,
+      'CONFIGURED (browser)',
+      false,
+      `could not drive a browser: ${err.message.split('\n')[0]}`,
+    );
+    note('Install browsers with: npm run e2e:install');
+  } finally {
+    await browser?.close().catch(() => {});
+  }
+}
+
+// ── 4. INDEXED ───────────────────────────────────────────────────────────────
+// Accepted by ingest is not visible to a human. Sentry answers 200 to envelopes
+// it then drops on a quota, an inbound filter or a project rule. This reads the
+// events back through the API, which is the first point at which "an error
+// would reach a human" is true at all.
+const sentryEvent = async (id) => {
+  if (!id) return null;
+  for (let attempt = 1; attempt <= 12; attempt++) {
+    try {
+      const res = await http(
+        `https://sentry.io/api/0/projects/${SENTRY_ORG}/${SENTRY_PROJECT}/events/${id}/`,
+        { headers: { authorization: `Bearer ${SENTRY_AUTH_TOKEN}` } },
+      );
+      if (res.ok) return await res.json();
+      if (res.status === 401 || res.status === 403) {
+        note(`Sentry API refused the token (HTTP ${res.status})`);
+        return null;
+      }
+    } catch {
+      /* retried below */
+    }
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+  return null;
+};
+
+const [serverEvent, browserEvent] = await Promise.all([
+  sentryEvent(serverEventId),
+  sentryEvent(browserEventId),
+]);
+record(
+  4,
+  'INDEXED',
+  Boolean(serverEvent) && Boolean(browserEvent),
+  `server ${serverEvent ? 'retrievable' : 'NOT retrievable'}, ` +
+    `browser ${browserEvent ? 'retrievable' : 'NOT retrievable'}` +
+    (serverEvent && browserEvent ? '' : ' — check quota, inbound filters and project rules'),
+);
+
+// ── 5. VERIFIED ──────────────────────────────────────────────────────────────
+// Retrievable is still not evidence. The event has to be THIS run's, from THIS
+// release, from the runtime it claims, and readable.
+const expectation = { releaseSha, environment: ENVIRONMENT, nonce: probeAuth.nonce, notBefore };
+const server = verifyReceipt(serverEvent, { ...expectation, runtime: 'server' });
+const browser = verifyReceipt(browserEvent, { ...expectation, runtime: 'browser' });
+const pair = verifyReceiptPair({ server, browser });
+record(5, 'VERIFIED', pair.ok, pair.ok ? 'both events are this run’s, and readable' : '');
+for (const p of pair.problems) note(`· ${p}`);
+
+// ── Not a level: source maps must be on Sentry and NOT on the CDN ────────────
+// `deleteSourcemapsAfterUpload` is a build option, and a build option is a
+// claim until someone checks the deployed output. Symbolication above proves
+// the maps reached Sentry; this proves they did not also reach the public.
+try {
+  const html = await (await http(APP_URL)).text();
+  const chunk = /\/_next\/static\/chunks\/[A-Za-z0-9._-]+\.js/.exec(html)?.[0];
+  if (!chunk) {
+    note('source-map exposure: no chunk reference found on the landing page — not checked');
+  } else {
+    const js = await (await http(`${APP_URL}${chunk}`)).text();
+    const ref = /\/\/# sourceMappingURL=(\S+)/.exec(js)?.[1];
+    if (!ref) {
+      record(0, 'SOURCE MAPS NOT PUBLIC', true, 'no sourceMappingURL in the served bundle');
+    } else {
+      const mapUrl = new URL(ref, `${APP_URL}${chunk}`).toString();
+      const mapRes = await http(mapUrl, { method: 'GET' });
+      record(
+        0,
+        'SOURCE MAPS NOT PUBLIC',
+        !mapRes.ok,
+        mapRes.ok
+          ? `the .map is PUBLICLY READABLE (HTTP ${mapRes.status}) — the unminified ` +
+              'application source is being served to anyone'
+          : `the .map is not served (HTTP ${mapRes.status})`,
+      );
+    }
+  }
+} catch (err) {
+  note(`source-map exposure check could not run: ${err.message}`);
+}
+
+// ── Receipt ──────────────────────────────────────────────────────────────────
+// Written only on a complete pass. A partial receipt is worse than none: the
+// soak would seed it, and the first tick would report a production fault for
+// what is really an incomplete verification.
+if (pair.ok && process.env.SENTRY_RECEIPT_OUT) {
   writeFileSync(
     process.env.SENTRY_RECEIPT_OUT,
     JSON.stringify(
       {
+        // The freshness bound, deliberately the START of this run. Using the
+        // finish time would make the receipt reject the very events it proved.
+        notBefore: notBefore.toISOString(),
         verifiedAt: new Date().toISOString(),
-        projectId: parsed.projectId,
-        // Which runtime produced it. The soak requires BOTH a server and a
-        // browser event, because they exercise different SDKs, different
-        // transports and different source maps.
-        runtime: process.env.SENTRY_VERIFY_RUNTIME ?? 'server',
-        eventId: indexedId,
+        nonce: probeAuth.nonce,
+        releaseSha,
+        environment: ENVIRONMENT,
+        serverEventId: server.eventId,
+        browserEventId: browser.eventId,
       },
       null,
       2,
     ) + '\n',
   );
   console.log(`\nreceipt written to ${process.env.SENTRY_RECEIPT_OUT}`);
+  console.log('Pass it to the soak as SOAK_SENTRY_RECEIPT (or SOAK_SENTRY_RECEIPT_FILE).');
 }
 
 // ── Verdict ──────────────────────────────────────────────────────────────────
-const highest = results.filter((r) => r.ok).reduce((n, r) => Math.max(n, r.level), 0);
-const names = ['NOTHING', 'CONFIGURED', 'INITIALISED', 'EMITTED', 'RECEIVED', 'INDEXED'];
-console.log(`\nHighest level proven: ${highest} (${names[highest]})`);
-if (highest < 5) {
-  console.log('Sentry is NOT proven operational. Do not record it as verified.');
-  console.log('Only level 5 (INDEXED) means an error would actually reach a human:');
-  console.log('  1-3 pass against a DSN pointing at a project that does not exist;');
-  console.log('  4 proves the envelope was well-formed, not that it was stored.');
+const levels = results.filter((r) => r.level > 0);
+const highest = levels.filter((r) => r.ok).reduce((n, r) => Math.max(n, r.level), 0);
+const firstFail = levels.find((r) => !r.ok)?.level ?? 6;
+const proven = Math.min(highest, firstFail - 1);
+const names = ['NOTHING', 'CONFIGURED', 'INITIALISED', 'EMITTED', 'INDEXED', 'VERIFIED'];
+console.log(`\nHighest level proven: ${proven} (${names[proven]})`);
+
+const exposed = results.find((r) => r.level === 0 && !r.ok);
+if (proven < 5 || exposed) {
+  console.log('\nSentry is NOT proven operational. Do not record it as verified,');
+  console.log('and do not start the soak: its observability gate reads this receipt.');
   process.exit(1);
 }
-console.log('Sentry ingestion is proven end to end, and the event is retrievable.');
+console.log('Sentry is proven end to end, in both runtimes, for this release.');

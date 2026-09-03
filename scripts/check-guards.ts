@@ -44,6 +44,13 @@ const NO_GUARD_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
       '"true" (404s otherwise), a bounded nonce, and a rate limit. Touches no tenant data: it ' +
       'constructs and captures one synthetic error and returns an event id.',
   },
+  {
+    path: 'app/api/health/sentry-probe/token/route.ts',
+    reason:
+      'Mints the short-lived HMAC that authorises the browser probe page — Bearer CRON_SECRET, ' +
+      'plus SENTRY_PROBE_ENABLED must be exactly "true" (404s otherwise). Touches no tenant ' +
+      'data: it returns a nonce, a derived token and an expiry, and never the secret itself.',
+  },
   { path: 'app/api/health/route.ts', reason: 'Uptime probe — no tenant data' },
   {
     path: 'app/api/health/ops/route.ts',
