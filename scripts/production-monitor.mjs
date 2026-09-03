@@ -409,6 +409,34 @@ export function evaluateAuditDigest({
   };
 }
 
+/**
+ * The jobs this monitor requires a heartbeat from, and how stale each one's
+ * last SUCCESS may be. Held HERE, not read from the response.
+ *
+ * Both halves used to come from production: the loop iterated
+ * `Object.entries(heartbeat.jobs)`, and the staleness threshold was
+ * `j.maxAgeMinutes` out of the same document. That makes the monitored system
+ * the author of its own report card. A deployment that stopped reporting a job
+ * stopped being asked about it — silently, because a check that is not emitted
+ * is not a failing check, it is nothing — and a deployment reporting a
+ * generous limit was graded against its own generosity.
+ *
+ * `maxAgeMinutes` still arrives in the response and is now used only for the
+ * drift check below: when the deployment's stated limit disagrees with this
+ * contract, that is a finding in itself.
+ *
+ * Mirrors lib/cron-heartbeat-jobs.ts. It cannot import it — this is `.mjs` and
+ * that is TypeScript, and Node will not load it. Duplication is the price;
+ * tests/cron-outcome.test.ts pins the two against each other so they cannot
+ * drift apart in silence.
+ */
+export const EXPECTED_HEARTBEAT_JOBS = Object.freeze([
+  { metricKey: 'reminders', checkId: 'cron-job-reminders', maxAgeMinutes: 360 },
+  { metricKey: 'housekeeping', checkId: 'cron-job-housekeeping', maxAgeMinutes: 360 },
+  { metricKey: 'retention', checkId: 'cron-job-retention', maxAgeMinutes: 1800 },
+  { metricKey: 'auditDigest', checkId: 'cron-job-audit-digest', maxAgeMinutes: 1800 },
+]);
+
 export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
   const results = [];
   const outbox = metrics?.outbox ?? {};
@@ -558,13 +586,27 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
   //
   // Four reminder runs prove nothing about retention, housekeeping or the
   // digest, so each is now its own line with its own limit.
+  // Present-but-empty (`{}`) is a deployment that supports per-job reporting and
+  // reported nothing; entirely absent (`undefined`) is a deployment too old to
+  // report at all, handled by the legacy branch below. The two are different
+  // failures and must not be collapsed.
   const jobs = heartbeat.jobs ?? null;
   if (jobs) {
-    for (const [job, j] of Object.entries(jobs)) {
-      const limit = j.maxAgeMinutes;
+    for (const { metricKey, checkId, maxAgeMinutes: limit } of EXPECTED_HEARTBEAT_JOBS) {
+      const job = metricKey;
+      const j = jobs[metricKey] ?? null;
       let ok;
       let detail;
-      if (!j.present) {
+      if (!j) {
+        // The job the monitor expects is not in the document at all. Before
+        // this branch existed the loop simply never visited it, so the check
+        // vanished from the run — no failure, no incident, and a gate count
+        // one smaller than the day before.
+        ok = false;
+        detail =
+          `${job} was not reported by this deployment — the heartbeat document did not ` +
+          'include it, so nothing is known about whether it runs';
+      } else if (!j.present) {
         // NOT VERIFIED, reported as a failure rather than passed over. A job
         // that has never run is the case the old aggregate was blindest to.
         ok = false;
@@ -602,11 +644,16 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
           `${job} last succeeded ${((j.successMinutesAgo ?? 0) / 60).toFixed(1)}h ago ` +
           `(limit ${(limit / 60).toFixed(1)}h), ${j.processedUnits ?? 0} unit(s)`;
       }
-      // The metric key is camelCase; the check id keeps the job's own spelling
-      // so an incident raised against `cron-job-audit-digest` survives.
-      const jobId = job === 'auditDigest' ? 'audit-digest' : job;
+      // The deployment's own stated limit is no longer authoritative, but a
+      // disagreement is worth saying out loud: it means the running code and
+      // this monitor were built from different contracts.
+      if (j && j.maxAgeMinutes !== null && j.maxAgeMinutes !== limit) {
+        detail +=
+          ` [contract drift: the deployment states a ${j.maxAgeMinutes}-minute limit for ` +
+          `${job}, the monitor requires ${limit}; graded against the monitor's]`;
+      }
       results.push({
-        id: `cron-job-${jobId}`,
+        id: checkId,
         title: `Scheduled job ${job} is not completing successfully`,
         ok,
         detail,
