@@ -558,4 +558,122 @@ BEGIN
     attached, to_char(cur_month, 'YYYY-MM'), horizon_months;
 END $$;
 
+-- -----------------------------------------------------------------------------
+-- Check 7 — current_org_id() is the function every policy assumes it is.
+--
+-- Check 4c verifies that each policy predicate is EXACTLY
+-- `(organization_id = current_org_id())`. That is a check on the TEXT of the
+-- policy, and it says nothing about the function that text names.
+--
+-- The whole of tenant isolation resolves through this one function, and every
+-- way of subverting it leaves all 21 policies looking perfect:
+--
+--   * a body of `SELECT '<some uuid>'::uuid` — a constant. Every predicate
+--     still reads `= current_org_id()`, and every tenant sees one org's rows.
+--   * SECURITY DEFINER, so it runs with the definer's authority.
+--   * VOLATILE instead of STABLE, so the planner may re-evaluate it per row.
+--   * RETURNS text, so the comparison stops being uuid-to-uuid.
+--   * a second definition in a schema earlier on search_path, which the
+--     policies bind to while public.current_org_id stays untouched.
+--   * an overload taking an argument, so a later migration binds the wrong one.
+--
+-- `CREATE OR REPLACE FUNCTION` is a single statement and touches no policy.
+--
+-- tests/rls-current-org-id.test.ts proves this predicate is not vacuous by
+-- building each of those wrong versions and showing it rejects them.
+-- -----------------------------------------------------------------------------
+DO $$
+DECLARE
+  defs       int;
+  f_schema   text;
+  f_nargs    int;
+  f_rettype  text;
+  f_lang     text;
+  f_volatile text;
+  f_secdef   boolean;
+  f_config   text;
+  f_owner    text;
+  f_body     text;
+  app_create boolean;
+  expected_body CONSTANT text :=
+    'SELECT NULLIF(current_setting(''app.current_org_id'', true), '''')::uuid;';
+BEGIN
+  -- 7a. Exactly one definition, anywhere in the database. Two means which one
+  --     answers depends on search_path, which is per-session and is not
+  --     recorded in the policy.
+  SELECT count(*) INTO defs FROM pg_proc WHERE proname = 'current_org_id';
+  IF defs <> 1 THEN
+    RAISE EXCEPTION 'production-verify: % definition(s) of current_org_id() exist (expected exactly 1) — a shadowing copy earlier on search_path would answer for every tenant policy', defs;
+  END IF;
+
+  SELECT n.nspname, p.pronargs::int, t.typname, l.lanname,
+         -- provolatile is "char"; cast it before comparing.
+         p.provolatile::text, p.prosecdef, p.proconfig::text,
+         pg_get_userbyid(p.proowner),
+         btrim(regexp_replace(btrim(p.prosrc), '\s+', ' ', 'g'))
+    INTO f_schema, f_nargs, f_rettype, f_lang,
+         f_volatile, f_secdef, f_config, f_owner, f_body
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_type t ON t.oid = p.prorettype
+    JOIN pg_language l ON l.oid = p.prolang
+   WHERE p.proname = 'current_org_id';
+
+  -- 7b. Signature and behaviour.
+  IF f_schema <> 'public' THEN
+    RAISE EXCEPTION 'production-verify: current_org_id() lives in schema %, not public', f_schema;
+  END IF;
+  IF f_nargs <> 0 THEN
+    RAISE EXCEPTION 'production-verify: current_org_id takes % argument(s) — the policies call it with none, so they are binding to something else', f_nargs;
+  END IF;
+  IF f_rettype <> 'uuid' THEN
+    RAISE EXCEPTION 'production-verify: current_org_id() returns %, not uuid — organization_id comparisons are no longer uuid-to-uuid', f_rettype;
+  END IF;
+  IF f_lang <> 'sql' THEN
+    RAISE EXCEPTION 'production-verify: current_org_id() is LANGUAGE %, expected sql', f_lang;
+  END IF;
+  IF f_volatile <> 's' THEN
+    RAISE EXCEPTION 'production-verify: current_org_id() is not STABLE (provolatile=%) — the planner may re-evaluate it per row', f_volatile;
+  END IF;
+  IF f_secdef THEN
+    RAISE EXCEPTION 'production-verify: current_org_id() is SECURITY DEFINER — it would run with the definer''s authority rather than the caller''s';
+  END IF;
+  IF f_config IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: current_org_id() carries a settings override (%) — its behaviour no longer follows from its body alone', f_config;
+  END IF;
+
+  -- 7c. The body itself. Every subversion that keeps the signature intact shows
+  --     up here and nowhere else.
+  IF f_body <> expected_body THEN
+    RAISE EXCEPTION 'production-verify: current_org_id() body is "%" but must be exactly "%" — tenant isolation is whatever this function returns', f_body, expected_body;
+  END IF;
+
+  -- 7d. Who can redefine it. NOSUPERUSER and NOBYPASSRLS do not stop a role
+  --     from replacing a function it owns, or creating one in a schema it can
+  --     write to.
+  IF f_owner = 'bookpitch_app' THEN
+    RAISE EXCEPTION 'production-verify: bookpitch_app OWNS current_org_id() — the application role can redefine the function that constrains it';
+  END IF;
+  SELECT has_schema_privilege('bookpitch_app', 'public', 'CREATE') INTO app_create;
+  IF app_create THEN
+    RAISE EXCEPTION 'production-verify: bookpitch_app has CREATE on schema public — it can define a function that shadows or replaces current_org_id()';
+  END IF;
+
+  -- 7e. Fail closed, observed rather than reasoned about: with no organization
+  --     context the function must be NULL, so every `organization_id = NULL`
+  --     predicate is NULL and filters every row.
+  IF (SELECT public.current_org_id()) IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: current_org_id() returned a value with no organization context set — policies would match rows for an unauthenticated session';
+  END IF;
+  -- An empty setting is what a naive context reset produces. NULLIF must turn
+  -- it back into NULL rather than letting ''::uuid throw on every request.
+  -- is_local => true, so it reverts when this block's transaction ends.
+  PERFORM set_config('app.current_org_id', '', true);
+  IF (SELECT public.current_org_id()) IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: current_org_id() is not NULL for an empty organization context';
+  END IF;
+
+  RAISE NOTICE 'ok: current_org_id() is public, 0-arg, returns uuid, LANGUAGE sql STABLE, not SECURITY DEFINER, body pinned, owned by %, unwritable by bookpitch_app, and NULL without context', f_owner;
+END $$;
+
 \echo '=== production invariants: ALL CHECKS PASSED ==='
