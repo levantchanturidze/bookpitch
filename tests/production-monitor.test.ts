@@ -626,6 +626,44 @@ describe('an unobservable check is not a resolved one', () => {
     expect([...OPS_DERIVED_CHECK_IDS].sort()).toEqual(union);
   });
 
+  it('no check id is ever emitted twice', () => {
+    // Shipped once: the reminders-missed block was duplicated when the per-job
+    // checks were inserted, so production reported it twice in a single run.
+    // Two results sharing an id give reconcileIncidents() two verdicts for one
+    // incident — whichever it sees last wins — and inflate the gate count, so
+    // "25/29 passed" silently counted one check twice.
+    const complete = {
+      config: {
+        invalidSecurityEnv: 0,
+        missingObservabilityEnv: 0,
+        mockedProviderEnv: 0,
+        unrecognisedProviderEnv: 0,
+        missingProviderEnv: 0,
+        missingProviderCredentialEnv: 0,
+        deferredProviderEnv: 0,
+        undeclaredMockProviderEnv: 0,
+      },
+      cronHeartbeat: {
+        remindersMinutesAgo: 0,
+        remindersLastUnits: 0,
+        remindersLastOutcome: 1,
+        jobsNotSucceeding: 0,
+        unremindedStartedAppointments: 0,
+        jobs: {
+          reminders: healthyJob(),
+          housekeeping: healthyJob(),
+          retention: healthyJob(),
+          auditDigest: healthyJob(),
+        },
+      },
+    };
+    const ids = evaluateOpsMetrics(complete).map((r: { id: string }) => r.id);
+    const seen = new Map<string, number>();
+    for (const id of ids) seen.set(id, (seen.get(id) ?? 0) + 1);
+    const duplicated = [...seen.entries()].filter(([, n]) => n > 1).map(([id]) => id);
+    expect(duplicated, 'these check ids are emitted more than once').toEqual([]);
+  });
+
   it('COMPLEMENT: an older deployment emits a strict subset, never an unknown id', () => {
     // Every id an old payload produces must still be in the exemption list, or
     // an incident raised before an upgrade would be closed as an orphan after
