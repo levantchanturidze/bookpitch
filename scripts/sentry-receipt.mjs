@@ -30,17 +30,24 @@ function tag(event, key) {
 }
 
 /**
- * True when at least one stack frame was genuinely resolved through an
- * uploaded source map.
+ * True when at least one stack frame resolves to ORIGINAL REPOSITORY SOURCE.
  *
- * The signal is `context`: Sentry populates it with surrounding lines of
- * ORIGINAL source, which it can only do when a map resolved. A minified frame
- * has a filename and a line number and no context, so checking for a filename
- * — or trusting a boolean — would pass on exactly the unreadable stack this
- * exists to rule out.
+ * Two signals, both required:
  *
- * Frames from the bundle itself are also excluded: a `.js` chunk path with
- * context lines is the minified file, not original source.
+ *   context   Sentry populates it with surrounding lines of original source,
+ *             which it can only do when a map resolved. A minified frame has a
+ *             filename and a line number and no context.
+ *   filename  must be a `.ts`/`.tsx` file that is not a dependency.
+ *
+ * The filename half is the part that was wrong. An earlier version excluded
+ * only `/_next/static/chunks/` and `.min.js`, so a SERVER build artefact —
+ * `.next/server/app/api/.../route.js` — with context lines counted as original
+ * source. That is the same unreadable stack the check exists to rule out, just
+ * on the other side of the application, and it would have made "source maps
+ * are proven" true while every server stack was compiled output.
+ *
+ * An allow-list, not a deny-list. A deny-list of build-output shapes has to be
+ * complete to be correct, and build tools invent new ones.
  */
 export function isSymbolicated(event) {
   const frames =
@@ -48,15 +55,19 @@ export function isSymbolicated(event) {
       ?.filter((e) => e.type === 'exception')
       .flatMap((e) => e.data?.values ?? [])
       .flatMap((v) => v.stacktrace?.frames ?? []) ?? [];
-  return frames.some(
-    (f) =>
-      Array.isArray(f.context) &&
-      f.context.length > 0 &&
-      typeof f.filename === 'string' &&
-      // Original source, not a built chunk.
-      !/\/_next\/static\/chunks\//.test(f.filename) &&
-      !/\.min\.js$/.test(f.filename),
-  );
+  return frames.some((f) => {
+    if (!Array.isArray(f.context) || f.context.length === 0) return false;
+    const name = typeof f.filename === 'string' ? f.filename : '';
+    if (!name) return false;
+    // Ours, and written by a human.
+    if (!/\.tsx?$/.test(name)) return false;
+    // A dependency's own source map is not proof that ours were uploaded.
+    if (/(^|\/)node_modules\//.test(name)) return false;
+    // Belt and braces: nothing under a build directory, whatever its extension.
+    if (/(^|\/)\.next\//.test(name)) return false;
+    if (/^webpack-internal:/.test(name)) return false;
+    return true;
+  });
 }
 
 /**
@@ -130,15 +141,23 @@ export function verifyReceiptPair(input) {
   ) {
     problems.push('server and browser report the SAME event id — only one runtime was exercised');
   }
-  // At least one runtime must prove symbolication. Requiring both would fail on
-  // a server frame that legitimately has no map (a dependency), while requiring
-  // neither is how `sourceMapsResolved` became a boolean nobody checked.
-  const symbolicated = input.server.symbolicated || input.browser.symbolicated;
-  if (!symbolicated) {
+  // EACH runtime proves its own. This was `server.symbolicated ||
+  // browser.symbolicated`, so uploading server maps alone satisfied the gate
+  // while every browser stack stayed minified — and the browser is where
+  // minification actually hurts. They are separate uploads, separate maps and
+  // separate failure modes; one cannot vouch for the other.
+  if (!input.server.symbolicated) {
     problems.push(
-      'no stack frame in either event resolved to original source — production stacks are ' +
-        'unreadable minified frames, which is a subtler way of having no Sentry at all',
+      'server: no stack frame resolved to original repository source — server stacks are ' +
+        'unreadable compiled output, which is a subtler way of having no Sentry at all',
     );
   }
+  if (!input.browser.symbolicated) {
+    problems.push(
+      'browser: no stack frame resolved to original repository source — browser stacks are ' +
+        'unreadable minified frames',
+    );
+  }
+  const symbolicated = input.server.symbolicated && input.browser.symbolicated;
   return { ok: problems.length === 0, problems, symbolicated };
 }
