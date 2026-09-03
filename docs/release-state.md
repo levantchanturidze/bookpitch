@@ -1,6 +1,6 @@
 # Release state — the one current-state document
 
-**Snapshot: 2026-09-03T10:40Z, corrective round 2 deployed.** This file is the single place that says
+**Snapshot: 2026-09-03T20:25Z, false-green elimination round deployed (`09ce5c5`).** This file is the single place that says
 what is true *now*. Every phase ledger is a historical record of what was true when it was
 written; where a ledger and this file disagree about the present, this file
 wins and the ledger is wrong only in tense, not in fact.
@@ -22,6 +22,28 @@ stale the moment it is written. Those live in:
 > very file produces a newer commit and a newer deployment, so the SHA below is
 > the one that was verified, not necessarily the one serving traffic when you
 > read this. For anything that moves, follow the workflow links at the top.
+
+### False-green elimination round — merged 2026-09-03
+
+| | |
+|---|---|
+| PRs | **#58** merged as `f2e5a59` (7 commits), **#59** merged as `09ce5c5` (1 commit) |
+| CI on #58 | run [33798794156](https://github.com/levantchanturidze/bookpitch/actions/runs/33798794156) — 120 files / **1665 tests, 0 skipped**, 268 Playwright across all 9 required suites, 0 vulnerabilities, secret scan clean, build clean |
+| Migrations | run [33801704929](https://github.com/levantchanturidze/bookpitch/actions/runs/33801704929) — **67 applied, none pending**, no drift |
+| Invariants | same run, **all seven checks**, including Check 7 for the first time: `current_org_id() is public, 0-arg, returns uuid, LANGUAGE sql STABLE, not SECURITY DEFINER, body pinned, owned by postgres, unwritable by bookpitch_app, and NULL without context` |
+| Backup | run [33800659940](https://github.com/levantchanturidze/bookpitch/actions/runs/33800659940), artifact `production-backup-33800659940-1` (id 9910927933), fingerprint `5c9f75110f30141f` — unchanged since the restore, so the same database — downloaded, checksum verified, decrypted and `pg_restore --list`ed in a separate job |
+| Deployment | GitHub Deployment **6252144624**, `09ce5c5`, Production, state `success`; `bookpitch.ge` and `www.bookpitch.ge` both 200 with `x-bookpitch-release: 09ce5c5…` |
+| Monitor | run [33801885885](https://github.com/levantchanturidze/bookpitch/actions/runs/33801885885) — 2 failures: Sentry (**#44**, below) and `cron-staleness`, which reports its own diagnosis: the most recent *scheduled* run succeeded, GitHub has not delivered the schedule since, so reminders are late and the application is not broken (R-08) |
+
+**Check 7 nearly shipped without ever running.** `migrate.yml` is path-filtered,
+and the filter did not include the verifier script the workflow runs. So the
+check merged, passed CI against the disposable CI database, and would have sat
+unexecuted against production until somebody happened to write an unrelated
+migration. PR #59 adds the script to the filter — which is also what caused the
+workflow above to run and produce the line quoted in the table.
+
+That is the project's recurring shape, one more time: the control existed, the
+tests were green, and the thing it protects was never looked at.
 
 ### Remediation round — merged 2026-09-02
 
@@ -287,6 +309,15 @@ open. Nothing has been human-approved.
 | **16** reconciliation | ✅ | ✅ `e69795b` (PR #36) | ✅ | ✅ incl. F16-012 | ❌ | ❌ |
 | **17** stabilization | ✅ | ✅ `86e09a9` (PR #35) | ✅ | ✅ except Sentry (P17-007) | ❌ | ❌ |
 
+Verified against production on 2026-09-03 at `09ce5c5`, in addition to the
+above: all seven schema invariants including `current_org_id()` itself; the four
+per-job cron heartbeats, each graded against the monitor's own limits rather
+than the deployment's; `reminders-missed` under the corrected eligibility
+contract; and an encrypted backup taken, downloaded, decrypted and read.
+
+Sentry is the only check that fails for a reason inside the product's control,
+and it fails because nothing exists to configure it against.
+
 ---
 
 ## Corrections — claims that were true when written and are false now
@@ -303,7 +334,7 @@ otherwise would destroy the record of how they were found.
 | "MARKETING still holds `client.read:contact`" | until migration 63 applied | **False.** Verified absent in production; the two reporting grants remain, which is the complement that stops the check being vacuous |
 | "`FIELD_ENCRYPTION_KEY` is malformed" | P15-010 / R-16, until 2026-08-22 | **False.** `production-config-invalid — malformed: 0`, corroborated by an encrypted `email_outbox` row that could not exist unless `encryptField()` succeeded |
 | "Nothing is merged" | Phase 16 freeze window | **False.** Phases 16 and 17 merged 2026-09-01 |
-| "Production monitor 18/18" / "17/21" / "18/21" | each true on its date | **Stale by construction.** See the workflow link above. the gate count is now **25** plus one informational line |
+| "Production monitor 18/18" / "17/21" / "18/21" / "22/25" | each true on its date | **Stale by construction, and now doubly so.** The denominator moves too: the monitor used to emit one per-job check for each job PRODUCTION reported, so the count depended on the thing being measured. It now emits one per job the MONITOR expects, whether or not the deployment mentions it. Follow the workflow link at the top rather than any number written here. |
 
 ---
 
@@ -316,8 +347,20 @@ The corrected controller has never run against a real window. What exists is:
   path.
 
 Neither is the soak. No soak issue has ever been created, and the controller's
-own preconditions currently refuse to start one — incident #44 is open and the
-observability gate cannot pass.
+own preconditions refuse to start one. Three of them, in the order they fire:
+
+1. `soak.yml` fails the dispatch if `sentry_receipt` is empty;
+2. the controller refuses to start without a receipt, or with one produced for a
+   different release — checked at start, where it reads as a setup mistake,
+   rather than on tick one, where it would read as a production fault;
+3. an open `ops-incident` refuses the start outright, and **#44** is open.
+
+The receipt cannot be produced at all: it is written only by a complete
+`npm run verify:sentry` run against the deployed application, and there is no
+Sentry project for it to read events back from.
+
+This is the correct state. A 24-hour window with error reporting switched off
+would measure nothing and would look exactly like one that measured everything.
 
 ## Three different claims about the schema, often conflated
 
@@ -450,11 +493,21 @@ item.
 
 **ENGINEERING COMPLETE — EXTERNAL BLOCKED**, on items 1–3 above.
 
-"No engineering work is outstanding" was claimed once before and was wrong: the
-remediation round above found eleven defects in that round's own output. The
-claim is only ever as good as the next review, and it is made here about the
-work as reviewed on 2026-09-02, not as a guarantee.
+"No engineering work is outstanding" has now been claimed twice and been wrong
+both times. The remediation round found eleven defects in the round before it;
+this round found nine more, plus one — the verifier path filter — in its own
+output, twenty minutes after merging. The claim is only ever as good as the next
+review, and it is made here about the work as reviewed on 2026-09-03, not as a
+guarantee about work nobody has looked at yet.
 
-The soak has not started and **must not** be started while `#44` is open: an
-unobserved window proves nothing, which is why the controller has an
-`observability` gate that refuses to pass without verified Sentry receipt.
+What has changed is the *shape* of what keeps being found. The early rounds
+found controls that reported health while measuring nothing. This round found
+mostly the inverse: gates that could never report health, and a check that could
+never run. Those are not softer failures. They are the same defect wearing a
+patient face, and a queue of them is how a release stays permanently three days
+away.
+
+The soak has not started and **must not** be started while `#44` is open. That
+is now enforced rather than intended: the controller refuses to start without a
+Sentry receipt for the release under soak, and no receipt can be produced,
+because there is no Sentry workspace to produce one against.
