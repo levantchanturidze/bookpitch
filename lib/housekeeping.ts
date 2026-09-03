@@ -52,6 +52,8 @@ export type HousekeepingResult = {
   outboxSent: number;
   outboxFailed: number;
   outboxSwept: number;
+  /** Sweeps that could not run at all (provider init, claim, or sweep threw). */
+  outboxInfraFailed: number;
 };
 
 const ZERO_RESULT: HousekeepingResult = {
@@ -68,6 +70,7 @@ const ZERO_RESULT: HousekeepingResult = {
   outboxSent: 0,
   outboxFailed: 0,
   outboxSwept: 0,
+  outboxInfraFailed: 0,
 };
 
 export async function runHousekeeping(): Promise<HousekeepingResult> {
@@ -206,11 +209,24 @@ type OutboxRow = {
   max_attempts: number;
 };
 
-async function drainEmailOutbox(
-  now: Date,
-): Promise<{ outboxSent: number; outboxFailed: number; outboxSwept: number }> {
+async function drainEmailOutbox(now: Date): Promise<{
+  outboxSent: number;
+  outboxFailed: number;
+  outboxSwept: number;
+  /**
+   * The drain could not RUN — provider initialisation threw, or the stale-claim
+   * recovery / claim transaction failed. Distinct from a per-recipient delivery
+   * failure, which is routine and handled by retry and dead-lettering.
+   *
+   * Without this the catch below returned zeroes and the caller wrote a
+   * successful heartbeat: a total inability to send mail was indistinguishable
+   * from an empty queue.
+   */
+  outboxInfraFailed: number;
+}> {
   let outboxSent = 0;
   let outboxFailed = 0;
+  let outboxInfraFailed = 0;
 
   try {
     const provider = getEmailProvider();
@@ -313,7 +329,12 @@ async function drainEmailOutbox(
       }
     }
   } catch (err) {
-    log.warn('housekeeping.outbox.drain_error', { err: sanitizeErrorMessage(err) });
+    // NOT a delivery failure. Reaching here means getEmailProvider() threw, or
+    // stale-claim recovery / the claim transaction failed — the sweep did not
+    // happen at all. Logged at error level and counted, so the caller can
+    // report a failed job instead of a successful empty one.
+    outboxInfraFailed += 1;
+    log.error('housekeeping.outbox.drain_error', { err: sanitizeErrorMessage(err) });
   }
 
   // Step 4: sweep dead rows older than 30 days.
@@ -326,8 +347,9 @@ async function drainEmailOutbox(
     `;
     outboxSwept = Number(swept);
   } catch (err) {
-    log.warn('housekeeping.outbox.sweep_error', { err: sanitizeErrorMessage(err) });
+    outboxInfraFailed += 1;
+    log.error('housekeeping.outbox.sweep_error', { err: sanitizeErrorMessage(err) });
   }
 
-  return { outboxSent, outboxFailed, outboxSwept };
+  return { outboxSent, outboxFailed, outboxSwept, outboxInfraFailed };
 }

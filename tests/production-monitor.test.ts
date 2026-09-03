@@ -26,6 +26,21 @@ import {
 
 const NOW = new Date('2026-08-16T18:00:00Z');
 
+/** A per-job heartbeat entry in the healthy shape. */
+function healthyJob(over: Record<string, number | null> = {}) {
+  return {
+    present: 1,
+    outcome: 1,
+    successMinutesAgo: 10,
+    attemptMinutesAgo: 10,
+    expectedUnits: 3,
+    processedUnits: 3,
+    failedUnits: 0,
+    maxAgeMinutes: 360,
+    ...over,
+  };
+}
+
 function probe(overrides: Record<string, unknown> = {}) {
   return { index: 1, ok: true, status: 200, location: null, reason: undefined, ...overrides };
 }
@@ -573,14 +588,42 @@ describe('an unobservable check is not a resolved one', () => {
         remindersMinutesAgo: 0,
         remindersLastUnits: 0,
         remindersLastOutcome: 1,
-        // cron-jobs-failing is omitted for a deployment that does not report
-        // this field, so leaving it out measures the subset, not the set.
         jobsNotSucceeding: 0,
         unremindedStartedAppointments: 0,
+        // Per-job evaluation. Each required job emits its own check id, so
+        // omitting this would measure a strict subset of what the evaluator
+        // can produce — which is the drift this test exists to catch.
+        jobs: {
+          reminders: healthyJob(),
+          housekeeping: healthyJob(),
+          retention: healthyJob(),
+          auditDigest: healthyJob(),
+        },
       },
     };
-    const emitted = evaluateOpsMetrics(complete).map((r: { id: string }) => r.id);
-    expect([...OPS_DERIVED_CHECK_IDS].sort()).toEqual([...emitted].sort());
+    // Two mutually exclusive emission shapes now exist, so strict equality
+    // against one of them is wrong:
+    //
+    //   modern  reports cronHeartbeat.jobs -> one `cron-job-<name>` per job
+    //   legacy  reports only the scalar    -> a single `cron-jobs-failing`
+    //
+    // A deployment can never emit both. The property that matters is unchanged:
+    // every id either shape can emit must be registered, or an incident raised
+    // before an upgrade would be closed as an orphan after one — which is
+    // exactly how incident #26 was closed.
+    const modern = evaluateOpsMetrics(complete).map((r: { id: string }) => r.id);
+    const legacyPayload = {
+      ...complete,
+      cronHeartbeat: { ...complete.cronHeartbeat, jobs: undefined },
+    };
+    const legacy = evaluateOpsMetrics(legacyPayload).map((r: { id: string }) => r.id);
+
+    expect(modern, 'the modern shape must emit a check per job').toContain('cron-job-reminders');
+    expect(legacy, 'the legacy shape must still emit its aggregate').toContain('cron-jobs-failing');
+    expect(modern, 'the two shapes must not both emit').not.toContain('cron-jobs-failing');
+
+    const union = [...new Set([...modern, ...legacy])].sort();
+    expect([...OPS_DERIVED_CHECK_IDS].sort()).toEqual(union);
   });
 
   it('COMPLEMENT: an older deployment emits a strict subset, never an unknown id', () => {

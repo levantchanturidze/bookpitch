@@ -37,6 +37,13 @@ const NO_GUARD_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   { path: 'app/api/cron/housekeeping/route.ts', reason: 'Scheduled worker — Bearer CRON_SECRET' },
   { path: 'app/api/cron/reminders/route.ts', reason: 'Scheduled worker — Bearer CRON_SECRET' },
   { path: 'app/api/cron/retention/route.ts', reason: 'Scheduled worker — Bearer CRON_SECRET' },
+  {
+    path: 'app/api/health/sentry-probe/route.ts',
+    reason:
+      'Sentry receipt probe — Bearer CRON_SECRET, plus SENTRY_PROBE_ENABLED must be exactly ' +
+      '"true" (404s otherwise), a bounded nonce, and a rate limit. Touches no tenant data: it ' +
+      'constructs and captures one synthetic error and returns an event id.',
+  },
   { path: 'app/api/health/route.ts', reason: 'Uptime probe — no tenant data' },
   {
     path: 'app/api/health/ops/route.ts',

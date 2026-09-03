@@ -94,6 +94,7 @@ describe('collectOpsMetrics against a real database', () => {
     expect(Object.keys(metrics.cronHeartbeat).sort()).toEqual([
       'auditDigestMinutesAgo',
       'housekeepingMinutesAgo',
+      'jobs',
       'jobsNotSucceeding',
       'remindersAttemptMinutesAgo',
       'remindersExpectedUnits',

@@ -43,7 +43,17 @@ describe('RLS coverage across every tenant table', () => {
     );
 
     // Three categories of exemption:
-    //   • audit_log partitions — the parent enforces RLS; partitions inherit.
+    //   • audit_log partitions — the PARENT's policy is asserted here; the
+    //     children are covered separately by tests/rls-partition-bypass.test.ts.
+    //
+    //     This comment used to read "the parent enforces RLS; partitions
+    //     inherit". That is false, and it was load-bearing: PostgreSQL applies
+    //     the CHILD's own relrowsecurity when a partition is named directly,
+    //     and the migrations never set it. Measured 2026-09-02 as bookpitch_app
+    //     with no organization context, 1705 audit rows across 15 organizations
+    //     were readable via `SELECT ... FROM audit_log_2026_09` while the same
+    //     query against the parent returned 0. Migration 67 revokes the
+    //     partitions from the app role and gives each its own policy.
     //   • roles / permissions / role_permissions — reference data, RLS-free
     //     by design (docs/rbac-schema-notes.md §3.2). Custom-role isolation
     //     is enforced at query time by the seed/admin writers.

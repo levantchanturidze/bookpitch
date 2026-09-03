@@ -1,6 +1,6 @@
 # Release state — the one current-state document
 
-**Snapshot: 2026-09-02T11:40Z, post-remediation-deploy.** This file is the single place that says
+**Snapshot: 2026-09-03, corrective round 2 (pre-merge).** This file is the single place that says
 what is true *now*. Every phase ledger is a historical record of what was true when it was
 written; where a ledger and this file disagree about the present, this file
 wins and the ledger is wrong only in tense, not in fact.
@@ -75,8 +75,8 @@ after the failure above, `cron-failures` still read
 | Restore drill | run [33597695162](https://github.com/levantchanturidze/bookpitch/actions/runs/33597695162) against that exact artifact — 65 migrations, 28 required tables, 10 organizations, append-only triggers present and `UPDATE` rejected, 13 partitions, 21 RLS policies, `bp_create_monthly_partition()` present |
 | Monitor | run [33597697501](https://github.com/levantchanturidze/bookpitch/actions/runs/33597697501) — **20/23 passed, 2 paused by configuration, 1 informational**; the single failing check is Sentry |
 
-> **Correction (2026-09-02):** PR #46 contains **nine** commits, not eight. An
-> earlier report said eight.
+> **Corrections.** PR #46 contains **nine** commits (an earlier report said
+> eight). PR #50 contains **eight** commits (an earlier report said seven).
 
 ### The two fixes that had to be proven in production, not just in CI
 
@@ -123,6 +123,27 @@ genuine scheduled successes had accumulated, and because a manual dispatch can
 no longer contribute to it or close an incident at all.
 
 **#44 (Sentry) remains open and is the only failing check.**
+
+---
+
+## Corrective round 2 — what the previous round still got wrong
+
+Independent review found more. The most serious was a live cross-tenant data
+exposure that every existing check reported as healthy.
+
+| Defect | Why it mattered |
+|---|---|
+| **Audit partitions were readable by the app role** | RLS does not inherit downwards. Measured as `bookpitch_app` with no org context: `audit_log` returned **0** tenant rows, `audit_log_2026_09` returned **1705 across 15 organizations**. `INSERT` worked too — a forged audit record attributed to another tenant. `tests/rbac-rls.test.ts` exempted the children with the comment "the parent enforces RLS; partitions inherit", which was the bug |
+| The soak workflow lacked `actions: read` / `deployments: read` | Every run-history read would have 403'd and the controller would have reported "0 natural observations" — indistinguishable from a quiet window |
+| `deployment_id` was labelled Vercel, compared as GitHub | A real Vercel id could never match; leaving it blank disabled the check. Two ways to be wrong, none to be right |
+| `resolveAliases()` ignored the expected SHA | Any HTTP 200 satisfied it, so a healthy response from a different deployment passed |
+| Elapsed time accrued while production was broken | Restarts happened only for monitor/incident failures, and began AT the failure — counting the broken hours toward the 24 |
+| A job that had never run counted as healthy | The aggregate counted only existing rows with a bad outcome. No row → no count. Only reminders had a freshness gate |
+| Housekeeping reported success when it could not send at all | `drainEmailOutbox()` caught provider-init and claim failures, returned zeroes, and the route wrote a successful heartbeat |
+| Retention could anonymize a day early | Local-time `getFullYear/getMonth/getDate` on a +04 host. Irreversible, and monitoring used a different cutoff |
+| A crash after claiming silenced a reminder forever | `queued` was written before the provider call and treated as delivery — never sent, never retried, never reported missed |
+| The reminders route counted organizations, not work | `runReminderTick()` resolves normally when every send fails |
+| Sentry receipt proved almost nothing | Local receipt file nothing imported; Node SDK used for the "browser" event; no stack, so maps untested; `sourceMapsResolved` a boolean |
 
 ---
 
@@ -210,6 +231,18 @@ otherwise would destroy the record of how they were found.
 
 ---
 
+## The soak has still not executed
+
+The corrected controller has never run against a real window. What exists is:
+
+- a `dry_run` mode that exercises every read and creates nothing;
+- unit coverage of the gates, including adversarial cases for each false-success
+  path.
+
+Neither is the soak. No soak issue has ever been created, and the controller's
+own preconditions currently refuse to start one — incident #44 is open and the
+observability gate cannot pass.
+
 ## Three different claims about the schema, often conflated
 
 An earlier report said "migrations and invariants pass" as if that were one
@@ -219,7 +252,7 @@ fact. It is three, and only the first two have been established in production:
 |---|---|---|
 | **Migration ledger is current** | `prisma migrate status` — every migration in `prisma/migrations` is recorded applied, none unfinished or rolled back | ✅ 65 applied |
 | **Selected invariants hold** | `scripts/verify-production-invariants.sql` — the specific properties someone thought to write down | ✅ all pass |
-| **No arbitrary schema drift** | `prisma migrate diff --from-migrations --to-schema --exit-code` against a shadow database, which catches a column someone added by hand | ✅ in CI, on a disposable database — **not** run against production |
+| **No arbitrary schema drift** | `prisma migrate diff --from-migrations --to-schema --exit-code` against a shadow database, which catches a column someone added by hand | ✅ in CI, on a disposable database — **not** run against production. `prisma migrate status` does NOT establish this and must not be cited for it: it compares the ledger, not the schema |
 
 The third is the one that is easy to over-claim. Prisma's drift detection needs
 a shadow database it can create and drop; pointing it at production is not

@@ -336,6 +336,78 @@ BEGIN
     n_required, array_length(exempt_rels, 1);
 END $$;
 
+-- 4f. Audit partitions are not a way around the parent's policy. ------------
+--
+-- Row-level security does not inherit downwards. Check 4 above verifies the
+-- PARTITIONED PARENT, and until 2026-09-02 that was the whole story — the
+-- children were exempted with the comment "the parent enforces RLS; partitions
+-- inherit", which is false. PostgreSQL applies the CHILD's own relrowsecurity
+-- when a partition is named directly.
+--
+-- Measured as bookpitch_app with no organization context, before the fix:
+--
+--   SELECT count(*) FROM audit_log         WHERE organization_id IS NOT NULL  ->     0
+--   SELECT count(*) FROM audit_log_2026_09 WHERE organization_id IS NOT NULL  ->  1705
+--
+-- Two independent layers, both asserted, because either alone fails open:
+-- revoking the grant stops the query reaching the table, and row security on
+-- the child stops it returning rows if a grant ever comes back.
+DO $$
+DECLARE
+  granted text;
+  unsecured text;
+  unpolicied text;
+BEGIN
+  SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO granted
+    FROM pg_inherits i
+    JOIN pg_class p ON p.oid = i.inhparent
+    JOIN pg_class c ON c.oid = i.inhrelid
+    JOIN pg_namespace n ON n.oid = p.relnamespace
+   WHERE n.nspname = 'public' AND p.relname = 'audit_log'
+     -- has_table_privilege() accounts for privileges reaching bookpitch_app
+     -- through PUBLIC and through role membership, so `GRANT SELECT ON
+     -- audit_log_2026_09 TO PUBLIC` is caught here too. Verified rather than
+     -- assumed.
+     AND (has_table_privilege('bookpitch_app', c.oid, 'SELECT')
+       OR has_table_privilege('bookpitch_app', c.oid, 'INSERT')
+       OR has_table_privilege('bookpitch_app', c.oid, 'UPDATE')
+       OR has_table_privilege('bookpitch_app', c.oid, 'DELETE'));
+  IF granted IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: bookpitch_app holds direct privileges on audit partition(s) % — naming a partition bypasses the parent policy and exposes every tenant''s audit records', granted;
+  END IF;
+
+  SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO unsecured
+    FROM pg_inherits i
+    JOIN pg_class p ON p.oid = i.inhparent
+    JOIN pg_class c ON c.oid = i.inhrelid
+    JOIN pg_namespace n ON n.oid = p.relnamespace
+   WHERE n.nspname = 'public' AND p.relname = 'audit_log'
+     AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity);
+  IF unsecured IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: audit partition(s) % have no enforced row security of their own — a future GRANT would expose them', unsecured;
+  END IF;
+
+  SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO unpolicied
+    FROM pg_inherits i
+    JOIN pg_class p ON p.oid = i.inhparent
+    JOIN pg_class c ON c.oid = i.inhrelid
+    JOIN pg_namespace n ON n.oid = p.relnamespace
+   WHERE n.nspname = 'public' AND p.relname = 'audit_log'
+     AND NOT EXISTS (
+       SELECT 1 FROM pg_policy pol
+        WHERE pol.polrelid = c.oid
+          AND pol.polname = 'tenant_isolation'
+          AND pol.polcmd = '*'
+          AND pg_get_expr(pol.polqual, pol.polrelid) LIKE '%current_org_id()%'
+          AND pg_get_expr(pol.polwithcheck, pol.polrelid) LIKE '%current_org_id()%'
+     );
+  IF unpolicied IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: audit partition(s) % lack a tenant_isolation policy of their own', unpolicied;
+  END IF;
+
+  RAISE NOTICE 'ok: audit partitions carry no direct bookpitch_app privileges, and each enforces its own tenant_isolation policy';
+END $$;
+
 -- 5. F16-012: MARKETING holds no route to patient contact details. ----------
 --
 -- Migration 20260823000001 deletes the grant. A restore from a dump taken

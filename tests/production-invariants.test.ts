@@ -510,6 +510,17 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
         sql(
           `ALTER TABLE audit_log ATTACH PARTITION ${curName} FOR VALUES FROM ('${b1.from}') TO ('${b1.to}')`,
         );
+        // Secure the decoy exactly as migration 67 secures a real partition.
+        // Without this, check 4f fires first — correctly, since an unsecured
+        // partition IS a bypass — and this test would pass on the wrong error.
+        sql(`REVOKE ALL ON ${curName} FROM bookpitch_app`);
+        sql(`ALTER TABLE ${curName} ENABLE ROW LEVEL SECURITY`);
+        sql(`ALTER TABLE ${curName} FORCE ROW LEVEL SECURITY`);
+        sql(
+          `CREATE POLICY tenant_isolation ON ${curName} FOR ALL ` +
+            `USING (organization_id = current_org_id() OR organization_id IS NULL) ` +
+            `WITH CHECK (organization_id = current_org_id() OR organization_id IS NULL)`,
+        );
         const broken = runVerifier();
         expect(broken.ok).toBe(false);
         expect(broken.output).toMatch(/but its name claims/);

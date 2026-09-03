@@ -64,39 +64,61 @@ export async function POST(req: NextRequest) {
     log.error('cron.reminders.org_failed', f);
   }
 
-  // Application-side proof of what the tick DID, as opposed to the GitHub
-  // Actions run list's proof that it was invoked.
+  // Channel-level accounting, not organization-level.
   //
-  // This used to pass `reports.length` — the count of organizations that
-  // happened to succeed — into an unconditional success write. A tick in which
-  // every organization threw wrote a fresh `last_succeeded_at` with units 0,
-  // and the monitor reported a healthy job. `truncated` counts too: taking a
-  // fixed prefix of an ordered list means organizations past the limit are
-  // never reached, which is not a completed tick.
+  // This used to count an organization as processed whenever runReminderTick()
+  // resolved. It resolves normally when every provider send fails —
+  // sendForAppointment() returns a report rather than throwing — and when the
+  // appointment list was truncated. So a tick in which nothing reached anyone
+  // was ten successful organizations, HTTP 200, and a healthy heartbeat.
+  const tallies = reports.map((r) => r.tally);
+  const sum = (k: keyof (typeof tallies)[number]) => tallies.reduce((n, t) => n + (t[k] ?? 0), 0);
+
+  const channelsExpected = sum('channelsExpected');
+  const sent = sum('sent');
+  const duplicates = sum('duplicates');
+  const missingContact = sum('missingContact');
+  const rateLimited = sum('rateLimited');
+  const providerFailed = sum('providerFailed');
+  const unprocessed = sum('unprocessed');
+
+  // A duplicate is a valid outcome — the reminder already went out. A missing
+  // contact is valid too: there is no address to send to, which is a data state
+  // rather than a delivery failure. Provider failures, rate limiting and
+  // unprocessed work are not.
+  const settledChannels = sent + duplicates + missingContact;
+  const failedChannels = providerFailed + rateLimited;
+
   const outcome = await recordCronHeartbeat('reminders', {
-    expected: orgs.length,
-    processed: reports.length,
-    failed: failures.length,
+    // Organizations that threw outright are counted as unreached channels, so a
+    // thrown org cannot vanish from the arithmetic.
+    expected: channelsExpected + failures.length,
+    processed: settledChannels,
+    failed: failedChannels + failures.length + unprocessed,
   });
 
-  // A cron endpoint that returns 200 after failing its work is the reason the
-  // workflow run list was never trustworthy evidence. 500 so the workflow step
-  // fails too, and the failure is visible in three places instead of none.
+  // Anything short of success is a non-2xx, so the workflow step fails too.
   const status = outcome === 'success' ? 200 : 500;
 
   return NextResponse.json(
     {
       ok: outcome === 'success',
       outcome,
-      // `orgs` is fetched with take: MAX + 1, so when truncated this exceeds
-      // what was processed and the run is classified partial — which is
-      // correct: organizations past the limit were never reached.
-      expected: orgs.length,
       orgs: reports.length,
+      orgsFailed: failures.length,
       concurrency,
+      // Counts only. Raw provider errors and any appointment or address detail
+      // stay server-side: this response is read by CI logs and the monitor.
+      channels: {
+        expected: channelsExpected,
+        sent,
+        duplicates,
+        missingContact,
+        rateLimited,
+        providerFailed,
+        unprocessed,
+      },
       ...(truncated ? { truncated: true, limit: MAX_ORGS_PER_RUN } : {}),
-      ...(failures.length ? { failed: failures.length, failures } : {}),
-      reports,
     },
     { status },
   );

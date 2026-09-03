@@ -3,6 +3,7 @@ import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
 import { decryptField } from '@/lib/crypto';
+import { retentionCutoffSql } from '@/lib/retention-window';
 
 // -----------------------------------------------------------------------------
 // GDPR-style tooling: per-customer data export, per-customer anonymize
@@ -242,28 +243,34 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
     });
     if (!org) throw new InvalidInputError('organization not found');
 
-    const now = new Date();
-    const cutoff = new Date(
-      now.getFullYear() - org.customerRetentionYears,
-      now.getMonth(),
-      now.getDate(),
+    // The cutoff is computed by PostgreSQL, not by Node. It used to be
+    // new Date(now.getFullYear() - N, now.getMonth(), now.getDate()) — local
+    // -time accessors, so on a host at +04 the day boundary moves four hours
+    // early and customers are redacted up to a day before the organization's
+    // policy permits. Redaction is irreversible. See lib/retention-window.ts.
+    const cutoffExpr = retentionCutoffSql(`${org.customerRetentionYears}`);
+    const stale = await tx.$queryRawUnsafe<Array<{ id: string; name: string }>>(
+      `SELECT c.id, c.name
+         FROM customers c
+        WHERE c.organization_id = $1::uuid
+          AND c.updated_at < ${cutoffExpr}
+          -- Not already redacted (name carries the sentinel).
+          AND c.name NOT LIKE 'Redacted Customer #%'
+          -- No appointment inside the window keeps the record live.
+          AND NOT EXISTS (
+                SELECT 1 FROM appointments a
+                 WHERE a.customer_id = c.id
+                   AND a.starts_at >= ${cutoffExpr}
+              )`,
+      organizationId,
     );
 
-    const candidates = await tx.customer.findMany({
-      where: {
-        organizationId,
-        updatedAt: { lt: cutoff },
-        // Not already redacted (name would start with the sentinel).
-        name: { not: { startsWith: 'Redacted Customer #' } },
-      },
-      select: {
-        id: true,
-        name: true,
-        appointments: { where: { startsAt: { gte: cutoff } }, select: { id: true }, take: 1 },
-      },
-    });
-
-    const stale = candidates.filter((c) => c.appointments.length === 0);
+    // Reported for the audit trail, read back from the same expression that
+    // selected the rows so the two can never drift.
+    const cutoffRow = await tx.$queryRawUnsafe<Array<{ cutoff: Date }>>(
+      `SELECT ${cutoffExpr} AS cutoff`,
+    );
+    const cutoff = cutoffRow[0].cutoff;
 
     const anonymizedIds: string[] = [];
     for (const c of stale) {
@@ -290,7 +297,7 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
     return {
       organizationId,
       retentionYears: org.customerRetentionYears,
-      cutoff: cutoff.toISOString(),
+      cutoff: new Date(cutoff).toISOString(),
       anonymizedCount: anonymizedIds.length,
       anonymizedIds,
     };

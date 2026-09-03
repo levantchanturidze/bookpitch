@@ -3,6 +3,11 @@
 // reports on this import, and an unused disable is itself a lint warning.
 import { unsafePrismaAdmin } from '@/lib/db';
 import { auditDigestDeliveryMode, isAuditDigestDeliveryEnabled } from '@/lib/audit-digest';
+import {
+  HEARTBEAT_JOBS,
+  HEARTBEAT_MAX_AGE_MINUTES,
+  HEARTBEAT_METRIC_KEY,
+} from '@/lib/cron-heartbeat-jobs';
 
 // -----------------------------------------------------------------------------
 // Operational metrics for the production monitor.
@@ -293,8 +298,31 @@ export type CronHeartbeatMetrics = {
   remindersFailedUnits: number | null;
   /** Minutes since the last reminders ATTEMPT, successful or not. */
   remindersAttemptMinutesAgo: number | null;
-  /** Jobs whose most recent attempt was not a success. */
+  /** Jobs whose most recent attempt was not a success. Kept for older monitors. */
   jobsNotSucceeding: number | null;
+  /**
+   * Per-job state, one entry for EVERY required job whether or not a row
+   * exists. Numeric-only, like everything else here.
+   *
+   * `present` 0 means the job has never written a heartbeat at all — which the
+   * previous scalar could not express, because it counted only existing rows
+   * with a bad outcome. A missing row read as healthy.
+   */
+  jobs: Record<
+    string,
+    {
+      present: number;
+      /** 1 success, 0 partial, -1 failure, null unknown/absent. */
+      outcome: number | null;
+      successMinutesAgo: number | null;
+      attemptMinutesAgo: number | null;
+      expectedUnits: number | null;
+      processedUnits: number | null;
+      failedUnits: number | null;
+      /** The cadence limit this job is held to, in minutes. */
+      maxAgeMinutes: number;
+    }
+  > | null;
   /**
    * Appointments that have already STARTED without any reminder ever being
    * logged, inside the window their organization's lead time covered.
@@ -743,12 +771,16 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         SELECT count(*) AS overdue_customers
         FROM customers c
         JOIN organizations o ON o.id = c.organization_id
-        WHERE c.updated_at < NOW() - (o.customer_retention_years * interval '1 year')
+        -- Same expression the executor uses, so the monitor cannot report a
+        -- backlog retention was never going to clear. See lib/retention-window.ts.
+        WHERE c.updated_at < ((date_trunc('day', (NOW() AT TIME ZONE 'UTC')) AT TIME ZONE 'UTC')
+                              - make_interval(years => o.customer_retention_years))
           AND c.name NOT LIKE 'Redacted Customer #%'
           AND NOT EXISTS (
             SELECT 1 FROM appointments a
             WHERE a.customer_id = c.id
-              AND a.starts_at >= NOW() - (o.customer_retention_years * interval '1 year')
+              AND a.starts_at >= ((date_trunc('day', (NOW() AT TIME ZONE 'UTC')) AT TIME ZONE 'UTC')
+                                  - make_interval(years => o.customer_retention_years))
           )
       `,
 
@@ -951,15 +983,34 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           JOIN organizations o ON o.id = a.organization_id
          WHERE a.starts_at < NOW()
            AND a.starts_at > NOW() - interval '48 hours'
-           AND a.status NOT IN ('cancelled', 'completed')
+           -- Cancelled appointments were never owed a reminder. COMPLETED ones
+           -- WERE: the appointment happened, and the customer should have been
+           -- reminded beforehand. Excluding them hid exactly the cases where a
+           -- missed reminder had already cost something.
+           AND a.status <> 'cancelled'
            -- Only appointments that existed early enough for the lead window
            -- to have covered them; one booked ten minutes beforehand was never
            -- eligible and is not evidence of a missed run.
            AND a.created_at < a.starts_at - make_interval(hours => o.reminder_lead_hours)
-           AND NOT EXISTS (
-             SELECT 1 FROM message_log m
-              WHERE m.appointment_id = a.id
-                AND m.state IN ('queued', 'sent', 'delivered')
+           -- Only GENUINELY delivered states count as a reminder.
+           --
+           -- The 'queued' state used to be included here, and it is written
+           -- BEFORE the provider call. A crash in between therefore produced a
+           -- reminder that was never sent, could never be retried (the stale
+           -- row deduped every later attempt), and was invisible to this
+           -- metric — silent from all three directions at once.
+           --
+           -- Per channel, not per appointment: one successful email must not
+           -- hide a failed SMS. An appointment is counted as missed when ANY
+           -- required channel has no delivery.
+           AND EXISTS (
+             SELECT 1 FROM unnest(ARRAY['sms', 'email']::message_channel[]) AS ch(channel)
+              WHERE NOT EXISTS (
+                SELECT 1 FROM message_log m
+                 WHERE m.appointment_id = a.id
+                   AND m.channel = ch.channel
+                   AND m.state IN ('sent', 'delivered')
+              )
            )
       `,
   ]);
@@ -1048,6 +1099,24 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         jobsNotSucceeding: (heartbeatRows ?? []).filter(
           (row) => row.last_outcome !== 'success' && row.last_outcome !== 'unknown',
         ).length,
+        jobs: Object.fromEntries(
+          HEARTBEAT_JOBS.map((job) => {
+            const row = by.get(job);
+            return [
+              HEARTBEAT_METRIC_KEY[job],
+              {
+                present: row ? 1 : 0,
+                outcome: outcomeCode(row?.last_outcome),
+                successMinutesAgo: numOrNull(row?.minutes_ago),
+                attemptMinutesAgo: numOrNull(row?.attempt_minutes_ago),
+                expectedUnits: numOrNull(row?.last_expected_units),
+                processedUnits: numOrNull(row?.last_units),
+                failedUnits: numOrNull(row?.last_failed_units),
+                maxAgeMinutes: HEARTBEAT_MAX_AGE_MINUTES[job],
+              },
+            ];
+          }),
+        ),
         unremindedStartedAppointments: num(unremindedRows?.[0]?.unreminded),
       };
     })(),
