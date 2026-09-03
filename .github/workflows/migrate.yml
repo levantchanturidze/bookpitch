@@ -32,6 +32,15 @@ on:
       - 'prisma/migrations/**'
       - 'prisma/schema.prisma'
       - '.github/workflows/migrate.yml'
+      # The invariant verifier runs in this workflow and nowhere else, so a
+      # change to it has to re-trigger the workflow — otherwise a new check
+      # merges, passes CI against the disposable CI database, and then sits
+      # unexecuted against PRODUCTION until somebody happens to write a
+      # migration. Check 7 (current_org_id) merged in exactly that state.
+      #
+      # This is the shape the project keeps finding: a control that exists, is
+      # tested, and is not called in the path that actually runs.
+      - 'scripts/verify-production-invariants.sql'
   workflow_dispatch:
 
 concurrency:
