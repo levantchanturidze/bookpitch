@@ -106,18 +106,42 @@ break. One status line for both would get the first read as the second.
 To prove it works rather than assume it, run:
 
 ```bash
-SENTRY_DSN=… npm run verify:sentry
+APP_URL=… CRON_SECRET=… SENTRY_AUTH_TOKEN=… SENTRY_ORG=… SENTRY_PROJECT=… \
+  npm run verify:sentry
 ```
 
-which reports four separate levels — CONFIGURED, INITIALISED, EMITTED,
-RECEIVED — and exits non-zero below level 4. Only RECEIVED means an error would
-reach a human; the first three all pass against a well-formed DSN pointing at a
-project that does not exist.
+It reports five levels — CONFIGURED, INITIALISED, EMITTED, INDEXED, **VERIFIED**
+— and exits non-zero below level 5, per runtime. Levels 1–3 all pass against a
+well-formed DSN pointing at a project that does not exist; level 4 passes on a
+stack of unreadable minified chunks. Only VERIFIED means an error would reach a
+human in a form anyone can act on.
 
-Not yet done, and it needs a credential this repository does not hold: source
-maps are not uploaded, so production stack traces will point at minified code.
-That requires wrapping `next.config.ts` in `withSentryConfig` and providing
-`SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT`.
+Every level is measured against the **deployed application**, not the machine
+running the script:
+
+- **server** — `POST /api/health/sentry-probe` with bearer `CRON_SECRET`;
+- **browser** — a real headless Chromium loading `/probe/sentry` on the
+  deployed site. Nothing runnable from Node exercises
+  `NEXT_PUBLIC_SENTRY_DSN`, the browser bundle or the browser source maps, so
+  nothing runnable from Node can stand in for this.
+
+Both probes carry the same freshly minted nonce and throw a real `Error`, so
+the events can be proven to belong to this run and both have a stack to
+symbolicate.
+
+The probe surface is off by default. It requires `SENTRY_PROBE_ENABLED` to be
+exactly `"true"` and 404s otherwise; the browser page additionally requires a
+five-minute HMAC from `POST /api/health/sentry-probe/token`, so `CRON_SECRET`
+never reaches client JavaScript or a URL. **Turn `SENTRY_PROBE_ENABLED` off
+again once verification is done** — it is a verification switch, not a setting.
+
+Source maps: `next.config.ts` is wrapped in `withSentryConfig` and uploads maps
+when `SENTRY_AUTH_TOKEN` is present, with `deleteSourcemapsAfterUpload` so they
+do not also land on the CDN. Both halves are checked rather than assumed —
+level 5 requires original-source frames on **both** runtimes (proving the maps
+reached Sentry), and a separate check fetches a served chunk's
+`sourceMappingURL` and requires it to be **unreachable** (proving they did not
+reach the public).
 | `DATABASE_URL_SUPERUSER_MIGRATE` | GitHub | migrations and **backups** fail |
 | `BACKUP_AGE_PRIVATE_KEY` | GitHub | backups still run; nothing can be restored |
 | `APP_URL` | GitHub | cron workflow has no target |

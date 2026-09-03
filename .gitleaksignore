@@ -11,3 +11,14 @@
 # commit stays in history, so the finding needs an explicit acceptance rather
 # than a rule change.
 a4a58fa85639c3f2f2c01b9f485c12f075ecd99a:tests/onboard-activation.test.ts:generic-api-key:149
+
+# d1a336e2 (2026-08-23) — the password of a synthetic signup account in a
+# Playwright journey. The account is created by the test against a seeded CI
+# database, is addressed at `@e2e.bookpitch.test`, and is deleted in afterAll.
+# It authenticates nothing that exists outside a test run.
+d1a336e2ff212d1f00723ff095e995cea8e42bb0:e2e/journeys/signup-onboarding.spec.ts:generic-api-key:32
+
+# ce2c1c21 (2026-08-23) — `newPassword` passed to consumeReset() to prove a
+# reset token is single-use. A literal in an assertion, never a credential for
+# anything.
+ce2c1c21a65b4ae13f298ccfd7011cf8340ccfb0:tests/phase17-durable-transactional-email.test.ts:generic-api-key:178
