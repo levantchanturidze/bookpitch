@@ -102,12 +102,14 @@ Observed directly, not carried over from any earlier summary.
 
 | # | Gate | Status | Evidence / exact blocker |
 |---|---|---|---|
-| D1 | Sentry workspace exists | `BLOCKED — MANUAL` | no authenticated session; creating one requires accepting Sentry's terms as the operator |
+| D1 | An accessible Sentry workspace | `BLOCKED — MANUAL` | **No authenticated session or configuration is reachable from here** — `sentry.io/organizations/new/` redirects to `/auth/login/`, Vercel Production holds neither DSN, the repository holds no Sentry secret. That is the whole of what the evidence supports: an organisation may exist that nothing here can reach. Signing in needs the operator's credentials; creating one needs their acceptance of Sentry's terms |
 | D2 | Sentry DSNs + auth token configured | `BLOCKED — MANUAL` | depends on D1 |
 | D3 | Server + browser Sentry receipt | `BLOCKED — MANUAL` | depends on D2 |
 | D4 | Designated test mailbox | `BLOCKED — MANUAL` | none nominated |
 | D5 | Mailbox UAT | `BLOCKED — MANUAL` | depends on D4 |
-| D6 | Legal operator identity + approval | `BLOCKED — MANUAL` | `LEGAL_DOCUMENT_STATUS` is `'draft'`, `OPERATOR_IDENTITY` all-null |
+| D6 | Legal operator identity + approval | `BLOCKED — MANUAL` | Two separate things. (a) **Data**: `OPERATOR_IDENTITY` in `lib/legal.ts` is all-null — legal name, registration number, postal address, contact. Only the operator has these. (b) **Approval**: `LEGAL_DOCUMENT_STATUS` is `'draft'`, and flipping it asserts that a qualified person reviewed the published privacy notice and terms against the actual processing this system performs. Scope is `docs/legal-review-checklist.md`. Neither is inferable from a green build, and an agent supplying either would be fabricating a representation to data subjects |
+
+| A12 | Sentry lifecycle: closure authority, ordering, real assets, ongoing proof | `MERGED` | `canClose: false` on the config check; starter refuses only unrelated incidents, closes #44 by evidence, re-checks, then starts; probe enable flag removed (its redeploy broke soak identity); map check uses the probe's own assets and fails closed; `observability-continuing` gate + `sentry-reverify.yml` every 6h |
 
 ### E. Soak
 
@@ -116,6 +118,25 @@ Observed directly, not carried over from any earlier summary.
 | E1 | Soak preconditions satisfied | `BLOCKED — MANUAL` | refused by **four** independent gates while D3 is unmet: `release-verify-and-soak.yml` refuses without a probe-enabled confirmation, refuses if production is not serving the named SHA on both hosts, refuses while any `ops-incident` is open (#44 is), and `verify-sentry.mjs` writes no receipt without a complete pass. The controller then refuses to start without one |
 | E2 | Uninterrupted 24h window on one SHA | `NOT STARTED` | Cannot begin until E1. Everything else it needs is proven: dry run [33867622778](https://github.com/levantchanturidze/bookpitch/actions/runs/33867622778) exercised all 7 evidence reads against production, including the shared heartbeat contract and the retention instant |
 | E3 | Natural scheduled evidence inside the window | `NOT STARTED` | Feasibility measured rather than assumed: monitor delivery p99 5.03h against a 6h gap limit, cron p99 3.02h. `retention-in-window` will hold a soak open until the nightly sweep runs inside it — by design, and the reason the window is 24 hours |
+
+---
+
+## What has never run, and what predates the current SHA
+
+Two honesty notes that the rows above would otherwise imply away.
+
+**`release-verify-and-soak.yml` has never completed end to end.** It has never
+been dispatched, because its Sentry step cannot pass without D1. Its individual
+steps are covered by tests, and the soak controller's evidence collectors have
+been exercised against production by a dry run — but the workflow as a whole is
+`NOT STARTED`, not `PASSED`. The same is true of `sentry-reverify.yml`.
+
+**The production evidence in C3–C5 predates the current head.** It was gathered
+against `408c629` / `b2bb4c0`. Every row names the SHA it was gathered against;
+where the current head differs, the difference is what that row does not cover.
+A fresh backup, restore drill, natural monitor run and soak dry run against the
+final SHA are the last items in the sequence, and they follow the final merge
+rather than preceding it.
 
 ---
 
