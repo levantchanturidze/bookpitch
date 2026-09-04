@@ -145,7 +145,7 @@ Observed directly, not carried over from any earlier summary.
 
 | C8 | `sentry-reverify.yml` + `sentry-incident.mjs` proven end to end | `PRODUCTION VERIFIED` | first NATURAL run [33925659120](https://github.com/levantchanturidze/bookpitch/actions/runs/33925659120) (`schedule`, attempt 1, `c6d59a1`). Classified `unavailable` — *"could not be attempted … this is not a report that delivery is broken"* — reopened **#44**, skipped the soak refresh, and failed the run so it is visible. Exactly the designed behaviour, in production, on the failure path |
 
-## Resumption checkpoint — 2026-09-05T00:20Z
+## Resumption checkpoint — 2026-09-05T00:45Z
 
 Everything below is current as of this line. To continue, say only:
 
@@ -154,7 +154,8 @@ Everything below is current as of this line. To continue, say only:
 
 | | |
 |---|---|
-| Final SHA | `c6d59a19e994710607720aab47b950068b611103`, deployed on both aliases |
+| Evidence SHA | `c6d59a19e994710607720aab47b950068b611103` — every C-row below was gathered against this, after its deployment |
+| Deployed SHA | `f45515d04ba5fbd82f0799f1d71d921aae902cb2`, GitHub Deployment **6274698464** (`success`), served by both aliases. Differs from the evidence SHA by `docs/finalization-ledger.md` alone — verified, not asserted: `git diff --name-only c6d59a1 f45515d` returns that one path |
 | Branch | `main`; no open PRs; working tree clean |
 | Open incident | **#44** (canonical). Closed twice by stray PR keywords and reopened twice by the monitor and the reverify job; #67 closed as a duplicate. CI now refuses a PR that would do it again |
 | Soak | never started; refused by four independent gates while Sentry is unverified |
@@ -183,9 +184,16 @@ reverify 33925659120 — were gathered against it, after its deployment. Nothing
 is carried over from an earlier SHA, which is what the previous two rounds
 did.
 
-Merging this ledger produces one further commit. It changes documentation only,
-so the C-row evidence continues to describe the running application; where a row
-names a SHA, that is the SHA it was gathered against.
+Merging this ledger produces one further documentation-only commit, and the one
+before it is already deployed and checked: `f45515d` differs from the evidence
+SHA `c6d59a1` in `docs/finalization-ledger.md` and nothing else. So the C-row
+evidence still describes the running application, and that is a verified diff
+rather than a promise about what the commit contains. Where a row names a SHA,
+that is the SHA the evidence was gathered against.
+
+This is the only regress in the ledger and it terminates here: a documentation
+commit cannot change application behaviour, and the check that proves it is
+mechanical.
 
 ---
 
