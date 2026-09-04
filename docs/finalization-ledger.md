@@ -90,8 +90,8 @@ Observed directly, not carried over from any earlier summary.
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| C1 | Final merge to `main` | `MERGED` | **`408c6290dc0a6da64d5e8c977acd5c70a3a570e3`** (PR #63, on top of #62 `74148d0`) |
-| C2 | Deployment of that exact SHA | `DEPLOYED` | GitHub Deployment **6263085408**, state `success`; `bookpitch.ge` and `www.bookpitch.ge` both serve `x-bookpitch-release: 408c6290…` |
+| C1 | Final merge to `main` | `MERGED` | **`b2bb4c015d6daac6d6ad9d17fd14bebd6ec9b812`** — PRs #62 (`74148d0`), #63 (`408c629`), #64 (`b2bb4c0`). The engineering landed in #62/#63; #64 is this ledger plus the CI audit retry |
+| C2 | Deployment of that exact SHA | `DEPLOYED` | GitHub Deployment **6263803861**, state `success`; both canonical hosts serve `x-bookpitch-release: b2bb4c01…`, which equals `origin/main` |
 | C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33863362248](https://github.com/levantchanturidze/bookpitch/actions/runs/33863362248) — 68 applied, 0 unfinished, no drift; all seven checks pass, including the exact per-partition policy match and `current_org_id()` |
 | C4 | Fresh backup, **actually restored** into a disposable DB | `PRODUCTION VERIFIED` | backup [33866999778](https://github.com/levantchanturidze/bookpitch/actions/runs/33866999778), artifact `production-backup-33866999778-1` (id 9934361561), fingerprint `5c9f75110f30141f`; restore drill [33867293853](https://github.com/levantchanturidze/bookpitch/actions/runs/33867293853) **restored it into a disposable database** — 68 migrations all finished, 28 tables, 10 organizations, append-only triggers present and `UPDATE` rejected, 13 partitions, **34 RLS policies**, `bp_create_monthly_partition()` present |
 | C5 | Production smoke + RBAC + cron/outbox/health | `PRODUCTION VERIFIED` | monitor [33867405040](https://github.com/levantchanturidze/bookpitch/actions/runs/33867405040) — **25/28 passed, 2 paused, 2 informational**, sole failure is Sentry (#44). Soak dry run [33867622778](https://github.com/levantchanturidze/bookpitch/actions/runs/33867622778) — 7/7 evidence reads succeed, `unhealthyJobs=[]`, `retentionSuccessMinutesAgo=247.9`. Probe surface 404s while disabled; `/api/health/ready`, `/scheduler`, `/settings` still 307 to `/signin` |
@@ -116,6 +116,21 @@ Observed directly, not carried over from any earlier summary.
 | E1 | Soak preconditions satisfied | `BLOCKED — MANUAL` | refused by **four** independent gates while D3 is unmet: `release-verify-and-soak.yml` refuses without a probe-enabled confirmation, refuses if production is not serving the named SHA on both hosts, refuses while any `ops-incident` is open (#44 is), and `verify-sentry.mjs` writes no receipt without a complete pass. The controller then refuses to start without one |
 | E2 | Uninterrupted 24h window on one SHA | `NOT STARTED` | Cannot begin until E1. Everything else it needs is proven: dry run [33867622778](https://github.com/levantchanturidze/bookpitch/actions/runs/33867622778) exercised all 7 evidence reads against production, including the shared heartbeat contract and the retention instant |
 | E3 | Natural scheduled evidence inside the window | `NOT STARTED` | Feasibility measured rather than assumed: monitor delivery p99 5.03h against a 6h gap limit, cron p99 3.02h. `retention-in-window` will hold a soak open until the nightly sweep runs inside it — by design, and the reason the window is 24 hours |
+
+---
+
+## A note on the last row
+
+Merging this file produces a newer commit and a newer deployment than the SHA
+recorded beside C2. That is unavoidable and is not a gap: the C3/C4/C5 evidence
+was gathered against `408c629`, and the only differences between it and the SHA
+serving production are this document, the CI audit retry, and one corrected
+error message — none of which change application behaviour. Where a row's
+evidence predates the deployed SHA, the row says which SHA it was gathered
+against.
+
+The alternative would be to claim verification of a commit nothing has verified,
+which is exactly the class of thing this ledger exists to prevent.
 
 ---
 

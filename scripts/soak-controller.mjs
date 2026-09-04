@@ -1328,8 +1328,10 @@ async function main() {
     }
     if (!seededSentry) {
       console.error(
-        'soak: refusing to start without a Sentry receipt. Run scripts/verify-sentry.mjs\n' +
-          'against this release and pass the result as SOAK_SENTRY_RECEIPT. Starting without\n' +
+        'soak: refusing to start without a Sentry receipt.\n' +
+          'The supported way to start a soak is the "Verify Sentry and start the soak"\n' +
+          'workflow (.github/workflows/release-verify-and-soak.yml), which runs the real\n' +
+          'probes and hands this controller the receipt file it produced. Starting without\n' +
           'one produces a window whose observability gate can never pass.',
       );
       process.exit(1);
