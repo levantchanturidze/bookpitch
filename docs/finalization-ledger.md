@@ -96,9 +96,9 @@ Observed directly, not carried over from any earlier summary.
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| B1 | Full local suite | `PASSED — LOCAL` | 124 files, **1828 passed**, 41 skipped (the disposable-DB injected-failure suite, which runs in CI); lint 0 errors; types clean; build exit 0; prettier clean |
-| B2 | CI green on the exact merged head | `PASSED — CI` | PR #66 run [33885769448](https://github.com/levantchanturidze/bookpitch/actions/runs/33885769448) — 124 files / **1869 tests, 0 skipped**, 0 vulnerabilities. Verified against the exact head SHA before merge (R-07 mitigation) |
-| B3 | Playwright full matrix | `PASSED — CI` | same runs, `Browser, mobile, and accessibility suite` green; all 9 required suites |
+| B1 | Full local suite | `PASSED — LOCAL` | 124 files, **1908 passed**, 41 skipped (the disposable-DB injected-failure suite, which runs in CI); format, lint, types, guards, orphan-perms, reachability all clean; build exit 0 |
+| B2 | CI green on the exact merged head | `PASSED — CI` | PR #70 run [33913015937](https://github.com/levantchanturidze/bookpitch/actions/runs/33913015937) — 124 files / **1947 tests, 0 skipped**, 0 vulnerabilities; PR #71 run [33915159529](https://github.com/levantchanturidze/bookpitch/actions/runs/33915159529). Both verified against the exact head SHA before merge (R-07 mitigation). Post-merge CI on the final head: run [33915973985](https://github.com/levantchanturidze/bookpitch/actions/runs/33915973985) |
+| B3 | Playwright full matrix | `PASSED — CI` | same runs; locally 265 passed / 3 skipped, and `npm run e2e:check` confirms all 9 required suites executed (268 tests) |
 | B4 | Secret scan | `PASSED — CI` | gitleaks green on both PRs; a local scan of a clean `git archive` of HEAD finds only the two fingerprints already accepted in `.gitleaksignore` |
 | B5 | Dependency audit | `PASSED — CI` | `found 0 vulnerabilities`. npm's audit endpoint 503'd intermittently on 2026-09-04 and the job was re-run rather than the gate weakened |
 | B6 | Migration from scratch + upgrade path | `PASSED — CI` | CI applies all 68 migrations to an empty database and runs `prisma migrate diff --exit-code` against a shadow DB; the upgrade path is migrate run [33863362248](https://github.com/levantchanturidze/bookpitch/actions/runs/33863362248), which applied 68 to the live database with no drift |
@@ -107,23 +107,14 @@ Observed directly, not carried over from any earlier summary.
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| C1 | Final merge to `main` | `MERGED` | **`bd42a471ae7edad3d1382a8237d2eb141adf0c27`** (PR #66) |
-| C2 | Deployment of that exact SHA | `DEPLOYED` | GitHub Deployment **6266990877**, state `success`; both canonical hosts serve `x-bookpitch-release: bd42a471…`, which equals `origin/main` |
-| C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33887082471](https://github.com/levantchanturidze/bookpitch/actions/runs/33887082471) against `bd42a47` — 68 applied, no drift; all seven checks pass, including the exact per-partition policy match and `current_org_id()` |
-| C4 | Fresh backup, **actually restored** into a disposable DB | `PRODUCTION VERIFIED` | taken AFTER the final deployment: backup [33887076578](https://github.com/levantchanturidze/bookpitch/actions/runs/33887076578), artifact `production-backup-33887076578-1` (id 9942303278); restore drill [33887514369](https://github.com/levantchanturidze/bookpitch/actions/runs/33887514369) **restored it into a disposable database** — 68 migrations all finished, 28 tables, 10 organizations, append-only triggers present and `UPDATE` rejected, 13 partitions, **34 RLS policies** |
-| C5 | Production smoke + RBAC + cron/outbox/health | `PRODUCTION VERIFIED` | **Natural scheduled** monitor run [33893547883](https://github.com/levantchanturidze/bookpitch/actions/runs/33893547883) against `bd42a47` — **25/28 passed, 2 paused, 2 informational**, sole failure Sentry (#44). Soak dry run [33887810194](https://github.com/levantchanturidze/bookpitch/actions/runs/33887810194) — 7/7 evidence reads, `unhealthyJobs=[]`, `retentionSuccessAt=2026-09-04T07:14:45Z` (an absolute DB instant, not a reconstructed age). Probe surface: token and probe answer **401** without a bearer, `/probe/sentry` **404** without a challenge, `/api/health/ready` and `/scheduler` still **307** to `/signin` |
+| C1 | Final merge to `main` | `MERGED` | **`c69abcc2ba51510c17dd6f1c3429d475f0929ef6`** — PRs #70 (`ab045c1`) and #71 (`c69abcc`) |
+| C2 | Deployment of that exact SHA | `DEPLOYED` | GitHub Deployment **6272214195**, state `success`; both canonical hosts serve `x-bookpitch-release: c69abcc2…`, which equals `origin/main` |
+| C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33916320184](https://github.com/levantchanturidze/bookpitch/actions/runs/33916320184) against **`c69abcc`** — 68 applied, no drift; all seven checks pass, including the exact per-partition policy match and `current_org_id()` |
+| C4 | Fresh backup, **actually restored** into a disposable DB | `PRODUCTION VERIFIED` | taken AFTER the final deployment: backup [33916323311](https://github.com/levantchanturidze/bookpitch/actions/runs/33916323311) on `c69abcc`, artifact `production-backup-33916323311-1` (id 9953305649); restore drill [33916732867](https://github.com/levantchanturidze/bookpitch/actions/runs/33916732867) **restored it into a disposable database** — all 10 restore invariants pass: 68 migrations finished, 28 tables, 10 organizations, append-only triggers present and `UPDATE` rejected, 13 partitions, 34 RLS policies |
+| C5 | Production smoke + RBAC + cron/outbox/health | `PRODUCTION VERIFIED` | **Natural, first-attempt** scheduled runs on **`c69abcc`**: monitor [33920833148](https://github.com/levantchanturidze/bookpitch/actions/runs/33920833148) (`event=schedule attempt=1`) — **25/28 passed, 2 paused, 2 informational, 1 failing**, and the one failure is Sentry; cron [33916539984](https://github.com/levantchanturidze/bookpitch/actions/runs/33916539984). Soak dry run [33916736186](https://github.com/levantchanturidze/bookpitch/actions/runs/33916736186) — 7/7 evidence reads |
+| C6 | Informational lines do not affect the verdict | `PRODUCTION VERIFIED` | same monitor run: two INFO lines present, verdict reads `1 production check(s) failing` |
+| C7 | Corrected incident reconciliation, against live state | `PRODUCTION VERIFIED` | same run, unprompted: `incident #44 … reopened — still failing` then `incident #67 closed as a duplicate of #44`. Exactly one open incident for the marker, and the three days of history are back on #44 |
 
-**That natural run is also the live proof of the informational-verdict fix.**
-`cron-delivery-lag` tripped at 1.6h — the exact condition that previously made
-the workflow exit non-zero and reset a soak — and the run printed:
-
-```
-note: cron-delivery-lag is reporting, but is informational and does not fail this run
-1 production check(s) failing:
-```
-
-One failing check, and it is Sentry. Before this round that would have been two,
-and a soak would have restarted for a delivery gap nobody can act on.
 
 | A11 | Probe surface reachable past the auth proxy | `PRODUCTION VERIFIED` | found by smoke-testing the deployed app: all three probe routes 307'd to `/signin`, so the whole Sentry flow was unreachable. Fixed in PR #63; verified in production — probe routes 404 (reachable, failing closed), `/api/health/ready` still 307s |
 
@@ -150,22 +141,40 @@ and a soak would have restarted for a delivery gap nobody can act on.
 
 ---
 
+## Resumption checkpoint — 2026-09-04T21:30Z
+
+Everything below is current as of this line. To continue, say only:
+
+> Continue from the Bookpitch finalization ledger and keep working until the
+> existing terminal objective is reached.
+
+| | |
+|---|---|
+| Final SHA | `c69abcc2ba51510c17dd6f1c3429d475f0929ef6`, deployed on both aliases |
+| Branch | `main`; no open PRs; working tree clean |
+| Open incident | **#44** (canonical, reopened by evidence). #67 closed as a duplicate |
+| Soak | never started; refused by four independent gates while Sentry is unverified |
+| Next action | supply the three human inputs below. Everything after them is automatic |
+
 ## What has never run, and what predates the current SHA
 
 Two honesty notes that the rows above would otherwise imply away.
 
-**`release-verify-and-soak.yml` has never completed end to end.** It has never
-been dispatched, because its Sentry step cannot pass without D1. Its individual
-steps are covered by tests, and the soak controller's evidence collectors have
-been exercised against production by a dry run — but the workflow as a whole is
-`NOT STARTED`, not `PASSED`. The same is true of `sentry-reverify.yml`.
+**Three code paths have never executed end to end**, and none of them can until
+D1: `release-verify-and-soak.yml`, `sentry-reverify.yml`, and
+`scripts/sentry-incident.mjs`. Their individual steps are covered by tests and
+the soak controller's evidence collectors have been exercised against production
+by a dry run — but the workflows as wholes are `NOT STARTED`, not `PASSED`, and
+this ledger says so rather than implying otherwise.
 
-**The production evidence in C3–C5 predates the current head.** It was gathered
-against `408c629` / `b2bb4c0`. Every row names the SHA it was gathered against;
-where the current head differs, the difference is what that row does not cover.
-A fresh backup, restore drill, natural monitor run and soak dry run against the
-final SHA are the last items in the sequence, and they follow the final merge
-rather than preceding it.
+**The C-rows now all name `c69abcc`, the deployed head.** Migration, backup,
+restore drill, soak dry run and both natural scheduled runs were gathered
+against it, after its deployment — not carried over from an earlier SHA, which
+is what the previous two rounds did.
+
+Merging this ledger produces one further commit. It changes documentation only,
+so the C-row evidence continues to describe the running application; where a row
+names a SHA, that is the SHA it was gathered against.
 
 ---
 
