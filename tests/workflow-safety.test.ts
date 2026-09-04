@@ -1043,7 +1043,7 @@ describe('the soak refuses to start without Sentry receipt', () => {
 
     // And it refuses before verifying, rather than after.
     expect(names.some((n) => /Resolve and pin the deployed release/.test(n))).toBe(true);
-    expect(names.some((n) => /Refuse while an incident is open/.test(n))).toBe(true);
+    expect(names.some((n) => /Refuse while an unrelated incident is open/.test(n))).toBe(true);
     const verifyAt = names.findIndex((n) => /Verify Sentry/.test(n));
     const pinAt = names.findIndex((n) => /Resolve and pin/.test(n));
     const startAt = names.findIndex((n) => /Start the soak/.test(n));
@@ -1112,5 +1112,92 @@ describe('the dependency audit distinguishes an outage from a finding', () => {
   it('and it is not suppressed with continue-on-error', () => {
     expect(step).not.toMatch(/continue-on-error/);
     expect(step).not.toMatch(/\|\| true/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §7 and §8 — closure authority, ordering, and continuing proof.
+// -----------------------------------------------------------------------------
+describe('the observability incident is closed by evidence, in the right order', () => {
+  const { raw, doc } = readWorkflow('release-verify-and-soak.yml');
+  const steps = (
+    doc as unknown as { jobs: Record<string, { steps: Array<Record<string, string>> }> }
+  ).jobs['verify-and-start'].steps;
+  const names = steps.map((s) => String(s.name ?? s.uses));
+  const at = (re: RegExp) => names.findIndex((n) => re.test(n));
+
+  it('THE DEADLOCK: it does not refuse to run while the incident it resolves is open', () => {
+    // The incident cannot be closed without verification, and verification
+    // refused to start while it was open.
+    const guard = steps.find((s) => /unrelated incident/i.test(String(s.name ?? '')))!;
+    expect(guard, 'the incident guard must exclude the observability incident').toBeDefined();
+    expect(String(guard.run)).toMatch(/production-observability-unconfigured/);
+    expect(String(guard.run)).toMatch(/not\)/);
+  });
+
+  it('every OTHER incident still refuses', () => {
+    const guard = steps.find((s) => /unrelated incident/i.test(String(s.name ?? '')))!;
+    expect(String(guard.run)).toMatch(/exit 1/);
+  });
+
+  it('closure happens AFTER verification and BEFORE the soak starts', () => {
+    const verify = at(/Verify Sentry/);
+    const close = at(/Resolve the observability incident/);
+    const recheck = at(/Re-check that no incident is open/);
+    const start = at(/Start the soak/);
+    expect(verify).toBeGreaterThan(-1);
+    expect(close).toBeGreaterThan(verify);
+    expect(recheck).toBeGreaterThan(close);
+    expect(start).toBeGreaterThan(recheck);
+  });
+
+  it('and the re-check refuses if anything is still open', () => {
+    const recheck = steps.find((s) => /Re-check that no incident/.test(String(s.name ?? '')))!;
+    expect(String(recheck.run)).toMatch(/exit 1/);
+  });
+
+  it('the closing step names the reason it, and not the monitor, is the authority', () => {
+    expect(raw).toMatch(/canClose: false/);
+    expect(raw).toMatch(/counts unset DSN\s+#?\s*variable NAMES|variable NAMES/);
+  });
+});
+
+describe('the observability proof is refreshed on a bounded cadence', () => {
+  const { raw, doc } = readWorkflow('sentry-reverify.yml');
+
+  it('runs on a schedule, not only by hand', () => {
+    // `on:` parses as the YAML 1.1 boolean `true`.
+    const parsed = doc as unknown as Record<string, { schedule?: Array<{ cron: string }> }>;
+    const on = parsed[true as unknown as string] ?? parsed.on;
+    expect(on.schedule).toBeDefined();
+  });
+
+  it('is bounded — four probe pairs a day, not one every tick', () => {
+    // Sentry quotas are finite, and a soak that exhausts one has broken the
+    // thing it was measuring.
+    const parsed = doc as unknown as Record<string, { schedule: Array<{ cron: string }> }>;
+    const on = parsed[true as unknown as string] ?? parsed.on;
+    const crons = on.schedule.map((x) => x.cron);
+    expect(
+      crons.some((c) => /\*\/6/.test(c)),
+      `cadence was ${crons.join(', ')}`,
+    ).toBe(true);
+  });
+
+  it('does nothing when no soak is open', () => {
+    expect(raw).toMatch(/Is a soak open\?/);
+    expect(raw).toMatch(/steps\.soak\.outputs\.open != '0'/);
+  });
+
+  it('runs the FULL verifier, both runtimes, not a cheap ping', () => {
+    expect(raw).toMatch(/playwright install --with-deps chromium/);
+    expect(raw).toMatch(/node scripts\/verify-sentry\.mjs/);
+  });
+
+  it('hands the receipt over as a file and deletes it', () => {
+    expect(raw).toMatch(/SOAK_REVERIFY: 'true'/);
+    expect(raw).toMatch(/SOAK_SENTRY_RECEIPT_FILE: \$\{\{ runner\.temp \}\}/);
+    expect(raw).toMatch(/rm -f .*sentry-receipt\.json/);
+    expect(raw, 'the receipt must never be uploaded').not.toMatch(/upload-artifact/);
   });
 });

@@ -61,6 +61,8 @@ import {
   verifyReceiptPair,
   receiptDigest,
   PROBE_SOURCES,
+  classifyMapProbe,
+  summariseMapProbes,
 } from './sentry-receipt.mjs';
 
 const results = [];
@@ -225,6 +227,7 @@ try {
 // exercises NEXT_PUBLIC_SENTRY_DSN, the browser bundle and the browser
 // transport. Nothing runnable from Node can stand in for it.
 let browserEventId = null;
+const probeAssets = new Set();
 {
   let browser = null;
   try {
@@ -234,6 +237,20 @@ let browserEventId = null;
     const consoleErrors = [];
     page.on('console', (m) => {
       if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 200));
+    });
+    // The assets the probe page ACTUALLY loads, recorded from its own session.
+    // The previous check sampled the first three chunks it happened to find on
+    // the landing page — which are not the bundles the browser probe runs from,
+    // so it was proving something about the wrong files.
+    page.on('response', (res) => {
+      try {
+        const u = new URL(res.url());
+        if (u.origin === new URL(APP_URL).origin && /\.js$/.test(u.pathname)) {
+          probeAssets.add(u.pathname);
+        }
+      } catch {
+        /* a data: or blob: URL is not an asset we can check */
+      }
     });
 
     // The challenge rides in a cookie, so the URL is bare — nothing to leak
@@ -391,68 +408,76 @@ for (const p of pair.problems) note(`· ${p}`);
 // also reach the public — serving them publishes the unminified application
 // source to anyone who asks.
 //
-// FAILS CLOSED, and that is the whole design. Every earlier version of this
-// check treated "no chunk reference found" and "the request threw" as reasons
-// to skip, printing a note and moving on, so the most likely way for the check
-// to be wrong — an unexpected page shape, a network blip — was also the way it
-// stayed quiet. Not knowing is a failure.
+// TWO things were wrong before. It sampled the first three chunks found on the
+// landing page, which are not the bundles the browser probe runs from; and it
+// treated ANY non-2xx as proof of privacy, so a 429, a 502, a redirect to a
+// login page or a network error all counted as "not public". A negative claim
+// cannot rest on a request that did not complete.
 //
-// Both URLs are probed for each sampled chunk: the `sourceMappingURL` the
-// bundle declares, if any, AND the conventional `<chunk>.map`. A build can omit
-// the comment while still uploading the file, so the absence of a comment is
-// not evidence of anything.
-let sourceMapsPublic = null; // null = could not determine, which is a failure
+// The assets are now the ones the probe page itself loaded, recorded from its
+// own session, and each map URL is classified explicitly: only 404/410 passes.
+let sourceMapVerdict = { ok: false, sourceMapsPublic: null, problems: ['not attempted'] };
+const checkedAssets = [...probeAssets].sort();
 try {
-  const pageRes = await http(APP_URL);
-  if (!pageRes.ok) throw new Error(`landing page answered HTTP ${pageRes.status}`);
-  const html = await pageRes.text();
-  const chunks = [
-    ...new Set([...html.matchAll(/\/_next\/static\/[A-Za-z0-9._\/-]+\.js/g)].map((m) => m[0])),
-  ].slice(0, 3);
-  if (chunks.length === 0) throw new Error('no /_next/static chunk reference on the landing page');
+  if (checkedAssets.length === 0) {
+    throw new Error(
+      'the browser probe loaded no JavaScript assets we could identify — with nothing ' +
+        'discovered there is nothing to prove private',
+    );
+  }
 
-  const exposed = [];
-  for (const chunk of chunks) {
-    const jsRes = await http(`${APP_URL}${chunk}`);
-    if (!jsRes.ok) throw new Error(`chunk ${chunk} answered HTTP ${jsRes.status}`);
-    const js = await jsRes.text();
-    const declared = /\/\/# sourceMappingURL=(\S+)/.exec(js)?.[1];
-
-    const candidates = new Set([`${APP_URL}${chunk}.map`]);
-    if (declared && !declared.startsWith('data:')) {
-      candidates.add(new URL(declared, `${APP_URL}${chunk}`).toString());
-    }
-    if (declared && declared.startsWith('data:')) {
-      // An inline map is public by definition — it IS the source, served.
-      exposed.push(`${chunk} (inline data: source map)`);
+  const probes = [];
+  for (const asset of checkedAssets) {
+    const assetUrl = `${APP_URL}${asset}`;
+    // The declared map, if the bundle names one, AND the conventional path. A
+    // build can omit the comment while still uploading the file, so the absence
+    // of a comment is not evidence of anything.
+    const candidates = new Set([`${assetUrl}.map`]);
+    try {
+      const jsRes = await http(assetUrl);
+      if (jsRes.ok) {
+        const declared = /\/\/# sourceMappingURL=(\S+)/.exec(await jsRes.text())?.[1];
+        if (declared?.startsWith('data:')) {
+          // An inline map IS the source, served. No request needed.
+          probes.push({ url: `${asset} (inline data: map)`, classification: 'exposed' });
+          continue;
+        }
+        if (declared) candidates.add(new URL(declared, assetUrl).toString());
+      } else {
+        probes.push({ url: assetUrl, classification: 'indeterminate' });
+        continue;
+      }
+    } catch (err) {
+      probes.push({ url: assetUrl, classification: 'indeterminate' });
       continue;
     }
+
     for (const url of candidates) {
-      const mapRes = await http(url, { method: 'GET' });
-      // 2xx is exposure. Anything else — 404, 403, a redirect to a 404 — is
-      // the map not being served.
-      if (mapRes.ok) exposed.push(url.replace(APP_URL, ''));
+      let outcome;
+      try {
+        // `redirect: 'manual'` so an interception is visible as a redirect
+        // rather than resolving to some other resource's 200 or 404.
+        const res = await http(url, { method: 'GET', redirect: 'manual' });
+        outcome = { status: res.status };
+      } catch (err) {
+        outcome = { error: err.message };
+      }
+      probes.push({ url: url.replace(APP_URL, ''), classification: classifyMapProbe(outcome) });
     }
   }
-  sourceMapsPublic = exposed.length > 0;
+
+  sourceMapVerdict = summariseMapProbes(probes);
   record(
     0,
     'SOURCE MAPS NOT PUBLIC',
-    !sourceMapsPublic,
-    sourceMapsPublic
-      ? `PUBLICLY READABLE: ${exposed.join(', ')} — the unminified application source is ` +
-          'being served to anyone'
-      : `${chunks.length} chunk(s) sampled; no .map is served`,
+    sourceMapVerdict.ok,
+    sourceMapVerdict.ok
+      ? `${checkedAssets.length} probe asset(s), ${probes.length} map URL(s) — all absent`
+      : sourceMapVerdict.problems.join('; '),
   );
 } catch (err) {
-  // Explicitly a failure, not a skip.
-  sourceMapsPublic = null;
-  record(
-    0,
-    'SOURCE MAPS NOT PUBLIC',
-    false,
-    `could not be determined (${err.message}) — this check fails closed, so "unknown" is a failure`,
-  );
+  sourceMapVerdict = { ok: false, sourceMapsPublic: null, problems: [err.message] };
+  record(0, 'SOURCE MAPS NOT PUBLIC', false, `${err.message} — this check fails closed`);
 }
 
 // ── Receipt ──────────────────────────────────────────────────────────────────
@@ -463,7 +488,8 @@ try {
 // Written ONLY on a complete pass, including the source-map check. A partial
 // receipt is worse than none: the soak would seed it and the first tick would
 // report a production fault for what is really an incomplete verification.
-const everythingPassed = pair.ok && sourceMapsPublic === false;
+const everythingPassed =
+  pair.ok && sourceMapVerdict.ok && sourceMapVerdict.sourceMapsPublic === false;
 if (everythingPassed && process.env.SENTRY_RECEIPT_OUT) {
   const receipt = {
     // The freshness bound, deliberately the START of this run. Using the finish
@@ -479,9 +505,11 @@ if (everythingPassed && process.env.SENTRY_RECEIPT_OUT) {
     // re-checks these, so a later event that resolves somewhere else fails.
     serverSource: PROBE_SOURCES.server,
     browserSource: PROBE_SOURCES.browser,
-    // Affirmative, not assumed. `false` is the only acceptable value and the
-    // only one this line can produce.
+    // Affirmative, not assumed, and bound to WHICH assets were checked — so a
+    // later tick can tell a receipt covering the probe's own bundles from one
+    // covering three chunks off the landing page.
     sourceMapsPublic: false,
+    sourceMapAssets: checkedAssets.join(','),
     digest: '',
   };
   // Keyed with CRON_SECRET, which the soak controller also holds. The receipt

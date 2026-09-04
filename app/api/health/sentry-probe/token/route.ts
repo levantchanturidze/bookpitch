@@ -30,15 +30,21 @@ export const dynamic = 'force-dynamic';
 // the server event, the browser event and the receipt together, and the
 // verifier needs it to look the events up afterwards.
 //
-// Same guards as the server probe: off unless SENTRY_PROBE_ENABLED is exactly
-// "true", 404 rather than 403 when off, bearer CRON_SECRET otherwise.
+// Same guard as the server probe: bearer CRON_SECRET, the credential every
+// /api/cron/* route already uses. There is deliberately no deploy-time enable
+// flag — see the comment in ../route.ts for why its lifecycle made correct
+// verification impossible.
 // -----------------------------------------------------------------------------
 
-export async function POST(req: NextRequest) {
-  if (process.env.SENTRY_PROBE_ENABLED !== 'true') {
-    return NextResponse.json({ error: 'not found' }, { status: 404 });
-  }
+/**
+ * Simplest possible in-process throttle. Honest about its limits: serverless
+ * instances do not share memory, so this bounds one instance rather than the
+ * deployment. It is a backstop behind the bearer secret, not the control.
+ */
+let lastMintAt = 0;
+const MINT_MIN_INTERVAL_MS = 10_000;
 
+export async function POST(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (!secret) {
     return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
@@ -50,6 +56,16 @@ export async function POST(req: NextRequest) {
   // The nonce is generated HERE rather than accepted from the caller, so a
   // verification run cannot be handed one that already has matching events
   // sitting in Sentry from an earlier run.
+  // Bounded, because this endpoint is now permanently reachable rather than
+  // hidden behind a flag. A CRON_SECRET holder can already trigger every cron
+  // job, so this is not the security boundary — it is a cap on how fast a
+  // leaked secret could fill the challenge table or Sentry's quota.
+  const now = Date.now();
+  if (now - lastMintAt < MINT_MIN_INTERVAL_MS) {
+    return NextResponse.json({ error: 'rate limited' }, { status: 429 });
+  }
+  lastMintAt = now;
+
   const challenge = await issueChallenge();
 
   const res = NextResponse.json(

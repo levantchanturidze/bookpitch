@@ -23,6 +23,31 @@ stale the moment it is written. Those live in:
 > the one that was verified, not necessarily the one serving traffic when you
 > read this. For anything that moves, follow the workflow links at the top.
 
+### Remediation round 2 — 2026-09-04
+
+The previous round's verdict of `ENGINEERING COMPLETE` was wrong. Eleven more
+defects, and the first one alone would have made the soak impossible to pass.
+
+| Defect | Why it mattered |
+|---|---|
+| **The signed receipt invalidated itself on seeding** | `receiptDigest()` binds `notBefore` AND `verifiedAt`. The verifier signs them as the run's start and finish, which differ. `seedSentryState()` dropped `notBefore`, overwrote `verifiedAt` with it, and kept the digest — so the first revalidation hashed a different document. A signature scheme whose own seeding step destroys the signature. Every test hid it by building the receipt from the persisted shape backwards |
+| **The informational cron line still failed the workflow** | `cron-delivery-lag` was excluded from incidents and from the pass/fail count, then the exit code was computed from `results.filter(r => !r.ok)`, which includes it. A 90-minute gap — 13.7% of them — produced a FAILED scheduled monitor run, which the soak treats as release-critical and resets the window for. The split was defeated by the one line that never learned about it |
+| **Re-runs still counted as schedule delivery** | A run keeps its `schedule` event when someone presses "Re-run failed jobs"; `run_attempt` increments and the API returns the latest attempt. The whole displaced-evidence defect from incident #38 was available through a different button — and because ordering used `updated_at`, a re-run also dragged a failure past the recovery boundary |
+| **Only the receipt was signed** | `releaseSha`, `deploymentId`, `startedAt`, `effectiveWindowStart`, `awaitingRecoverySince`, `restarts` sat in a public issue body as plain JSON. Optimistic concurrency catches an edit made DURING a tick and is blind to one made between ticks — 29 minutes in every 30 |
+| **The source-map check looked at the wrong files, and passed on ignorance** | It sampled the landing page's first three chunks, not the probe's own bundles, and treated any non-2xx as proof of privacy. A negative claim cannot rest on a request that did not complete |
+| **The probe's enable flag made verification impossible** | It lives in Vercel; changing it needs a redeploy; a redeploy makes a new deployment id; the soak treats that as superseded. The documented sequence ended with either a debug switch left on in production or a soak pinned to a dead deployment |
+| **#44 had the wrong closure authority, and a deadlock** | The monitor's check counts unset DSN *names* — a revoked DSN looks identical — and would have closed the incident whose subject is whether errors reach a human. Meanwhile the starter refused to run while that incident was open, so it could never be resolved |
+| **The soak proved nothing about ongoing ingestion** | Every tick re-fetched the same two pre-window events. Revoke the DSN at hour 3 and they stay readable all day while nothing new arrives |
+| **Truncated organizations reported success** | The reminders route processed the first 500, flagged `truncated` in the body, logged an error — and left the omitted organizations out of the heartbeat arithmetic entirely. Measured in the fixture database: 192 organizations dropped, HTTP 200, healthy heartbeat |
+| **The retention instant mixed two clocks** | The soak reconstructed it as `runnerNow − successMinutesAgo`, where the age comes from PostgreSQL's `NOW()`. Fifth instance of this class |
+| **The heartbeat contract was not exact** | Unknown job keys were ignored rather than refused, and only `successMinutesAgo` was validated as a number |
+
+Two of those were found by asking hostile questions about this round's own
+output rather than about the previous one: the observation-gap threshold became
+consequential without being recalibrated, and the continuing-proof gate
+initially required the proof to postdate the window start, which livelocks every
+restart. Both are documented where they live.
+
 ### Finalization round — 2026-09-04
 
 Status board with per-gate evidence: **`docs/finalization-ledger.md`**. That file
@@ -452,15 +477,20 @@ has now been stated three times and been wrong twice: the round after each one
 found more. What can honestly be said is that no known automatable defect is
 outstanding, and that the next review is what decides whether that holds.
 
-### 1. Sentry — no workspace exists
+### 1. Sentry — no accessible workspace or configuration
 
 `production-observability-unconfigured` fails; issue **#44** is open. Every
 uncaught exception in production is discarded.
 
-`sentry.io` serves its marketing page, which means **no authenticated Sentry
-session exists**. Creating an account requires accepting Sentry's terms on the
-operator's behalf, which is out of scope. This is not a configuration step
-someone forgot — there is nothing to configure against.
+What is actually established, and the distinction matters: **no authenticated
+Sentry session or configuration is reachable from here.** Navigating to
+`sentry.io/organizations/new/` redirects to `/auth/login/`; Vercel Production
+holds `SENTRY_ENVIRONMENT` and `NEXT_PUBLIC_SENTRY_ENVIRONMENT` and neither DSN;
+the repository holds no Sentry secret. Earlier versions of this document said
+"no Sentry workspace exists", which is a claim about the world that this
+evidence does not support — an organisation may well exist that nothing here can
+reach. Signing in requires the operator's credentials, and creating one requires
+accepting Sentry's terms on their behalf; both are out of scope for an agent.
 
 **Needs a person to:** create or nominate a Sentry organisation and project,
 then set, in Vercel Production, `SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_DSN` and
@@ -491,10 +521,19 @@ exist; level 4 passes on a stack of unreadable minified chunks.
 The browser half is a real headless Chromium loading `/probe/sentry` on the
 deployed site, because nothing runnable from Node exercises
 `NEXT_PUBLIC_SENTRY_DSN`, the browser bundle or the browser source maps. The
-page is reachable only with a short-lived HMAC issued by
-`/api/health/sentry-probe/token` (bearer `CRON_SECRET`), and only while
-`SENTRY_PROBE_ENABLED` is exactly `"true"` — it 404s otherwise, and the secret
-itself never reaches client JavaScript or a URL.
+page is authorised by a **single-use challenge**: a database row minted by
+`POST /api/health/sentry-probe/token` (bearer `CRON_SECRET`) and redeemed by an
+atomic `UPDATE … WHERE consumed_at IS NULL`, so exactly one caller wins. The id
+travels in an HttpOnly `__Host-` cookie, so nothing reaches the URL, history,
+referrers or logs, and reloading the page 404s.
+
+An earlier design used a short-lived HMAC in the query string. That kept
+`CRON_SECRET` out of the URL but was still a bearer credential in a URL, and it
+was replayable for its whole lifetime — "short-lived" is not "one-time". There
+is also no longer a `SENTRY_PROBE_ENABLED` flag: it lived in Vercel, changing it
+required a redeploy, a redeploy produced a new deployment id, and the soak treats
+a new deployment id as superseded — so the flag's own lifecycle made verifying
+and then soaking one exact deployment impossible.
 
 The script also checks the complement of source-map upload: that the `.map`
 files are **not** served from the CDN. `deleteSourcemapsAfterUpload` is a build

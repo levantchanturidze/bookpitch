@@ -21,9 +21,15 @@ export const dynamic = 'force-dynamic';
 // public:
 //
 //   * bearer CRON_SECRET, the same credential the cron endpoints use, so it is
-//     reachable only from a workflow that already holds it;
-//   * off unless SENTRY_PROBE_ENABLED is exactly "true", so it cannot be
-//     reached at all on a deployment that has not deliberately turned it on;
+//     reachable only from a workflow that already holds it. This is the same
+//     protection every /api/cron/* route has, and those are permanently on;
+//   * there is deliberately NO deploy-time enable flag. There used to be, and
+//     its lifecycle made correct verification impossible: the flag lives in
+//     Vercel, changing it requires a redeploy, a redeploy produces a new
+//     deployment id, and the soak treats a new deployment id as superseded even
+//     for the same SHA. The only ways out were to leave a debug switch on
+//     permanently or to soak a configuration nobody verified. The flag was also
+//     redundant with the bearer secret it sat beside;
 //   * a caller-supplied nonce is required and echoed into the event, so a
 //     verification run can prove the event is its own and not a cached one;
 //   * in-process rate limit — one probe per minute. Honest about its limits:
@@ -50,11 +56,6 @@ class BookpitchSentryProbeError extends Error {
 }
 
 export async function POST(req: NextRequest) {
-  if (process.env.SENTRY_PROBE_ENABLED !== 'true') {
-    // 404 rather than 403: a disabled probe should not advertise that it exists.
-    return NextResponse.json({ error: 'not found' }, { status: 404 });
-  }
-
   const secret = process.env.CRON_SECRET;
   if (!secret) {
     return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });

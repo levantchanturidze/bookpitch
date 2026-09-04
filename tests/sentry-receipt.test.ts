@@ -6,6 +6,9 @@ import {
   PROBE_SOURCES,
   receiptDigest,
   verifyReceiptIntegrity,
+  classifyMapProbe,
+  summariseMapProbes,
+  RECEIPT_BOUND_FIELDS,
 } from '../scripts/sentry-receipt.mjs';
 
 /** Shape of the Sentry API event payload these tests build. */
@@ -561,5 +564,83 @@ describe('a receipt is tamper-evident', () => {
     const a = { ...receipt(), digest: '' };
     const reordered = Object.fromEntries(Object.entries(a).reverse()) as unknown as typeof a;
     expect(receiptDigest(SECRET, a)).toBe(receiptDigest(SECRET, reordered));
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §5 — a negative claim cannot rest on a request that did not complete.
+//
+// The old check called ANY non-2xx "not publicly served". So a 429 from a
+// throttled CDN, a 502, a redirect to a login page, or a network error all
+// counted as proof of privacy — and it only sampled the first three chunks it
+// happened to find on the landing page, which are not the assets the browser
+// probe runs from.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('a source-map probe only passes on an explicit absence', () => {
+  it('a 2xx is exposure', () => {
+    expect(classifyMapProbe({ status: 200 })).toBe('exposed');
+    expect(classifyMapProbe({ status: 206 })).toBe('exposed');
+  });
+
+  it('404 and 410 are the only proofs of absence', () => {
+    expect(classifyMapProbe({ status: 404 })).toBe('private');
+    expect(classifyMapProbe({ status: 410 })).toBe('private');
+  });
+
+  it('THE DEFECT: throttling, server errors and redirects are NOT proof', () => {
+    for (const status of [301, 302, 307, 401, 403, 429, 500, 502, 503, 504]) {
+      expect(classifyMapProbe({ status }), String(status)).toBe('indeterminate');
+    }
+  });
+
+  it('a transport failure is not proof either', () => {
+    expect(classifyMapProbe({ error: 'ECONNRESET' })).toBe('indeterminate');
+    expect(classifyMapProbe({})).toBe('indeterminate');
+  });
+
+  it('403 is deliberately not "private"', () => {
+    // A CDN that forbids us may still serve the file to someone else, and some
+    // hosts answer 403 when rate limiting.
+    expect(classifyMapProbe({ status: 403 })).toBe('indeterminate');
+  });
+});
+
+describe('the map verdict fails closed', () => {
+  const probe = (url: string, classification: string) => ({ url, classification });
+
+  it('THE DEFECT: discovering nothing to check is a failure, not a pass', () => {
+    const v = summariseMapProbes([]);
+    expect(v.ok).toBe(false);
+    expect(v.sourceMapsPublic).toBeNull();
+    expect(v.problems.join(' ')).toMatch(/no source-map probe was performed/);
+  });
+
+  it('all private is the only pass', () => {
+    const v = summariseMapProbes([probe('/a.js.map', 'private'), probe('/b.js.map', 'private')]);
+    expect(v).toEqual({ ok: true, sourceMapsPublic: false, problems: [] });
+  });
+
+  it('one exposed map fails and names it', () => {
+    const v = summariseMapProbes([probe('/a.js.map', 'private'), probe('/b.js.map', 'exposed')]);
+    expect(v.ok).toBe(false);
+    expect(v.sourceMapsPublic).toBe(true);
+    expect(v.problems.join(' ')).toMatch(/b\.js\.map/);
+  });
+
+  it('THE DEFECT: one indeterminate probe fails the whole check', () => {
+    const v = summariseMapProbes([
+      probe('/a.js.map', 'private'),
+      probe('/b.js.map', 'indeterminate'),
+    ]);
+    expect(v.ok, 'unknown is not private').toBe(false);
+    expect(v.sourceMapsPublic, 'and it is not recorded as false either').toBeNull();
+    expect(v.problems.join(' ')).toMatch(/fails closed/);
+  });
+
+  it('the checked assets are bound into the signature', () => {
+    expect(RECEIPT_BOUND_FIELDS).toContain('sourceMapAssets');
+    expect(RECEIPT_BOUND_FIELDS).toContain('sourceMapsPublic');
   });
 });

@@ -87,6 +87,7 @@ export const RECEIPT_BOUND_FIELDS = Object.freeze([
   'releaseSha',
   'serverEventId',
   'serverSource',
+  'sourceMapAssets',
   'sourceMapsPublic',
   'verifiedAt',
 ]);
@@ -139,6 +140,70 @@ export function verifyReceiptIntegrity(secret, receipt) {
     };
   }
   return { ok: true };
+}
+
+/**
+ * What one source-map probe proved.
+ *
+ * The previous check called ANY non-2xx "not publicly served". That is wrong
+ * for most of the ways a request fails: 429 means we were throttled, 5xx means
+ * the CDN was unwell, a redirect to a login page means something intercepted
+ * us, and a network error means we never asked. None of those is evidence that
+ * the map is private — they are evidence that we do not know.
+ *
+ * Only an explicit "this is not here" counts. Everything else fails closed,
+ * because the claim being made is a negative one, and a negative claim cannot
+ * rest on a request that did not complete.
+ *
+ * @param {{status?: number, error?: string}} outcome
+ * @returns {'private'|'exposed'|'indeterminate'}
+ */
+export function classifyMapProbe(outcome) {
+  if (outcome?.error) return 'indeterminate';
+  const status = outcome?.status;
+  if (typeof status !== 'number') return 'indeterminate';
+  if (status >= 200 && status < 300) return 'exposed';
+  // The only two answers that mean "there is no such asset here".
+  if (status === 404 || status === 410) return 'private';
+  // 403 is deliberately NOT private: a CDN that forbids anonymous access may
+  // still serve the file to someone else, and some hosts return 403 for
+  // rate-limited requests.
+  return 'indeterminate';
+}
+
+/**
+ * Roll individual probe results into a verdict for the receipt.
+ *
+ * @param {Array<{url: string, classification: string}>} probes
+ */
+export function summariseMapProbes(probes) {
+  if (!Array.isArray(probes) || probes.length === 0) {
+    return {
+      ok: false,
+      sourceMapsPublic: null,
+      problems: ['no source-map probe was performed — nothing was discovered to check'],
+    };
+  }
+  const exposed = probes.filter((p) => p.classification === 'exposed');
+  const unknown = probes.filter((p) => p.classification === 'indeterminate');
+  const problems = [];
+  if (exposed.length) {
+    problems.push(
+      `publicly readable source map(s): ${exposed.map((p) => p.url).join(', ')} — the ` +
+        'unminified application source is being served to anyone',
+    );
+  }
+  if (unknown.length) {
+    problems.push(
+      `could not establish that ${unknown.length} map URL(s) are private: ` +
+        `${unknown.map((p) => p.url).join(', ')}. This check fails closed, so "unknown" is a failure`,
+    );
+  }
+  return {
+    ok: problems.length === 0,
+    sourceMapsPublic: exposed.length > 0 ? true : problems.length === 0 ? false : null,
+    problems,
+  };
 }
 
 /**

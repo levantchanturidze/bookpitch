@@ -34,8 +34,11 @@
 // -----------------------------------------------------------------------------
 
 import process from 'node:process';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { unhealthyJobsFrom } from './heartbeat-contract.mjs';
 import { verifyReceiptIntegrity } from './sentry-receipt.mjs';
+import { normaliseRun, isNaturalObservation, isNaturalSuccess } from './run-evidence.mjs';
+import { heartbeatSuccessAt } from './heartbeat-contract.mjs';
 
 export const SOAK_DEFAULTS = {
   /** An uninterrupted healthy window shorter than this is not a soak. */
@@ -85,6 +88,21 @@ export const SOAK_DEFAULTS = {
   maxObservationGapHours: 6,
   /** Both canonical hosts must resolve to the deployment under soak. */
   requiredAliases: ['bookpitch.ge', 'www.bookpitch.ge'],
+  /**
+   * How old the most recent FRESH observability proof may be.
+   *
+   * Re-fetching the same two events every tick proves they are still readable.
+   * It proves nothing about ingestion: revoke the DSN at hour 3, exhaust a
+   * quota, add an inbound filter or break the transport, and those two events
+   * stay perfectly readable for the whole window while nothing new can arrive.
+   *
+   * Six hours is a deliberate compromise. Tighter means more synthetic events
+   * against a finite Sentry quota — a soak that exhausts the quota has broken
+   * the thing it was measuring. Looser leaves a gap long enough to hide an
+   * outage in. Four proofs a day, and one of them necessarily inside the last
+   * six hours of the window.
+   */
+  maxObservabilityProofAgeHours: 6,
 };
 
 /**
@@ -108,6 +126,7 @@ export const SOAK_HEALTH_GATES = Object.freeze([
   'outbox-clean',
   'cron-outcomes',
   'observability',
+  'observability-continuing',
 ]);
 
 /**
@@ -131,6 +150,116 @@ export const SOAK_PROGRESS_GATES = Object.freeze([
 /** Marker so the state block is found by content, never by issue title. */
 export const SOAK_MARKER = '<!-- bookpitch-soak-state -->';
 export const SOAK_LABEL = 'soak';
+
+// -----------------------------------------------------------------------------
+// Soak state integrity.
+//
+// The Sentry receipt was signed. Everything that actually decides the verdict
+// was not: `releaseSha`, `deploymentId`, `startedAt`, `effectiveWindowStart`,
+// `awaitingRecoverySince`, `restarts` and `lastProcessedMonitorRun` lived in a
+// public GitHub issue body as plain JSON.
+//
+// Optimistic concurrency does not help. It compares the body against what THIS
+// tick read, so it catches an edit made during a tick and is blind to one made
+// between ticks — which is 29 minutes out of every 30. Backdate
+// `effectiveWindowStart` and the next tick reports a full window; delete a
+// restart and the interruption never happened; swap `deploymentId` and the
+// soak measures something else.
+//
+// The signature does not mean the state never changes — the controller rewrites
+// it every tick. It means only something holding CRON_SECRET can produce a
+// valid one, which is exactly the property the receipt already had.
+//
+// Signing alone does not stop REPLAY: an attacker can restore an older, validly
+// signed body, and an older body has an earlier window start, which is more
+// elapsed time. So the window is additionally anchored to something GitHub owns
+// and the body cannot move — the soak issue's own creation time. A window
+// cannot begin before the issue that records it exists.
+// -----------------------------------------------------------------------------
+
+/**
+ * Fields the state digest covers: everything a gate reads or a verdict depends
+ * on. `stateDigest` itself and the purely informational `lastTickAt` are
+ * excluded; `sentry` is covered through its own digest, which is included here
+ * so the two cannot be mixed and matched between states.
+ */
+export const SOAK_SIGNED_FIELDS = Object.freeze([
+  'awaitingRecoverySince',
+  'deploymentId',
+  'effectiveWindowStart',
+  'lastProcessedMonitorRun',
+  'releaseSha',
+  'restarts',
+  'startedAt',
+  'tickSeq',
+]);
+
+/** HMAC over a canonical serialisation. Sorted keys, explicit types. */
+export function soakStateDigest(secret, state) {
+  // An absent secret must not silently produce a digest over the string
+  // "undefined" — signing and verifying would both do it and agree, which is a
+  // signature scheme that authenticates nothing. Both call sites are already
+  // gated, so reaching here without one is a programming error, and it should
+  // sound like one.
+  if (!secret || typeof secret !== 'string') {
+    throw new Error('soakStateDigest requires CRON_SECRET; refusing to sign with an empty key');
+  }
+  const canonical = SOAK_SIGNED_FIELDS.map(
+    (k) => `${k}=${JSON.stringify(state?.[k] ?? null)}`,
+  ).join('\n');
+  // The receipt's own digest is bound in, so a valid receipt cannot be moved
+  // into a different soak's state and vice versa.
+  const receiptDigestValue = state?.sentry?.digest ?? null;
+  return createHmac('sha256', String(secret))
+    .update(`${canonical}\nsentry.digest=${JSON.stringify(receiptDigestValue)}`)
+    .digest('hex');
+}
+
+/**
+ * Is this persisted state authentic, and is its window anchored to reality?
+ *
+ * @param {string} secret
+ * @param {object} state
+ * @param {string|null} issueCreatedAt  the soak issue's creation time, from GitHub
+ */
+export function verifySoakState(secret, state, issueCreatedAt) {
+  if (!state || typeof state !== 'object') return { ok: false, reason: 'no state' };
+  if (typeof state.stateDigest !== 'string' || !/^[0-9a-f]{64}$/.test(state.stateDigest)) {
+    return {
+      ok: false,
+      reason: 'the soak state is not signed — it cannot be distinguished from an edited one',
+    };
+  }
+  const expected = Buffer.from(soakStateDigest(secret, state), 'hex');
+  const actual = Buffer.from(state.stateDigest, 'hex');
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    return {
+      ok: false,
+      reason: 'the soak state digest does not match its contents — it was edited after signing',
+    };
+  }
+  // The replay anchor. An older validly-signed body would carry an earlier
+  // window; this refuses any window that begins before the issue recording it.
+  if (issueCreatedAt) {
+    const issueAt = Date.parse(issueCreatedAt);
+    const windowAt = Date.parse(state.effectiveWindowStart ?? state.startedAt ?? '');
+    const startedAt = Date.parse(state.startedAt ?? '');
+    if (!Number.isFinite(issueAt) || !Number.isFinite(windowAt) || !Number.isFinite(startedAt)) {
+      return { ok: false, reason: 'the soak state carries no usable window timestamps' };
+    }
+    // One minute of slack: the issue is created immediately after startedAt is
+    // captured, and the two clocks are GitHub's and the runner's.
+    if (windowAt < issueAt - 60_000 || startedAt < issueAt - 60_000) {
+      return {
+        ok: false,
+        reason:
+          `the window begins at ${new Date(windowAt).toISOString()}, before the soak issue ` +
+          `recording it was created at ${issueCreatedAt} — a window cannot predate its own record`,
+      };
+    }
+  }
+  return { ok: true };
+}
 
 /** Serialise state into a fenced block the next run can parse back out. */
 export function renderState(state) {
@@ -165,9 +294,10 @@ export function parseState(body) {
  *     deployment: {sha: string, id: string, state?: string|null,
  *                  environment?: string|null, aliases?: string[]} | null,
  *     sentry: {configured: boolean, ok: boolean, serverEventId: string|null,
- *              browserEventId: string|null, problems?: string[]} | null,
+ *              browserEventId: string|null, problems?: string[],
+ *              lastFreshProofAt?: string|null} | null,
  *     outboxDead: number | null,
- *     retentionSuccessMinutesAgo?: number | null,
+ *     retentionSuccessAt?: string | null,
  *     unhealthyJobs?: string[] | null,
  *     historyComplete?: boolean,
  *   },
@@ -188,7 +318,11 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
   // most dangerous shape a soak can have — it manufactures the evidence.
   let windowStart = new Date(state.effectiveWindowStart ?? state.startedAt);
 
-  const scheduled = (runs) => (runs ?? []).filter((r) => r.event === 'schedule');
+  // Natural evidence is scheduled AND first-attempt. A rerun keeps the
+  // `schedule` event, so this used to accept a hand-pressed button as proof of
+  // unattended operation — a failed monitor, backup or cron run could be rerun
+  // into a success and the window would look clean.
+  const scheduled = (runs) => (runs ?? []).filter(isNaturalObservation);
   const after = (runs, from) => runs.filter((r) => new Date(r.completedAt) > from);
 
   const fail = (status, summary, extra = {}) => ({
@@ -567,16 +701,20 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
       // Compared as an INSTANT against the effective window start, so a restart
       // invalidates evidence from before it rather than inheriting it.
       ...(() => {
-        const mins = evidence.retentionSuccessMinutesAgo;
-        if (typeof mins !== 'number' || !Number.isFinite(mins) || mins < 0) {
+        // An absolute instant from the DATABASE, compared directly with the
+        // window start. This used to be an age subtracted from the runner's
+        // clock, which is two clocks on one comparison.
+        const raw = evidence.retentionSuccessAt;
+        const parsed = raw ? Date.parse(raw) : NaN;
+        if (!Number.isFinite(parsed)) {
           return {
             ok: false,
             detail:
-              'retention success age could not be read — absence of evidence is not evidence ' +
-              'that the nightly sweep ran',
+              'retention success timestamp could not be read — absence of evidence is not ' +
+              'evidence that the nightly sweep ran',
           };
         }
-        const at = new Date(now.getTime() - mins * 60_000);
+        const at = new Date(parsed);
         const inWindow = at >= windowStart;
         return {
           ok: inWindow,
@@ -585,6 +723,51 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
             : `retention last succeeded ${at.toISOString()}, which is BEFORE the window ` +
               `began at ${windowStart.toISOString()} — the nightly sweep has not run in ` +
               'this window',
+        };
+      })(),
+    },
+    {
+      id: 'observability-continuing',
+      // Ongoing ingestion, not merely ongoing readability.
+      //
+      // The `observability` gate below re-checks the two events the receipt
+      // names. They were created before the window began, and they stay
+      // readable through Sentry's API no matter what happens to ingestion
+      // afterwards — so on its own it certifies 24 hours on a verification done
+      // at hour zero.
+      ...(() => {
+        const raw = evidence.sentry?.lastFreshProofAt ?? null;
+        const at = raw ? Date.parse(raw) : NaN;
+        const limitH = opts.maxObservabilityProofAgeHours;
+        if (!Number.isFinite(at)) {
+          return {
+            ok: false,
+            detail:
+              'no fresh observability proof is recorded — re-fetching the original events shows ' +
+              'they are still readable, which is not evidence that new ones can be ingested',
+          };
+        }
+        const ageH = (now.getTime() - at) / 3_600_000;
+        // AGE only, deliberately — not "inside the window".
+        //
+        // Requiring the proof to postdate the window start looks stricter and
+        // livelocks: a restart begins a new window, every existing proof
+        // predates it, the gate fails, the failure is a HEALTH gate, and the
+        // soak returns to awaiting-recovery — forever.
+        //
+        // The age limit already gives the stronger property where it matters.
+        // Success needs `window-elapsed` at 24h, and the cadence is 6h, so any
+        // proof recent enough to satisfy this gate at success time is
+        // necessarily inside the window by a margin of 18 hours. The
+        // in-window clause was redundant exactly when it would have mattered
+        // and harmful the rest of the time.
+        return {
+          ok: ageH <= limitH,
+          detail:
+            ageH > limitH
+              ? `the most recent fresh proof is ${ageH.toFixed(1)}h old, limit ${limitH}h — stale. ` +
+                'Re-fetching the original events shows only that they are still readable'
+              : `fresh events ingested ${ageH.toFixed(1)}h ago (limit ${limitH}h)`,
         };
       })(),
     },
@@ -703,7 +886,10 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
  */
 export function nextSentryState(persisted, verdict) {
   return {
-    // Immutable identity of the verification run.
+    // Immutable identity of the verification run. Every one of these is a
+    // signed field; a tick that rewrote any of them would invalidate the
+    // receipt it is carrying, or — worse — launder an edited one.
+    notBefore: persisted?.notBefore ?? null,
     nonce: persisted?.nonce ?? null,
     verifiedAt: persisted?.verifiedAt ?? null,
     releaseSha: persisted?.releaseSha ?? null,
@@ -719,7 +905,12 @@ export function nextSentryState(persisted, verdict) {
     serverSource: persisted?.serverSource ?? null,
     browserSource: persisted?.browserSource ?? null,
     sourceMapsPublic: persisted?.sourceMapsPublic ?? null,
+    sourceMapAssets: persisted?.sourceMapAssets ?? null,
     digest: persisted?.digest ?? null,
+    // When fresh events were last ingested. Only a re-verification moves this;
+    // an ordinary tick carries it forward, because re-reading the same two
+    // events is not new evidence.
+    lastFreshProofAt: persisted?.lastFreshProofAt ?? null,
     // The only fields a tick may update: what it observed this time.
     configured: Boolean(verdict?.configured),
     lastRevalidationOk: Boolean(verdict?.ok),
@@ -748,7 +939,7 @@ export function nextSentryState(persisted, verdict) {
  * tick, where it reads as a production problem rather than a setup mistake.
  *
  * @param {string|undefined|null} json  the receipt document, or nothing
- * @returns {{nonce: string, verifiedAt: string, releaseSha: string,
+ * @returns {{notBefore: string, nonce: string, verifiedAt: string, releaseSha: string,
  *            environment: string, serverEventId: string, browserEventId: string,
  *            serverSource: string, browserSource: string,
  *            sourceMapsPublic: boolean, digest: string,
@@ -775,6 +966,7 @@ export function seedSentryState(json) {
     'browserEventId',
     'serverSource',
     'browserSource',
+    'sourceMapAssets',
     'digest',
   ];
   const missing = required.filter((k) => !r?.[k] || typeof r[k] !== 'string');
@@ -805,9 +997,23 @@ export function seedSentryState(json) {
   }
 
   return {
+    // EVERY signed field is carried through byte-for-byte. Nothing here may be
+    // renamed, dropped or recomputed: the digest covers all of them, and the
+    // next tick re-authenticates the persisted document against it.
+    //
+    // This used to drop `notBefore` and overwrite `verifiedAt` with it, keeping
+    // the original digest — so the very first revalidation hashed a different
+    // document and the observability gate could never pass. A signature scheme
+    // whose own seeding step invalidated it.
+    //
+    // The two timestamps are NOT interchangeable and that is why both are
+    // signed: `notBefore` is the freshness bound (the run's start, before any
+    // event existed), `verifiedAt` is when verification finished. Use
+    // soakFreshnessBound() to read the bound rather than reaching for whichever
+    // field looks right.
+    notBefore: r.notBefore,
+    verifiedAt: r.verifiedAt,
     nonce: r.nonce,
-    // The freshness bound, deliberately the START of the verification run.
-    verifiedAt: new Date(Date.parse(r.notBefore)).toISOString(),
     releaseSha: r.releaseSha,
     environment: r.environment,
     serverEventId: r.serverEventId,
@@ -818,6 +1024,10 @@ export function seedSentryState(json) {
     serverSource: r.serverSource,
     browserSource: r.browserSource,
     sourceMapsPublic: r.sourceMapsPublic,
+    // WHICH assets the public-map check covered. Bound so a receipt that
+    // checked the landing page's chunks cannot pass as one that checked the
+    // probe's own bundles.
+    sourceMapAssets: r.sourceMapAssets,
     // Kept so every tick can re-authenticate the receipt it is trusting,
     // rather than only the tick that seeded it.
     digest: r.digest,
@@ -827,6 +1037,27 @@ export function seedSentryState(json) {
     lastRevalidationAt: null,
     lastProblems: [],
   };
+}
+
+/**
+ * The freshness bound a persisted receipt imposes on its events.
+ *
+ * `notBefore` — the moment the verification run STARTED, before any probe had
+ * fired — and never `verifiedAt`, which is when it finished. The events were
+ * created between the two, so a bound at `verifiedAt` rejects the very events
+ * the receipt exists to vouch for.
+ *
+ * A named accessor rather than a field read at each call site, because the two
+ * timestamps look interchangeable and are not. Reaching for the wrong one is
+ * exactly the mistake that made seeding overwrite a signed field.
+ *
+ * @param {{notBefore?: string|null}|null|undefined} sentry
+ * @returns {Date} epoch 0 when absent, so a missing bound admits nothing
+ */
+export function soakFreshnessBound(sentry) {
+  const raw = sentry?.notBefore;
+  const at = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(at) ? new Date(at) : new Date(0);
 }
 
 /** The comment posted on every tick. Public, so it must carry no secrets. */
@@ -925,11 +1156,19 @@ async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
     const batch = data.workflow_runs ?? [];
     for (const r of batch) {
       if (r.status !== 'completed') continue;
+      // normaliseRun() keeps `run_attempt` and separates the immutable
+      // `created_at` from the rerun-mutable `updated_at`. A run KEEPS its
+      // `schedule` event when a human presses "Re-run failed jobs", so the
+      // event alone never distinguished delivery from a button press.
+      const n = normaliseRun(r);
       runs.push({
-        runId: r.id,
-        event: r.event ?? event,
-        conclusion: r.conclusion,
-        completedAt: r.updated_at,
+        ...n,
+        event: n.event ?? event,
+        // Ordering and window membership use the time a rerun cannot move.
+        // Using `updated_at` let a rerun drag a failure forward past a
+        // recovery boundary the soak orders against.
+        completedAt: n.scheduledAt,
+        rerunCompletedAt: n.completedAt,
       });
     }
     if (batch.length === 0) {
@@ -1119,8 +1358,9 @@ async function verifySentryReceipt({ persisted, configured, releaseSha }) {
     environment: process.env.SENTRY_ENVIRONMENT ?? 'production',
     nonce: persisted.nonce,
     // The receipt must have been produced for THIS release. Re-verification
-    // does not re-run the probe, so freshness is bounded by the recorded time.
-    notBefore: new Date(persisted.verifiedAt ?? 0),
+    // does not re-run the probe, so freshness is bounded by the recorded START
+    // of the run — read through the accessor, never by picking a field.
+    notBefore: soakFreshnessBound(persisted),
   };
   const server = verifyReceipt(await fetchEvent(persisted.serverEventId), {
     ...expectation,
@@ -1209,12 +1449,13 @@ async function dryRun(repo, token) {
       else {
         const m = (await res.json())?.metrics ?? {};
         const unhealthy = unhealthyJobsFrom(m?.cronHeartbeat?.jobs ?? null);
-        const retentionMins = m?.cronHeartbeat?.jobs?.retention?.successMinutesAgo ?? null;
+        const retentionAtIso =
+          heartbeatSuccessAt(m?.cronHeartbeat?.jobs?.retention ?? null)?.toISOString() ?? null;
         ok(
           'ops metrics',
           `outboxDead=${m?.outbox?.dead ?? 'null'} ` +
             `unhealthyJobs=${unhealthy === null ? 'UNREADABLE' : JSON.stringify(unhealthy)} ` +
-            `retentionSuccessMinutesAgo=${retentionMins ?? 'null'}`,
+            `retentionSuccessAt=${retentionAtIso ?? 'null'}`,
         );
         // A dry run must exercise the JUDGEMENT, not only the fetch. Reporting
         // the raw map proved the endpoint answered; it did not prove the
@@ -1285,6 +1526,73 @@ async function main() {
     process.exit(1);
   }
 
+  // Authenticate the state BEFORE any gate reads it. The body is public and
+  // editable between ticks, and optimistic concurrency only sees edits made
+  // during one. An unsigned or edited state is refused outright rather than
+  // being measured.
+  if (issue && state) {
+    const secret = process.env.CRON_SECRET;
+    if (!secret) {
+      console.error('soak: CRON_SECRET is not set, so the persisted state cannot be authenticated');
+      process.exit(1);
+    }
+    const verdict = verifySoakState(secret, state, issue.created_at ?? null);
+    if (!verdict.ok) {
+      console.error(`soak: refusing to continue — ${verdict.reason}`);
+      console.error(
+        'The window recorded in this issue is not one this controller produced. Close the ' +
+          'issue and start a new soak; do not edit the body to make it verify.',
+      );
+      process.exit(1);
+    }
+  }
+
+  // Re-verification mode: a fresh receipt for an EXISTING soak.
+  //
+  // The observability-continuing gate needs proof that new events can still be
+  // ingested, not merely that the original two remain readable. A separate
+  // scheduled workflow runs the full verifier every few hours and hands the
+  // result here; this replaces the sentry block, re-signs the state, and
+  // touches nothing else — the window, the restarts and the deployment pin are
+  // not the verifier's business.
+  if (state && process.env.SOAK_REVERIFY === 'true') {
+    const file = process.env.SOAK_SENTRY_RECEIPT_FILE;
+    if (!file) {
+      console.error('soak: SOAK_REVERIFY=true requires SOAK_SENTRY_RECEIPT_FILE');
+      process.exit(1);
+    }
+    let seeded;
+    try {
+      seeded = seedSentryState((await import('node:fs')).readFileSync(file, 'utf8'));
+    } catch (err) {
+      console.error(`soak: refusing the re-verification receipt — ${err.message}`);
+      process.exit(1);
+    }
+    if (!seeded || seeded.releaseSha !== state.releaseSha) {
+      console.error(
+        `soak: the re-verification receipt is for ${seeded?.releaseSha?.slice(0, 12) ?? '(none)'}, ` +
+          `but this soak measures ${String(state.releaseSha).slice(0, 12)}.`,
+      );
+      process.exit(1);
+    }
+    const refreshed = {
+      ...state,
+      sentry: { ...seeded, lastFreshProofAt: new Date().toISOString() },
+      tickSeq: (typeof state.tickSeq === 'number' ? state.tickSeq : 0) + 1,
+      lastTickAt: new Date().toISOString(),
+    };
+    refreshed.stateDigest = soakStateDigest(process.env.CRON_SECRET, refreshed);
+    await gh(`/repos/${repo}/issues/${issue.number}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify({ body: renderState(refreshed) }),
+    });
+    console.log(
+      `soak: refreshed the observability proof on issue #${issue.number} ` +
+        `(events ${seeded.serverEventId}, ${seeded.browserEventId}).`,
+    );
+    return;
+  }
+
   if (!state) {
     if (process.env.SOAK_START !== 'true') {
       console.log('soak: no open soak issue; nothing to do. This tick is not evidence.');
@@ -1349,6 +1657,7 @@ async function main() {
 
     const startedAt = new Date().toISOString();
     state = {
+      tickSeq: 0,
       releaseSha: sha,
       deploymentId: process.env.SOAK_DEPLOYMENT_ID ?? null,
       startedAt,
@@ -1356,9 +1665,10 @@ async function main() {
       awaitingRecoverySince: null,
       restarts: [],
       lastProcessedMonitorRun: null,
-      sentry: seededSentry,
+      sentry: { ...seededSentry, lastFreshProofAt: new Date().toISOString() },
       lastTickAt: null,
     };
+    state.stateDigest = soakStateDigest(process.env.CRON_SECRET, state);
     issue = await gh(`/repos/${repo}/issues`, token, {
       method: 'POST',
       body: JSON.stringify({
@@ -1390,7 +1700,7 @@ async function main() {
 
   let outboxDead = null;
   let unhealthyJobs = null;
-  let retentionSuccessMinutesAgo = null;
+  let retentionSuccessAt = null;
   let sentryConfigured = false;
   const cronSecret = process.env.CRON_SECRET;
   const target = process.env.MONITOR_PRODUCTION_URL ?? 'https://bookpitch.ge';
@@ -1425,11 +1735,12 @@ async function main() {
         // turn it into an instant and compare it against the effective window
         // start. `cron-outcomes` only asks whether it is inside retention's
         // 30-hour freshness limit, and 30 hours is longer than the window.
-        const retentionEntry = m?.cronHeartbeat?.jobs?.retention ?? null;
-        retentionSuccessMinutesAgo =
-          retentionEntry && typeof retentionEntry.successMinutesAgo === 'number'
-            ? retentionEntry.successMinutesAgo
-            : null;
+        // The ABSOLUTE instant the database recorded, not an age subtracted
+        // from this runner's clock. Reconstructing it locally mixed
+        // PostgreSQL's NOW() with GitHub's — two machines, on the comparison
+        // that decides whether the nightly sweep landed inside the window.
+        const retentionAt = heartbeatSuccessAt(m?.cronHeartbeat?.jobs?.retention ?? null);
+        retentionSuccessAt = retentionAt ? retentionAt.toISOString() : null;
       }
     } catch {
       /* null → gates read it as "not evidence of health" */
@@ -1454,10 +1765,10 @@ async function main() {
       historyComplete: monitor.complete && backup.complete && cron.complete,
       incidents: incidents ?? [],
       deployment,
-      sentry,
+      sentry: { ...sentry, lastFreshProofAt: state.sentry?.lastFreshProofAt ?? null },
       outboxDead,
       unhealthyJobs,
-      retentionSuccessMinutesAgo,
+      retentionSuccessAt,
     },
   });
 
@@ -1471,8 +1782,15 @@ async function main() {
     lastProcessedMonitorRun:
       result.lastProcessedMonitorRun ?? state.lastProcessedMonitorRun ?? null,
     sentry: nextSentryState(state.sentry ?? null, sentry),
+    // Monotonic, and signed: it exists so a replayed older body is visibly
+    // older rather than merely different.
+    tickSeq: (typeof state.tickSeq === 'number' ? state.tickSeq : 0) + 1,
     lastTickAt: new Date().toISOString(),
   };
+  // Re-signed on every write. The controller is the only thing that can do
+  // this, which is what makes an edited body detectable rather than merely
+  // unlikely.
+  nextState.stateDigest = soakStateDigest(process.env.CRON_SECRET, nextState);
 
   // Optimistic concurrency: refuse to write over a body that changed since it
   // was read, so two controllers cannot interleave conflicting windows.

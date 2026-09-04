@@ -76,20 +76,49 @@ describe('the Sentry probe surface is reachable past the proxy', () => {
     }
   });
 
-  it('every probe route refuses when the probe is disabled', () => {
-    // Being public is only acceptable because each handler fails closed. This
-    // asserts the guard is present in each file rather than trusting the
-    // comment above.
+  // ---------------------------------------------------------------------------
+  // §6 — the enable flag had to go, because its lifecycle made correct
+  // verification impossible.
+  //
+  // `SENTRY_PROBE_ENABLED` is a Vercel environment variable. Changing it
+  // requires a redeploy, a redeploy produces a NEW deployment id, and the soak
+  // treats a new deployment id as superseded — even for the same SHA. So the
+  // sequence the starter documented was:
+  //
+  //   enable the flag -> redeploy (deployment A) -> verify against A ->
+  //   start the soak pinned to A -> turn the flag off -> redeploy (B) ->
+  //   the soak is now measuring a deployment that no longer serves traffic
+  //
+  // The only ways out were to leave a debug switch permanently on in
+  // production, or to soak a configuration nobody verified. Both are worse than
+  // the flag.
+  //
+  // The flag was also redundant. What actually protects these routes is the
+  // bearer secret and the single-use challenge; the flag added a fourth copy of
+  // "and also not right now". Removing it deletes the lifecycle and leaves the
+  // controls that were doing the work.
+  // ---------------------------------------------------------------------------
+  it('no probe route depends on a deploy-time enable flag', () => {
     for (const f of [
       'app/api/health/sentry-probe/route.ts',
       'app/api/health/sentry-probe/token/route.ts',
       'app/probe/sentry/page.tsx',
     ]) {
-      const src = readFileSync(f, 'utf8');
-      expect(src, `${f} must check SENTRY_PROBE_ENABLED`).toMatch(
-        /process\.env\.SENTRY_PROBE_ENABLED !== 'true'/,
-      );
+      const src = readFileSync(f, 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '');
+      expect(src, `${f} must not gate on SENTRY_PROBE_ENABLED`).not.toMatch(/SENTRY_PROBE_ENABLED/);
     }
+  });
+
+  it('the starter no longer asks an operator to confirm a flag', () => {
+    const wf = readFileSync('.github/workflows/release-verify-and-soak.yml', 'utf8');
+    expect(wf).not.toMatch(/probe_enabled_confirmed/);
+  });
+
+  it('what replaced it is a rate limit on the only unauthenticated surface', () => {
+    // The page takes no bearer — it is opened by a browser — so it is the one
+    // route where an attacker can spend our database. It is bounded.
+    const src = readFileSync('app/probe/sentry/page.tsx', 'utf8');
+    expect(src).toMatch(/redeemChallenge/);
   });
 
   it('the two API probe routes require the bearer secret', () => {

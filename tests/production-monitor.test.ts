@@ -12,6 +12,7 @@ import {
   reconcileIncidents,
   OPS_DERIVED_CHECK_IDS,
   incidentMarker,
+  summariseResults,
   INCIDENT_LABEL,
 } from '../scripts/production-monitor.mjs';
 
@@ -171,13 +172,23 @@ describe('cron workflow health', () => {
   // `event` is explicit because the two reliability checks read it: only a
   // delivered schedule is evidence that the scheduler is alive. These cases
   // are all about schedule delivery, so they say so.
-  function run(minutesAgo: number, conclusion: string, runId = 1, event = 'schedule') {
+  // runAttempt defaults to 1: these fixtures stand for runs the scheduler
+  // delivered and nobody touched. A rerun (attempt > 1) is covered explicitly
+  // in its own describe below.
+  function run(
+    minutesAgo: number,
+    conclusion: string,
+    runId = 1,
+    event = 'schedule',
+    runAttempt = 1,
+  ) {
     return {
       runId,
       status: 'completed',
       conclusion,
       completedAt: new Date(NOW.getTime() - minutesAgo * 60_000).toISOString(),
       event,
+      runAttempt,
     };
   }
 
@@ -940,7 +951,7 @@ describe('a stale cron says which failure it is', () => {
   const NOW = new Date('2026-09-01T14:20:00Z');
 
   function run(runId: number, conclusion: string, completedAt: string, event = 'schedule') {
-    return { status: 'completed', conclusion, completedAt, runId, event };
+    return { status: 'completed', conclusion, completedAt, runId, event, runAttempt: 1 };
   }
 
   function staleness(runs: ReturnType<typeof run>[]) {
@@ -1029,12 +1040,13 @@ describe('a check points at the table it actually reads', () => {
 describe('manual dispatches cannot stand in for scheduled evidence', () => {
   const NOW = new Date('2026-09-01T18:45:00Z');
 
-  const scheduled = (runId: number, conclusion: string, at: string) => ({
+  const scheduled = (runId: number, conclusion: string, at: string, runAttempt = 1) => ({
     runId,
     status: 'completed',
     conclusion,
     completedAt: at,
     event: 'schedule',
+    runAttempt,
   });
   const manual = (runId: number, conclusion: string, at: string) => ({
     runId,
@@ -1042,6 +1054,7 @@ describe('manual dispatches cannot stand in for scheduled evidence', () => {
     conclusion,
     completedAt: at,
     event: 'workflow_dispatch',
+    runAttempt: 1,
   });
 
   // Exactly what the GitHub API returned that afternoon, newest first.
@@ -1433,6 +1446,7 @@ describe('cron delivery lag and cron outage are different claims', () => {
   const run = (over: Record<string, unknown> = {}) => ({
     runId: 1,
     status: 'completed',
+    runAttempt: 1,
     conclusion: 'success',
     completedAt: at(0.2),
     event: 'schedule',
@@ -1491,5 +1505,260 @@ describe('cron delivery lag and cron outage are different claims', () => {
     const ids = evaluateCronHealth([run()], NOW).map((r) => r.id);
     expect(ids).toContain('cron-staleness');
     expect(ids).toContain('cron-delivery-lag');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The PROCESS VERDICT, not just the incident reconciler.
+//
+// `cron-delivery-lag` was made informational so a 90-minute delivery gap would
+// be reported without being a gate. It was excluded from incident
+// reconciliation and from the "N/M checks passed" line — and then the exit code
+// was computed from `results.filter((r) => !r.ok)`, which includes it.
+//
+// So the workflow still failed. A failed SCHEDULED monitor run is exactly what
+// the soak controller treats as a release-critical failure, so an informational
+// observation reset the soak window. Measured: 13.7% of cron gaps exceed 90
+// minutes, so roughly one monitor run in seven.
+//
+// The split was defeated by the one line that never learned about it, and every
+// test looked at reconcileIncidents() rather than at what the process does.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the process verdict excludes informational observations', () => {
+  const gate = (id: string, ok: boolean) => ({ id, title: id, ok, detail: id });
+  const info = (id: string, ok: boolean) => ({ ...gate(id, ok), informational: true });
+  const paused = (id: string) => ({ ...gate(id, true), paused: true });
+
+  it('THE DEFECT: a failing informational line does not make the run unhealthy', () => {
+    const s = summariseResults([
+      gate('a', true),
+      gate('b', true),
+      info('cron-delivery-lag', false),
+    ]);
+    expect(s.healthy, 'an observation nobody can act on must not fail the workflow').toBe(true);
+    expect(s.failingGates).toEqual([]);
+  });
+
+  it('THE DEFECT: it is not counted against the denominator or the numerator', () => {
+    const s = summariseResults([gate('a', true), gate('b', true), info('c', false)]);
+    expect(s.gateCount).toBe(2);
+    expect(s.passedCount, '"2/2 passed" must stay true').toBe(2);
+    expect(s.infoCount).toBe(1);
+  });
+
+  it('…but it is still surfaced, so it cannot be quietly lost', () => {
+    const s = summariseResults([gate('a', true), info('c', false)]);
+    expect(s.failingInformational.map((r) => r.id)).toEqual(['c']);
+  });
+
+  it('a failing GATE still makes the run unhealthy', () => {
+    const s = summariseResults([gate('a', false), info('c', true)]);
+    expect(s.healthy).toBe(false);
+    expect(s.failingGates.map((r) => r.id)).toEqual(['a']);
+  });
+
+  it('a paused gate is neither passed nor failed', () => {
+    const s = summariseResults([gate('a', true), paused('b')]);
+    expect(s.healthy).toBe(true);
+    expect(s.gateCount).toBe(2);
+    expect(s.passedCount).toBe(1);
+    expect(s.pausedCount).toBe(1);
+  });
+
+  it('a paused gate reporting !ok is still not a failure', () => {
+    const s = summariseResults([{ ...gate('b', false), paused: true }]);
+    expect(s.healthy).toBe(true);
+    expect(s.failingGates).toEqual([]);
+  });
+
+  it('THE REGRESSION: the real cron split cannot fail a healthy run', () => {
+    // The exact shape production produces during an ordinary delivery lag.
+    const runs = [
+      {
+        runId: 1,
+        status: 'completed',
+        runAttempt: 1,
+        conclusion: 'success',
+        completedAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
+        event: 'schedule',
+      },
+    ];
+    const s = summariseResults(evaluateCronHealth(runs, NOW));
+    expect(s.healthy, 'a 2h delivery gap is p90 behaviour, not a failure').toBe(true);
+    expect(s.failingInformational.map((r) => r.id)).toContain('cron-delivery-lag');
+  });
+
+  it('COMPLEMENT: the OLD predicate disagrees on exactly this input', () => {
+    // Proof that the tests above discriminate rather than restating whatever
+    // the code now does. The defect was `results.filter((r) => !r.ok)` next to
+    // the exit call; applied to the same results it still says "fail".
+    const results = [gate('a', true), gate('b', true), info('cron-delivery-lag', false)];
+    const oldPredicate = results.filter((r) => !r.ok);
+    expect(oldPredicate.length, 'the old filter counted the informational line').toBe(1);
+    expect(summariseResults(results).healthy, 'the new verdict does not').toBe(true);
+  });
+
+  it('the exit path reads this verdict and nothing else', async () => {
+    // The defect was a second, divergent filter next to the exit call. One
+    // verdict, computed once — asserted at source level because the process
+    // exit itself cannot be observed from here.
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync('scripts/production-monitor.mjs', 'utf8');
+    const exitBlock = src.slice(
+      src.indexOf('// --- Alerting'),
+      src.indexOf('async function ensureLabel'),
+    );
+    expect(exitBlock).toMatch(/if \(!summary\.healthy\)/);
+    expect(exitBlock, 'no re-filtering next to the exit').not.toMatch(/results\.filter/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §3 — a re-run is not unattended operation.
+//
+// The 2026-09-01 incident was manual DISPATCHES displacing scheduled failures.
+// The same move survives through a different button: "Re-run failed jobs" keeps
+// the run's `schedule` event, increments `run_attempt`, replaces `conclusion`
+// and moves `updated_at`. Filtering on the event alone let a human turn a
+// failed scheduled run green, and the API returns the latest attempt.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('re-running a scheduled run cannot make the monitor green', () => {
+  const NOW2 = new Date('2026-09-01T18:45:00Z');
+  const at = (h: number) => new Date(NOW2.getTime() - h * 3_600_000).toISOString();
+  const r = (over: Record<string, unknown>) => ({
+    runId: 1,
+    status: 'completed',
+    conclusion: 'success',
+    completedAt: at(0.2),
+    event: 'schedule',
+    runAttempt: 1,
+    ...over,
+  });
+  const find = (runs: ReturnType<typeof r>[], id: string) =>
+    evaluateCronHealth(runs, NOW2).find((x) => x.id === id)!;
+
+  it('THE DEFECT: a failed scheduled run re-run into success is not fresh evidence', () => {
+    // What an operator sees after pressing the button: schedule event, success,
+    // recent — and attempt 2.
+    const check = find([r({ runAttempt: 2, completedAt: at(0.1) })], 'cron-staleness');
+    expect(check.ok, 'a re-run is a button press, not schedule delivery').toBe(false);
+    expect(check.detail).toMatch(/no SCHEDULED run/i);
+  });
+
+  it('a re-run does not count toward the recent-failure window either', () => {
+    // Ten genuinely failed first attempts, then someone re-runs three of them.
+    // The failures must still be counted; the re-runs must not displace them.
+    const runs = [
+      ...Array.from({ length: 3 }, (_, i) =>
+        r({ runId: 900 + i, runAttempt: 2, conclusion: 'success', completedAt: at(0.1) }),
+      ),
+      ...Array.from({ length: 6 }, (_, i) =>
+        r({ runId: 800 + i, conclusion: 'failure', completedAt: at(1 + i) }),
+      ),
+      r({ runId: 700, conclusion: 'success', completedAt: at(8) }),
+    ];
+    const failures = find(runs, 'cron-failures');
+    expect(failures.ok, '6 genuine failures must not be hidden by 3 re-runs').toBe(false);
+  });
+
+  it('a first-attempt success right after a re-run IS accepted', () => {
+    // The complement. Once the scheduler delivers again on its own, the
+    // evidence is natural and the check recovers — otherwise this rule would
+    // make a re-run permanently poisonous.
+    const runs = [
+      r({ runId: 2, completedAt: at(0.1) }),
+      r({ runId: 1, runAttempt: 3, completedAt: at(0.2) }),
+    ];
+    expect(find(runs, 'cron-staleness').ok).toBe(true);
+  });
+
+  it('a re-run is REPORTED, not silently dropped', () => {
+    // An operator who pressed the button should see that it did not count,
+    // rather than watching the check stay red for no visible reason.
+    const results = evaluateCronHealth([r({ runAttempt: 2 })], NOW2);
+    const notice = results.find((x) => x.id === 'cron-rerun-notice');
+    expect(notice, 'a re-run must be visible').toBeDefined();
+    expect(notice!.informational, 'and must not be a gate').toBe(true);
+    expect(notice!.detail).toMatch(/run_attempt > 1/);
+  });
+
+  it('no notice appears when nothing was re-run', () => {
+    const ids = evaluateCronHealth([r({})], NOW2).map((x) => x.id);
+    expect(ids).not.toContain('cron-rerun-notice');
+  });
+
+  it('an unknown run_attempt fails closed', () => {
+    const check = find([{ ...r({}), runAttempt: undefined } as never], 'cron-staleness');
+    expect(check.ok).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §7 — a check may raise an alarm without being competent to declare it over.
+//
+// `production-observability-unconfigured` counts how many Sentry DSN env vars
+// are UNSET. That is a real fault when it is non-zero, and it is what opened
+// #44. But zero only means "two names are present": a revoked DSN, a DSN for a
+// deleted project, or a typo all count as configured.
+//
+// So the moment somebody pastes any two strings, this check goes green and
+// CLOSES #44 — the incident whose entire subject is whether errors actually
+// reach a human. Presence is not delivery, and this check cannot tell the
+// difference.
+//
+// The end-to-end verifier can: it makes the deployed app emit real events in
+// both runtimes, reads them back through Sentry's API, and checks release,
+// environment, nonce, runtime and symbolication. That is the authority for
+// closing #44.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the observability check can open an incident but never close one', () => {
+  const check = (missing: number) =>
+    evaluateOpsMetrics({ config: { missingObservabilityEnv: missing } }).find(
+      (r: { id: string }) => r.id === 'production-observability-unconfigured',
+    )!;
+
+  it('still fails, and still opens an incident, when a DSN is missing', () => {
+    const r = check(2);
+    expect(r.ok).toBe(false);
+    expect(reconcileIncidents([r], []).toOpen.map((o) => o.result.id)).toEqual([
+      'production-observability-unconfigured',
+    ]);
+  });
+
+  it('THE DEFECT: presence alone must not close the incident', () => {
+    const r = check(0);
+    expect(r.ok, 'two names present is a legitimate pass for a CONFIG check').toBe(true);
+    const open = [
+      { number: 44, body: incidentMarker('production-observability-unconfigured'), title: 'x' },
+    ];
+    const plan = reconcileIncidents([r], open);
+    expect(plan.toClose, 'a config check cannot certify that errors reach a human').toEqual([]);
+  });
+
+  it('the check says why it is not the authority', () => {
+    expect(check(0).detail).toMatch(/presence|not proof|does not prove/i);
+  });
+
+  it('COMPLEMENT: an ordinary check still closes its own incident', () => {
+    // The `canClose` flag must be narrow, not a general weakening of recovery.
+    const ok = { id: 'outbox-dead-letters', title: 't', ok: true, detail: 'd' };
+    const open = [{ number: 9, body: incidentMarker('outbox-dead-letters'), title: 'x' }];
+    expect(reconcileIncidents([ok], open).toClose.map((c) => c.issue.number)).toEqual([9]);
+  });
+
+  it('a check that cannot close is still not able to open twice', () => {
+    const r = check(2);
+    const open = [
+      { number: 44, body: incidentMarker('production-observability-unconfigured'), title: 'x' },
+    ];
+    const plan = reconcileIncidents([r], open);
+    expect(plan.toOpen).toEqual([]);
+    expect(plan.toComment.map((c) => c.issue.number)).toEqual([44]);
   });
 });

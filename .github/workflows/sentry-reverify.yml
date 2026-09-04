@@ -1,0 +1,96 @@
+name: Refresh the soak's observability proof
+
+# §8 — old events staying readable is not proof that new ones are ingested.
+#
+# The soak's `observability` gate re-fetches the two events the receipt names.
+# They were created before the window began, and they stay readable through
+# Sentry's API no matter what happens afterwards: revoke the DSN at hour 3,
+# exhaust a quota, add an inbound filter or break the transport, and that gate
+# stays green while nothing new can arrive.
+#
+# So this runs the FULL verifier — deployed server probe, real Chromium browser
+# probe, both events read back, both stacks resolved, public source maps
+# affirmatively absent — every six hours while a soak is open, and hands the
+# controller a fresh receipt. The soak's `observability-continuing` gate fails
+# if the most recent fresh proof is older than that.
+#
+# Bounded on purpose: four probe pairs a day. Sentry quotas are finite, and a
+# soak that exhausts one has broken the thing it was measuring.
+#
+# Does nothing when no soak is open, so it is free the rest of the time.
+
+on:
+  schedule:
+    # Offset from the soak's own :20/:50 ticks so a refresh lands between them.
+    - cron: '35 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: production-soak
+  cancel-in-progress: false
+
+jobs:
+  reverify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is a soak open?
+        id: soak
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          open=$(gh issue list --label soak --state open --json number --jq 'length')
+          echo "open=$open" >> "$GITHUB_OUTPUT"
+          [ "$open" = "0" ] && echo "No soak is open; nothing to refresh." || true
+
+      - uses: actions/setup-node@v4
+        if: steps.soak.outputs.open != '0'
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.soak.outputs.open != '0'
+        run: npm ci
+
+      - name: Install Chromium for the browser probe
+        if: steps.soak.outputs.open != '0'
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify Sentry against the release under soak
+        if: steps.soak.outputs.open != '0'
+        env:
+          APP_URL: https://bookpitch.ge
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_ENVIRONMENT: production
+          SENTRY_RECEIPT_OUT: ${{ runner.temp }}/sentry-receipt.json
+        run: node scripts/verify-sentry.mjs
+
+      - name: Hand the fresh receipt to the soak
+        if: steps.soak.outputs.open != '0'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          MONITOR_PRODUCTION_URL: https://bookpitch.ge
+          SOAK_REVERIFY: 'true'
+          SOAK_SENTRY_RECEIPT_FILE: ${{ runner.temp }}/sentry-receipt.json
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: node scripts/soak-controller.mjs
+
+      - name: Remove the receipt from the runner
+        if: always()
+        run: rm -f "${{ runner.temp }}/sentry-receipt.json"

@@ -69,7 +69,6 @@ gh secret list                    # GitHub Actions secret names + last update
 | `NEXT_PUBLIC_SENTRY_DSN` | Vercel | every uncaught browser exception is discarded |
 | `SENTRY_AUTH_TOKEN` | Vercel **and** GitHub | source maps are not uploaded at build time, so every production stack trace is unreadable minified frames; and events cannot be read back, so receipt cannot be proven |
 | `SENTRY_ORG`, `SENTRY_PROJECT` | Vercel **and** GitHub | as above — the upload and the API read both need to know which project |
-| `SENTRY_PROBE_ENABLED` | Vercel, temporarily | the verification probes 404. Set to `"true"` only for a verification window, then unset — it is a switch, not a setting |
 | `DATABASE_URL_SUPERUSER_MIGRATE` | GitHub | migrations and **backups** fail |
 | `BACKUP_AGE_PRIVATE_KEY` | GitHub | backups still run; nothing can be restored |
 | `APP_URL` | GitHub | cron workflow has no target |
@@ -139,11 +138,23 @@ Both probes carry the same freshly minted nonce and throw a real `Error`, so
 the events can be proven to belong to this run and both have a stack to
 symbolicate.
 
-The probe surface is off by default. It requires `SENTRY_PROBE_ENABLED` to be
-exactly `"true"` and 404s otherwise; the browser page additionally requires a
-five-minute HMAC from `POST /api/health/sentry-probe/token`, so `CRON_SECRET`
-never reaches client JavaScript or a URL. **Turn `SENTRY_PROBE_ENABLED` off
-again once verification is done** — it is a verification switch, not a setting.
+The probe surface has **no enable flag**, deliberately. One existed and its
+lifecycle made correct verification impossible: the flag lives in Vercel,
+changing it requires a redeploy, a redeploy produces a new deployment id, and
+the soak treats a new deployment id as superseded even for the same SHA — so the
+sequence ended either with a debug switch left on in production or with a soak
+pinned to a deployment that no longer served traffic.
+
+What protects the surface is what always was:
+
+- the two API routes take a bearer `CRON_SECRET`, the same credential every
+  `/api/cron/*` route uses, and those are permanently reachable;
+- the browser page takes a **single-use challenge** — a database row minted by
+  the token endpoint and redeemed by an atomic
+  `UPDATE … WHERE consumed_at IS NULL`, so exactly one caller wins. The id
+  travels in an HttpOnly `__Host-` cookie, so nothing reaches the URL, browser
+  history, a `Referer` header or an access log, and reloading the page 404s;
+- the minting endpoint is rate limited.
 
 Source maps: `next.config.ts` is wrapped in `withSentryConfig` and uploads maps
 when `SENTRY_AUTH_TOKEN` is present, with `deleteSourcemapsAfterUpload` so they
@@ -531,11 +542,40 @@ answers:
 | fresh | stale | the schedule arrives and the endpoint does nothing — **the case nothing could previously see** |
 | stale | stale | the job is not running at all |
 
-And `cron-manual-verification` is an **INFO** line, excluded from the pass/fail
-counts. A `workflow_dispatch` proves the endpoint answers when called; it
-proves nothing about schedule delivery. Counting the two together is what let
-five manual dispatches displace six failed scheduled runs on 2026-09-01 and
-close incident #38 as "recovered".
+### Two cron thresholds, and why they are not one
+
+| check | trips at | opens an incident? | means |
+| --- | --- | --- | --- |
+| `cron-delivery-lag` | 90 minutes | **no** — INFO only | reminders are late for real customers |
+| `cron-staleness` | 6 hours | yes | the scheduler has stopped, or the endpoint is broken |
+
+They were one check at 90 minutes, on the premise that "reminders run every 15
+minutes, so a 90-minute gap means something broke". Measured over 191 scheduled
+runs across 12.5 days on this account: p50 0.44h, p90 2.08h, p95 2.44h, p99
+3.02h, and **13.7% of gaps exceed 1.5h**. Exactly one gap exceeded 6h, and it
+was the seven-day Actions billing suspension.
+
+So the premise is false here. As a gate it opened and closed an incident on
+roughly one interval in seven — and the only available response was to close it
+again, which teaches the reader to close the next one unseen. The 90-minute
+observation is not deleted: reminders being late is real customer impact and is
+reported on every run. What changed is which one opens an incident.
+
+### Neither manual dispatches nor re-runs are schedule delivery
+
+`cron-manual-verification` is an **INFO** line, excluded from the pass/fail
+counts. A `workflow_dispatch` proves the endpoint answers when called; it proves
+nothing about schedule delivery. Counting the two together is what let five
+manual dispatches displace six failed scheduled runs on 2026-09-01 and close
+incident #38 as "recovered".
+
+The same move is available through a different button, and is also refused: a
+run KEEPS its `schedule` event when someone presses **Re-run failed jobs**.
+GitHub increments `run_attempt`, replaces the conclusion and moves `updated_at`,
+and the API returns the latest attempt. Natural evidence therefore requires
+`run_attempt === 1`, and ordering uses the immutable `created_at`
+(`scripts/run-evidence.mjs`). A genuinely failed first attempt stays visible —
+hiding failures would be the same erasure by another route.
 
 ---
 
@@ -553,7 +593,8 @@ Checks, each of which is its own incident class:
 | `unexpected-redirect` | the canonical health URL redirects |
 | `tls` | certificate invalid or expiring within 14 days |
 | `deployment-reachable` | the current Production deployment does not answer |
-| `cron-staleness` | no successful cron run in 90 minutes |
+| `cron-staleness` | no successful **first-attempt scheduled** cron run in **6 hours** |
+| `cron-delivery-lag` | **INFO only.** No such run in 90 minutes — reminders are late |
 | `cron-failures` | 3+ of the last 10 cron runs failed |
 | `backup-freshness` | no successful backup in 26 hours |
 | `restore-drill-stale` | no successful drill in 40 days |

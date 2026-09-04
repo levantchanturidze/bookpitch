@@ -40,17 +40,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const orgs = await withoutRls((tx) =>
-    tx.organization.findMany({
+  // The TOTAL is counted, not just the page. Without it the route cannot say
+  // how many organizations it failed to reach, and a count it cannot state is a
+  // count it cannot put into the failure arithmetic.
+  const [orgs, orgsTotal] = await withoutRls(async (tx) => [
+    await tx.organization.findMany({
       select: { id: true },
       orderBy: { createdAt: 'asc' },
       take: MAX_ORGS_PER_RUN + 1,
     }),
-  );
+    await tx.organization.count(),
+  ]);
   const truncated = orgs.length > MAX_ORGS_PER_RUN;
   const batch = truncated ? orgs.slice(0, MAX_ORGS_PER_RUN) : orgs;
+  const orgsOmitted = Math.max(0, orgsTotal - batch.length);
   if (truncated) {
-    log.error('cron.reminders.org_limit_hit', { limit: MAX_ORGS_PER_RUN });
+    log.error('cron.reminders.org_limit_hit', { limit: MAX_ORGS_PER_RUN, orgsOmitted });
   }
 
   const concurrency = cronOrgConcurrency();
@@ -89,12 +94,28 @@ export async function POST(req: NextRequest) {
   const settledChannels = sent + duplicates + missingContact;
   const failedChannels = providerFailed + rateLimited;
 
+  // Organizations the cap dropped are unreached work, and they must be in the
+  // arithmetic — not merely flagged in the response body.
+  //
+  // Before this they were flagged and nothing else: the first MAX_ORGS_PER_RUN
+  // organizations succeeded, everything after was never processed, the
+  // heartbeat recorded `success`, the route answered 200, the workflow step
+  // passed, `cron-job-reminders` was green and the soak's `cron-outcomes` gate
+  // was satisfied. Those customers simply did not get reminded, and every
+  // signal said the job was healthy. A `log.error` is not a signal — it is the
+  // same category of evidence as the Turnstile failure that broke signup for a
+  // week.
+  //
+  // Each omitted organization counts as one unreached unit. That is a floor,
+  // not an estimate: an organization has at least one appointment channel's
+  // worth of work or it would not be in the list. Understating it is safe;
+  // making it zero was not.
   const outcome = await recordCronHeartbeat('reminders', {
     // Organizations that threw outright are counted as unreached channels, so a
     // thrown org cannot vanish from the arithmetic.
-    expected: channelsExpected + failures.length,
+    expected: channelsExpected + failures.length + orgsOmitted,
     processed: settledChannels,
-    failed: failedChannels + failures.length + unprocessed,
+    failed: failedChannels + failures.length + unprocessed + orgsOmitted,
   });
 
   // Anything short of success is a non-2xx, so the workflow step fails too.
@@ -117,7 +138,12 @@ export async function POST(req: NextRequest) {
         rateLimited,
         providerFailed,
         unprocessed,
+        // Work that was never attempted because the per-run cap cut the list
+        // short. Named in `channels` because that is what the monitor reads.
+        unreachedOrganizations: orgsOmitted,
       },
+      orgsTotal,
+      orgsOmitted,
       ...(truncated ? { truncated: true, limit: MAX_ORGS_PER_RUN } : {}),
     },
     { status },
