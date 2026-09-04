@@ -135,10 +135,24 @@ try {
 let probeAuth = null;
 let probeCookie = null;
 try {
+  // `redirect: 'manual'` so an auth redirect is visible rather than followed.
+  // Measured on production 2026-09-04: the proxy 307'd every probe route to
+  // /signin, and following that quietly produced the sign-in page's HTML — so
+  // the run failed with "returned an unusable response", which is true and
+  // useless. Naming the redirect points at the actual problem.
   const res = await http(`${APP_URL}/api/health/sentry-probe/token`, {
     method: 'POST',
     headers: { authorization: `Bearer ${CRON_SECRET}` },
+    redirect: 'manual',
   });
+  if (res.status >= 300 && res.status < 400) {
+    bail(
+      `The probe token endpoint redirected to ${res.headers.get('location') ?? 'somewhere'}.\n` +
+        'It is behind the authentication proxy, so no probe can ever reach it. Add the\n' +
+        'path to isPublicPath() in auth.config.ts — the handler authenticates itself\n' +
+        'with a bearer secret and 404s unless SENTRY_PROBE_ENABLED is "true".',
+    );
+  }
   if (res.status === 404) {
     bail(
       'The probe is disabled on this deployment (SENTRY_PROBE_ENABLED is not "true").\n' +
@@ -243,7 +257,25 @@ let browserEventId = null;
       timeout: 30_000,
     });
 
-    if (!res || res.status() === 404) {
+    if (res && res.status() >= 300 && res.status() < 400) {
+      // Playwright follows redirects, so this is belt and braces; the final URL
+      // check below is what actually catches it.
+      record(
+        1,
+        'CONFIGURED (browser)',
+        false,
+        'the probe page redirected — it is behind the proxy',
+      );
+    } else if (!page.url().startsWith(`${APP_URL}/probe/sentry`)) {
+      record(
+        1,
+        'CONFIGURED (browser)',
+        false,
+        `the probe page redirected to ${page.url().replace(APP_URL, '')} — it is behind the ` +
+          'authentication proxy, so no browser can reach it. Add /probe/sentry to ' +
+          'isPublicPath() in auth.config.ts.',
+      );
+    } else if (!res || res.status() === 404) {
       record(
         1,
         'CONFIGURED (browser)',
