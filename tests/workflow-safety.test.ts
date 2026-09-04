@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { load } from 'js-yaml';
+import { SOAK_DEFAULTS } from '../scripts/soak-controller.mjs';
 
 // -----------------------------------------------------------------------------
 // Phase 13 — structural safety tests for the operational workflows.
@@ -1172,16 +1173,27 @@ describe('the observability proof is refreshed on a bounded cadence', () => {
     expect(on.schedule).toBeDefined();
   });
 
-  it('is bounded — four probe pairs a day, not one every tick', () => {
+  it('is bounded, and its cadence is NOT the same number as the expiry', () => {
     // Sentry quotas are finite, and a soak that exhausts one has broken the
-    // thing it was measuring.
+    // thing it was measuring. But the cadence and the expiry were both six
+    // hours, which left zero margin for scheduling delay, npm install, Chromium
+    // install or Sentry indexing — so the gate failed for reasons that had
+    // nothing to do with production, and each failure restarted the window.
     const parsed = doc as unknown as Record<string, { schedule: Array<{ cron: string }> }>;
     const on = parsed[true as unknown as string] ?? parsed.on;
     const crons = on.schedule.map((x) => x.cron);
+    const everyN = crons
+      .map((c) => /\*\/(\d+)/.exec(c)?.[1])
+      .filter(Boolean)
+      .map(Number);
+    expect(everyN, `cadence was ${crons.join(', ')}`).not.toEqual([]);
+    const cadence = everyN[0];
+    expect(cadence).toBe(SOAK_DEFAULTS.observabilityRefreshCadenceHours);
+    expect(cadence, 'bounded volume').toBeGreaterThanOrEqual(3);
     expect(
-      crons.some((c) => /\*\/6/.test(c)),
-      `cadence was ${crons.join(', ')}`,
-    ).toBe(true);
+      SOAK_DEFAULTS.maxObservabilityProofAgeHours,
+      'the expiry must leave room for a dropped schedule plus measured lag',
+    ).toBeGreaterThan(cadence * 2);
   });
 
   it('does nothing when no soak is open', () => {

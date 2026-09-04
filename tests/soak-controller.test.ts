@@ -14,6 +14,8 @@ import {
   renderCheckpoint,
   parseCheckpoint,
   verifyCheckpointChain,
+  verifyReverifyProvenance,
+  reverifyProvenance,
   evaluateSoak,
   parseState,
   renderState,
@@ -2204,10 +2206,12 @@ describe('the soak requires ONGOING proof of ingestion', () => {
   });
 
   it('the cadence is bounded, so this cannot become event spam', () => {
-    // Four probe pairs a day at six hours. Sentry quotas are finite and a soak
-    // that exhausts one has broken the thing it was measuring.
-    expect(SOAK_DEFAULTS.maxObservabilityProofAgeHours).toBeGreaterThanOrEqual(4);
-    expect(SOAK_DEFAULTS.maxObservabilityProofAgeHours).toBeLessThanOrEqual(8);
+    // This used to assert bounds on the EXPIRY, conflating it with the cadence
+    // — which was the defect: both were six hours and there was no margin for
+    // scheduling delay. The volume is set by the cadence; the expiry is how
+    // much delay that volume can absorb.
+    expect(SOAK_DEFAULTS.observabilityRefreshCadenceHours).toBeGreaterThanOrEqual(3);
+    expect(SOAK_DEFAULTS.observabilityRefreshCadenceHours).toBeLessThanOrEqual(8);
   });
 });
 
@@ -2529,5 +2533,210 @@ describe('an earlier valid body of the same issue cannot be replayed', () => {
     const rendered = renderCheckpoint({ tickSeq: 7, stateDigest: 'f'.repeat(64) });
     expect(parseCheckpoint(rendered)).toEqual({ tickSeq: 7, stateDigest: 'f'.repeat(64) });
     expect(parseCheckpoint('not a checkpoint')).toBeNull();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §2.4 — the continuing-observability proof must be UNATTENDED.
+//
+// `sentry-reverify.yml` allowed `workflow_dispatch`, and neither the workflow
+// nor the controller looked at how it had been triggered. So the one gate that
+// exists to prove production is still ingesting events could be refreshed by
+// pressing a button — or by re-running a failed refresh until it passed. That
+// is the manual-evidence defect again, on the newest gate.
+//
+// Provenance is now bound into the signed state and independently confirmed
+// against GitHub, rather than trusted from the environment the workflow handed
+// us: a workflow can be edited, and `GITHUB_EVENT_NAME` is just a string.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('only a natural first-attempt run may refresh the Sentry proof', () => {
+  const env = (over: Record<string, string> = {}) => ({
+    GITHUB_EVENT_NAME: 'schedule',
+    GITHUB_RUN_ID: '900',
+    GITHUB_RUN_ATTEMPT: '1',
+    GITHUB_SHA: SHA,
+    ...over,
+  });
+  const apiRun = (over: Record<string, unknown> = {}) => ({
+    id: 900,
+    event: 'schedule',
+    run_attempt: 1,
+    created_at: '2026-09-02T00:30:00Z',
+    head_sha: SHA,
+    ...over,
+  });
+  const persisted = { verifiedAt: '2026-09-01T18:00:00.000Z' };
+  const receipt = { verifiedAt: '2026-09-02T00:31:00.000Z', releaseSha: SHA };
+
+  it('a scheduled first attempt is accepted', () => {
+    expect(verifyReverifyProvenance(env(), apiRun(), persisted, receipt)).toEqual({ ok: true });
+  });
+
+  it('THE DEFECT: a manual dispatch may not refresh the proof', () => {
+    const v = verifyReverifyProvenance(
+      env({ GITHUB_EVENT_NAME: 'workflow_dispatch' }),
+      apiRun({ event: 'workflow_dispatch' }),
+      persisted,
+      receipt,
+    );
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/workflow_dispatch|not scheduled/i);
+  });
+
+  it('THE DEFECT: a re-run may not refresh the proof', () => {
+    const v = verifyReverifyProvenance(
+      env({ GITHUB_RUN_ATTEMPT: '2' }),
+      apiRun({ run_attempt: 2 }),
+      persisted,
+      receipt,
+    );
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/attempt/i);
+  });
+
+  it('provenance is confirmed against GitHub, not taken from the environment', () => {
+    // The environment claims a scheduled first attempt; GitHub says otherwise.
+    // A workflow file can be edited; the API record cannot.
+    const v = verifyReverifyProvenance(
+      env(),
+      apiRun({ event: 'workflow_dispatch' }),
+      persisted,
+      receipt,
+    );
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/disagrees|GitHub/i);
+  });
+
+  it('an unreadable run record fails closed', () => {
+    expect(verifyReverifyProvenance(env(), null, persisted, receipt).ok).toBe(false);
+  });
+
+  it('THE DEFECT: an OLD receipt cannot be restamped as fresh', () => {
+    // Constructed to isolate this rule from the "before the run" rule: the
+    // receipt is verified AFTER the run started, so that check passes, but
+    // BEFORE the proof already held. Accepting it would let a stale receipt
+    // reset the freshness clock indefinitely.
+    const held = { verifiedAt: '2026-09-02T01:00:00.000Z' };
+    const stale = { verifiedAt: '2026-09-02T00:45:00.000Z', releaseSha: SHA };
+    const v = verifyReverifyProvenance(env(), apiRun(), held, stale);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/older|not newer/i);
+  });
+
+  it('a receipt for a different release is refused', () => {
+    const other = { verifiedAt: '2026-09-02T00:31:00.000Z', releaseSha: 'f'.repeat(40) };
+    const v = verifyReverifyProvenance(env(), apiRun(), persisted, other);
+    expect(v.ok).toBe(false);
+  });
+
+  it('the run head SHA must match the release under soak', () => {
+    const v = verifyReverifyProvenance(
+      env(),
+      apiRun({ head_sha: 'e'.repeat(40) }),
+      persisted,
+      receipt,
+    );
+    expect(v.ok).toBe(false);
+  });
+
+  it('the verification must have happened during that run, not before it', () => {
+    // A receipt produced before the refreshing run even started is one the run
+    // did not produce.
+    const early = { verifiedAt: '2026-09-01T23:00:00.000Z', releaseSha: SHA };
+    const v = verifyReverifyProvenance(env(), apiRun(), { verifiedAt: null }, early);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/before the run/i);
+  });
+
+  it('the bound provenance names everything a later reader needs', () => {
+    const p = reverifyProvenance(env(), apiRun(), receipt);
+    expect(p).toEqual({
+      event: 'schedule',
+      runId: 900,
+      runAttempt: 1,
+      runCreatedAt: '2026-09-02T00:30:00Z',
+      headSha: SHA,
+      verifiedAt: '2026-09-02T00:31:00.000Z',
+      releaseSha: SHA,
+    });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §2.5 — the refresh cadence and the proof expiry must not be the same number.
+//
+// They were both six hours, which left exactly zero margin for GitHub's
+// scheduling delay, npm install, Chromium install, Sentry indexing and queue
+// time. Any one of those made the gate fail for reasons that had nothing to do
+// with production — and because it is a HEALTH gate, each of those failures
+// restarted the window.
+//
+// Measured lag on this account: p95 4.13h, p99 5.03h. Cadence is now 4h and
+// expiry 14h.
+// -----------------------------------------------------------------------------
+describe('the proof cadence leaves room for real scheduling delay', () => {
+  const withProofAge = (hoursAgo: number, now: Date) =>
+    healthyEvidence({
+      sentry: {
+        configured: true,
+        ok: true,
+        serverEventId: 's',
+        browserEventId: 'b',
+        problems: [],
+        verifiedAt: new Date(now.getTime() - hoursAgo * 3_600_000).toISOString(),
+      },
+    });
+  const ok = (hoursAgo: number) =>
+    gate(
+      evaluateSoak({ state: state(), evidence: withProofAge(hoursAgo, NOW), now: NOW }),
+      'observability-continuing',
+    ).ok;
+
+  it('cadence and expiry are different numbers, and expiry is the larger', () => {
+    expect(SOAK_DEFAULTS.observabilityRefreshCadenceHours).toBe(4);
+    expect(SOAK_DEFAULTS.maxObservabilityProofAgeHours).toBe(14);
+    expect(SOAK_DEFAULTS.maxObservabilityProofAgeHours).toBeGreaterThan(
+      SOAK_DEFAULTS.observabilityRefreshCadenceHours * 2,
+    );
+  });
+
+  it('normal runtime delay: cadence plus p99 lag plus ten minutes still passes', () => {
+    expect(ok(4 + 5.03 + 10 / 60)).toBe(true);
+  });
+
+  it('ONE dropped schedule at p95 lag still passes', () => {
+    expect(ok(2 * 4 + 4.13 + 10 / 60)).toBe(true);
+  });
+
+  it('a genuine prolonged ingestion outage does NOT pass', () => {
+    // Two consecutive dropped schedules, or an outage. Deliberately over the
+    // line: a window nobody was proving ingestion for is not one to certify.
+    expect(ok(2 * 4 + 4.13 + 10 / 60 + 2)).toBe(false);
+    expect(ok(20)).toBe(false);
+  });
+
+  it('and it stops the clock, because it is a health gate', () => {
+    const r = evaluateSoak({ state: state(), evidence: withProofAge(20, NOW), now: NOW });
+    expect(r.status).toBe('awaiting-recovery');
+  });
+
+  it('recovery: a new proof after the outage clears it', () => {
+    expect(ok(0.5)).toBe(true);
+  });
+
+  it('a healthy 24h window is not restarted by the cadence itself', () => {
+    // The scenario that matters most: with the proof refreshed on cadence, a
+    // clean window must reach success rather than being nibbled to death by its
+    // own freshness requirement.
+    const r = evaluateSoak({ state: state(), evidence: withProofAge(3, NOW), now: NOW });
+    expect(r.status).toBe('success');
+  });
+
+  it('the daily probe volume stays bounded', () => {
+    const pairsPerDay = 24 / SOAK_DEFAULTS.observabilityRefreshCadenceHours;
+    expect(pairsPerDay).toBe(6);
+    expect(pairsPerDay * 2, 'synthetic events per day').toBe(12);
   });
 });

@@ -21,8 +21,25 @@ name: Refresh the soak's observability proof
 
 on:
   schedule:
-    # Offset from the soak's own :20/:50 ticks so a refresh lands between them.
-    - cron: '35 */6 * * *'
+    # Every four hours, offset from the soak's own :20/:50 ticks so a refresh
+    # lands between them.
+    #
+    # The cadence and the EXPIRY are deliberately different numbers. They were
+    # both six hours, which left zero margin for GitHub's scheduling delay, npm
+    # install, Chromium install, Sentry indexing or queue time — so the gate
+    # failed for reasons that had nothing to do with production. Measured lag on
+    # this account is p95 4.13h / p99 5.03h; the expiry is 14h
+    # (SOAK_DEFAULTS.maxObservabilityProofAgeHours), which survives one dropped
+    # schedule at p95 lag with about 1.7h to spare.
+    #
+    # 6 probe pairs a day, 12 synthetic events.
+    - cron: '35 */4 * * *'
+  # workflow_dispatch is available for DIAGNOSIS only. The controller refuses to
+  # advance the observability proof unless GitHub's own record of the run says
+  # `event: schedule, run_attempt: 1` — so a dispatch runs the verifier, prints
+  # what it found, and changes no soak state. Re-runs are refused for the same
+  # reason: the gate exists to prove UNATTENDED ingestion, and a button press is
+  # the opposite of unattended.
   workflow_dispatch:
 
 permissions:
@@ -86,9 +103,18 @@ jobs:
           MONITOR_PRODUCTION_URL: https://bookpitch.ge
           SOAK_REVERIFY: 'true'
           SOAK_SENTRY_RECEIPT_FILE: ${{ runner.temp }}/sentry-receipt.json
+          # Provenance the controller re-confirms against the GitHub API. These
+          # are the workflow's claims; the API record is the authority.
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_SHA: ${{ github.sha }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        # A dispatch or a re-run reaches this step and is refused by the
+        # controller, on purpose: the run is then visibly red rather than
+        # silently having done nothing.
         run: node scripts/soak-controller.mjs
 
       - name: Remove the receipt from the runner

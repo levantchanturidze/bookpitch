@@ -101,13 +101,33 @@ export const SOAK_DEFAULTS = {
    * quota, add an inbound filter or break the transport, and those two events
    * stay perfectly readable for the whole window while nothing new can arrive.
    *
-   * Six hours is a deliberate compromise. Tighter means more synthetic events
-   * against a finite Sentry quota — a soak that exhausts the quota has broken
-   * the thing it was measuring. Looser leaves a gap long enough to hide an
-   * outage in. Four proofs a day, and one of them necessarily inside the last
-   * six hours of the window.
+   * CALIBRATED, and separately from the refresh cadence — which is the defect
+   * this replaces. Expiry and cadence were both six hours, leaving exactly zero
+   * margin for GitHub's scheduling delay, npm install, Chromium install, Sentry
+   * indexing, or queue time. Any one of those made the gate fail for reasons
+   * that had nothing to do with production.
+   *
+   * Measured scheduled-delivery lag on this account: p95 4.13h, p99 5.03h.
+   * Verifier runtime is roughly ten minutes. With a 4-hour cadence:
+   *
+   *   normal, p99 lag        4 + 5.03 + 0.17 =  9.20h
+   *   one dropped schedule   8 + 4.13 + 0.17 = 12.30h
+   *
+   * 14h is the smallest expiry that survives a dropped schedule at p95 lag,
+   * with ~1.7h to spare and ~4.8h in the normal worst case. Two consecutive
+   * dropped schedules exceed it — deliberately: that is a scheduler outage, and
+   * a window nobody was proving ingestion for is not one to certify.
+   *
+   * Cost: 6 probe pairs a day, 12 synthetic events. A soak that exhausts the
+   * Sentry quota has broken the thing it was measuring.
    */
-  maxObservabilityProofAgeHours: 6,
+  maxObservabilityProofAgeHours: 14,
+  /**
+   * How often `sentry-reverify.yml` aims to refresh the proof. Documented here
+   * so the two numbers are visibly related and cannot drift into equality
+   * again; the schedule itself lives in the workflow.
+   */
+  observabilityRefreshCadenceHours: 4,
 };
 
 /**
@@ -470,6 +490,125 @@ export function verifyCheckpointChain(comments, state) {
     return {
       ok: false,
       reason: `the state at tick ${tickSeq} does not match its own checkpoint`,
+    };
+  }
+  return { ok: true };
+}
+
+// -----------------------------------------------------------------------------
+// Provenance for the continuing-observability proof.
+//
+// `sentry-reverify.yml` allowed `workflow_dispatch`, and neither the workflow
+// nor the controller looked at how it had been triggered. So the one gate that
+// proves production is STILL ingesting events could be refreshed by pressing a
+// button, or by re-running a failed refresh until it passed. That is the
+// manual-evidence defect the whole project keeps finding, on its newest gate.
+//
+// Two rules, and the second is the one that matters:
+//
+//   1. only a scheduled, first-attempt run may refresh the proof;
+//   2. that is confirmed against GitHub's own run record, not read from the
+//      environment. A workflow file can be edited and `GITHUB_EVENT_NAME` is
+//      just a string; the API record is not ours to write.
+//
+// The provenance is then bound into the persisted state, which the state digest
+// covers, so a later reader can see exactly which run produced the proof.
+// -----------------------------------------------------------------------------
+
+/** The provenance recorded alongside a refreshed receipt. */
+export function reverifyProvenance(env, apiRun, receipt) {
+  return {
+    event: apiRun?.event ?? null,
+    runId: apiRun?.id ?? null,
+    runAttempt: apiRun?.run_attempt ?? null,
+    runCreatedAt: apiRun?.created_at ?? null,
+    headSha: apiRun?.head_sha ?? null,
+    verifiedAt: receipt?.verifiedAt ?? null,
+    releaseSha: receipt?.releaseSha ?? null,
+  };
+}
+
+/**
+ * May this run refresh the soak's observability proof?
+ *
+ * @param {Record<string,string|undefined>} env  the workflow's own claims
+ * @param {Record<string,any>|null} apiRun       GitHub's record of the same run
+ * @param {{verifiedAt?: string|null}|null} persisted  the proof already held
+ * @param {{verifiedAt?: string|null, releaseSha?: string|null}} receipt
+ */
+export function verifyReverifyProvenance(env, apiRun, persisted, receipt) {
+  if (!apiRun) {
+    return {
+      ok: false,
+      reason: "GitHub's record of this run could not be read, so its provenance is unconfirmed",
+    };
+  }
+
+  // The environment's claims, checked first so the message names what the
+  // caller thought it was doing.
+  if (env?.GITHUB_EVENT_NAME !== 'schedule') {
+    return {
+      ok: false,
+      reason:
+        `this run was triggered by ${env?.GITHUB_EVENT_NAME ?? 'an unknown event'}, not the ` +
+        'schedule. A refresh started by hand is diagnostic; it is not evidence of unattended ' +
+        'operation',
+    };
+  }
+  if (env?.GITHUB_RUN_ATTEMPT !== '1') {
+    return {
+      ok: false,
+      reason: `this is run attempt ${env?.GITHUB_RUN_ATTEMPT ?? '(unknown)'}; a re-run is not unattended`,
+    };
+  }
+
+  // …and now the same facts from GitHub, which is the half that cannot be
+  // forged by editing a workflow file.
+  if (String(apiRun.id) !== String(env.GITHUB_RUN_ID)) {
+    return { ok: false, reason: 'the run record fetched is not the run claiming to refresh' };
+  }
+  if (apiRun.event !== 'schedule' || (apiRun.run_attempt ?? 0) !== 1) {
+    return {
+      ok: false,
+      reason:
+        `GitHub disagrees with the environment: it records event ${apiRun.event}, attempt ` +
+        `${apiRun.run_attempt}`,
+    };
+  }
+  if (!apiRun.head_sha || apiRun.head_sha !== receipt?.releaseSha) {
+    return {
+      ok: false,
+      reason:
+        `the refreshing run is on ${String(apiRun.head_sha).slice(0, 12)} but the receipt is ` +
+        `for ${String(receipt?.releaseSha).slice(0, 12)}`,
+    };
+  }
+
+  const verifiedAt = receipt?.verifiedAt ? Date.parse(receipt.verifiedAt) : NaN;
+  if (!Number.isFinite(verifiedAt)) {
+    return { ok: false, reason: 'the receipt carries no usable verification time' };
+  }
+  // The receipt must have been produced BY this run, so its verification cannot
+  // predate the run's own start.
+  const runStarted = apiRun.created_at ? Date.parse(apiRun.created_at) : NaN;
+  if (Number.isFinite(runStarted) && verifiedAt < runStarted) {
+    return {
+      ok: false,
+      reason:
+        `the receipt was verified at ${receipt.verifiedAt}, before the run started at ` +
+        `${apiRun.created_at} — this run did not produce it`,
+    };
+  }
+  // And it must be NEWER than the proof already held, or an old receipt could
+  // be restamped and reset the freshness clock indefinitely.
+  const previous = persisted?.verifiedAt ? Date.parse(persisted.verifiedAt) : NaN;
+  if (Number.isFinite(previous) && verifiedAt <= previous) {
+    return {
+      ok: false,
+      reason:
+        `the receipt is older than, or the same age as, the proof already held ` +
+        `(${receipt.verifiedAt} vs ${persisted.verifiedAt}) — a stale receipt cannot be ` +
+        'restamped as fresh',
     };
   }
   return { ok: true };
@@ -1829,9 +1968,30 @@ async function main() {
       );
       process.exit(1);
     }
+
+    // Provenance, confirmed against GitHub rather than read from the
+    // environment. Only a scheduled first-attempt run may advance the
+    // continuing-observability proof; a dispatch or a re-run is diagnostic and
+    // must not touch authoritative state.
+    const apiRun = process.env.GITHUB_RUN_ID
+      ? await gh(`/repos/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`, token).catch(
+          () => null,
+        )
+      : null;
+    const provenance = verifyReverifyProvenance(process.env, apiRun, state.sentry ?? null, seeded);
+    if (!provenance.ok) {
+      console.error(`soak: refusing to refresh the observability proof — ${provenance.reason}`);
+      console.error(
+        'The verification above may still be useful as a diagnostic; it is simply not ' +
+          'evidence of unattended operation, and the soak state is unchanged.',
+      );
+      process.exit(1);
+    }
     const refreshed = {
       ...state,
-      sentry: seeded,
+      // The provenance is inside the state digest, so a later reader can see
+      // exactly which scheduled run produced this proof.
+      sentry: { ...seeded, provenance: reverifyProvenance(process.env, apiRun, seeded) },
       tickSeq: (typeof state.tickSeq === 'number' ? state.tickSeq : 0) + 1,
       lastTickAt: new Date().toISOString(),
     };
