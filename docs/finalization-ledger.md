@@ -33,7 +33,7 @@ is.
 
 ---
 
-## Baseline — revalidated 2026-09-04T13:36Z (superseded by the evidence below)
+## Baseline — revalidated 2026-09-04T18:10Z (superseded by the evidence below)
 
 Observed directly, not carried over from any earlier summary.
 
@@ -42,7 +42,7 @@ Observed directly, not carried over from any earlier summary.
 | `origin/main` | `6452f3da7a89f996417240ffff61d7522e680f7a` | `git rev-parse origin/main` |
 | Local tree | clean, `main`, 0 ahead / 0 behind | `git status`, `git rev-list --left-right` |
 | Open PRs | none | `gh pr list --state open` |
-| Open incidents | **#44** only (Sentry). #60 (cron staleness) closed itself on recovery | `gh issue list --label ops-incident` |
+| Open incidents | **#67** (Sentry). #44 is the CANONICAL issue for that marker and is wrongly closed — a PR body containing `closes #44` closed it while the check was still failing, and the next monitor run raised #67. The corrected reconciler reopens #44 and closes #67 as a duplicate on its next run | `gh issue list --label ops-incident --state all` |
 | Production deployment | id **6252458484**, sha `6452f3d`, state `success` | GitHub Deployments API |
 | Aliases | `bookpitch.ge` 200, `www.bookpitch.ge` 308→200, both `x-bookpitch-release: 6452f3d…` | `curl -sI` |
 | Health body | exactly `{"ok":true}` | `curl` |
@@ -73,7 +73,7 @@ Observed directly, not carried over from any earlier summary.
 | A7 | Automatic Sentry→soak handoff | `MERGED` | `release-verify-and-soak.yml` does all six steps in one job; `soak.yml` can no longer start a soak at all — `start`, `release_sha`, `deployment_id` and `sentry_receipt` inputs removed |
 | A8 | Reminder clock + eligibility contract, shared | `MERGED` | `lib/messaging/reminder-eligibility.ts`; selection window moved into SQL (was `new Date()` compared against a DB `starts_at`); clock-skew tests both directions with `toFake: ['Date']` |
 | A9 | Cron threshold contradiction (1.5h vs 6h) | `MERGED` | measured 191 scheduled runs / 12.5 days: p50 0.44h, p90 2.08h, p99 3.02h, 13.7% of gaps > 1.5h, one > 6h (the billing outage). Split into `cron-delivery-lag` (90m, informational) and `cron-staleness` (6h, gating) |
-| A10 | Documentation reconciliation | `MERGED` | operations.md env table repaired (3 GitHub rows were orphaned below the Sentry prose and rendered as text) + the 3 Sentry build/API vars and `SENTRY_PROBE_ENABLED` added; `pg_restore --list` no longer described as "restorable"; superseded banners on the phase-17 Sentry instructions; release-state records this round and stops claiming "everything automatable is done" unqualified |
+| A10 | Documentation reconciliation | `MERGED` | operations.md env table repaired (3 GitHub rows were orphaned below the Sentry prose and rendered as text) + the 3 Sentry build/API vars added (the probe-enable flag documented then was removed on 2026-09-04, see A19); `pg_restore --list` no longer described as "restorable"; superseded banners on the phase-17 Sentry instructions; release-state records this round and stops claiming "everything automatable is done" unqualified |
 
 | A13 | Receipt survives its own lifecycle | `MERGED` | `receiptDigest()` binds `notBefore` AND `verifiedAt`; seeding dropped one and overwrote the other while keeping the digest, so the first revalidation hashed a different document. Both preserved verbatim; the bound is read through `soakFreshnessBound()` |
 | A14 | Informational results excluded from the process verdict | `MERGED` | one `summariseResults()` for the summary, step summary and exit code; a complement test applies the OLD predicate to prove the new tests discriminate |
@@ -81,7 +81,16 @@ Observed directly, not carried over from any earlier summary.
 | A16 | All verdict-relevant soak state signed | `MERGED` | `soakStateDigest` over 8 fields plus the receipt digest; replay anchored to the soak issue's creation time |
 | A17 | Truncated organizations counted as unreached work | `MERGED` | measured in the fixture DB: 192 organizations dropped, HTTP 200, healthy heartbeat |
 
-| A18 | A wrongly closed incident reopens rather than duplicating | `MERGED` | found in production: a PR body reading "the verifier closes #44 by evidence" was parsed by GitHub as a closing keyword and closed the incident while its check was still failing. `canClose: false` governs this monitor, not GitHub's automation. A still-failing check now reopens its own issue, keeping the history on one number |
+| A18 | A wrongly closed incident reopens rather than duplicating | `MERGED` | found in production: a PR body reading "the verifier closes #44 by evidence" was parsed by GitHub as a closing keyword and closed the incident while its check was still failing. `canClose: false` governs this monitor, not GitHub's automation. A still-failing check reopens its own issue. **Superseded by A25**: that first version chose the highest-numbered closed issue and only looked at closed issues when none was open, so against the live #44/#67 state it did nothing — it commented on #67 and left #44 closed |
+
+| A19 | Every semantic leaf signed, under a schema version | `MERGED` | canonical deep serialisation; unknown top-level fields refused; only `lastTickAt` excluded; exhaustive nested-mutation tests |
+| A20 | Same-issue replay detectable | `MERGED` | checkpoint comments as an external monotonic reference — rollback, deletion, forking and reordering all fail closed. Documented limitation: an actor with repo write can delete the whole chain, and the controller then refuses rather than trusting the body |
+| A21 | Re-runs resolve to attempt 1 rather than vanishing | `MERGED` | `resolveRun()` fetches `/attempts/1`; an unreadable one is kept and marked unresolved; ordering and pagination on immutable `created_at` |
+| A22 | The unattended proof cannot be refreshed by hand | `MERGED` | provenance confirmed against GitHub's run record, not the environment; restamping an old receipt refused |
+| A23 | Cadence separated from expiry, with measured margin | `MERGED` | 4h cadence / 14h expiry; survives one dropped schedule at p95 lag with ~1.7h spare; 6 probe pairs a day |
+| A24 | Ongoing delivery monitoring, soak or no soak | `MERGED` | `sentry-reverify.yml` verifies on schedule regardless; `scripts/sentry-incident.mjs` raises a deduplicated incident and only a complete pass closes it; unavailable / indeterminate / broken are distinct; all output redacted |
+| A25 | Canonical incident is the oldest issue | `MERGED` | duplicates closed after the canonical is reopened, so there is never a moment with no open incident for a failing condition |
+| A26 | Email DNS — suspected defect DISPROVED | `PRODUCTION VERIFIED` | re-verified by `dig` 2026-09-04: SPF, DKIM, bounce MX and DMARC (`p=none`) all present. They live at `send.send.bookpitch.ge` — a `send.` child of the sending domain — so a query aimed at `send.bookpitch.ge` finds nothing and wrongly concludes they are missing. That misreading is what Phase 13 recorded as "unverified" |
 
 ### B. Verification
 

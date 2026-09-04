@@ -1,7 +1,11 @@
 # Release state — the one current-state document
 
-**Snapshot: 2026-09-03T20:25Z, false-green elimination round deployed (`09ce5c5`).** This file is the single place that says
-what is true *now*. Every phase ledger is a historical record of what was true when it was
+**Snapshot: `docs/finalization-ledger.md` holds the current SHA and per-gate
+evidence; this file is the narrative that explains it.** Where a SHA or a run id
+appears below it names the moment it was recorded, not the present — the ledger
+is the place to look for what is current.
+
+This file says what is true *now* in the sense of explanation, not of numbers. Every phase ledger is a historical record of what was true when it was
 written; where a ledger and this file disagree about the present, this file
 wins and the ledger is wrong only in tense, not in fact.
 
@@ -22,6 +26,32 @@ stale the moment it is written. Those live in:
 > very file produces a newer commit and a newer deployment, so the SHA below is
 > the one that was verified, not necessarily the one serving traffic when you
 > read this. For anything that moves, follow the workflow links at the top.
+
+### Terminal remediation round — 2026-09-04
+
+The previous verdict, `ENGINEERING COMPLETE — BLOCKED ONLY ON MANUAL EXTERNAL
+ACTION`, was again not supported by the evidence. Nine more defects, several of
+them in the fixes from the round before.
+
+| Defect | Why it mattered |
+|---|---|
+| **"All verdict-relevant state is signed" was not true** | The digest named eight top-level fields plus `sentry.digest`, so it missed `sentry.lastFreshProofAt` — the one value the `observability-continuing` gate reads. Future-dating it kept the signature valid and produced a NEGATIVE age that passed `age <= limit`. Any manual list of "the important fields" is one nested value behind the code that reads them; the digest now covers a canonical deep serialisation under a schema version, with unknown fields refused |
+| **Signing never stopped replay** | Restoring an EARLIER valid body of the same issue carries a genuine signature, a window that postdates the issue, and a state from before a failure. A signed `tickSeq` cannot help — the attacker restores the body containing it. Checkpoint comments now provide an external monotonic reference: rollback, deletion, forking and reordering are all visible |
+| **Dropping a re-run ERASED the original failure** | Excluding `run_attempt > 1` stopped a re-run counting as a success and also removed the record from the failure set, so the scheduled failure vanished and the surrounding successes carried the gate. Attempt 1 is now fetched and judged; an unreadable one is kept and marked unresolved |
+| **A button press could refresh the unattended-ingestion proof** | `sentry-reverify.yml` allowed `workflow_dispatch` and nothing checked the trigger. Provenance is now confirmed against GitHub's own run record, not read from the environment |
+| **The refresh cadence and the proof expiry were the same number** | Both six hours, leaving zero margin for scheduling delay, npm install, Chromium install or Sentry indexing — and it is a health gate, so each spurious failure restarted the window. Now 4h cadence against a 14h expiry, calibrated from measured lag |
+| **A failed verification was invisible outside a soak** | It exited before the controller, raised no incident, and did nothing at all when no soak was open. The verifier now owns a deduplicated incident and runs on schedule regardless |
+| **The reopen logic did nothing against the live state** | It chose the highest-numbered CLOSED issue and only looked at closed issues when none was open — so with #44 closed and #67 open it commented on #67 forever. The canonical issue is the OLDEST, because that is where the history is |
+| **Freshness came from an unsigned local clock** | `lastFreshProofAt` was stamped by the controller. It now derives from `sentry.verifiedAt`, which the verifier wrote and the receipt digest covers |
+| **`latestSuccessfulRun()` read `updated_at`** | Re-running an old failed backup made a stale backup look minutes old |
+
+One suspected defect was investigated and **disproved**: the email DNS. Querying
+`send.bookpitch.ge` for SPF or a bounce MX returns nothing, which looks like a
+gap and is not one — Resend publishes both on a `send.` CHILD of the sending
+domain, so the names are `send.send.bookpitch.ge`. Re-verified by direct `dig`
+on 2026-09-04: SPF, DKIM, bounce MX and DMARC (`p=none`) are all present. That
+same misreading is what Phase 13 recorded as "unverified", and it has now nearly
+happened twice.
 
 ### Remediation round 2 — 2026-09-04
 

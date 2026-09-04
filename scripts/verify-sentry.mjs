@@ -154,13 +154,14 @@ try {
       `The probe token endpoint redirected to ${res.headers.get('location') ?? 'somewhere'}.\n` +
         'It is behind the authentication proxy, so no probe can ever reach it. Add the\n' +
         'path to isPublicPath() in auth.config.ts — the handler authenticates itself\n' +
-        'with a bearer secret and 404s unless SENTRY_PROBE_ENABLED is "true".',
+        'with a bearer secret and needs no other gate.',
     );
   }
   if (res.status === 404) {
     bail(
-      'The probe is disabled on this deployment (SENTRY_PROBE_ENABLED is not "true").\n' +
-        'Enable it for the verification window and turn it off afterwards.',
+      'The probe token endpoint answered 404. There is no enable flag to set — the route is\n' +
+        'permanently available and gated by the bearer secret — so a 404 here means the\n' +
+        'deployment predates the probe, or the path is not reachable past the proxy.',
     );
   }
   if (res.status === 401) bail('The deployment rejected CRON_SECRET.');

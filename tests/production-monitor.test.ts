@@ -1891,7 +1891,10 @@ describe('the canonical incident is the oldest, and duplicates are folded into i
 
   it('THE LIVE CASE: canonical closed, duplicate open — reopen 44, close 67', () => {
     const plan = reconcileIncidents([failing], [issue(67, 'open')], [issue(44, 'closed')]);
-    expect(plan.toReopen.map((r) => r.issue.number), 'the history lives on #44').toEqual([44]);
+    expect(
+      plan.toReopen.map((r) => r.issue.number),
+      'the history lives on #44',
+    ).toEqual([44]);
     expect(plan.toCloseDuplicate.map((d) => d.issue.number)).toEqual([67]);
     expect(plan.toOpen, 'a third issue would be absurd').toEqual([]);
   });
@@ -1922,11 +1925,7 @@ describe('the canonical incident is the oldest, and duplicates are folded into i
   it('a recovered check closes every issue for the marker, canonical included', () => {
     // Evidence-based recovery must not leave a duplicate open behind it.
     const recovered = { ...failing, ok: true };
-    const plan = reconcileIncidents(
-      [recovered],
-      [issue(44, 'open'), issue(67, 'open')],
-      [],
-    );
+    const plan = reconcileIncidents([recovered], [issue(44, 'open'), issue(67, 'open')], []);
     expect(plan.toClose.map((c) => c.issue.number).sort()).toEqual([44, 67]);
   });
 

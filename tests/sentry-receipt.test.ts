@@ -683,7 +683,10 @@ describe('a verifier outcome is classified honestly', () => {
   });
 
   it('a deployment with no DSN is UNAVAILABLE', () => {
-    const o = classifyVerifierOutcome({ proven: 0, problems: ['the deployment reports no SENTRY_DSN'] });
+    const o = classifyVerifierOutcome({
+      proven: 0,
+      problems: ['the deployment reports no SENTRY_DSN'],
+    });
     expect(o.state).toBe('unavailable');
   });
 
