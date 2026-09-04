@@ -16,6 +16,16 @@ Captured 2026-08-18T22:07:24Z against resolver `8.8.8.8`. Reproduce with
 
 ### Sending domain — `send.bookpitch.ge`
 
+**Re-verified 2026-09-04** by direct `dig` against every name below; all four
+records are present exactly as recorded.
+
+A warning to the next reader, because it has now misled twice: querying
+`send.bookpitch.ge` for SPF or MX returns NOTHING, and that is correct. Resend
+publishes both on a `send.` CHILD of the sending domain, so the names are
+`send.send.bookpitch.ge`. A check aimed at the obvious name concludes "no SPF,
+no bounce MX" and is wrong — which is exactly the mistake §2 below documents
+from Phase 13.
+
 | Name | Type | Value | Verdict |
 |---|---|---|---|
 | `resend._domainkey.send.bookpitch.ge` | TXT | `p=MIGfMA0GCSqGSIb3DQEB…` (RSA public key) | **Present** |

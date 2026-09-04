@@ -63,6 +63,7 @@ import {
   PROBE_SOURCES,
   classifyMapProbe,
   summariseMapProbes,
+  classifyVerifierOutcome,
 } from './sentry-receipt.mjs';
 
 const results = [];
@@ -97,6 +98,7 @@ const missing = Object.entries({
   .filter(([, v]) => !v.trim())
   .map(([k]) => k);
 if (missing.length) {
+  writeOutcome({ proven: 0, missingInputs: missing, problems: [] });
   bail(
     `Cannot verify anything: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set.\n` +
       'This script proves things about a DEPLOYMENT, so it needs the deployment\n' +
@@ -152,13 +154,14 @@ try {
       `The probe token endpoint redirected to ${res.headers.get('location') ?? 'somewhere'}.\n` +
         'It is behind the authentication proxy, so no probe can ever reach it. Add the\n' +
         'path to isPublicPath() in auth.config.ts — the handler authenticates itself\n' +
-        'with a bearer secret and 404s unless SENTRY_PROBE_ENABLED is "true".',
+        'with a bearer secret and needs no other gate.',
     );
   }
   if (res.status === 404) {
     bail(
-      'The probe is disabled on this deployment (SENTRY_PROBE_ENABLED is not "true").\n' +
-        'Enable it for the verification window and turn it off afterwards.',
+      'The probe token endpoint answered 404. There is no enable flag to set — the route is\n' +
+        'permanently available and gated by the bearer secret — so a 404 here means the\n' +
+        'deployment predates the probe, or the path is not reachable past the proxy.',
     );
   }
   if (res.status === 401) bail('The deployment rejected CRON_SECRET.');
@@ -523,6 +526,20 @@ if (everythingPassed && process.env.SENTRY_RECEIPT_OUT) {
   console.log('\nNO receipt written — verification did not pass in full.');
 }
 
+// ── Machine-readable outcome, for the incident lifecycle ─────────────────────
+//
+// The production monitor can only see whether DSN variable NAMES are set. This
+// is what lets a scheduled job raise and clear an incident about whether errors
+// actually reach a human, and it must distinguish "could not check" from
+// "checked and it is broken" — see classifyVerifierOutcome().
+function writeOutcome(run) {
+  const path = process.env.SENTRY_OUTCOME_OUT;
+  if (!path) return;
+  const outcome = classifyVerifierOutcome(run);
+  writeFileSync(path, JSON.stringify(outcome, null, 2) + '\n');
+  console.log(`\noutcome: ${outcome.state} — ${outcome.summary}`);
+}
+
 // ── Verdict ──────────────────────────────────────────────────────────────────
 const levels = results.filter((r) => r.level > 0);
 const highest = levels.filter((r) => r.ok).reduce((n, r) => Math.max(n, r.level), 0);
@@ -530,6 +547,12 @@ const firstFail = levels.find((r) => !r.ok)?.level ?? 6;
 const proven = Math.min(highest, firstFail - 1);
 const names = ['NOTHING', 'CONFIGURED', 'INITIALISED', 'EMITTED', 'INDEXED', 'VERIFIED'];
 console.log(`\nHighest level proven: ${proven} (${names[proven]})`);
+
+writeOutcome({
+  proven,
+  problems: [...pair.problems, ...(sourceMapVerdict.problems ?? [])],
+  mapVerdict: sourceMapVerdict,
+});
 
 const mapCheck = results.find((r) => r.level === 0 && !r.ok);
 if (proven < 5 || mapCheck) {

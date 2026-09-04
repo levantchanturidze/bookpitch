@@ -9,6 +9,8 @@ import {
   classifyMapProbe,
   summariseMapProbes,
   RECEIPT_BOUND_FIELDS,
+  classifyVerifierOutcome,
+  shouldCloseObservabilityIncident,
 } from '../scripts/sentry-receipt.mjs';
 
 /** Shape of the Sentry API event payload these tests build. */
@@ -642,5 +644,110 @@ describe('the map verdict fails closed', () => {
   it('the checked assets are bound into the signature', () => {
     expect(RECEIPT_BOUND_FIELDS).toContain('sourceMapAssets');
     expect(RECEIPT_BOUND_FIELDS).toContain('sourceMapsPublic');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §2.6 — "we could not check" is not "delivery is broken", and neither is
+// silence.
+//
+// The monitor detects only that DSN variable NAMES are unset. Revoked,
+// mistyped, filtered, quota-exhausted or wrong-project DSNs all leave that check
+// green. And a failed `sentry-reverify` exited before the controller, created no
+// incident, and outside an active soak did nothing at all — so a production
+// where errors had silently stopped being delivered looked identical to one
+// where they were.
+//
+// Three failure states, deliberately distinct, because they need different
+// responses and conflating them is how an operator learns to ignore the alarm:
+//
+//   unavailable     the check could not start — no DSN, no secrets. Nothing is
+//                   known, and nothing is claimed.
+//   indeterminate   the check started and could not finish — API denied, quota,
+//                   transport failure, an ambiguous source-map response.
+//   broken          confirmed: events were emitted and did not arrive, or
+//                   arrived unusable, or the maps are public.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('a verifier outcome is classified honestly', () => {
+  it('a full pass is verified', () => {
+    const o = classifyVerifierOutcome({ proven: 5, problems: [], mapVerdict: { ok: true } });
+    expect(o.state).toBe('verified');
+  });
+
+  it('missing inputs are UNAVAILABLE, not broken', () => {
+    const o = classifyVerifierOutcome({ proven: 0, missingInputs: ['SENTRY_AUTH_TOKEN'] });
+    expect(o.state).toBe('unavailable');
+    expect(o.summary).toMatch(/could not be attempted/i);
+  });
+
+  it('a deployment with no DSN is UNAVAILABLE', () => {
+    const o = classifyVerifierOutcome({
+      proven: 0,
+      problems: ['the deployment reports no SENTRY_DSN'],
+    });
+    expect(o.state).toBe('unavailable');
+  });
+
+  it('an API refusal is INDETERMINATE, not confirmed delivery failure', () => {
+    const o = classifyVerifierOutcome({
+      proven: 3,
+      problems: ['Sentry API refused the token (HTTP 403)'],
+    });
+    expect(o.state).toBe('indeterminate');
+    // It must not CLAIM confirmation. It may — and should — say the opposite:
+    // asserting "not a confirmed failure" is the whole point of the state.
+    expect(o.summary).not.toMatch(/^CONFIRMED/);
+    expect(o.summary).toMatch(/NOT a confirmed delivery failure/);
+  });
+
+  it('an ambiguous source-map response is INDETERMINATE', () => {
+    const o = classifyVerifierOutcome({
+      proven: 5,
+      problems: [],
+      mapVerdict: { ok: false, sourceMapsPublic: null, problems: ['could not establish'] },
+    });
+    expect(o.state).toBe('indeterminate');
+  });
+
+  it('events emitted but never retrievable is BROKEN', () => {
+    const o = classifyVerifierOutcome({
+      proven: 3,
+      problems: ['server NOT retrievable, browser NOT retrievable'],
+    });
+    expect(o.state).toBe('broken');
+  });
+
+  it('publicly served source maps is BROKEN', () => {
+    const o = classifyVerifierOutcome({
+      proven: 5,
+      problems: [],
+      mapVerdict: { ok: false, sourceMapsPublic: true, problems: ['publicly readable'] },
+    });
+    expect(o.state).toBe('broken');
+  });
+
+  it('only "verified" may close the incident', () => {
+    for (const state of ['unavailable', 'indeterminate', 'broken']) {
+      expect(shouldCloseObservabilityIncident({ state }), state).toBe(false);
+    }
+    expect(shouldCloseObservabilityIncident({ state: 'verified' })).toBe(true);
+  });
+
+  it('the summary carries no secret, DSN, token or cookie', () => {
+    const o = classifyVerifierOutcome({
+      proven: 2,
+      problems: [
+        'https://abc123deadbeef@o1.ingest.sentry.io/42 rejected',
+        'Bearer sntrys_abcdef',
+        '__Host-bookpitch-sentry-probe=9f2c',
+      ],
+    });
+    const text = `${o.summary} ${o.problems.join(' ')}`;
+    expect(text).not.toMatch(/ingest\.sentry\.io/);
+    expect(text).not.toMatch(/sntrys_/);
+    expect(text).not.toMatch(/__Host-/);
+    expect(text, 'and it must still say something useful').toMatch(/redacted/i);
   });
 });

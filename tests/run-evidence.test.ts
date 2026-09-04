@@ -4,6 +4,7 @@ import {
   isNaturalObservation,
   isNaturalSuccess,
   naturalEvidenceProblem,
+  resolveRun,
 } from '../scripts/run-evidence.mjs';
 
 // -----------------------------------------------------------------------------
@@ -121,5 +122,102 @@ describe('ordering uses the time a rerun cannot move', () => {
     const rerun = normaliseRun(apiRun({ run_attempt: 2, updated_at: '2026-09-04T09:00:00Z' }));
     expect(rerun.scheduledAt).toBe(first.scheduledAt);
     expect(rerun.completedAt).not.toBe(first.completedAt);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §2.3 — dropping a rerun record ERASES the original failure.
+//
+// This is the shape GitHub actually returns. The run list gives ONE record per
+// run — the LATEST attempt. After "Re-run failed jobs" that record reads
+// `run_attempt: 2, conclusion: 'success'`, and the original failure is only
+// reachable through /actions/runs/{id}/attempts/1.
+//
+// The first fix excluded `run_attempt > 1` from natural evidence, which stopped
+// a rerun COUNTING as a success. But it also removed the record from the
+// failure set — so the scheduled failure vanished from the window entirely, and
+// the surrounding successes carried the gate. Re-running a failed monitor run
+// still cleaned the window; it just took a different route.
+//
+// The authoritative outcome is attempt 1's, and it has to be fetched. If it
+// cannot be, that is not evidence of health.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the authoritative first attempt is preserved, not dropped', () => {
+  /** The single record the list endpoint returns after a re-run. */
+  const latestAfterRerun = () =>
+    apiRun({ run_attempt: 2, conclusion: 'success', updated_at: '2026-09-04T09:00:00Z' });
+
+  /** What /actions/runs/{id}/attempts/1 returns for it. */
+  const attemptOne = () => apiRun({ run_attempt: 1, conclusion: 'failure' });
+
+  it('a first-attempt record needs no lookup', async () => {
+    let looked = 0;
+    const r = await resolveRun(apiRun(), async () => {
+      looked++;
+      return null;
+    });
+    expect(looked, 'no API call for an untouched run').toBe(0);
+    expect(isNaturalSuccess(r)).toBe(true);
+  });
+
+  it('THE DEFECT: a re-run resolves to attempt 1, which FAILED', async () => {
+    const r = await resolveRun(latestAfterRerun(), async () => attemptOne());
+    expect(r.runAttempt).toBe(1);
+    expect(r.conclusion, 'the authoritative outcome is the first attempt').toBe('failure');
+    expect(isNaturalObservation(r), 'and it stays visible as an observation').toBe(true);
+    expect(isNaturalSuccess(r)).toBe(false);
+  });
+
+  it('THE DEFECT: the failure is not erased from the window', async () => {
+    // The whole point. Before this, the record disappeared and the surrounding
+    // successes carried the gate.
+    const r = await resolveRun(latestAfterRerun(), async () => attemptOne());
+    expect(r).not.toBeNull();
+    expect(r.conclusion).toBe('failure');
+  });
+
+  it('a re-run of a SUCCESSFUL run still resolves to its first attempt', async () => {
+    const r = await resolveRun(latestAfterRerun(), async () =>
+      apiRun({ run_attempt: 1, conclusion: 'success' }),
+    );
+    expect(isNaturalSuccess(r), 'attempt 1 genuinely succeeded').toBe(true);
+  });
+
+  it('an unretrievable attempt 1 FAILS CLOSED, it does not vanish', async () => {
+    const r = await resolveRun(latestAfterRerun(), async () => null);
+    expect(r, 'the record must not disappear').not.toBeNull();
+    expect(isNaturalSuccess(r), 'unknown is not success').toBe(false);
+    expect(r.unresolved).toBe(true);
+  });
+
+  it('a lookup that throws also fails closed', async () => {
+    const r = await resolveRun(latestAfterRerun(), async () => {
+      throw new Error('403');
+    });
+    expect(isNaturalSuccess(r)).toBe(false);
+    expect(r.unresolved).toBe(true);
+  });
+
+  it('ordering uses attempt 1 created_at, which a re-run cannot move', async () => {
+    const r = await resolveRun(latestAfterRerun(), async () => attemptOne());
+    expect(r.scheduledAt).toBe('2026-09-04T01:00:00Z');
+  });
+});
+
+describe('a run with no immutable timestamp is not natural evidence', () => {
+  it('THE DEFECT: falling back to updated_at must not still count as natural', () => {
+    // `updated_at` moves when someone re-runs. Accepting it as the scheduling
+    // time means a re-run can slide a run across a window boundary.
+    const r = normaliseRun(apiRun({ created_at: undefined }));
+    expect(r.scheduledAtIsExact).toBe(false);
+    expect(isNaturalObservation(r), 'no immutable timestamp, no natural evidence').toBe(false);
+    expect(isNaturalSuccess(r)).toBe(false);
+  });
+
+  it('and the reason says so', () => {
+    const r = normaliseRun(apiRun({ created_at: undefined }));
+    expect(naturalEvidenceProblem(r)).toMatch(/immutable|created_at/i);
   });
 });

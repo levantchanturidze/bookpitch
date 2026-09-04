@@ -89,8 +89,9 @@ export function isPublicPath(path: string): boolean {
     // browser it drives (the page) — and because a probe that redirects to
     // /signin cannot verify anything. Measured on production 2026-09-04: all
     // three answered 307 to /signin, so the entire verification flow was
-    // unreachable and would have reported "the probe is disabled on this
-    // deployment", sending the operator to look at the wrong variable.
+    // unreachable, and the verifier's diagnostics pointed at the wrong thing
+    // entirely — it reported a disabled probe, which sent the operator looking
+    // at a variable rather than at routing.
     //
     // Past the proxy is not unauthenticated. Each handler fails closed:
     //   /api/health/sentry-probe        bearer CRON_SECRET + rate limit
