@@ -4,6 +4,7 @@ import {
   seedSentryState,
   SOAK_HEALTH_GATES,
   SOAK_PROGRESS_GATES,
+  soakFreshnessBound,
   evaluateSoak,
   parseState,
   renderState,
@@ -11,7 +12,7 @@ import {
   SOAK_DEFAULTS,
   SOAK_MARKER,
 } from '../scripts/soak-controller.mjs';
-import { receiptDigest } from '../scripts/sentry-receipt.mjs';
+import { receiptDigest, verifyReceiptIntegrity } from '../scripts/sentry-receipt.mjs';
 
 // -----------------------------------------------------------------------------
 // §13 — the durable soak controller.
@@ -62,15 +63,21 @@ const DEPLOYMENT = {
   aliasReleases: { 'bookpitch.ge': SHA, 'www.bookpitch.ge': SHA },
 };
 
+// runAttempt defaults to 1: these stand for runs the scheduler delivered and
+// nobody touched. A re-run keeps the `schedule` event, so the attempt number is
+// what distinguishes delivery from a button press — see the re-run suite below.
 const run = (
   runId: number,
   hoursAfterStart: number,
   conclusion = 'success',
   event = 'schedule',
+  runAttempt = 1,
 ) => ({
   runId,
   event,
   conclusion,
+  status: 'completed',
+  runAttempt,
   completedAt: new Date(new Date(START).getTime() + hoursAfterStart * 3_600_000).toISOString(),
 });
 
@@ -162,12 +169,16 @@ describe('time alone never satisfies the soak', () => {
           {
             runId: 1,
             event: 'schedule',
+            runAttempt: 1,
+            status: 'completed',
             conclusion: 'success',
             completedAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
           },
           {
             runId: 2,
             event: 'schedule',
+            runAttempt: 1,
+            status: 'completed',
             conclusion: 'success',
             completedAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
           },
@@ -988,11 +999,17 @@ describe('a verified receipt can be seeded into soak state automatically', () =>
   });
 
   it('THE DEFECT: the freshness bound is the START of the run, not the end', () => {
-    // The probe fires, THEN the receipt is written. Using the write time as
-    // `notBefore` means the events it just proved "predate this verification
-    // run" on the very next tick.
-    const seeded = seedSentryState(JSON.stringify(receipt));
-    expect(new Date(seeded!.verifiedAt!).getTime()).toBe(Date.parse('2026-09-03T09:00:00.000Z'));
+    // The probe fires, THEN the receipt is written. A bound at the write time
+    // makes the events it just proved "predate this verification run".
+    //
+    // This used to assert that seeding OVERWROTE `verifiedAt` with `notBefore`,
+    // which produced the right bound and destroyed the signature — both fields
+    // are signed. The bound is now derived, and both fields are preserved
+    // exactly as the verifier emitted them.
+    const seeded = seedSentryState(JSON.stringify(receipt))!;
+    expect(soakFreshnessBound(seeded).getTime()).toBe(Date.parse('2026-09-03T09:00:00.000Z'));
+    expect(seeded.notBefore, 'notBefore must survive verbatim').toBe(receipt.notBefore);
+    expect(seeded.verifiedAt, 'verifiedAt must survive verbatim').toBe(receipt.verifiedAt);
   });
 
   it('survives a tick: the seeded identity is carried forward unchanged', () => {
@@ -1065,6 +1082,8 @@ describe('the daily sweep must land inside the effective window', () => {
     monitorRuns: Array.from({ length: 25 }, (_, i) => ({
       runId: 100 + i,
       event: 'schedule',
+      runAttempt: 1,
+      status: 'completed',
       conclusion: 'success',
       completedAt: new Date(Date.parse(startedAt) + (i + 1) * 3_600_000).toISOString(),
     })),
@@ -1072,6 +1091,8 @@ describe('the daily sweep must land inside the effective window', () => {
       {
         runId: 7,
         event: 'schedule',
+        runAttempt: 1,
+        status: 'completed',
         conclusion: 'success',
         completedAt: '2026-09-05T01:40:00Z',
       },
@@ -1079,6 +1100,8 @@ describe('the daily sweep must land inside the effective window', () => {
     cronRuns: Array.from({ length: 8 }, (_, i) => ({
       runId: 200 + i,
       event: 'schedule',
+      runAttempt: 1,
+      status: 'completed',
       conclusion: 'success',
       completedAt: new Date(Date.parse(startedAt) + (i + 1) * 5_400_000).toISOString(),
     })),
@@ -1274,6 +1297,8 @@ describe('every release-critical failure resets the window', () => {
           {
             runId: 9001,
             event: 'schedule',
+            runAttempt: 1,
+            status: 'completed',
             conclusion: 'success',
             completedAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
           },
@@ -1484,6 +1509,8 @@ describe('the observation-gap limit sits above delivery lag and below an outage'
       monitorRuns: hours.map((h, i) => ({
         runId: 400 + i,
         event: 'schedule',
+        runAttempt: 1,
+        status: 'completed',
         conclusion: 'success',
         completedAt: at(h),
       })),
@@ -1569,6 +1596,8 @@ describe('a continuing failure is recorded once, not once per tick', () => {
           {
             runId: 5001,
             event: 'schedule',
+            runAttempt: 1,
+            status: 'completed',
             conclusion: 'success',
             completedAt: recoveredAt.toISOString(),
           },
@@ -1579,5 +1608,231 @@ describe('a continuing failure is recorded once, not once per tick', () => {
     });
     expect(second.status).toBe('awaiting-recovery');
     expect(second.restarts.length, 'a separate episode deserves its own entry').toBe(2);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// THE RECEIPT MUST SURVIVE ITS OWN LIFECYCLE.
+//
+// Every previous test built a receipt whose `verifiedAt` already equalled its
+// `notBefore`, signed THAT, and seeded it. The real verifier does not produce
+// such a document: it captures `notBefore` before firing the probes and
+// `verifiedAt` after they are read back, so the two differ by however long
+// verification took.
+//
+// `receiptDigest()` binds both. `seedSentryState()` then dropped `notBefore`
+// and overwrote `verifiedAt` with it, while keeping the original digest — so
+// the first tick recomputed the HMAC over a different document and the
+// observability gate could never pass. A signature scheme whose own seeding
+// step invalidates it.
+//
+// The fixtures hid it because they were written from the persisted shape
+// backwards, instead of from the shape the verifier actually emits.
+//
+// This test starts where the real data starts.
+// -----------------------------------------------------------------------------
+describe('a receipt as the VERIFIER emits it survives seeding and every tick', () => {
+  const SECRET = 'lifecycle-cron-secret';
+  const RELEASE = 'c'.repeat(40);
+
+  /** Byte-for-byte the document scripts/verify-sentry.mjs writes. */
+  function verifierReceipt() {
+    const notBefore = new Date('2026-09-04T09:00:00.000Z');
+    // The probes ran, the events were polled back, the maps were checked.
+    const verifiedAt = new Date('2026-09-04T09:03:41.000Z');
+    const receipt: Record<string, unknown> = {
+      notBefore: notBefore.toISOString(),
+      verifiedAt: verifiedAt.toISOString(),
+      nonce: 'a1b2c3d4e5f60718',
+      releaseSha: RELEASE,
+      environment: 'production',
+      serverEventId: 'srv-real-1',
+      browserEventId: 'brw-real-2',
+      serverSource: 'app/api/health/sentry-probe/route.ts',
+      browserSource: 'app/probe/sentry/BrowserProbe.tsx',
+      sourceMapsPublic: false,
+      digest: '',
+    };
+    receipt.digest = receiptDigest(SECRET, receipt);
+    return receipt;
+  }
+
+  beforeEach(() => {
+    process.env.CRON_SECRET = SECRET;
+  });
+
+  it('THE DEFECT: verifiedAt and notBefore genuinely differ, as they must', () => {
+    const r = verifierReceipt();
+    expect(r.verifiedAt).not.toBe(r.notBefore);
+  });
+
+  it('THE DEFECT: it seeds, and the seeded state still authenticates', () => {
+    const seeded = seedSentryState(JSON.stringify(verifierReceipt()));
+    expect(seeded).not.toBeNull();
+    const v = verifyReceiptIntegrity(SECRET, seeded as never);
+    expect(v.ok, `seeded state failed integrity: ${v.reason ?? ''}`).toBe(true);
+  });
+
+  it('THE DEFECT: it survives a round trip through the issue body', () => {
+    // State is stored as JSON inside a GitHub issue and parsed back next tick.
+    const seeded = seedSentryState(JSON.stringify(verifierReceipt()))!;
+    const state = {
+      releaseSha: RELEASE,
+      deploymentId: '99',
+      startedAt: '2026-09-04T09:05:00.000Z',
+      effectiveWindowStart: '2026-09-04T09:05:00.000Z',
+      restarts: [],
+      sentry: seeded,
+    };
+    const recovered = parseState(renderState(state));
+    const v = verifyReceiptIntegrity(SECRET, recovered.sentry);
+    expect(v.ok, `after a round trip: ${v.reason ?? ''}`).toBe(true);
+  });
+
+  it('THE DEFECT: it still authenticates after many ticks', () => {
+    let carried = seedSentryState(JSON.stringify(verifierReceipt()))!;
+    for (let tick = 0; tick < 48; tick++) {
+      carried = nextSentryState(carried, {
+        configured: true,
+        ok: true,
+        serverEventId: 'srv-real-1',
+        browserEventId: 'brw-real-2',
+        problems: [],
+      }) as never;
+      const v = verifyReceiptIntegrity(SECRET, carried as never);
+      expect(v.ok, `tick ${tick + 1}: ${v.reason ?? ''}`).toBe(true);
+    }
+  });
+
+  it('the freshness bound stays the START of the run, not the finish', () => {
+    // The reason the two fields exist. The events were created between
+    // notBefore and verifiedAt, so a bound at verifiedAt rejects them.
+    const seeded = seedSentryState(JSON.stringify(verifierReceipt()))!;
+    expect(soakFreshnessBound(seeded).toISOString()).toBe('2026-09-04T09:00:00.000Z');
+  });
+
+  it('and a tampered field is still caught after all of that', () => {
+    // The complement: surviving the lifecycle must not mean surviving edits.
+    let carried = seedSentryState(JSON.stringify(verifierReceipt()))!;
+    carried = nextSentryState(carried, { configured: true, ok: true, problems: [] }) as never;
+    for (const [field, value] of [
+      ['serverEventId', 'srv-from-an-old-run'],
+      ['releaseSha', 'd'.repeat(40)],
+      ['nonce', 'another-nonce'],
+      ['verifiedAt', '2020-01-01T00:00:00.000Z'],
+      ['notBefore', '2020-01-01T00:00:00.000Z'],
+    ] as Array<[string, string]>) {
+      const tampered = { ...(carried as Record<string, unknown>), [field]: value };
+      expect(verifyReceiptIntegrity(SECRET, tampered as never).ok, field).toBe(false);
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §3 — a re-run cannot repair a soak window.
+//
+// "Re-run failed jobs" keeps the `schedule` event, increments `run_attempt`,
+// replaces `conclusion` and moves `updated_at`. So before this, an operator
+// watching a soak fail at hour 20 could re-run the failed monitor, backup or
+// cron run and the next tick would see a clean window — with the added twist
+// that `updated_at` moved the failure's apparent time forward, past the
+// recovery boundary the controller orders against.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('re-running a failed run cannot repair the window', () => {
+  const rerun = (runId: number, hoursAfterStart: number) => ({
+    ...run(runId, hoursAfterStart),
+    runAttempt: 2,
+  });
+
+  it('THE DEFECT: a re-run monitor observation is not a natural observation', () => {
+    // Eight observations, but three of them were re-run by hand. Only five are
+    // natural, which is below the required six.
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        monitorRuns: [
+          ...[1, 2, 3, 4, 5].map((n) => run(100 + n, n * 3)),
+          ...[6, 7, 8].map((n) => rerun(100 + n, n * 3)),
+        ],
+      }),
+      now: NOW,
+    });
+    expect(gate(r, 'monitor-observations').ok, 're-runs must not count').toBe(false);
+  });
+
+  it('THE DEFECT: a re-run backup does not satisfy the backup gate', () => {
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({ backupRuns: [rerun(200, 6)] }),
+      now: NOW,
+    });
+    expect(gate(r, 'scheduled-backup').ok).toBe(false);
+  });
+
+  it('THE DEFECT: re-run cron runs do not satisfy the cron count', () => {
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        cronRuns: [rerun(300, 2), rerun(301, 8), rerun(302, 14), rerun(303, 20)],
+      }),
+      now: NOW,
+    });
+    expect(gate(r, 'scheduled-cron').ok).toBe(false);
+  });
+
+  it('THE DEFECT: a re-run cannot serve as the RECOVERY observation', () => {
+    // The most dangerous one. The window is awaiting recovery; an operator
+    // re-runs the failed monitor run; if that counted, the window would restart
+    // on a button press and start accruing time again.
+    const failedAt = new Date(NOW.getTime() - 2 * 3_600_000).toISOString();
+    const r = evaluateSoak({
+      state: { ...state(), awaitingRecoverySince: failedAt },
+      evidence: healthyEvidence({
+        monitorRuns: [
+          {
+            ...run(9001, 0),
+            runAttempt: 2,
+            completedAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
+          },
+        ],
+      }),
+      now: NOW,
+    });
+    expect(r.status, 'recovery must be delivered, not pressed').toBe('awaiting-recovery');
+  });
+
+  it('COMPLEMENT: a genuine first-attempt observation after the failure DOES recover it', () => {
+    const failedAt = new Date(NOW.getTime() - 2 * 3_600_000).toISOString();
+    const r = evaluateSoak({
+      state: { ...state(), awaitingRecoverySince: failedAt },
+      evidence: healthyEvidence({
+        monitorRuns: [
+          {
+            ...run(9002, 0),
+            completedAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
+          },
+        ],
+      }),
+      now: NOW,
+    });
+    expect(r.status).not.toBe('awaiting-recovery');
+  });
+
+  it('a genuinely failed FIRST attempt still restarts the window', () => {
+    // Excluding re-runs must not also hide the original failure — that would
+    // be the same erasure by another route.
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        monitorRuns: [
+          ...[1, 2, 3, 4, 5, 6, 7].map((n) => run(100 + n, n * 3)),
+          run(199, 10, 'failure'),
+        ],
+      }),
+      now: NOW,
+    });
+    expect(['restarted', 'awaiting-recovery']).toContain(r.status);
   });
 });

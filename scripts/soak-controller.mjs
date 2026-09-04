@@ -36,6 +36,7 @@
 import process from 'node:process';
 import { unhealthyJobsFrom } from './heartbeat-contract.mjs';
 import { verifyReceiptIntegrity } from './sentry-receipt.mjs';
+import { normaliseRun, isNaturalObservation, isNaturalSuccess } from './run-evidence.mjs';
 
 export const SOAK_DEFAULTS = {
   /** An uninterrupted healthy window shorter than this is not a soak. */
@@ -188,7 +189,11 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
   // most dangerous shape a soak can have — it manufactures the evidence.
   let windowStart = new Date(state.effectiveWindowStart ?? state.startedAt);
 
-  const scheduled = (runs) => (runs ?? []).filter((r) => r.event === 'schedule');
+  // Natural evidence is scheduled AND first-attempt. A rerun keeps the
+  // `schedule` event, so this used to accept a hand-pressed button as proof of
+  // unattended operation — a failed monitor, backup or cron run could be rerun
+  // into a success and the window would look clean.
+  const scheduled = (runs) => (runs ?? []).filter(isNaturalObservation);
   const after = (runs, from) => runs.filter((r) => new Date(r.completedAt) > from);
 
   const fail = (status, summary, extra = {}) => ({
@@ -703,7 +708,10 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
  */
 export function nextSentryState(persisted, verdict) {
   return {
-    // Immutable identity of the verification run.
+    // Immutable identity of the verification run. Every one of these is a
+    // signed field; a tick that rewrote any of them would invalidate the
+    // receipt it is carrying, or — worse — launder an edited one.
+    notBefore: persisted?.notBefore ?? null,
     nonce: persisted?.nonce ?? null,
     verifiedAt: persisted?.verifiedAt ?? null,
     releaseSha: persisted?.releaseSha ?? null,
@@ -748,7 +756,7 @@ export function nextSentryState(persisted, verdict) {
  * tick, where it reads as a production problem rather than a setup mistake.
  *
  * @param {string|undefined|null} json  the receipt document, or nothing
- * @returns {{nonce: string, verifiedAt: string, releaseSha: string,
+ * @returns {{notBefore: string, nonce: string, verifiedAt: string, releaseSha: string,
  *            environment: string, serverEventId: string, browserEventId: string,
  *            serverSource: string, browserSource: string,
  *            sourceMapsPublic: boolean, digest: string,
@@ -805,9 +813,23 @@ export function seedSentryState(json) {
   }
 
   return {
+    // EVERY signed field is carried through byte-for-byte. Nothing here may be
+    // renamed, dropped or recomputed: the digest covers all of them, and the
+    // next tick re-authenticates the persisted document against it.
+    //
+    // This used to drop `notBefore` and overwrite `verifiedAt` with it, keeping
+    // the original digest — so the very first revalidation hashed a different
+    // document and the observability gate could never pass. A signature scheme
+    // whose own seeding step invalidated it.
+    //
+    // The two timestamps are NOT interchangeable and that is why both are
+    // signed: `notBefore` is the freshness bound (the run's start, before any
+    // event existed), `verifiedAt` is when verification finished. Use
+    // soakFreshnessBound() to read the bound rather than reaching for whichever
+    // field looks right.
+    notBefore: r.notBefore,
+    verifiedAt: r.verifiedAt,
     nonce: r.nonce,
-    // The freshness bound, deliberately the START of the verification run.
-    verifiedAt: new Date(Date.parse(r.notBefore)).toISOString(),
     releaseSha: r.releaseSha,
     environment: r.environment,
     serverEventId: r.serverEventId,
@@ -827,6 +849,27 @@ export function seedSentryState(json) {
     lastRevalidationAt: null,
     lastProblems: [],
   };
+}
+
+/**
+ * The freshness bound a persisted receipt imposes on its events.
+ *
+ * `notBefore` — the moment the verification run STARTED, before any probe had
+ * fired — and never `verifiedAt`, which is when it finished. The events were
+ * created between the two, so a bound at `verifiedAt` rejects the very events
+ * the receipt exists to vouch for.
+ *
+ * A named accessor rather than a field read at each call site, because the two
+ * timestamps look interchangeable and are not. Reaching for the wrong one is
+ * exactly the mistake that made seeding overwrite a signed field.
+ *
+ * @param {{notBefore?: string|null}|null|undefined} sentry
+ * @returns {Date} epoch 0 when absent, so a missing bound admits nothing
+ */
+export function soakFreshnessBound(sentry) {
+  const raw = sentry?.notBefore;
+  const at = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(at) ? new Date(at) : new Date(0);
 }
 
 /** The comment posted on every tick. Public, so it must carry no secrets. */
@@ -925,11 +968,19 @@ async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
     const batch = data.workflow_runs ?? [];
     for (const r of batch) {
       if (r.status !== 'completed') continue;
+      // normaliseRun() keeps `run_attempt` and separates the immutable
+      // `created_at` from the rerun-mutable `updated_at`. A run KEEPS its
+      // `schedule` event when a human presses "Re-run failed jobs", so the
+      // event alone never distinguished delivery from a button press.
+      const n = normaliseRun(r);
       runs.push({
-        runId: r.id,
-        event: r.event ?? event,
-        conclusion: r.conclusion,
-        completedAt: r.updated_at,
+        ...n,
+        event: n.event ?? event,
+        // Ordering and window membership use the time a rerun cannot move.
+        // Using `updated_at` let a rerun drag a failure forward past a
+        // recovery boundary the soak orders against.
+        completedAt: n.scheduledAt,
+        rerunCompletedAt: n.completedAt,
       });
     }
     if (batch.length === 0) {
@@ -1119,8 +1170,9 @@ async function verifySentryReceipt({ persisted, configured, releaseSha }) {
     environment: process.env.SENTRY_ENVIRONMENT ?? 'production',
     nonce: persisted.nonce,
     // The receipt must have been produced for THIS release. Re-verification
-    // does not re-run the probe, so freshness is bounded by the recorded time.
-    notBefore: new Date(persisted.verifiedAt ?? 0),
+    // does not re-run the probe, so freshness is bounded by the recorded START
+    // of the run — read through the accessor, never by picking a field.
+    notBefore: soakFreshnessBound(persisted),
   };
   const server = verifyReceipt(await fetchEvent(persisted.serverEventId), {
     ...expectation,

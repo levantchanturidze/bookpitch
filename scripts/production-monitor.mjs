@@ -31,6 +31,12 @@ import process from 'node:process';
 // monitored system defines the terms it is graded on.
 export { EXPECTED_HEARTBEAT_JOBS } from './heartbeat-contract.mjs';
 import { EXPECTED_HEARTBEAT_JOBS, evaluateHeartbeatJob } from './heartbeat-contract.mjs';
+import {
+  normaliseRun,
+  isNaturalObservation,
+  isNaturalSuccess,
+  naturalEvidenceProblem,
+} from './run-evidence.mjs';
 
 export const DEFAULTS = {
   productionUrl: 'https://bookpitch.ge',
@@ -249,10 +255,15 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
   // cached payload, or a GitHub response shape change — must not be counted as
   // scheduled evidence, because the whole point is that only a genuine
   // schedule delivery proves the scheduler is alive.
-  const scheduled = completed.filter((r) => r.event === 'schedule');
+  // Natural means scheduled AND first-attempt. A rerun keeps the `schedule`
+  // event, so filtering on the event alone let a hand-pressed button restore a
+  // failed run to health — the same displaced-evidence move that closed
+  // incident #38, through a different control.
+  const scheduled = completed.filter(isNaturalObservation);
+  const rerun = completed.filter((r) => r.event === 'schedule' && !isNaturalObservation(r));
   const manual = completed.filter((r) => r.event === 'workflow_dispatch');
 
-  const latestSuccess = scheduled.find((r) => r.conclusion === 'success');
+  const latestSuccess = scheduled.find(isNaturalSuccess);
 
   const staleness = evaluateWorkflowFreshness({
     id: 'cron-staleness',
@@ -881,6 +892,50 @@ export const OPS_DERIVED_CHECK_IDS = Object.freeze([
   'production-observability-unconfigured',
 ]);
 
+/**
+ * The run's verdict, as one pure function.
+ *
+ * Extracted because the process exit code was computed inline from
+ * `results.filter((r) => !r.ok)` — which includes INFORMATIONAL results. So a
+ * `cron-delivery-lag` line, whose entire purpose is to be reported without
+ * being a gate, still exited the workflow non-zero. That produced a FAILED
+ * scheduled monitor run, which the soak controller reads as a release-critical
+ * failure and resets the window for.
+ *
+ * Measured: 13.7% of scheduled cron gaps exceed the 90-minute lag threshold. So
+ * roughly one monitor run in seven failed for a condition nobody can act on,
+ * and every one of them would have restarted a soak. The split that made
+ * `cron-delivery-lag` informational was defeated by the one line that never
+ * learned about it.
+ *
+ * Four categories, and only one of them decides the exit code:
+ *
+ *   gate failing   a real problem. Exit 1, open an incident.
+ *   gate paused    disabled by configuration on purpose. Not a failure.
+ *   gate passing   fine.
+ *   informational  an observation. Never in the numerator, never in the
+ *                  denominator, never in the exit code.
+ *
+ * @param {Array<{id:string, ok:boolean, informational?:boolean, paused?:boolean}>} results
+ */
+export function summariseResults(results) {
+  const informational = results.filter((r) => r.informational);
+  const gates = results.filter((r) => !r.informational);
+  const failingGates = gates.filter((r) => !r.ok && !r.paused);
+  const pausedGates = gates.filter((r) => r.paused);
+  return {
+    gateCount: gates.length,
+    passedCount: gates.length - failingGates.length - pausedGates.length,
+    pausedCount: pausedGates.length,
+    infoCount: informational.length,
+    failingGates,
+    // Informational lines that happen to be !ok are still reported in the log
+    // above; they are simply not part of this.
+    failingInformational: informational.filter((r) => !r.ok),
+    healthy: failingGates.length === 0,
+  };
+}
+
 // -----------------------------------------------------------------------------
 // Incident reconciliation — pure. Given the check results and the currently
 // open incident issues, decide what to open, comment on, and close.
@@ -1200,23 +1255,17 @@ async function main() {
           token,
         ),
       ]);
-      const toRun = (r) => ({
-        runId: r.id,
-        status: r.status,
-        conclusion: r.conclusion,
-        completedAt: r.updated_at,
-        // Carried through so the evaluator can tell a delivered schedule from
-        // a button press. Falling back to the query's own event keeps the
-        // field populated if a payload ever omits it.
-        event: r.event,
-      });
+      // normaliseRun() keeps `run_attempt` and separates the immutable
+      // `created_at` from the rerun-mutable `updated_at`. Filtering on the
+      // event alone was not enough: a run KEEPS its `schedule` event when a
+      // human presses "Re-run failed jobs".
       const runs = [
         ...(scheduledData.workflow_runs ?? []).map((r) => ({
-          ...toRun(r),
+          ...normaliseRun(r),
           event: r.event ?? 'schedule',
         })),
         ...(manualData.workflow_runs ?? []).map((r) => ({
-          ...toRun(r),
+          ...normaliseRun(r),
           event: r.event ?? 'workflow_dispatch',
         })),
       ];
@@ -1378,7 +1427,10 @@ async function main() {
   }
 
   // --- Report -------------------------------------------------------------
-  const failing = results.filter((r) => !r.ok);
+  // ONE verdict, computed once, used for the summary, the step summary and the
+  // exit code. Three separate filters is how an informational line came to
+  // decide whether the workflow failed.
+  const summary = summariseResults(results);
   console.log('=== bookpitch production monitor ===');
   console.log(`time: ${now.toISOString()}`);
   console.log(`target: ${productionUrl}`);
@@ -1388,23 +1440,22 @@ async function main() {
     console.log(`${label}  ${r.id.padEnd(24)} ${r.detail}`);
   }
   console.log('');
-  const pausedCount = results.filter((r) => r.paused && !r.informational).length;
   // Informational lines are observations, not gates. They are excluded from
   // both the numerator and the denominator so "N/M checks passed" keeps
   // meaning "M things had to be true and N were".
-  const infoCount = results.filter((r) => r.informational).length;
-  const gateCount = results.length - infoCount;
-  const passedCount = gateCount - failing.length - pausedCount;
   console.log(
-    `${passedCount}/${gateCount} checks passed` +
-      (pausedCount ? `, ${pausedCount} paused by configuration` : '') +
-      (infoCount ? `, ${infoCount} informational` : ''),
+    `${summary.passedCount}/${summary.gateCount} checks passed` +
+      (summary.pausedCount ? `, ${summary.pausedCount} paused by configuration` : '') +
+      (summary.infoCount ? `, ${summary.infoCount} informational` : ''),
   );
+  for (const r of summary.failingInformational) {
+    console.log(`note: ${r.id} is reporting, but is informational and does not fail this run`);
+  }
 
   if (process.env.GITHUB_STEP_SUMMARY) {
     const { appendFileSync } = await import('node:fs');
     const lines = [
-      `## Production monitor — ${failing.length === 0 ? '✅ healthy' : `❌ ${failing.length} failing`}`,
+      `## Production monitor — ${summary.healthy ? '✅ healthy' : `❌ ${summary.failingGates.length} failing`}`,
       '',
       `\`${now.toISOString()}\` · target \`${productionUrl}\``,
       '',
@@ -1432,9 +1483,9 @@ async function main() {
     }
   }
 
-  if (failing.length > 0) {
-    console.error(`\n${failing.length} production check(s) failing:`);
-    for (const f of failing) console.error(`  - ${f.id}: ${f.detail}`);
+  if (!summary.healthy) {
+    console.error(`\n${summary.failingGates.length} production check(s) failing:`);
+    for (const f of summary.failingGates) console.error(`  - ${f.id}: ${f.detail}`);
     process.exit(1);
   }
   if (alertingFailed) process.exit(2);
