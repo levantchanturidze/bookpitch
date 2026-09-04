@@ -1676,6 +1676,21 @@ describe('re-running a scheduled run cannot make the monitor green', () => {
     expect(find(runs, 'cron-staleness').ok).toBe(true);
   });
 
+  it('a re-run is REPORTED, not silently dropped', () => {
+    // An operator who pressed the button should see that it did not count,
+    // rather than watching the check stay red for no visible reason.
+    const results = evaluateCronHealth([r({ runAttempt: 2 })], NOW2);
+    const notice = results.find((x) => x.id === 'cron-rerun-notice');
+    expect(notice, 'a re-run must be visible').toBeDefined();
+    expect(notice!.informational, 'and must not be a gate').toBe(true);
+    expect(notice!.detail).toMatch(/run_attempt > 1/);
+  });
+
+  it('no notice appears when nothing was re-run', () => {
+    const ids = evaluateCronHealth([r({})], NOW2).map((x) => x.id);
+    expect(ids).not.toContain('cron-rerun-notice');
+  });
+
   it('an unknown run_attempt fails closed', () => {
     const check = find([{ ...r({}), runAttempt: undefined } as never], 'cron-staleness');
     expect(check.ok).toBe(false);

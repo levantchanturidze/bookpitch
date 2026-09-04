@@ -196,6 +196,14 @@ export const SOAK_SIGNED_FIELDS = Object.freeze([
 
 /** HMAC over a canonical serialisation. Sorted keys, explicit types. */
 export function soakStateDigest(secret, state) {
+  // An absent secret must not silently produce a digest over the string
+  // "undefined" — signing and verifying would both do it and agree, which is a
+  // signature scheme that authenticates nothing. Both call sites are already
+  // gated, so reaching here without one is a programming error, and it should
+  // sound like one.
+  if (!secret || typeof secret !== 'string') {
+    throw new Error('soakStateDigest requires CRON_SECRET; refusing to sign with an empty key');
+  }
   const canonical = SOAK_SIGNED_FIELDS.map(
     (k) => `${k}=${JSON.stringify(state?.[k] ?? null)}`,
   ).join('\n');

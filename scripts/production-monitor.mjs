@@ -260,6 +260,9 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
   // failed run to health — the same displaced-evidence move that closed
   // incident #38, through a different control.
   const scheduled = completed.filter(isNaturalObservation);
+  // Scheduled runs somebody re-ran. Reported rather than silently dropped: a
+  // re-run is a legitimate diagnostic action, and an operator who pressed the
+  // button should see that it did not count.
   const rerun = completed.filter((r) => r.event === 'schedule' && !isNaturalObservation(r));
   const manual = completed.filter((r) => r.event === 'workflow_dispatch');
 
@@ -359,6 +362,23 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
 
   // Informational. Never gates the run, never opens an incident: a manual
   // dispatch is an operator action, and its absence is not a fault.
+  if (rerun.length > 0) {
+    results.push({
+      id: 'cron-rerun-notice',
+      title: 'Scheduled cron runs were re-run by hand (informational)',
+      ok: true,
+      informational: true,
+      detail:
+        `${rerun.length} scheduled run(s) in the window carry run_attempt > 1: ` +
+        `${rerun
+          .slice(0, 5)
+          .map((r) => `${r.runId}#${r.runAttempt}`)
+          .join(', ')}. ` +
+        'A re-run keeps the schedule event, so it is excluded from natural evidence — it proves ' +
+        'the job can succeed when pressed, not that the scheduler delivered it.',
+    });
+  }
+
   results.push({
     id: 'cron-manual-verification',
     title: 'Manual cron dispatch (informational)',

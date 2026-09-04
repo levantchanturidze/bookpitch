@@ -2165,3 +2165,12 @@ describe('the soak requires ONGOING proof of ingestion', () => {
     expect(SOAK_DEFAULTS.maxObservabilityProofAgeHours).toBeLessThanOrEqual(8);
   });
 });
+
+describe('an absent signing key is an error, not a silent downgrade', () => {
+  it('signing with no secret throws rather than digesting "undefined"', () => {
+    // Otherwise signing and verifying would both hash the string "undefined"
+    // and agree — a signature scheme that authenticates nothing.
+    expect(() => soakStateDigest(undefined as never, { releaseSha: 'x' })).toThrow(/CRON_SECRET/);
+    expect(() => soakStateDigest('', { releaseSha: 'x' })).toThrow(/CRON_SECRET/);
+  });
+});
