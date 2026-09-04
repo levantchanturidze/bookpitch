@@ -1010,16 +1010,42 @@ export function incidentMarker(id) {
   return `<!-- bookpitch-ops-incident:${id} -->`;
 }
 
-export function reconcileIncidents(results, openIssues) {
+export function reconcileIncidents(results, openIssues, closedIssues = []) {
+  const markerOf = (issue) =>
+    /<!-- bookpitch-ops-incident:([a-z0-9-]+) -->/.exec(issue.body ?? '')?.[1] ?? null;
+
   const byId = new Map();
   for (const issue of openIssues) {
-    const match = /<!-- bookpitch-ops-incident:([a-z0-9-]+) -->/.exec(issue.body ?? '');
-    if (match) byId.set(match[1], issue);
+    const id = markerOf(issue);
+    if (id) byId.set(id, issue);
+  }
+
+  // Recently CLOSED incidents, so a check that is still failing reopens its own
+  // issue rather than opening a duplicate.
+  //
+  // Found the hard way: a pull-request body containing "the verifier closes #44
+  // by evidence" was read by GitHub as a closing keyword, and merging it closed
+  // the observability incident while the DSNs were still unset. `canClose:
+  // false` governs THIS monitor; it cannot govern GitHub's issue automation, a
+  // stray comment, or a person tidying up.
+  //
+  // The monitor recovered by opening a fresh issue — but with a new number, so
+  // three days of history were orphaned and anyone following the incident was
+  // following a dead link. Same number, same history, and the record shows it
+  // was closed and that closing it was wrong.
+  const closedById = new Map();
+  for (const issue of closedIssues) {
+    const id = markerOf(issue);
+    if (!id) continue;
+    const existing = closedById.get(id);
+    // Highest number wins: the most recent occurrence of this class.
+    if (!existing || (issue.number ?? 0) > (existing.number ?? 0)) closedById.set(id, issue);
   }
 
   const toOpen = [];
   const toComment = [];
   const toClose = [];
+  const toReopen = [];
 
   const reportedIds = new Set(results.map((r) => r.id));
 
@@ -1033,7 +1059,9 @@ export function reconcileIncidents(results, openIssues) {
     const existing = byId.get(result.id);
     if (!result.ok) {
       if (existing) toComment.push({ result, issue: existing });
-      else toOpen.push({ result });
+      else if (closedById.has(result.id)) {
+        toReopen.push({ result, issue: closedById.get(result.id) });
+      } else toOpen.push({ result });
     } else if (existing) {
       // `canClose: false` marks a check that is competent to raise an alarm but
       // not to declare it over — one whose green state is weaker than the
@@ -1100,7 +1128,7 @@ export function reconcileIncidents(results, openIssues) {
     });
   }
 
-  return { toOpen, toComment, toClose };
+  return { toOpen, toComment, toClose, toReopen };
 }
 
 // -----------------------------------------------------------------------------
@@ -1557,7 +1585,38 @@ async function syncIncidents(repo, token, results, now) {
     `/repos/${repo}/issues?state=open&labels=${INCIDENT_LABEL}&per_page=100`,
     token,
   );
-  const { toOpen, toComment, toClose } = reconcileIncidents(results, openIssues ?? []);
+  // Recently closed incidents too, so a still-failing check reopens its own
+  // issue instead of orphaning its history under a new number. Sorted by
+  // GitHub newest-first; one page is ample for a class that recurs.
+  const closedIssues = await gh(
+    `/repos/${repo}/issues?state=closed&labels=${INCIDENT_LABEL}&per_page=50&sort=created&direction=desc`,
+    token,
+  );
+  const { toOpen, toComment, toClose, toReopen } = reconcileIncidents(
+    results,
+    openIssues ?? [],
+    closedIssues ?? [],
+  );
+
+  for (const { result, issue } of toReopen) {
+    await gh(`/repos/${repo}/issues/${issue.number}/comments`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        body:
+          `Reopened at ${now.toISOString()}: this incident was closed while its check was ` +
+          `still failing.\n\n**Detail:** ${result.detail}\n\n` +
+          'An incident can be closed by something with no opinion about the underlying ' +
+          'condition — a pull-request body containing a closing keyword, a stray comment, or ' +
+          'a person tidying up. Reopening keeps the history on one issue rather than ' +
+          'orphaning it under a new number.',
+      }),
+    });
+    await gh(`/repos/${repo}/issues/${issue.number}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify({ state: 'open' }),
+    });
+    console.log(`incident #${issue.number} (${result.id}) reopened — still failing`);
+  }
 
   for (const { result } of toOpen) {
     const body = [

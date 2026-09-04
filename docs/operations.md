@@ -542,6 +542,27 @@ answers:
 | fresh | stale | the schedule arrives and the endpoint does nothing — **the case nothing could previously see** |
 | stale | stale | the job is not running at all |
 
+### An incident can be closed by something with no opinion about it
+
+Measured on 2026-09-04: a pull-request body containing the words
+*"the verifier closes #44 by evidence"* was read by GitHub as a closing keyword,
+and merging that PR closed the observability incident while the DSNs were still
+unset and the check was still failing.
+
+`canClose: false` governs **this monitor**. It cannot govern GitHub's issue
+automation, a stray comment, or a person tidying up. So a still-failing check
+now **reopens** its own incident rather than opening a new one — same number,
+same history, with a comment recording that it was closed and that closing it
+was wrong.
+
+Two practical consequences:
+
+- **Never write `closes #N`, `fixes #N` or `resolves #N` in a PR body about an
+  incident.** Refer to it as `#N` alone.
+- Everything that keys on an incident does so by its **marker**
+  (`<!-- bookpitch-ops-incident:<id> -->`), never by its number, so an incident
+  that does get renumbered still matches.
+
 ### Two cron thresholds, and why they are not one
 
 | check | trips at | opens an incident? | means |
