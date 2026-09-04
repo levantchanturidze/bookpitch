@@ -40,17 +40,17 @@ const NO_GUARD_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   {
     path: 'app/api/health/sentry-probe/route.ts',
     reason:
-      'Sentry receipt probe — Bearer CRON_SECRET, plus SENTRY_PROBE_ENABLED must be exactly ' +
-      '"true" (404s otherwise), a bounded nonce, and a rate limit. Touches no tenant data: it ' +
-      'constructs and captures one synthetic error and returns an event id.',
+      'Sentry receipt probe — Bearer CRON_SECRET (the same credential every /api/cron/* route ' +
+      'uses), a bounded nonce, and a rate limit. Touches no tenant data: it constructs and ' +
+      'captures one synthetic error and returns an event id.',
   },
   {
     path: 'app/api/health/sentry-probe/token/route.ts',
     reason:
       'Mints the single-use challenge that authorises the browser probe page — Bearer ' +
-      'CRON_SECRET, plus SENTRY_PROBE_ENABLED must be exactly "true" (404s otherwise). ' +
-      'Touches no tenant data: it returns a public nonce and sets an HttpOnly __Host- cookie ' +
-      'carrying a challenge id that can be redeemed exactly once.',
+      'CRON_SECRET, plus an in-process rate limit. Touches no tenant data: it returns a public ' +
+      'nonce and sets an HttpOnly __Host- cookie carrying a challenge id that can be redeemed ' +
+      'exactly once.',
   },
   { path: 'app/api/health/route.ts', reason: 'Uptime probe — no tenant data' },
   {

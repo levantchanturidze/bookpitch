@@ -97,7 +97,11 @@ export function isPublicPath(path: string): boolean {
     //   /api/health/sentry-probe/token  bearer CRON_SECRET
     //   /probe/sentry                   single-use challenge in an HttpOnly
     //                                   cookie, redeemed by an atomic UPDATE
-    // and all three 404 unless SENTRY_PROBE_ENABLED is exactly "true".
+    // There is deliberately no enable flag: one existed, it lived in Vercel,
+    // and changing it required a redeploy — which produces a new deployment id,
+    // which the soak treats as superseded. Its lifecycle made verifying and
+    // then soaking one exact deployment impossible, and it was redundant with
+    // the controls above.
     //
     // Exact matches, deliberately. `startsWith('/api/health/')` would also
     // expose /api/health/ready, which is session-gated on purpose.

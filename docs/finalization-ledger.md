@@ -33,7 +33,7 @@ is.
 
 ---
 
-## Baseline — revalidated 2026-09-03T22:30Z (superseded by the evidence below)
+## Baseline — revalidated 2026-09-04T13:36Z (superseded by the evidence below)
 
 Observed directly, not carried over from any earlier summary.
 
@@ -75,12 +75,18 @@ Observed directly, not carried over from any earlier summary.
 | A9 | Cron threshold contradiction (1.5h vs 6h) | `MERGED` | measured 191 scheduled runs / 12.5 days: p50 0.44h, p90 2.08h, p99 3.02h, 13.7% of gaps > 1.5h, one > 6h (the billing outage). Split into `cron-delivery-lag` (90m, informational) and `cron-staleness` (6h, gating) |
 | A10 | Documentation reconciliation | `MERGED` | operations.md env table repaired (3 GitHub rows were orphaned below the Sentry prose and rendered as text) + the 3 Sentry build/API vars and `SENTRY_PROBE_ENABLED` added; `pg_restore --list` no longer described as "restorable"; superseded banners on the phase-17 Sentry instructions; release-state records this round and stops claiming "everything automatable is done" unqualified |
 
+| A13 | Receipt survives its own lifecycle | `MERGED` | `receiptDigest()` binds `notBefore` AND `verifiedAt`; seeding dropped one and overwrote the other while keeping the digest, so the first revalidation hashed a different document. Both preserved verbatim; the bound is read through `soakFreshnessBound()` |
+| A14 | Informational results excluded from the process verdict | `MERGED` | one `summariseResults()` for the summary, step summary and exit code; a complement test applies the OLD predicate to prove the new tests discriminate |
+| A15 | Re-runs are not natural evidence | `MERGED` | `scripts/run-evidence.mjs`: scheduled AND `run_attempt === 1`; ordering on the immutable `created_at`; re-runs reported on their own INFO line |
+| A16 | All verdict-relevant soak state signed | `MERGED` | `soakStateDigest` over 8 fields plus the receipt digest; replay anchored to the soak issue's creation time |
+| A17 | Truncated organizations counted as unreached work | `MERGED` | measured in the fixture DB: 192 organizations dropped, HTTP 200, healthy heartbeat |
+
 ### B. Verification
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| B1 | Full local suite | `PASSED — LOCAL` | 121 files, 1713 passed, 41 skipped (all 41 are the disposable-DB injected-failure suite, which runs in CI); lint 0 errors; build exit 0; prettier clean |
-| B2 | CI green on the exact merged head | `PASSED — CI` | PR #62 run [33861544720](https://github.com/levantchanturidze/bookpitch/actions/runs/33861544720) — 121 files / **1759 tests, 0 skipped**; PR #63 run [33864071094](https://github.com/levantchanturidze/bookpitch/actions/runs/33864071094). Both verified against the exact head SHA before merge (R-07 mitigation) |
+| B1 | Full local suite | `PASSED — LOCAL` | 124 files, **1828 passed**, 41 skipped (the disposable-DB injected-failure suite, which runs in CI); lint 0 errors; types clean; build exit 0; prettier clean |
+| B2 | CI green on the exact merged head | `PASSED — CI` | PR #66 run [33885769448](https://github.com/levantchanturidze/bookpitch/actions/runs/33885769448) — 124 files / **1869 tests, 0 skipped**, 0 vulnerabilities. Verified against the exact head SHA before merge (R-07 mitigation) |
 | B3 | Playwright full matrix | `PASSED — CI` | same runs, `Browser, mobile, and accessibility suite` green; all 9 required suites |
 | B4 | Secret scan | `PASSED — CI` | gitleaks green on both PRs; a local scan of a clean `git archive` of HEAD finds only the two fingerprints already accepted in `.gitleaksignore` |
 | B5 | Dependency audit | `PASSED — CI` | `found 0 vulnerabilities`. npm's audit endpoint 503'd intermittently on 2026-09-04 and the job was re-run rather than the gate weakened |
@@ -90,11 +96,23 @@ Observed directly, not carried over from any earlier summary.
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| C1 | Final merge to `main` | `MERGED` | **`b2bb4c015d6daac6d6ad9d17fd14bebd6ec9b812`** — PRs #62 (`74148d0`), #63 (`408c629`), #64 (`b2bb4c0`). The engineering landed in #62/#63; #64 is this ledger plus the CI audit retry |
-| C2 | Deployment of that exact SHA | `DEPLOYED` | GitHub Deployment **6263803861**, state `success`; both canonical hosts serve `x-bookpitch-release: b2bb4c01…`, which equals `origin/main` |
-| C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33863362248](https://github.com/levantchanturidze/bookpitch/actions/runs/33863362248) — 68 applied, 0 unfinished, no drift; all seven checks pass, including the exact per-partition policy match and `current_org_id()` |
-| C4 | Fresh backup, **actually restored** into a disposable DB | `PRODUCTION VERIFIED` | backup [33866999778](https://github.com/levantchanturidze/bookpitch/actions/runs/33866999778), artifact `production-backup-33866999778-1` (id 9934361561), fingerprint `5c9f75110f30141f`; restore drill [33867293853](https://github.com/levantchanturidze/bookpitch/actions/runs/33867293853) **restored it into a disposable database** — 68 migrations all finished, 28 tables, 10 organizations, append-only triggers present and `UPDATE` rejected, 13 partitions, **34 RLS policies**, `bp_create_monthly_partition()` present |
-| C5 | Production smoke + RBAC + cron/outbox/health | `PRODUCTION VERIFIED` | monitor [33867405040](https://github.com/levantchanturidze/bookpitch/actions/runs/33867405040) — **25/28 passed, 2 paused, 2 informational**, sole failure is Sentry (#44). Soak dry run [33867622778](https://github.com/levantchanturidze/bookpitch/actions/runs/33867622778) — 7/7 evidence reads succeed, `unhealthyJobs=[]`, `retentionSuccessMinutesAgo=247.9`. Probe surface 404s while disabled; `/api/health/ready`, `/scheduler`, `/settings` still 307 to `/signin` |
+| C1 | Final merge to `main` | `MERGED` | **`bd42a471ae7edad3d1382a8237d2eb141adf0c27`** (PR #66) |
+| C2 | Deployment of that exact SHA | `DEPLOYED` | GitHub Deployment **6266990877**, state `success`; both canonical hosts serve `x-bookpitch-release: bd42a471…`, which equals `origin/main` |
+| C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33887082471](https://github.com/levantchanturidze/bookpitch/actions/runs/33887082471) against `bd42a47` — 68 applied, no drift; all seven checks pass, including the exact per-partition policy match and `current_org_id()` |
+| C4 | Fresh backup, **actually restored** into a disposable DB | `PRODUCTION VERIFIED` | taken AFTER the final deployment: backup [33887076578](https://github.com/levantchanturidze/bookpitch/actions/runs/33887076578), artifact `production-backup-33887076578-1` (id 9942303278); restore drill [33887514369](https://github.com/levantchanturidze/bookpitch/actions/runs/33887514369) **restored it into a disposable database** — 68 migrations all finished, 28 tables, 10 organizations, append-only triggers present and `UPDATE` rejected, 13 partitions, **34 RLS policies** |
+| C5 | Production smoke + RBAC + cron/outbox/health | `PRODUCTION VERIFIED` | **Natural scheduled** monitor run [33893547883](https://github.com/levantchanturidze/bookpitch/actions/runs/33893547883) against `bd42a47` — **25/28 passed, 2 paused, 2 informational**, sole failure Sentry (#44). Soak dry run [33887810194](https://github.com/levantchanturidze/bookpitch/actions/runs/33887810194) — 7/7 evidence reads, `unhealthyJobs=[]`, `retentionSuccessAt=2026-09-04T07:14:45Z` (an absolute DB instant, not a reconstructed age). Probe surface: token and probe answer **401** without a bearer, `/probe/sentry` **404** without a challenge, `/api/health/ready` and `/scheduler` still **307** to `/signin` |
+
+**That natural run is also the live proof of the informational-verdict fix.**
+`cron-delivery-lag` tripped at 1.6h — the exact condition that previously made
+the workflow exit non-zero and reset a soak — and the run printed:
+
+```
+note: cron-delivery-lag is reporting, but is informational and does not fail this run
+1 production check(s) failing:
+```
+
+One failing check, and it is Sentry. Before this round that would have been two,
+and a soak would have restarted for a delivery gap nobody can act on.
 
 | A11 | Probe surface reachable past the auth proxy | `PRODUCTION VERIFIED` | found by smoke-testing the deployed app: all three probe routes 307'd to `/signin`, so the whole Sentry flow was unreachable. Fixed in PR #63; verified in production — probe routes 404 (reachable, failing closed), `/api/health/ready` still 307s |
 
