@@ -1762,3 +1762,81 @@ describe('the observability check can open an incident but never close one', () 
     expect(plan.toComment.map((c) => c.issue.number)).toEqual([44]);
   });
 });
+
+// -----------------------------------------------------------------------------
+// An incident closed while its check is still failing must be REOPENED, not
+// duplicated.
+//
+// Found the hard way on 2026-09-04. A pull-request body containing the words
+// "the verifier closes #44 by evidence" was parsed by GitHub as a closing
+// keyword, and merging that PR closed the observability incident — while the
+// DSNs were still unset and the check was still failing. So an incident can be
+// closed by something with no opinion about the underlying condition, and
+// `canClose: false` cannot prevent it: that flag governs THIS monitor, not
+// GitHub's issue automation, a stray comment, or a person tidying up.
+//
+// The monitor recovered, which is the good news: the next natural run saw no
+// open issue with the marker and opened a fresh one. But it opened a NEW
+// number, so three days of history — first detection, every "still failing"
+// comment — was orphaned on the old issue, and anyone following the incident
+// was following a dead link.
+//
+// Reopening is strictly better: same number, same history, and the record shows
+// that it was closed and why that was wrong.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('a wrongly closed incident is reopened, not duplicated', () => {
+  const failing = {
+    id: 'production-observability-unconfigured',
+    title: 't',
+    ok: false,
+    detail: 'd',
+  };
+  const closed = (number: number) => ({
+    number,
+    title: 't',
+    body: incidentMarker('production-observability-unconfigured'),
+    state: 'closed',
+  });
+
+  it('THE DEFECT: a closed issue with the marker is reopened, not re-created', () => {
+    const plan = reconcileIncidents([failing], [], [closed(44)]);
+    expect(
+      plan.toReopen.map((r) => r.issue.number),
+      'the history lives on #44',
+    ).toEqual([44]);
+    expect(plan.toOpen, 'a second issue would orphan three days of history').toEqual([]);
+  });
+
+  it('with no closed issue either, it opens a fresh one', () => {
+    const plan = reconcileIncidents([failing], [], []);
+    expect(plan.toOpen.map((o) => o.result.id)).toEqual(['production-observability-unconfigured']);
+    expect(plan.toReopen).toEqual([]);
+  });
+
+  it('an OPEN issue is commented on, never reopened', () => {
+    const open = [{ ...closed(44), state: 'open' }];
+    const plan = reconcileIncidents([failing], open, [closed(44)]);
+    expect(plan.toComment.map((c) => c.issue.number)).toEqual([44]);
+    expect(plan.toReopen).toEqual([]);
+    expect(plan.toOpen).toEqual([]);
+  });
+
+  it('a PASSING check does not reopen anything', () => {
+    // The complement, and the one that matters: reopening must be driven by the
+    // check still failing, not by the issue merely being closed.
+    const ok = { ...failing, ok: true };
+    expect(reconcileIncidents([ok], [], [closed(44)]).toReopen).toEqual([]);
+  });
+
+  it('the most recent closed issue is chosen when several carry the marker', () => {
+    const plan = reconcileIncidents([failing], [], [closed(12), closed(44)]);
+    expect(plan.toReopen.map((r) => r.issue.number)).toEqual([44]);
+  });
+
+  it('informational results never reopen anything', () => {
+    const info = { ...failing, informational: true };
+    expect(reconcileIncidents([info], [], [closed(44)]).toReopen).toEqual([]);
+  });
+});

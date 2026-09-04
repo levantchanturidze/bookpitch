@@ -81,6 +81,8 @@ Observed directly, not carried over from any earlier summary.
 | A16 | All verdict-relevant soak state signed | `MERGED` | `soakStateDigest` over 8 fields plus the receipt digest; replay anchored to the soak issue's creation time |
 | A17 | Truncated organizations counted as unreached work | `MERGED` | measured in the fixture DB: 192 organizations dropped, HTTP 200, healthy heartbeat |
 
+| A18 | A wrongly closed incident reopens rather than duplicating | `MERGED` | found in production: a PR body reading "the verifier closes #44 by evidence" was parsed by GitHub as a closing keyword and closed the incident while its check was still failing. `canClose: false` governs this monitor, not GitHub's automation. A still-failing check now reopens its own issue, keeping the history on one number |
+
 ### B. Verification
 
 | # | Gate | Status | Evidence |
@@ -133,7 +135,7 @@ and a soak would have restarted for a delivery gap nobody can act on.
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| E1 | Soak preconditions satisfied | `BLOCKED — MANUAL` | refused by **four** independent gates while D3 is unmet: `release-verify-and-soak.yml` refuses without a probe-enabled confirmation, refuses if production is not serving the named SHA on both hosts, refuses while any `ops-incident` is open (#44 is), and `verify-sentry.mjs` writes no receipt without a complete pass. The controller then refuses to start without one |
+| E1 | Soak preconditions satisfied | `BLOCKED — MANUAL` | refused by **four** independent gates while D3 is unmet (the observability incident is now **#67**, reopened/re-raised after #44 was closed by a stray PR keyword): `release-verify-and-soak.yml` refuses without a probe-enabled confirmation, refuses if production is not serving the named SHA on both hosts, refuses while any `ops-incident` is open (#44 is), and `verify-sentry.mjs` writes no receipt without a complete pass. The controller then refuses to start without one |
 | E2 | Uninterrupted 24h window on one SHA | `NOT STARTED` | Cannot begin until E1. Everything else it needs is proven: dry run [33867622778](https://github.com/levantchanturidze/bookpitch/actions/runs/33867622778) exercised all 7 evidence reads against production, including the shared heartbeat contract and the retention instant |
 | E3 | Natural scheduled evidence inside the window | `NOT STARTED` | Feasibility measured rather than assumed: monitor delivery p99 5.03h against a 6h gap limit, cron p99 3.02h. `retention-in-window` will hold a soak open until the nightly sweep runs inside it — by design, and the reason the window is 24 hours |
 
