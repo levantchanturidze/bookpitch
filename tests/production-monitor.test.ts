@@ -1945,3 +1945,51 @@ describe('the canonical incident is the oldest, and duplicates are folded into i
     expect(plan.toCloseDuplicate.map((d) => d.issue.number)).toEqual([67]);
   });
 });
+
+// -----------------------------------------------------------------------------
+// The canonical issue must survive pagination.
+//
+// The closed-incident query is a single page. Fetched newest-first, the OLDEST
+// issue carrying a marker — which is the canonical one — falls off the end as
+// soon as there is more than a page of closed incidents, and the reconciler
+// opens a duplicate of an issue it simply could not see.
+//
+// Latent rather than live today (14 closed incidents against a 100 cap), and
+// exactly the shape that is invisible until it is not.
+// -----------------------------------------------------------------------------
+describe('the canonical issue is not paginated away', () => {
+  it('closed incidents are fetched OLDEST first', async () => {
+    const { readFileSync } = await import('node:fs');
+    for (const f of ['scripts/production-monitor.mjs', 'scripts/sentry-incident.mjs']) {
+      const src = readFileSync(f, 'utf8');
+      const q = /state=closed[^`]*/.exec(src)?.[0] ?? '';
+      expect(q, `${f} closed-issue query`).toMatch(/direction=asc/);
+      expect(q, `${f} must not fetch newest-first`).not.toMatch(/direction=desc/);
+    }
+  });
+
+  it('and the reconciler picks the oldest even when the newest is listed first', () => {
+    // Order-independence at the logic level, so the query and the choice cannot
+    // disagree.
+    const marker = incidentMarker('production-observability-unconfigured');
+    const issue = (number: number, state: string) => ({ number, state, title: 't', body: marker });
+    const failing = {
+      id: 'production-observability-unconfigured',
+      title: 't',
+      ok: false,
+      detail: 'd',
+    };
+    const newestFirst = reconcileIncidents(
+      [failing],
+      [],
+      [issue(67, 'closed'), issue(44, 'closed')],
+    );
+    const oldestFirst = reconcileIncidents(
+      [failing],
+      [],
+      [issue(44, 'closed'), issue(67, 'closed')],
+    );
+    expect(newestFirst.toReopen.map((r) => r.issue.number)).toEqual([44]);
+    expect(oldestFirst.toReopen.map((r) => r.issue.number)).toEqual([44]);
+  });
+});
