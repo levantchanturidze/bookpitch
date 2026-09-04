@@ -5,6 +5,9 @@ import {
   SOAK_HEALTH_GATES,
   SOAK_PROGRESS_GATES,
   soakFreshnessBound,
+  soakStateDigest,
+  SOAK_SIGNED_FIELDS,
+  verifySoakState,
   evaluateSoak,
   parseState,
   renderState,
@@ -102,7 +105,7 @@ function healthyEvidence(over: Record<string, unknown> = {}) {
     // The nightly sweep, inside the window. 12 hours ago against a window that
     // began 25 hours ago — see the `retention-in-window` gate for why "fresh"
     // is not the same question as "inside the window".
-    retentionSuccessMinutesAgo: 13 * 60,
+    retentionSuccessAt: new Date(new Date(NOW).getTime() - 13 * 3_600_000).toISOString(),
     ...over,
   };
 }
@@ -1131,7 +1134,9 @@ describe('the daily sweep must land inside the effective window', () => {
   it('THE DEFECT: a retention success from BEFORE the window does not count', () => {
     // 26 hours ago: inside retention's 30-hour freshness limit, and an hour
     // before the soak began. `cron-outcomes` is perfectly happy with it.
-    const g = gate(evidence({ retentionSuccessMinutesAgo: 26 * 60 }));
+    const g = gate(
+      evidence({ retentionSuccessAt: new Date(NOW.getTime() - 26 * 3_600_000).toISOString() }),
+    );
     expect(g, 'there must be a gate for this at all').toBeDefined();
     expect(g!.ok, 'a sweep that ran before the window did not run in the window').toBe(false);
     expect(g!.detail).toMatch(/before the window/i);
@@ -1139,13 +1144,17 @@ describe('the daily sweep must land inside the effective window', () => {
 
   it('a retention success inside the window counts', () => {
     // 10 hours ago, window started 25 hours ago.
-    expect(gate(evidence({ retentionSuccessMinutesAgo: 10 * 60 }))!.ok).toBe(true);
+    expect(
+      gate(
+        evidence({ retentionSuccessAt: new Date(NOW.getTime() - 10 * 3_600_000).toISOString() }),
+      )!.ok,
+    ).toBe(true);
   });
 
   it('unreadable retention evidence is not health', () => {
-    for (const bad of [null, undefined, 'soon', NaN, -1]) {
-      const g = gate(evidence({ retentionSuccessMinutesAgo: bad }));
-      expect(g!.ok, `retentionSuccessMinutesAgo=${String(bad)}`).toBe(false);
+    for (const bad of [null, undefined, 'soon', 'not-a-date', '']) {
+      const g = gate(evidence({ retentionSuccessAt: bad }));
+      expect(g!.ok, `retentionSuccessAt=${String(bad)}`).toBe(false);
     }
   });
 
@@ -1160,7 +1169,9 @@ describe('the daily sweep must land inside the effective window', () => {
     };
     const g = evaluateSoak({
       state: restarted,
-      evidence: evidence({ retentionSuccessMinutesAgo: 10 * 60 }) as never,
+      evidence: evidence({
+        retentionSuccessAt: new Date(NOW.getTime() - 10 * 3_600_000).toISOString(),
+      }) as never,
       now: NOW,
     }).gates.find((x: { id: string }) => x.id === 'retention-in-window');
     expect(g!.ok).toBe(false);
@@ -1169,7 +1180,9 @@ describe('the daily sweep must land inside the effective window', () => {
   it('the gate is one of the gates that must all pass for success', () => {
     const result = evaluateSoak({
       state,
-      evidence: evidence({ retentionSuccessMinutesAgo: 26 * 60 }) as never,
+      evidence: evidence({
+        retentionSuccessAt: new Date(NOW.getTime() - 26 * 3_600_000).toISOString(),
+      }) as never,
       now: NOW,
     });
     expect(result.status).not.toBe('success');
@@ -1180,7 +1193,9 @@ describe('the daily sweep must land inside the effective window', () => {
     // Otherwise this suite would prove only that something fails.
     const result = evaluateSoak({
       state,
-      evidence: evidence({ retentionSuccessMinutesAgo: 10 * 60 }) as never,
+      evidence: evidence({
+        retentionSuccessAt: new Date(NOW.getTime() - 10 * 3_600_000).toISOString(),
+      }) as never,
       now: NOW,
     });
     const failing = result.gates.filter((g: { ok: boolean }) => !g.ok).map((g) => g.id);
@@ -1834,5 +1849,193 @@ describe('re-running a failed run cannot repair the window', () => {
       now: NOW,
     });
     expect(['restarted', 'awaiting-recovery']).toContain(r.status);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4 — ALL verdict-relevant state must be tamper-evident, not only the receipt.
+//
+// The receipt was signed. Everything that actually decides the verdict was not:
+// `releaseSha`, `deploymentId`, `startedAt`, `effectiveWindowStart`,
+// `awaitingRecoverySince`, `restarts` and `lastProcessedMonitorRun` sat in a
+// public GitHub issue body as plain JSON. Optimistic concurrency compares the
+// body against what THIS tick read, so it detects an edit made during a tick
+// and is blind to one made between ticks — which is 29 of every 30 minutes.
+//
+// So: backdate `effectiveWindowStart` by a day and the next tick reports 24
+// elapsed hours. Delete a restart and the interruption never happened. Swap
+// `deploymentId` and the soak silently measures a different deployment.
+//
+// The signature is not "state never changes" — the controller changes it every
+// tick. It is "only something holding CRON_SECRET can produce a valid state",
+// which is the same property the receipt has, applied to the rest of the
+// document.
+//
+// Replay is handled separately, by an anchor GitHub owns: the window cannot
+// begin before the soak issue that records it exists.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the whole soak state is tamper-evident', () => {
+  const SECRET = 'state-integrity-secret';
+  const ISSUE_CREATED = '2026-09-01T00:00:00Z';
+
+  const signedState = (over: Record<string, unknown> = {}) => {
+    const st: Record<string, unknown> = {
+      releaseSha: SHA,
+      deploymentId: '6221617929',
+      startedAt: START,
+      effectiveWindowStart: START,
+      awaitingRecoverySince: null,
+      restarts: [],
+      lastProcessedMonitorRun: 107,
+      tickSeq: 3,
+      ...over,
+    };
+    st.stateDigest = soakStateDigest(SECRET, st);
+    return st;
+  };
+
+  beforeEach(() => {
+    process.env.CRON_SECRET = SECRET;
+  });
+
+  it('a state the controller signed verifies', () => {
+    expect(verifySoakState(SECRET, signedState(), ISSUE_CREATED)).toEqual({ ok: true });
+  });
+
+  it('THE DEFECT: backdating the window is caught', () => {
+    const st = signedState();
+    st.effectiveWindowStart = '2026-08-20T00:00:00Z';
+    expect(verifySoakState(SECRET, st, ISSUE_CREATED).ok).toBe(false);
+  });
+
+  it('THE DEFECT: deleting a restart is caught', () => {
+    const st = signedState({ restarts: [{ at: START, reason: 'something broke' }] });
+    st.restarts = [];
+    expect(verifySoakState(SECRET, st, ISSUE_CREATED).ok).toBe(false);
+  });
+
+  it('THE DEFECT: replacing the deployment or the release is caught', () => {
+    for (const [field, value] of [
+      ['deploymentId', '999999'],
+      ['releaseSha', 'e'.repeat(40)],
+      ['startedAt', '2026-08-01T00:00:00Z'],
+      ['awaitingRecoverySince', null],
+      ['lastProcessedMonitorRun', 1],
+      ['tickSeq', 99],
+    ] as Array<[string, unknown]>) {
+      const st = signedState({ awaitingRecoverySince: '2026-09-01T12:00:00Z' });
+      st[field] = value;
+      expect(verifySoakState(SECRET, st, ISSUE_CREATED).ok, field).toBe(false);
+    }
+  });
+
+  it('an unsigned state is refused — absence is not permission', () => {
+    const st = signedState();
+    delete st.stateDigest;
+    const v = verifySoakState(SECRET, st, ISSUE_CREATED);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/not signed/i);
+  });
+
+  it('a state signed with another key is refused', () => {
+    const st: Record<string, unknown> = { ...signedState(), stateDigest: '' };
+    st.stateDigest = soakStateDigest('another-secret', st);
+    expect(verifySoakState(SECRET, st, ISSUE_CREATED).ok).toBe(false);
+  });
+
+  it('THE REPLAY: a validly signed window cannot predate the issue recording it', () => {
+    // Signature alone does not stop replaying an OLDER valid body, and an older
+    // body has an earlier window start — which is more elapsed time, i.e. the
+    // attacker's goal. The issue's own creation time is an anchor GitHub owns
+    // and the body cannot move.
+    const st = signedState({
+      effectiveWindowStart: '2026-08-25T00:00:00Z',
+      startedAt: '2026-08-25T00:00:00Z',
+    });
+    const v = verifySoakState(SECRET, st, ISSUE_CREATED);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/before the soak issue/i);
+  });
+
+  it('field order does not change the digest', () => {
+    const a = signedState();
+    const reordered = Object.fromEntries(Object.entries(a).reverse());
+    expect(verifySoakState(SECRET, reordered as never, ISSUE_CREATED).ok).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The lifecycle version of §4: a state the controller writes must verify on the
+// next tick, and every field a gate reads must be inside the signature.
+// -----------------------------------------------------------------------------
+describe('signed state survives its own lifecycle', () => {
+  const SECRET = 'lifecycle-state-secret';
+  const ISSUE_CREATED = START;
+
+  beforeEach(() => {
+    process.env.CRON_SECRET = SECRET;
+  });
+
+  it('a freshly created state verifies, round-trips, and verifies again', () => {
+    const created: Record<string, unknown> = {
+      tickSeq: 0,
+      releaseSha: SHA,
+      deploymentId: '6221617929',
+      startedAt: START,
+      effectiveWindowStart: START,
+      awaitingRecoverySince: null,
+      restarts: [],
+      lastProcessedMonitorRun: null,
+      lastTickAt: null,
+    };
+    created.stateDigest = soakStateDigest(SECRET, created);
+    expect(verifySoakState(SECRET, created, ISSUE_CREATED).ok).toBe(true);
+
+    const recovered = parseState(renderState(created));
+    expect(verifySoakState(SECRET, recovered, ISSUE_CREATED).ok).toBe(true);
+  });
+
+  it('every field the evaluator reads from state is signed', () => {
+    // Guards against adding a new verdict-relevant field and forgetting to
+    // cover it — which is how `restarts` or `deploymentId` would become
+    // editable again.
+    for (const field of [
+      'releaseSha',
+      'deploymentId',
+      'startedAt',
+      'effectiveWindowStart',
+      'awaitingRecoverySince',
+      'restarts',
+      'lastProcessedMonitorRun',
+    ]) {
+      expect(SOAK_SIGNED_FIELDS, `${field} is read by a gate but not signed`).toContain(field);
+    }
+  });
+
+  it('lastTickAt is deliberately NOT signed — it decides nothing', () => {
+    expect(SOAK_SIGNED_FIELDS).not.toContain('lastTickAt');
+  });
+
+  it('a receipt cannot be moved between two soaks', () => {
+    // The receipt's own digest is bound into the state digest, so lifting a
+    // valid receipt out of one soak and into another invalidates the state.
+    const base: Record<string, unknown> = {
+      tickSeq: 1,
+      releaseSha: SHA,
+      deploymentId: '1',
+      startedAt: START,
+      effectiveWindowStart: START,
+      awaitingRecoverySince: null,
+      restarts: [],
+      lastProcessedMonitorRun: 1,
+      sentry: { digest: 'a'.repeat(64) },
+    };
+    base.stateDigest = soakStateDigest(SECRET, base);
+    expect(verifySoakState(SECRET, base, ISSUE_CREATED).ok).toBe(true);
+
+    const swapped = { ...base, sentry: { digest: 'b'.repeat(64) } };
+    expect(verifySoakState(SECRET, swapped, ISSUE_CREATED).ok).toBe(false);
   });
 });

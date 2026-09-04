@@ -34,9 +34,11 @@
 // -----------------------------------------------------------------------------
 
 import process from 'node:process';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { unhealthyJobsFrom } from './heartbeat-contract.mjs';
 import { verifyReceiptIntegrity } from './sentry-receipt.mjs';
 import { normaliseRun, isNaturalObservation, isNaturalSuccess } from './run-evidence.mjs';
+import { heartbeatSuccessAt } from './heartbeat-contract.mjs';
 
 export const SOAK_DEFAULTS = {
   /** An uninterrupted healthy window shorter than this is not a soak. */
@@ -133,6 +135,108 @@ export const SOAK_PROGRESS_GATES = Object.freeze([
 export const SOAK_MARKER = '<!-- bookpitch-soak-state -->';
 export const SOAK_LABEL = 'soak';
 
+// -----------------------------------------------------------------------------
+// Soak state integrity.
+//
+// The Sentry receipt was signed. Everything that actually decides the verdict
+// was not: `releaseSha`, `deploymentId`, `startedAt`, `effectiveWindowStart`,
+// `awaitingRecoverySince`, `restarts` and `lastProcessedMonitorRun` lived in a
+// public GitHub issue body as plain JSON.
+//
+// Optimistic concurrency does not help. It compares the body against what THIS
+// tick read, so it catches an edit made during a tick and is blind to one made
+// between ticks — which is 29 minutes out of every 30. Backdate
+// `effectiveWindowStart` and the next tick reports a full window; delete a
+// restart and the interruption never happened; swap `deploymentId` and the
+// soak measures something else.
+//
+// The signature does not mean the state never changes — the controller rewrites
+// it every tick. It means only something holding CRON_SECRET can produce a
+// valid one, which is exactly the property the receipt already had.
+//
+// Signing alone does not stop REPLAY: an attacker can restore an older, validly
+// signed body, and an older body has an earlier window start, which is more
+// elapsed time. So the window is additionally anchored to something GitHub owns
+// and the body cannot move — the soak issue's own creation time. A window
+// cannot begin before the issue that records it exists.
+// -----------------------------------------------------------------------------
+
+/**
+ * Fields the state digest covers: everything a gate reads or a verdict depends
+ * on. `stateDigest` itself and the purely informational `lastTickAt` are
+ * excluded; `sentry` is covered through its own digest, which is included here
+ * so the two cannot be mixed and matched between states.
+ */
+export const SOAK_SIGNED_FIELDS = Object.freeze([
+  'awaitingRecoverySince',
+  'deploymentId',
+  'effectiveWindowStart',
+  'lastProcessedMonitorRun',
+  'releaseSha',
+  'restarts',
+  'startedAt',
+  'tickSeq',
+]);
+
+/** HMAC over a canonical serialisation. Sorted keys, explicit types. */
+export function soakStateDigest(secret, state) {
+  const canonical = SOAK_SIGNED_FIELDS.map(
+    (k) => `${k}=${JSON.stringify(state?.[k] ?? null)}`,
+  ).join('\n');
+  // The receipt's own digest is bound in, so a valid receipt cannot be moved
+  // into a different soak's state and vice versa.
+  const receiptDigestValue = state?.sentry?.digest ?? null;
+  return createHmac('sha256', String(secret))
+    .update(`${canonical}\nsentry.digest=${JSON.stringify(receiptDigestValue)}`)
+    .digest('hex');
+}
+
+/**
+ * Is this persisted state authentic, and is its window anchored to reality?
+ *
+ * @param {string} secret
+ * @param {object} state
+ * @param {string|null} issueCreatedAt  the soak issue's creation time, from GitHub
+ */
+export function verifySoakState(secret, state, issueCreatedAt) {
+  if (!state || typeof state !== 'object') return { ok: false, reason: 'no state' };
+  if (typeof state.stateDigest !== 'string' || !/^[0-9a-f]{64}$/.test(state.stateDigest)) {
+    return {
+      ok: false,
+      reason: 'the soak state is not signed — it cannot be distinguished from an edited one',
+    };
+  }
+  const expected = Buffer.from(soakStateDigest(secret, state), 'hex');
+  const actual = Buffer.from(state.stateDigest, 'hex');
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    return {
+      ok: false,
+      reason: 'the soak state digest does not match its contents — it was edited after signing',
+    };
+  }
+  // The replay anchor. An older validly-signed body would carry an earlier
+  // window; this refuses any window that begins before the issue recording it.
+  if (issueCreatedAt) {
+    const issueAt = Date.parse(issueCreatedAt);
+    const windowAt = Date.parse(state.effectiveWindowStart ?? state.startedAt ?? '');
+    const startedAt = Date.parse(state.startedAt ?? '');
+    if (!Number.isFinite(issueAt) || !Number.isFinite(windowAt) || !Number.isFinite(startedAt)) {
+      return { ok: false, reason: 'the soak state carries no usable window timestamps' };
+    }
+    // One minute of slack: the issue is created immediately after startedAt is
+    // captured, and the two clocks are GitHub's and the runner's.
+    if (windowAt < issueAt - 60_000 || startedAt < issueAt - 60_000) {
+      return {
+        ok: false,
+        reason:
+          `the window begins at ${new Date(windowAt).toISOString()}, before the soak issue ` +
+          `recording it was created at ${issueCreatedAt} — a window cannot predate its own record`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 /** Serialise state into a fenced block the next run can parse back out. */
 export function renderState(state) {
   return `${SOAK_MARKER}\n\n\`\`\`json\n${JSON.stringify(state, null, 2)}\n\`\`\``;
@@ -168,7 +272,7 @@ export function parseState(body) {
  *     sentry: {configured: boolean, ok: boolean, serverEventId: string|null,
  *              browserEventId: string|null, problems?: string[]} | null,
  *     outboxDead: number | null,
- *     retentionSuccessMinutesAgo?: number | null,
+ *     retentionSuccessAt?: string | null,
  *     unhealthyJobs?: string[] | null,
  *     historyComplete?: boolean,
  *   },
@@ -572,16 +676,20 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
       // Compared as an INSTANT against the effective window start, so a restart
       // invalidates evidence from before it rather than inheriting it.
       ...(() => {
-        const mins = evidence.retentionSuccessMinutesAgo;
-        if (typeof mins !== 'number' || !Number.isFinite(mins) || mins < 0) {
+        // An absolute instant from the DATABASE, compared directly with the
+        // window start. This used to be an age subtracted from the runner's
+        // clock, which is two clocks on one comparison.
+        const raw = evidence.retentionSuccessAt;
+        const parsed = raw ? Date.parse(raw) : NaN;
+        if (!Number.isFinite(parsed)) {
           return {
             ok: false,
             detail:
-              'retention success age could not be read — absence of evidence is not evidence ' +
-              'that the nightly sweep ran',
+              'retention success timestamp could not be read — absence of evidence is not ' +
+              'evidence that the nightly sweep ran',
           };
         }
-        const at = new Date(now.getTime() - mins * 60_000);
+        const at = new Date(parsed);
         const inWindow = at >= windowStart;
         return {
           ok: inWindow,
@@ -1261,12 +1369,13 @@ async function dryRun(repo, token) {
       else {
         const m = (await res.json())?.metrics ?? {};
         const unhealthy = unhealthyJobsFrom(m?.cronHeartbeat?.jobs ?? null);
-        const retentionMins = m?.cronHeartbeat?.jobs?.retention?.successMinutesAgo ?? null;
+        const retentionAtIso =
+          heartbeatSuccessAt(m?.cronHeartbeat?.jobs?.retention ?? null)?.toISOString() ?? null;
         ok(
           'ops metrics',
           `outboxDead=${m?.outbox?.dead ?? 'null'} ` +
             `unhealthyJobs=${unhealthy === null ? 'UNREADABLE' : JSON.stringify(unhealthy)} ` +
-            `retentionSuccessMinutesAgo=${retentionMins ?? 'null'}`,
+            `retentionSuccessAt=${retentionAtIso ?? 'null'}`,
         );
         // A dry run must exercise the JUDGEMENT, not only the fetch. Reporting
         // the raw map proved the endpoint answered; it did not prove the
@@ -1337,6 +1446,27 @@ async function main() {
     process.exit(1);
   }
 
+  // Authenticate the state BEFORE any gate reads it. The body is public and
+  // editable between ticks, and optimistic concurrency only sees edits made
+  // during one. An unsigned or edited state is refused outright rather than
+  // being measured.
+  if (issue && state) {
+    const secret = process.env.CRON_SECRET;
+    if (!secret) {
+      console.error('soak: CRON_SECRET is not set, so the persisted state cannot be authenticated');
+      process.exit(1);
+    }
+    const verdict = verifySoakState(secret, state, issue.created_at ?? null);
+    if (!verdict.ok) {
+      console.error(`soak: refusing to continue — ${verdict.reason}`);
+      console.error(
+        'The window recorded in this issue is not one this controller produced. Close the ' +
+          'issue and start a new soak; do not edit the body to make it verify.',
+      );
+      process.exit(1);
+    }
+  }
+
   if (!state) {
     if (process.env.SOAK_START !== 'true') {
       console.log('soak: no open soak issue; nothing to do. This tick is not evidence.');
@@ -1401,6 +1531,7 @@ async function main() {
 
     const startedAt = new Date().toISOString();
     state = {
+      tickSeq: 0,
       releaseSha: sha,
       deploymentId: process.env.SOAK_DEPLOYMENT_ID ?? null,
       startedAt,
@@ -1411,6 +1542,7 @@ async function main() {
       sentry: seededSentry,
       lastTickAt: null,
     };
+    state.stateDigest = soakStateDigest(process.env.CRON_SECRET, state);
     issue = await gh(`/repos/${repo}/issues`, token, {
       method: 'POST',
       body: JSON.stringify({
@@ -1442,7 +1574,7 @@ async function main() {
 
   let outboxDead = null;
   let unhealthyJobs = null;
-  let retentionSuccessMinutesAgo = null;
+  let retentionSuccessAt = null;
   let sentryConfigured = false;
   const cronSecret = process.env.CRON_SECRET;
   const target = process.env.MONITOR_PRODUCTION_URL ?? 'https://bookpitch.ge';
@@ -1477,11 +1609,12 @@ async function main() {
         // turn it into an instant and compare it against the effective window
         // start. `cron-outcomes` only asks whether it is inside retention's
         // 30-hour freshness limit, and 30 hours is longer than the window.
-        const retentionEntry = m?.cronHeartbeat?.jobs?.retention ?? null;
-        retentionSuccessMinutesAgo =
-          retentionEntry && typeof retentionEntry.successMinutesAgo === 'number'
-            ? retentionEntry.successMinutesAgo
-            : null;
+        // The ABSOLUTE instant the database recorded, not an age subtracted
+        // from this runner's clock. Reconstructing it locally mixed
+        // PostgreSQL's NOW() with GitHub's — two machines, on the comparison
+        // that decides whether the nightly sweep landed inside the window.
+        const retentionAt = heartbeatSuccessAt(m?.cronHeartbeat?.jobs?.retention ?? null);
+        retentionSuccessAt = retentionAt ? retentionAt.toISOString() : null;
       }
     } catch {
       /* null → gates read it as "not evidence of health" */
@@ -1509,7 +1642,7 @@ async function main() {
       sentry,
       outboxDead,
       unhealthyJobs,
-      retentionSuccessMinutesAgo,
+      retentionSuccessAt,
     },
   });
 
@@ -1523,8 +1656,15 @@ async function main() {
     lastProcessedMonitorRun:
       result.lastProcessedMonitorRun ?? state.lastProcessedMonitorRun ?? null,
     sentry: nextSentryState(state.sentry ?? null, sentry),
+    // Monotonic, and signed: it exists so a replayed older body is visibly
+    // older rather than merely different.
+    tickSeq: (typeof state.tickSeq === 'number' ? state.tickSeq : 0) + 1,
     lastTickAt: new Date().toISOString(),
   };
+  // Re-signed on every write. The controller is the only thing that can do
+  // this, which is what makes an edited body detectable rather than merely
+  // unlikely.
+  nextState.stateDigest = soakStateDigest(process.env.CRON_SECRET, nextState);
 
   // Optimistic concurrency: refuse to write over a body that changed since it
   // was read, so two controllers cannot interleave conflicting windows.

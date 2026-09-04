@@ -52,6 +52,61 @@ function isAge(v) {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0;
 }
 
+/** Null is "not recorded"; anything non-numeric is a corrupt document. */
+function isAgeOrNull(v) {
+  return v === null || v === undefined || isAge(v);
+}
+
+/**
+ * The exact instant a job last succeeded, as the DATABASE recorded it.
+ *
+ * The soak used to reconstruct this as `runnerNow - successMinutesAgo`. The age
+ * is computed against PostgreSQL's `NOW()` and was then subtracted from the
+ * GitHub runner's clock — two machines, on the one comparison that decides
+ * whether the nightly sweep landed inside the soak window. Same class as the
+ * retention cutoff, the cron heartbeat and the reminder lease.
+ *
+ * Epoch milliseconds rather than an ISO string because the ops response is
+ * numeric-only by construction (assertMetricsAreNumericOnly), and that guard is
+ * worth more than the readability.
+ *
+ * @returns {Date|null} null when absent or unusable — never a guess
+ */
+export function heartbeatSuccessAt(entry) {
+  const ms = entry?.successAtEpochMs;
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return null;
+  return new Date(ms);
+}
+
+/**
+ * Is this document the document the contract describes?
+ *
+ * Exact key set. `unhealthyJobsFrom()` used to ignore unknown keys, which
+ * stopped a deployment ADDING a passing gate but also let it report a job the
+ * monitor has never heard of — a renamed job, a half-applied migration, a
+ * response from something else entirely — without comment. The contract says
+ * which keys exist; anything else is a violation.
+ */
+export function validateHeartbeatMap(jobs) {
+  const problems = [];
+  if (!jobs || typeof jobs !== 'object' || Array.isArray(jobs)) {
+    return { ok: false, problems: ['the heartbeat job map is absent or not an object'] };
+  }
+  const expected = new Set(EXPECTED_HEARTBEAT_JOBS.map((j) => j.metricKey));
+  for (const key of Object.keys(jobs)) {
+    if (!expected.has(key)) {
+      problems.push(
+        `the deployment reports a job the contract does not name: ${key} — the monitor and the ` +
+          'application were built from different contracts',
+      );
+    }
+  }
+  for (const key of expected) {
+    if (!(key in jobs)) problems.push(`the deployment does not report ${key}`);
+  }
+  return { ok: problems.length === 0, problems };
+}
+
 /**
  * Is one job healthy, judged against the LOCAL limit?
  *
@@ -72,6 +127,23 @@ export function evaluateHeartbeatJob(name, entry, limit) {
         `${name} was not reported by this deployment — the heartbeat document did not ` +
         'include it, so nothing is known about whether it runs',
     };
+  }
+  // Every field is validated before it is used. Only `successMinutesAgo` was,
+  // so a string or a NaN anywhere else was compared with `<` and silently
+  // agreed with.
+  if (typeof entry.present !== 'number') {
+    return { ok: false, reason: `${name}'s "present" flag is not numeric` };
+  }
+  if (entry.outcome !== null && entry.outcome !== undefined && typeof entry.outcome !== 'number') {
+    return { ok: false, reason: `${name}'s outcome is not numeric` };
+  }
+  for (const field of ['expectedUnits', 'processedUnits', 'failedUnits']) {
+    if (!isAgeOrNull(entry[field])) {
+      return {
+        ok: false,
+        reason: `${name}'s ${field} is ${JSON.stringify(entry[field])}, which is not a count`,
+      };
+    }
   }
   if (!entry.present) {
     return {
@@ -151,6 +223,12 @@ export function evaluateHeartbeatJob(name, entry, limit) {
  */
 export function unhealthyJobsFrom(jobs) {
   if (!jobs || typeof jobs !== 'object' || Array.isArray(jobs)) return null;
+  // A document that is not the expected document is not evidence about any of
+  // its entries. Fail closed on the whole map rather than trusting the parts
+  // that happen to look familiar.
+  if (!validateHeartbeatMap(jobs).ok) {
+    return EXPECTED_HEARTBEAT_JOBS.map((j) => j.metricKey);
+  }
   const unhealthy = [];
   for (const { metricKey, maxAgeMinutes } of EXPECTED_HEARTBEAT_JOBS) {
     const verdict = evaluateHeartbeatJob(metricKey, jobs[metricKey] ?? null, maxAgeMinutes);

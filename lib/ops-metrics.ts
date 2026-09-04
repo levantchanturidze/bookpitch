@@ -316,6 +316,8 @@ export type CronHeartbeatMetrics = {
       /** 1 success, 0 partial, -1 failure, null unknown/absent. */
       outcome: number | null;
       successMinutesAgo: number | null;
+      /** Absolute UTC instant of the last success, from the DB clock. */
+      successAtEpochMs: number | null;
       attemptMinutesAgo: number | null;
       expectedUnits: number | null;
       processedUnits: number | null;
@@ -953,10 +955,20 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
         last_expected_units: number | null;
         last_failed_units: number | null;
         attempt_minutes_ago: number | null;
+        success_at_epoch_ms: number | null;
       }>
     >`
         SELECT job,
                EXTRACT(EPOCH FROM (NOW() - last_succeeded_at))::float / 60 AS minutes_ago,
+               -- The ABSOLUTE instant, as the database recorded it. The soak
+               -- used to reconstruct this by subtracting minutes_ago from the
+               -- GitHub runner's clock, which mixes PostgreSQL's NOW() with the
+               -- runner's on the one comparison that decides whether the
+               -- nightly sweep landed inside the window. Milliseconds, because
+               -- this response is numeric-only by construction.
+               -- (No backticks in this comment: it lives inside a tagged
+               --  template literal, and a backtick would terminate it.)
+               (EXTRACT(EPOCH FROM last_succeeded_at) * 1000)::float8 AS success_at_epoch_ms,
                last_units,
                last_outcome,
                last_expected_units,
@@ -1131,6 +1143,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
                 present: row ? 1 : 0,
                 outcome: outcomeCode(row?.last_outcome),
                 successMinutesAgo: numOrNull(row?.minutes_ago),
+                successAtEpochMs: numOrNull(row?.success_at_epoch_ms),
                 attemptMinutesAgo: numOrNull(row?.attempt_minutes_ago),
                 expectedUnits: numOrNull(row?.last_expected_units),
                 processedUnits: numOrNull(row?.last_units),

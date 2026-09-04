@@ -3,6 +3,8 @@ import {
   EXPECTED_HEARTBEAT_JOBS,
   evaluateHeartbeatJob,
   unhealthyJobsFrom,
+  validateHeartbeatMap,
+  heartbeatSuccessAt,
 } from '../scripts/heartbeat-contract.mjs';
 import {
   HEARTBEAT_JOBS,
@@ -166,11 +168,19 @@ describe('the whole map is judged against the contract, not its own keys', () =>
     expect(unhealthyJobsFrom([] as unknown as object)).toBeNull();
   });
 
-  it('an unknown job key cannot add or remove health', () => {
+  it('an unknown job key cannot add a gate — and is now a violation in itself', () => {
+    // This used to assert that unknown keys were simply IGNORED, which stopped
+    // a deployment adding a passing gate. That property still holds — an
+    // unknown key never appears in the unhealthy list under its own name — but
+    // ignoring it was too weak: a job the monitor has never heard of means the
+    // two were built from different contracts, and nothing in that document is
+    // evidence. It now fails the whole map, closed.
     const jobs = { ...allHealthy(), somethingNew: healthy() };
-    expect(unhealthyJobsFrom(jobs)).toEqual([]);
-    const broken = { ...allHealthy(), somethingNew: healthy({ outcome: -1 }) };
-    expect(unhealthyJobsFrom(broken), 'an unknown job must not fail the soak').toEqual([]);
+    const unhealthy = unhealthyJobsFrom(jobs)!;
+    expect(unhealthy, 'the unknown key must not become a gate of its own').not.toContain(
+      'somethingNew',
+    );
+    expect(unhealthy.length, 'and the document as a whole is refused').toBeGreaterThan(0);
   });
 
   it('one unhealthy required job is reported by name', () => {
@@ -186,5 +196,100 @@ describe('the whole map is judged against the contract, not its own keys', () =>
     jobs.retention = healthy({ successMinutesAgo: 400, maxAgeMinutes: 1800 });
     jobs.reminders = healthy({ successMinutesAgo: 400 });
     expect(unhealthyJobsFrom(jobs)).toEqual(['reminders']);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §10 — the contract must be exact, and the timestamp must be one clock's.
+//
+// Three gaps left over from the first pass:
+//
+//   * `unhealthyJobsFrom()` ignored unknown keys. That stopped a deployment
+//     ADDING a passing gate, which was the point at the time, but it also meant
+//     a deployment reporting a job the monitor has never heard of — a renamed
+//     job, a half-finished migration, a response from a different service —
+//     passed silently. The contract says which keys exist; anything else is a
+//     violation, not a curiosity.
+//
+//   * Only `successMinutesAgo` was validated as a number. `expectedUnits`,
+//     `processedUnits`, `failedUnits`, `outcome` and `present` were used
+//     unchecked, so a string or a NaN in any of them was compared with `<` and
+//     silently agreed with.
+//
+//   * The soak reconstructed retention's success INSTANT as
+//     `runnerNow - successMinutesAgo`. The age is computed against the
+//     database's `NOW()` and then subtracted from the GitHub runner's clock —
+//     two machines again, on the one comparison that decides whether the
+//     nightly sweep landed inside the window.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the heartbeat map is validated against the exact contract', () => {
+  it('THE DEFECT: an unknown job key is a contract violation', () => {
+    const v = validateHeartbeatMap({ ...allHealthy(), somethingNew: healthy() });
+    expect(v.ok, 'a key the contract does not name must be reported').toBe(false);
+    expect(v.problems.join(' ')).toMatch(/somethingNew/);
+  });
+
+  it('a violation makes every job unhealthy, rather than being ignored', () => {
+    // Fail closed: if the document is not the document we expect, nothing in it
+    // is evidence.
+    const jobs = { ...allHealthy(), somethingNew: healthy() };
+    expect(unhealthyJobsFrom(jobs)!.sort()).toEqual(
+      [...EXPECTED_HEARTBEAT_JOBS].map((j) => j.metricKey).sort(),
+    );
+  });
+
+  it('an exactly-correct map has no problems', () => {
+    expect(validateHeartbeatMap(allHealthy())).toEqual({ ok: true, problems: [] });
+  });
+
+  it('a missing key is a violation too, and names the key', () => {
+    const jobs = allHealthy();
+    delete (jobs as Record<string, unknown>).retention;
+    const v = validateHeartbeatMap(jobs);
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(' ')).toMatch(/retention/);
+  });
+
+  it('THE DEFECT: every numeric field is validated, not only the age', () => {
+    for (const field of ['expectedUnits', 'processedUnits', 'failedUnits']) {
+      for (const bad of ['12', NaN, Infinity, {}, []]) {
+        const v = evaluateHeartbeatJob('reminders', healthy({ [field]: bad }), 360);
+        expect(v.ok, `${field}=${JSON.stringify(bad)} must not pass`).toBe(false);
+      }
+    }
+  });
+
+  it('null unit counts are allowed — they mean "not recorded", not "malformed"', () => {
+    // A row written before unit tracking has nulls. That is an absence, and the
+    // coherence check simply cannot run; it is not a corrupt document.
+    const v = evaluateHeartbeatJob(
+      'reminders',
+      healthy({ expectedUnits: null, processedUnits: null, failedUnits: null }),
+      360,
+    );
+    expect(v.ok).toBe(true);
+  });
+
+  it('a non-numeric outcome or present flag is refused', () => {
+    expect(evaluateHeartbeatJob('reminders', healthy({ outcome: 'success' }), 360).ok).toBe(false);
+    expect(evaluateHeartbeatJob('reminders', healthy({ present: 'yes' }), 360).ok).toBe(false);
+  });
+});
+
+describe('the success instant comes from the database, not from two clocks', () => {
+  it('THE DEFECT: the contract exposes an absolute epoch, not just an age', () => {
+    const entry = healthy({ successAtEpochMs: Date.parse('2026-09-04T02:17:00Z') });
+    expect(heartbeatSuccessAt(entry)?.toISOString()).toBe('2026-09-04T02:17:00.000Z');
+  });
+
+  it('an absent or malformed epoch yields null — never a reconstructed guess', () => {
+    for (const bad of [undefined, null, NaN, 'soon', -1, 0]) {
+      expect(
+        heartbeatSuccessAt(healthy({ successAtEpochMs: bad as number })),
+        JSON.stringify(bad),
+      ).toBeNull();
+    }
   });
 });
