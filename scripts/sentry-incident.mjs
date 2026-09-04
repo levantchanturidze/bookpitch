@@ -79,8 +79,10 @@ async function main() {
     `/repos/${repo}/issues?state=open&labels=${INCIDENT_LABEL}&per_page=100`,
     token,
   );
+  // Ascending: the canonical issue is the OLDEST, and this is one page. See
+  // the same query in production-monitor.mjs.
   const closed = await gh(
-    `/repos/${repo}/issues?state=closed&labels=${INCIDENT_LABEL}&per_page=50&sort=created&direction=desc`,
+    `/repos/${repo}/issues?state=closed&labels=${INCIDENT_LABEL}&per_page=100&sort=created&direction=asc`,
     token,
   );
   const plan = reconcileIncidents([result], open ?? [], closed ?? []);

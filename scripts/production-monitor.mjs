@@ -1624,11 +1624,16 @@ async function syncIncidents(repo, token, results, now) {
     `/repos/${repo}/issues?state=open&labels=${INCIDENT_LABEL}&per_page=100`,
     token,
   );
-  // Recently closed incidents too, so a still-failing check reopens its own
-  // issue instead of orphaning its history under a new number. Sorted by
-  // GitHub newest-first; one page is ample for a class that recurs.
+  // Closed incidents too, so a still-failing check reopens its own issue
+  // instead of orphaning its history under a new number.
+  //
+  // ASCENDING, deliberately. The canonical issue for a marker is the OLDEST
+  // one, and this list is capped at one page — so fetching newest-first would
+  // drop the canonical off the end as soon as there were more than a page of
+  // closed incidents, and the reconciler would open a duplicate of an issue it
+  // simply could not see. Oldest-first puts what matters on page one.
   const closedIssues = await gh(
-    `/repos/${repo}/issues?state=closed&labels=${INCIDENT_LABEL}&per_page=50&sort=created&direction=desc`,
+    `/repos/${repo}/issues?state=closed&labels=${INCIDENT_LABEL}&per_page=100&sort=created&direction=asc`,
     token,
   );
   const { toOpen, toComment, toClose, toReopen, toCloseDuplicate } = reconcileIncidents(
