@@ -73,13 +73,13 @@ Observed directly, not carried over from any earlier summary.
 | A7 | Automatic Sentry→soak handoff | `PASSED — LOCAL` | `release-verify-and-soak.yml` does all six steps in one job; `soak.yml` can no longer start a soak at all — `start`, `release_sha`, `deployment_id` and `sentry_receipt` inputs removed |
 | A8 | Reminder clock + eligibility contract, shared | `PASSED — LOCAL` | `lib/messaging/reminder-eligibility.ts`; selection window moved into SQL (was `new Date()` compared against a DB `starts_at`); clock-skew tests both directions with `toFake: ['Date']` |
 | A9 | Cron threshold contradiction (1.5h vs 6h) | `PASSED — LOCAL` | measured 191 scheduled runs / 12.5 days: p50 0.44h, p90 2.08h, p99 3.02h, 13.7% of gaps > 1.5h, one > 6h (the billing outage). Split into `cron-delivery-lag` (90m, informational) and `cron-staleness` (6h, gating) |
-| A10 | Documentation reconciliation | `NOT STARTED` | |
+| A10 | Documentation reconciliation | `PASSED — LOCAL` | operations.md env table repaired (3 GitHub rows were orphaned below the Sentry prose and rendered as text) + the 3 Sentry build/API vars and `SENTRY_PROBE_ENABLED` added; `pg_restore --list` no longer described as "restorable"; superseded banners on the phase-17 Sentry instructions; release-state records this round and stops claiming "everything automatable is done" unqualified |
 
 ### B. Verification
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| B1 | Full local suite | `NOT STARTED` | |
+| B1 | Full local suite | `PASSED — LOCAL` | 121 files, 1713 passed, 41 skipped (all 41 are the disposable-DB injected-failure suite, which runs in CI); lint 0 errors; build exit 0; prettier clean |
 | B2 | CI green on the exact merged head | `NOT STARTED` | |
 | B3 | Playwright full matrix | `NOT STARTED` | |
 | B4 | Secret scan | `NOT STARTED` | |

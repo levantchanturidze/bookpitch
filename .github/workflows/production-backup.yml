@@ -6,7 +6,9 @@ name: Production backup
 #
 # Chain of custody:
 #   pg_dump (custom format)          → ephemeral runner disk, 0700 work dir
-#   pg_restore --list validation     → an unreadable archive never ships
+#   pg_restore --list validation     → an unreadable archive never ships.
+#                                      Readability, NOT a restore: restoring is
+#                                      restore-drill.yml.
 #   age encryption to the public key → ops/backup-age-recipient.txt
 #   GitHub Actions artifact          → encrypted bytes only, 35-day retention
 #
@@ -242,7 +244,7 @@ jobs:
           TOC="${RUNNER_TEMP}/toc.txt"
           pg_restore --list "${RUNNER_TEMP}/unpacked/database.dump" > "$TOC"
           ENTRIES=$(grep -cvE '^(;|$)' "$TOC")
-          echo "restorable entries: ${ENTRIES}"
+          echo "table-of-contents entries: ${ENTRIES}"
           if [ "$ENTRIES" -lt 20 ]; then
             echo "::error::decrypted archive has only ${ENTRIES} entries"
             exit 1
@@ -254,4 +256,10 @@ jobs:
             fi
           done
 
-          echo "OK: artifact is encrypted, intact, and restorable."
+          # Carefully worded. `pg_restore --list` reads the archive's table of
+          # contents; it does NOT restore anything, and an archive whose TOC
+          # parses can still fail to load. Proving it RESTORES is
+          # restore-drill.yml, which loads it into a disposable database and
+          # runs the invariants against the result.
+          echo "OK: artifact is encrypted, intact, and its table of contents is readable."
+          echo "NOTE: this is a readability check, not a restore. See restore-drill.yml."

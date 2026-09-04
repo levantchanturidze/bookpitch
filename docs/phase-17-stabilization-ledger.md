@@ -217,6 +217,13 @@ first few milliseconds can be missed. That is the right trade for 61 KB.
 
 ### What was proven, level by level
 
+> **Superseded 2026-09-04.** `verify:sentry` no longer has four levels, no
+> longer takes `SENTRY_DSN` alone, and no longer proves anything about the
+> machine it runs on. It drives the DEPLOYED application in both runtimes and
+> ends at level 5 VERIFIED. The current description is in `docs/operations.md`
+> § Sentry; the current state is in `docs/release-state.md`. Left here because
+> the reasoning below is still the reasoning — only the instructions changed.
+
 `npm run verify:sentry` reports four levels and exits non-zero below level 4. It
 is proven to discriminate, not merely to run: against a local ingest stub
 answering `200` it reports level 4; against the same stub answering `403` it
