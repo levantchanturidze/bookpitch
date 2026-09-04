@@ -98,7 +98,33 @@ jobs:
       - name: Audit dependencies for known vulnerabilities
         # Fails on high or critical severity. Run after install so the exact
         # installed tree is scanned, not just the lockfile resolution.
-        run: npm audit --audit-level=high
+        #
+        # Retried, because "the registry did not answer" and "this tree has
+        # vulnerabilities" are different facts and only one of them is about us.
+        # npm's audit endpoint returned 503 on three of five runs on
+        # 2026-09-04; a gate that fails most of the time for reasons unrelated
+        # to the code is one people learn to re-run without reading, which is
+        # how a real finding gets waved through.
+        #
+        # This retries the TRANSPORT only. `npm audit` exits non-zero for both
+        # causes, so the two are told apart by the message it prints: anything
+        # that is not an endpoint error is a real result and fails immediately.
+        # A persistent outage still fails the job — it is not a skip.
+        run: |
+          set -o pipefail
+          for attempt in 1 2 3; do
+            out=$(npm audit --audit-level=high 2>&1) && { echo "$out"; exit 0; }
+            echo "$out"
+            if ! grep -q "audit endpoint returned an error" <<<"$out"; then
+              echo "::error::npm audit reported findings, not a transport failure."
+              exit 1
+            fi
+            echo "::warning::npm audit endpoint unavailable (attempt ${attempt}/3)."
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 20))
+          done
+          echo "::error::npm's audit endpoint did not answer after 3 attempts."
+          echo "::error::Dependencies are UNVERIFIED. This fails closed rather than passing."
+          exit 1
 
       - name: Check formatting
         run: npm run format:check

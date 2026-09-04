@@ -1071,3 +1071,46 @@ describe('the soak refuses to start without Sentry receipt', () => {
     expect(controller).toMatch(/seededSentry\.releaseSha !== sha/);
   });
 });
+
+// -----------------------------------------------------------------------------
+// The dependency audit retries the transport, never the verdict.
+//
+// npm's audit endpoint returned 503 on three of five CI runs on 2026-09-04. A
+// gate that fails most of the time for reasons unrelated to the code is one
+// people learn to re-run without reading, and that is how a real finding gets
+// waved through — the same alarm-fatigue failure as the 90-minute cron
+// threshold, in a different place.
+//
+// The fix must not blur the two facts. "The registry did not answer" and "this
+// tree has vulnerabilities" both make `npm audit` exit non-zero, and only one
+// of them is about us.
+// -----------------------------------------------------------------------------
+describe('the dependency audit distinguishes an outage from a finding', () => {
+  const { raw } = readWorkflow('ci.yml');
+  const step = raw.slice(
+    raw.indexOf('- name: Audit dependencies'),
+    raw.indexOf('- name: Check formatting'),
+  );
+
+  it('still runs npm audit at high severity', () => {
+    expect(step).toMatch(/npm audit --audit-level=high/);
+  });
+
+  it('a real finding fails immediately, without retrying', () => {
+    // The retry is gated on the endpoint-error message. Anything else exits 1
+    // on the first attempt.
+    expect(step).toMatch(/grep -q "audit endpoint returned an error"/);
+    expect(step).toMatch(/npm audit reported findings, not a transport failure/);
+  });
+
+  it('a persistent outage FAILS the job — it is not a skip', () => {
+    expect(step).toMatch(/did not answer after 3 attempts/);
+    expect(step).toMatch(/UNVERIFIED/);
+    expect(step.trimEnd().endsWith('exit 1')).toBe(true);
+  });
+
+  it('and it is not suppressed with continue-on-error', () => {
+    expect(step).not.toMatch(/continue-on-error/);
+    expect(step).not.toMatch(/\|\| true/);
+  });
+});
