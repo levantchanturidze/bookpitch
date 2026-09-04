@@ -57,11 +57,32 @@ export const SOAK_DEFAULTS = {
    * Largest tolerable hole between natural monitor observations.
    *
    * Six observations satisfy a count and can still leave most of a day
-   * unwatched. 4h clears GitHub's measured worst-case delivery gap (4h40m is
-   * the cron figure; the monitor's own 30-minute schedule is delivered more
-   * reliably) while refusing a window with a hole big enough to hide an outage.
+   * unwatched, so density alone is not enough.
+   *
+   * RECALIBRATED 2026-09-04, and the reason matters. This gate used to have no
+   * consequence — failing it coloured a tick red and the window carried on.
+   * Making it restart the window (SOAK_HEALTH_GATES) turned a number that had
+   * never bitten into one that decides whether a soak can finish, and it had
+   * never been calibrated against what GitHub actually does.
+   *
+   * Measured over 183 scheduled runs of the monitor's own 30-minute schedule,
+   * across 15.5 days:
+   *
+   *   p50 0.82h   p90 2.25h   p95 4.13h   p99 5.03h
+   *   gaps over 4h: 172.95, 5.21, 5.03, 4.84, 4.79, 4.73, 4.67, 4.62, 4.39,
+   *                 4.26, 4.13
+   *
+   * There is a clean separation in that list: ordinary delivery lag tops out at
+   * 5.21h, and then the next value is 172.95h — the seven-day Actions billing
+   * suspension, which is an outage, not a lag.
+   *
+   * At 5h the gate fires on 1.6% of gaps, which is a 38% chance of tripping at
+   * least once in any 24-hour window: the soak would have been a lottery
+   * against GitHub's scheduler rather than a measurement of production. At 6h
+   * it fires only on the outage. 7h and 8h fire on exactly the same one gap, so
+   * they buy nothing and only widen the hole an outage could hide in.
    */
-  maxObservationGapHours: 5,
+  maxObservationGapHours: 6,
   /** Both canonical hosts must resolve to the deployment under soak. */
   requiredAliases: ['bookpitch.ge', 'www.bookpitch.ge'],
 };

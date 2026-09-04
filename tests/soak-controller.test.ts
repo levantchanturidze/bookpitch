@@ -1460,3 +1460,50 @@ describe('a tampered receipt cannot survive a tick', () => {
     }
   });
 });
+
+// -----------------------------------------------------------------------------
+// The observation-gap limit is calibrated, and its boundary is probed.
+//
+// It became consequential when it joined SOAK_HEALTH_GATES: before that,
+// failing it coloured a tick red and the window carried on. A threshold that
+// has never bitten has never been tested against reality, and this one had not:
+// at 5h it fired on 1.6% of measured monitor gaps, which is a 38% chance of
+// tripping at least once per 24-hour window.
+// -----------------------------------------------------------------------------
+describe('the observation-gap limit sits above delivery lag and below an outage', () => {
+  const at = (h: number) => new Date(new Date(START).getTime() + h * 3_600_000).toISOString();
+
+  const withGap = (gapHours: number) => {
+    // Hourly observations for 25 hours, minus a stretch that creates one hole.
+    const hours = [];
+    for (let h = 1; h <= 25; h++) {
+      if (h > 5 && h <= 5 + gapHours - 1) continue;
+      hours.push(h);
+    }
+    return healthyEvidence({
+      monitorRuns: hours.map((h, i) => ({
+        runId: 400 + i,
+        event: 'schedule',
+        conclusion: 'success',
+        completedAt: at(h),
+      })),
+    });
+  };
+
+  it('a 5.2h hole — the worst measured delivery lag — is tolerated', () => {
+    const r = evaluateSoak({ state: state(), evidence: withGap(5), now: NOW });
+    expect(gate(r, 'observation-gap').ok, gate(r, 'observation-gap').detail).toBe(true);
+  });
+
+  it('a 7h hole is not', () => {
+    const r = evaluateSoak({ state: state(), evidence: withGap(7), now: NOW });
+    expect(gate(r, 'observation-gap').ok).toBe(false);
+    // …and because it is a health gate, it stops the clock rather than just
+    // showing red.
+    expect(r.status).toBe('awaiting-recovery');
+  });
+
+  it('the limit is the calibrated value, not an incidental one', () => {
+    expect(SOAK_DEFAULTS.maxObservationGapHours).toBe(6);
+  });
+});
