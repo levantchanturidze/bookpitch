@@ -1507,3 +1507,77 @@ describe('the observation-gap limit sits above delivery lag and below an outage'
     expect(SOAK_DEFAULTS.maxObservationGapHours).toBe(6);
   });
 });
+
+// -----------------------------------------------------------------------------
+// A continuing failure is ONE unhealthy episode, not one per tick.
+//
+// Introduced by the health-gate rule itself: the branch that enters
+// awaiting-recovery appended to `restarts`, and `restarts` is persisted, so a
+// six-hour Sentry outage would write twelve identical entries — and a day-long
+// one, forty-eight. The issue body grows without bound and the real restart
+// history drowns in repetitions of the same sentence.
+//
+// The run-failure path already had this right: it only records when the moment
+// is newer than the one already being awaited.
+// -----------------------------------------------------------------------------
+describe('a continuing failure is recorded once, not once per tick', () => {
+  const t0 = new Date(NOW);
+
+  it('THE DEFECT: a second failing tick adds no second restart entry', () => {
+    const first = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({ outboxDead: 4 }),
+      now: t0,
+    });
+    expect(first.status).toBe('awaiting-recovery');
+    expect(first.restarts).toHaveLength(1);
+
+    const second = evaluateSoak({
+      state: {
+        ...state(),
+        awaitingRecoverySince: first.awaitingRecoverySince,
+        restarts: first.restarts,
+      },
+      evidence: healthyEvidence({ outboxDead: 4 }),
+      now: new Date(t0.getTime() + 30 * 60_000),
+    });
+    expect(second.status).toBe('awaiting-recovery');
+    expect(second.restarts, 'the same episode must not be recorded twice').toHaveLength(1);
+    // …and the episode keeps its ORIGINAL start, so recovery is still required
+    // after the moment things actually broke.
+    expect(second.awaitingRecoverySince).toBe(first.awaitingRecoverySince);
+  });
+
+  it('a NEW failure after a recovery is a new entry', () => {
+    // The complement: deduping must not swallow a genuinely separate episode.
+    const first = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({ outboxDead: 4 }),
+      now: t0,
+    });
+    // Recovered: a healthy scheduled observation after the failure.
+    const recoveredAt = new Date(t0.getTime() + 3_600_000);
+    const later = new Date(t0.getTime() + 2 * 3_600_000);
+    const second = evaluateSoak({
+      state: {
+        ...state(),
+        awaitingRecoverySince: first.awaitingRecoverySince,
+        restarts: first.restarts,
+      },
+      evidence: healthyEvidence({
+        monitorRuns: [
+          {
+            runId: 5001,
+            event: 'schedule',
+            conclusion: 'success',
+            completedAt: recoveredAt.toISOString(),
+          },
+        ],
+        outboxDead: 7,
+      }),
+      now: later,
+    });
+    expect(second.status).toBe('awaiting-recovery');
+    expect(second.restarts.length, 'a separate episode deserves its own entry').toBe(2);
+  });
+});
