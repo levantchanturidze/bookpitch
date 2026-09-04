@@ -6,8 +6,14 @@ import {
   SOAK_PROGRESS_GATES,
   soakFreshnessBound,
   soakStateDigest,
-  SOAK_SIGNED_FIELDS,
+  SOAK_SEMANTIC_FIELDS,
   verifySoakState,
+  SOAK_STATE_VERSION,
+  SOAK_PRESENTATION_FIELDS,
+  sentryProofAge,
+  renderCheckpoint,
+  parseCheckpoint,
+  verifyCheckpointChain,
   evaluateSoak,
   parseState,
   renderState,
@@ -99,10 +105,10 @@ function healthyEvidence(over: Record<string, unknown> = {}) {
       serverEventId: 'srv-abc',
       browserEventId: 'brw-def',
       problems: [],
-      // A fresh both-runtime proof inside the window. Re-fetching the original
+      // The verifier's own signed completion time. Re-fetching the original
       // events proves only that they are still readable; this is the evidence
       // that new ones can still be ingested.
-      lastFreshProofAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
+      verifiedAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
     },
     outboxDead: 0,
     unhealthyJobs: [],
@@ -200,10 +206,23 @@ describe('time alone never satisfies the soak', () => {
   });
 
   it('a window shorter than 24h is not yet a soak, however clean', () => {
+    const earlier = new Date('2026-09-01T20:00:00Z');
     const r = evaluateSoak({
       state: state(),
-      evidence: healthyEvidence(),
-      now: new Date('2026-09-01T20:00:00Z'),
+      evidence: healthyEvidence({
+        // The shared fixture dates its proof relative to NOW; this test runs
+        // five hours earlier, which would put the proof in the future and be
+        // refused. Dated for this test's own clock instead.
+        sentry: {
+          configured: true,
+          ok: true,
+          serverEventId: 'srv-abc',
+          browserEventId: 'brw-def',
+          problems: [],
+          verifiedAt: new Date(earlier.getTime() - 2 * 3_600_000).toISOString(),
+        },
+      }),
+      now: earlier,
     });
     expect(r.status).toBe('running');
     expect(gate(r, 'window-elapsed').ok).toBe(false);
@@ -1128,7 +1147,7 @@ describe('the daily sweep must land inside the effective window', () => {
       ok: true,
       serverEventId: 's1',
       browserEventId: 'b1',
-      lastFreshProofAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
+      verifiedAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
     },
     outboxDead: 0,
     unhealthyJobs: [],
@@ -1895,6 +1914,7 @@ describe('the whole soak state is tamper-evident', () => {
 
   const signedState = (over: Record<string, unknown> = {}) => {
     const st: Record<string, unknown> = {
+      schemaVersion: SOAK_STATE_VERSION,
       releaseSha: SHA,
       deploymentId: '6221617929',
       startedAt: START,
@@ -1993,6 +2013,7 @@ describe('signed state survives its own lifecycle', () => {
 
   it('a freshly created state verifies, round-trips, and verifies again', () => {
     const created: Record<string, unknown> = {
+      schemaVersion: SOAK_STATE_VERSION,
       tickSeq: 0,
       releaseSha: SHA,
       deploymentId: '6221617929',
@@ -2010,10 +2031,10 @@ describe('signed state survives its own lifecycle', () => {
     expect(verifySoakState(SECRET, recovered, ISSUE_CREATED).ok).toBe(true);
   });
 
-  it('every field the evaluator reads from state is signed', () => {
-    // Guards against adding a new verdict-relevant field and forgetting to
-    // cover it — which is how `restarts` or `deploymentId` would become
-    // editable again.
+  it('every field the evaluator reads from state is a known semantic field', () => {
+    // The signature now covers a canonical DEEP serialisation of everything
+    // except the presentation list, so this asserts the SCHEMA rather than an
+    // inclusion list — a nested value can no longer be semantic and unsigned.
     for (const field of [
       'releaseSha',
       'deploymentId',
@@ -2022,19 +2043,21 @@ describe('signed state survives its own lifecycle', () => {
       'awaitingRecoverySince',
       'restarts',
       'lastProcessedMonitorRun',
+      'sentry',
     ]) {
-      expect(SOAK_SIGNED_FIELDS, `${field} is read by a gate but not signed`).toContain(field);
+      expect(SOAK_SEMANTIC_FIELDS, `${field} is read by a gate`).toContain(field);
     }
   });
 
   it('lastTickAt is deliberately NOT signed — it decides nothing', () => {
-    expect(SOAK_SIGNED_FIELDS).not.toContain('lastTickAt');
+    expect(SOAK_SEMANTIC_FIELDS).not.toContain('lastTickAt');
   });
 
   it('a receipt cannot be moved between two soaks', () => {
     // The receipt's own digest is bound into the state digest, so lifting a
     // valid receipt out of one soak and into another invalidates the state.
     const base: Record<string, unknown> = {
+      schemaVersion: SOAK_STATE_VERSION,
       tickSeq: 1,
       releaseSha: SHA,
       deploymentId: '1',
@@ -2078,7 +2101,7 @@ describe('the soak requires ONGOING proof of ingestion', () => {
         serverEventId: 'srv-abc',
         browserEventId: 'brw-def',
         problems: [],
-        lastFreshProofAt: hoursAgo === null ? null : at(hoursAgo),
+        verifiedAt: hoursAgo === null ? null : at(hoursAgo),
       },
     });
 
@@ -2172,5 +2195,319 @@ describe('an absent signing key is an error, not a silent downgrade', () => {
     // and agree — a signature scheme that authenticates nothing.
     expect(() => soakStateDigest(undefined as never, { releaseSha: 'x' })).toThrow(/CRON_SECRET/);
     expect(() => soakStateDigest('', { releaseSha: 'x' })).toThrow(/CRON_SECRET/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §2.1 — a hand-maintained list of top-level field names is not "all
+// verdict-relevant state signed".
+//
+// `SOAK_SIGNED_FIELDS` named eight top-level keys plus `sentry.digest`. It
+// therefore did NOT cover `sentry.lastFreshProofAt`, which is the single value
+// the `observability-continuing` gate reads. An issue editor could future-date
+// it and `stateDigest` stayed valid — and because the gate compared an age
+// rather than validating the timestamp, a future date produced a negative age
+// that sailed under the maximum.
+//
+// The lesson is the list itself: any manual enumeration of "the important
+// fields" is one nested value behind the code that reads them. So the digest
+// now covers a canonical DEEP serialisation of the whole semantic state, under
+// a schema version, with unknown fields rejected rather than ignored.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('every semantic leaf is signed, however deeply nested', () => {
+  const SECRET = 'deep-signing-secret';
+  const ISSUE_AT = START;
+
+  const base = () => ({
+    schemaVersion: SOAK_STATE_VERSION,
+    tickSeq: 4,
+    releaseSha: SHA,
+    deploymentId: '6221617929',
+    startedAt: START,
+    effectiveWindowStart: START,
+    awaitingRecoverySince: null,
+    restarts: [{ at: START, reason: 'something broke' }],
+    lastProcessedMonitorRun: 107,
+    sentry: {
+      notBefore: '2026-09-01T00:00:00.000Z',
+      verifiedAt: '2026-09-01T00:03:00.000Z',
+      nonce: 'abcd1234abcd1234',
+      releaseSha: SHA,
+      environment: 'production',
+      serverEventId: 'srv-1',
+      browserEventId: 'brw-2',
+      serverSource: 'app/api/health/sentry-probe/route.ts',
+      browserSource: 'app/probe/sentry/BrowserProbe.tsx',
+      sourceMapsPublic: false,
+      sourceMapAssets: '/_next/static/chunks/main.js',
+      digest: 'a'.repeat(64),
+      configured: true,
+      lastRevalidationOk: true,
+      lastProblems: [],
+    },
+  });
+
+  const signed = (over: Record<string, unknown> = {}) => {
+    const st = { ...base(), ...over } as Record<string, unknown>;
+    st.stateDigest = soakStateDigest(SECRET, st);
+    return st;
+  };
+
+  beforeEach(() => {
+    process.env.CRON_SECRET = SECRET;
+  });
+
+  it('a signed state verifies', () => {
+    expect(verifySoakState(SECRET, signed(), ISSUE_AT)).toEqual({ ok: true });
+  });
+
+  it('THE DEFECT: mutating a NESTED sentry field invalidates the state', () => {
+    for (const field of [
+      'nonce',
+      'verifiedAt',
+      'notBefore',
+      'serverEventId',
+      'browserEventId',
+      'serverSource',
+      'browserSource',
+      'sourceMapAssets',
+      'sourceMapsPublic',
+      'digest',
+      'releaseSha',
+      'environment',
+    ]) {
+      const st = signed();
+      (st.sentry as Record<string, unknown>)[field] = 'tampered';
+      expect(verifySoakState(SECRET, st, ISSUE_AT).ok, `sentry.${field}`).toBe(false);
+    }
+  });
+
+  it('mutating a restart entry — at any depth — invalidates the state', () => {
+    const st = signed();
+    (st.restarts as Array<{ reason: string }>)[0].reason = 'nothing happened';
+    expect(verifySoakState(SECRET, st, ISSUE_AT).ok).toBe(false);
+  });
+
+  it('THE DEFECT: an unknown semantic field is rejected, not ignored', () => {
+    // Ignoring one is how a future field gets added, read by a gate, and never
+    // covered — which is exactly how lastFreshProofAt happened.
+    const st = signed();
+    (st as Record<string, unknown>).somethingNew = 'x';
+    const v = verifySoakState(SECRET, st, ISSUE_AT);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/unknown/i);
+  });
+
+  it('a schema version mismatch is refused', () => {
+    const st = signed({ schemaVersion: SOAK_STATE_VERSION + 1 });
+    expect(verifySoakState(SECRET, st, ISSUE_AT).ok).toBe(false);
+  });
+
+  it('presentation-only fields are excluded, and only those', () => {
+    // lastTickAt decides nothing. Changing it must not invalidate a state, or
+    // every tick would have to be re-signed for a cosmetic value.
+    const st = signed();
+    (st as Record<string, unknown>).lastTickAt = new Date().toISOString();
+    expect(verifySoakState(SECRET, st, ISSUE_AT).ok).toBe(true);
+    expect(SOAK_PRESENTATION_FIELDS).toEqual(['lastTickAt']);
+  });
+
+  it('key order never changes the digest, at any depth', () => {
+    // A round trip through JSON, or through GitHub's issue body, can reorder
+    // keys. It must not look like tampering. (The first version of this test
+    // used a JSON.stringify replacer ARRAY, which filters keys rather than
+    // reordering them — it dropped every nested value and proved nothing.)
+    const reverseKeysDeep = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(reverseKeysDeep);
+      if (v && typeof v === 'object') {
+        return Object.fromEntries(
+          Object.entries(v as Record<string, unknown>)
+            .reverse()
+            .map(([k, val]) => [k, reverseKeysDeep(val)]),
+        );
+      }
+      return v;
+    };
+    const a = signed();
+    const reordered = reverseKeysDeep(a) as Record<string, unknown>;
+    expect(Object.keys(reordered)).not.toEqual(Object.keys(a));
+    expect(verifySoakState(SECRET, reordered, ISSUE_AT).ok).toBe(true);
+  });
+});
+
+describe('Sentry freshness comes from the SIGNED verifier timestamp', () => {
+  const SECRET = 'freshness-secret';
+
+  it('THE DEFECT: freshness is derived from sentry.verifiedAt, not a local now', () => {
+    // `lastFreshProofAt` was written by the controller from its own clock and
+    // was outside both HMACs. The verifier's own completion time is signed, so
+    // it cannot be moved without breaking the receipt.
+    const at = new Date(NOW.getTime() - 2 * 3_600_000).toISOString();
+    expect(sentryProofAge({ verifiedAt: at }, NOW)).toBeCloseTo(2, 1);
+  });
+
+  it('a future timestamp is refused, not treated as very fresh', () => {
+    // A negative age passed `age <= limit` silently — future-dating the field
+    // made the gate greener than green.
+    const future = new Date(NOW.getTime() + 3_600_000).toISOString();
+    expect(sentryProofAge({ verifiedAt: future }, NOW)).toBeNull();
+  });
+
+  it('a small forward skew is tolerated, a large one is not', () => {
+    const smallSkew = new Date(NOW.getTime() + 30_000).toISOString();
+    expect(sentryProofAge({ verifiedAt: smallSkew }, NOW)).not.toBeNull();
+    const bigSkew = new Date(NOW.getTime() + 20 * 60_000).toISOString();
+    expect(sentryProofAge({ verifiedAt: bigSkew }, NOW)).toBeNull();
+  });
+
+  it('a malformed or absent timestamp is refused', () => {
+    for (const bad of [undefined, null, '', 'soon', '2026-13-45T99:99:99Z']) {
+      expect(sentryProofAge({ verifiedAt: bad as string }, NOW), String(bad)).toBeNull();
+    }
+  });
+
+  it('the gate reads it, so a future-dated proof cannot pass', () => {
+    const future = new Date(NOW.getTime() + 3_600_000).toISOString();
+    const r = evaluateSoak({
+      state: state(),
+      evidence: healthyEvidence({
+        sentry: {
+          configured: true,
+          ok: true,
+          serverEventId: 's',
+          browserEventId: 'b',
+          problems: [],
+          verifiedAt: future,
+        },
+      }),
+      now: NOW,
+    });
+    expect(gate(r, 'observability-continuing').ok).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §2.2 — signing does not stop REPLAY, and the issue-creation anchor only
+// catches a window that predates its own issue.
+//
+// Restoring an EARLIER valid body of the SAME issue defeats both. It carries a
+// genuine signature, a window that postdates the issue, and — crucially — a
+// state from before a release-critical failure. The restart is erased, the
+// clock resumes from the older window, and every check passes.
+//
+// A signed `tickSeq` alone cannot help: the attacker restores the body that
+// contains the older `tickSeq`, and there is nothing to compare it against.
+// It needs an EXTERNAL monotonic reference the body cannot rewrite.
+//
+// The controller therefore posts a checkpoint comment each tick. GitHub comment
+// ids are monotonic and are not part of the issue body, so:
+//
+//   rollback     the newest checkpoint's digest will not match the restored
+//                body;
+//   deletion     `tickSeq` values must form a contiguous run, so a hole is
+//                visible;
+//   forking      two checkpoints claiming the same tickSeq is a fork;
+//   reordering   comment id order must agree with tickSeq order.
+//
+// Documented limitation, and it fails closed rather than pretending otherwise:
+// an actor with repository write can delete every checkpoint. The controller
+// then sees no chain for an existing soak and refuses, rather than silently
+// accepting whatever the body says.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('an earlier valid body of the same issue cannot be replayed', () => {
+  const cp = (tickSeq: number, digest: string, id: number) => ({
+    id,
+    body: renderCheckpoint({ tickSeq, stateDigest: digest }),
+  });
+
+  it('the newest checkpoint must match the state being read', () => {
+    const v = verifyCheckpointChain([cp(1, 'a'.repeat(64), 10), cp(2, 'b'.repeat(64), 20)], {
+      tickSeq: 2,
+      stateDigest: 'b'.repeat(64),
+    });
+    expect(v).toEqual({ ok: true });
+  });
+
+  it('THE REPLAY: an earlier body is refused even though it is validly signed', () => {
+    // The attacker restores tick 1's body. Its signature is genuine; the chain
+    // says the last thing this controller wrote was tick 2.
+    const v = verifyCheckpointChain([cp(1, 'a'.repeat(64), 10), cp(2, 'b'.repeat(64), 20)], {
+      tickSeq: 1,
+      stateDigest: 'a'.repeat(64),
+    });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/older than the latest checkpoint|rolled back/i);
+  });
+
+  it('a matching tickSeq with a different digest is refused', () => {
+    const v = verifyCheckpointChain([cp(1, 'a'.repeat(64), 10)], {
+      tickSeq: 1,
+      stateDigest: 'c'.repeat(64),
+    });
+    expect(v.ok).toBe(false);
+  });
+
+  it('a DELETED checkpoint leaves a hole, and a hole fails closed', () => {
+    const v = verifyCheckpointChain([cp(1, 'a'.repeat(64), 10), cp(3, 'c'.repeat(64), 30)], {
+      tickSeq: 3,
+      stateDigest: 'c'.repeat(64),
+    });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/gap|contiguous|missing/i);
+  });
+
+  it('a FORK — two checkpoints claiming the same tick — fails closed', () => {
+    // Both digests must be valid hex, or the parser rejects one as malformed
+    // and there is no fork left to detect.
+    const v = verifyCheckpointChain([cp(1, 'a'.repeat(64), 10), cp(1, '9'.repeat(64), 11)], {
+      tickSeq: 1,
+      stateDigest: 'a'.repeat(64),
+    });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/twice|duplicate|fork/i);
+  });
+
+  it('REORDERING — a later tick posted under an earlier comment id — fails closed', () => {
+    const v = verifyCheckpointChain([cp(2, 'b'.repeat(64), 10), cp(1, 'a'.repeat(64), 20)], {
+      tickSeq: 2,
+      stateDigest: 'b'.repeat(64),
+    });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/order/i);
+  });
+
+  it('NO chain at all for an existing soak fails closed', () => {
+    const v = verifyCheckpointChain([], { tickSeq: 5, stateDigest: 'd'.repeat(64) });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/no checkpoint/i);
+  });
+
+  it('a brand new soak — tick 0, no checkpoints yet — is allowed', () => {
+    expect(verifyCheckpointChain([], { tickSeq: 0, stateDigest: 'e'.repeat(64) })).toEqual({
+      ok: true,
+    });
+  });
+
+  it('ordinary sequential ticks keep working', () => {
+    const chain = [cp(1, 'a'.repeat(64), 10), cp(2, 'b'.repeat(64), 20), cp(3, 'c'.repeat(64), 30)];
+    expect(
+      verifyCheckpointChain(chain, { tickSeq: 3, stateDigest: 'c'.repeat(64) }).ok,
+    ).toBe(true);
+  });
+
+  it('non-checkpoint comments are ignored, not misread', () => {
+    const noise = [{ id: 15, body: 'a human said something here' }];
+    const chain = [cp(1, 'a'.repeat(64), 10), ...noise, cp(2, 'b'.repeat(64), 20)];
+    expect(verifyCheckpointChain(chain, { tickSeq: 2, stateDigest: 'b'.repeat(64) }).ok).toBe(true);
+  });
+
+  it('a checkpoint round-trips through its rendered form', () => {
+    const rendered = renderCheckpoint({ tickSeq: 7, stateDigest: 'f'.repeat(64) });
+    expect(parseCheckpoint(rendered)).toEqual({ tickSeq: 7, stateDigest: 'f'.repeat(64) });
+    expect(parseCheckpoint('not a checkpoint')).toBeNull();
   });
 });

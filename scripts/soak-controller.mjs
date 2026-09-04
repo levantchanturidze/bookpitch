@@ -178,45 +178,113 @@ export const SOAK_LABEL = 'soak';
 // -----------------------------------------------------------------------------
 
 /**
- * Fields the state digest covers: everything a gate reads or a verdict depends
- * on. `stateDigest` itself and the purely informational `lastTickAt` are
- * excluded; `sentry` is covered through its own digest, which is included here
- * so the two cannot be mixed and matched between states.
+ * The persisted-state schema version.
+ *
+ * Bound into the digest, so a state written by a different shape of controller
+ * is refused rather than half-understood. Bump it whenever the semantic field
+ * set changes.
  */
-export const SOAK_SIGNED_FIELDS = Object.freeze([
+export const SOAK_STATE_VERSION = 1;
+
+/**
+ * The ONLY fields excluded from the signature, because they decide nothing.
+ *
+ * Everything else is semantic and is signed. This list is deliberately an
+ * exclusion rather than an inclusion: the previous design enumerated the
+ * *included* top-level names, and any such list is one nested value behind the
+ * code that reads them. It was — `sentry.lastFreshProofAt` was the single value
+ * the observability-continuing gate read, and it was covered by neither HMAC.
+ */
+export const SOAK_PRESENTATION_FIELDS = Object.freeze(['lastTickAt']);
+
+/** Top-level keys a state may carry. Anything else is refused, not ignored. */
+export const SOAK_SEMANTIC_FIELDS = Object.freeze([
   'awaitingRecoverySince',
   'deploymentId',
   'effectiveWindowStart',
   'lastProcessedMonitorRun',
   'releaseSha',
   'restarts',
+  'schemaVersion',
+  'sentry',
   'startedAt',
   'tickSeq',
 ]);
 
-/** HMAC over a canonical serialisation. Sorted keys, explicit types. */
+/**
+ * Deterministic serialisation, to any depth.
+ *
+ * Object keys sorted; arrays kept in order because their order is meaningful
+ * (`restarts` is a history). Types are explicit, so `1` and `"1"` do not
+ * collide.
+ */
+function canonicalise(value) {
+  if (value === null || value === undefined) return 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalise).join(',')}]`;
+  if (typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalise(value[k])}`)
+      .join(',')}}`;
+  }
+  return `${typeof value}:${JSON.stringify(value)}`;
+}
+
+/** The semantic half of a state — everything the digest covers. */
+function semanticState(state) {
+  const out = {};
+  for (const key of Object.keys(state ?? {})) {
+    if (key === 'stateDigest') continue;
+    if (SOAK_PRESENTATION_FIELDS.includes(key)) continue;
+    out[key] = state[key];
+  }
+  return out;
+}
+
+/**
+ * HMAC over the schema version and a canonical DEEP serialisation of every
+ * semantic value — nested Sentry fields, restart entries, all of it.
+ */
 export function soakStateDigest(secret, state) {
   // An absent secret must not silently produce a digest over the string
   // "undefined" — signing and verifying would both do it and agree, which is a
-  // signature scheme that authenticates nothing. Both call sites are already
-  // gated, so reaching here without one is a programming error, and it should
-  // sound like one.
+  // signature scheme that authenticates nothing.
   if (!secret || typeof secret !== 'string') {
     throw new Error('soakStateDigest requires CRON_SECRET; refusing to sign with an empty key');
   }
-  const canonical = SOAK_SIGNED_FIELDS.map(
-    (k) => `${k}=${JSON.stringify(state?.[k] ?? null)}`,
-  ).join('\n');
-  // The receipt's own digest is bound in, so a valid receipt cannot be moved
-  // into a different soak's state and vice versa.
-  const receiptDigestValue = state?.sentry?.digest ?? null;
-  return createHmac('sha256', String(secret))
-    .update(`${canonical}\nsentry.digest=${JSON.stringify(receiptDigestValue)}`)
+  return createHmac('sha256', secret)
+    .update(`v${SOAK_STATE_VERSION}\n${canonicalise(semanticState(state))}`)
     .digest('hex');
 }
 
 /**
- * Is this persisted state authentic, and is its window anchored to reality?
+ * How old the Sentry proof is, in hours — or null when it cannot be trusted.
+ *
+ * Derived from `sentry.verifiedAt`, which the VERIFIER wrote and the receipt
+ * digest covers. The controller used to stamp its own `lastFreshProofAt` from
+ * its local clock, outside both HMACs, so the value the freshness gate read was
+ * the one value nothing authenticated.
+ *
+ * Null for: absent, malformed, or implausibly future. A future timestamp
+ * produced a NEGATIVE age, which passed `age <= limit` — future-dating the
+ * field made the gate greener than green.
+ */
+export const SENTRY_PROOF_MAX_SKEW_MINUTES = 5;
+
+export function sentryProofAge(sentry, now) {
+  const raw = sentry?.verifiedAt;
+  const at = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  if (!Number.isFinite(at)) return null;
+  const ageH = (now.getTime() - at) / 3_600_000;
+  // A little forward skew is ordinary between a runner and this process; a lot
+  // is a clock problem or a forged timestamp, and either way it is not
+  // evidence of freshness.
+  if (ageH < -(SENTRY_PROOF_MAX_SKEW_MINUTES / 60)) return null;
+  return Math.max(0, ageH);
+}
+
+/**
+ * Is this persisted state authentic, complete, and anchored to reality?
  *
  * @param {string} secret
  * @param {object} state
@@ -224,6 +292,29 @@ export function soakStateDigest(secret, state) {
  */
 export function verifySoakState(secret, state, issueCreatedAt) {
   if (!state || typeof state !== 'object') return { ok: false, reason: 'no state' };
+
+  // Unknown fields are REFUSED. Ignoring one is how a value gets added, read by
+  // a gate, and never covered by the signature.
+  const known = new Set([...SOAK_SEMANTIC_FIELDS, ...SOAK_PRESENTATION_FIELDS, 'stateDigest']);
+  const unknown = Object.keys(state).filter((k) => !known.has(k));
+  if (unknown.length) {
+    return {
+      ok: false,
+      reason:
+        `the soak state carries unknown field(s): ${unknown.join(', ')} — refusing rather ` +
+        'than measuring a document this controller does not fully understand',
+    };
+  }
+
+  if (state.schemaVersion !== SOAK_STATE_VERSION) {
+    return {
+      ok: false,
+      reason:
+        `the soak state is schema v${state.schemaVersion ?? '(none)'}, this controller ` +
+        `writes v${SOAK_STATE_VERSION}`,
+    };
+  }
+
   if (typeof state.stateDigest !== 'string' || !/^[0-9a-f]{64}$/.test(state.stateDigest)) {
     return {
       ok: false,
@@ -238,8 +329,9 @@ export function verifySoakState(secret, state, issueCreatedAt) {
       reason: 'the soak state digest does not match its contents — it was edited after signing',
     };
   }
-  // The replay anchor. An older validly-signed body would carry an earlier
-  // window; this refuses any window that begins before the issue recording it.
+
+  // The window cannot begin before the issue recording it. An older validly
+  // signed body carries an earlier window, which is more elapsed time.
   if (issueCreatedAt) {
     const issueAt = Date.parse(issueCreatedAt);
     const windowAt = Date.parse(state.effectiveWindowStart ?? state.startedAt ?? '');
@@ -247,8 +339,6 @@ export function verifySoakState(secret, state, issueCreatedAt) {
     if (!Number.isFinite(issueAt) || !Number.isFinite(windowAt) || !Number.isFinite(startedAt)) {
       return { ok: false, reason: 'the soak state carries no usable window timestamps' };
     }
-    // One minute of slack: the issue is created immediately after startedAt is
-    // captured, and the two clocks are GitHub's and the runner's.
     if (windowAt < issueAt - 60_000 || startedAt < issueAt - 60_000) {
       return {
         ok: false,
@@ -257,6 +347,125 @@ export function verifySoakState(secret, state, issueCreatedAt) {
           `recording it was created at ${issueCreatedAt} — a window cannot predate its own record`,
       };
     }
+  }
+  return { ok: true };
+}
+
+// -----------------------------------------------------------------------------
+// Replay protection: a monotonic checkpoint chain outside the issue BODY.
+//
+// Signing the state stops edits. It does not stop REPLAY — restoring an earlier
+// valid body of the same issue. That body carries a genuine signature, a window
+// that postdates the issue, and a state from before a release-critical failure:
+// the restart is erased and the clock resumes from the older window.
+//
+// A signed `tickSeq` cannot help by itself, because the attacker restores the
+// body containing the older `tickSeq` and there is nothing to compare it
+// against. It needs an external monotonic reference the body cannot rewrite.
+//
+// GitHub issue COMMENTS are that reference: their ids are monotonic, and they
+// are not part of the body. Each tick posts one carrying `tickSeq` and the
+// state digest, which makes four attacks visible:
+//
+//   rollback     the newest checkpoint's digest does not match the body;
+//   deletion     tickSeq values must be contiguous, so a hole shows;
+//   forking      two checkpoints claiming one tick;
+//   reordering   comment id order must agree with tickSeq order.
+//
+// LIMITATION, stated rather than papered over: an actor with repository write
+// can delete every checkpoint. The controller then sees no chain for a soak
+// that is past tick 0 and REFUSES — it does not fall back to trusting the body.
+// GitHub offers no append-only primitive an agent can use here; this is the
+// strongest available construction, and where it ends, the controller stops.
+// -----------------------------------------------------------------------------
+
+const CHECKPOINT_MARKER = '<!-- bookpitch-soak-checkpoint -->';
+
+/** One checkpoint, as an issue comment body. Carries no secrets. */
+export function renderCheckpoint({ tickSeq, stateDigest }) {
+  return (
+    `${CHECKPOINT_MARKER}\n` +
+    `tick ${tickSeq} · state ${stateDigest}\n\n` +
+    '<sub>Written by the soak controller. It exists so that restoring an older issue body ' +
+    'is detectable: comment ids are monotonic and are not part of the body.</sub>'
+  );
+}
+
+/** Read a checkpoint back, or null when the comment is not one. */
+export function parseCheckpoint(body) {
+  if (typeof body !== 'string' || !body.includes(CHECKPOINT_MARKER)) return null;
+  const m = /tick (\d+) · state ([0-9a-f]{64})/.exec(body);
+  return m ? { tickSeq: Number(m[1]), stateDigest: m[2] } : null;
+}
+
+/**
+ * Does the chain of checkpoints agree that this state is the current one?
+ *
+ * @param {Array<{id:number, body:string}>} comments  every comment on the issue
+ * @param {{tickSeq:number, stateDigest:string}} state
+ */
+export function verifyCheckpointChain(comments, state) {
+  const chain = (comments ?? [])
+    .map((c) => ({ id: c.id, cp: parseCheckpoint(c.body) }))
+    .filter((c) => c.cp)
+    .sort((a, b) => a.id - b.id);
+
+  const tickSeq = typeof state?.tickSeq === 'number' ? state.tickSeq : -1;
+
+  if (chain.length === 0) {
+    // A soak that has never ticked has nothing to prove yet. One that has is
+    // missing its entire history, which is not a state to keep measuring.
+    if (tickSeq === 0) return { ok: true };
+    return {
+      ok: false,
+      reason:
+        `the state claims tick ${tickSeq} but no checkpoint comments exist — the chain that ` +
+        'would make a replayed body detectable has been removed',
+    };
+  }
+
+  // Contiguity: every tick from the first recorded to the last must be present.
+  const seqs = chain.map((c) => c.cp.tickSeq);
+  const seen = new Set();
+  for (const n of seqs) {
+    if (seen.has(n)) {
+      return { ok: false, reason: `tick ${n} is checkpointed twice — the chain has forked` };
+    }
+    seen.add(n);
+  }
+  for (let i = 1; i < seqs.length; i++) {
+    if (seqs[i] < seqs[i - 1]) {
+      return {
+        ok: false,
+        reason:
+          `checkpoint order disagrees with comment order: tick ${seqs[i]} was posted after ` +
+          `tick ${seqs[i - 1]}`,
+      };
+    }
+    if (seqs[i] !== seqs[i - 1] + 1) {
+      return {
+        ok: false,
+        reason:
+          `a gap in the checkpoint chain: tick ${seqs[i - 1]} is followed by ${seqs[i]}. ` +
+          'A missing checkpoint means one was deleted',
+      };
+    }
+  }
+
+  const latest = chain[chain.length - 1].cp;
+  if (tickSeq < latest.tickSeq) {
+    return {
+      ok: false,
+      reason:
+        `the state is at tick ${tickSeq}, older than the latest checkpoint (tick ` +
+        `${latest.tickSeq}) — the issue body was rolled back`,
+    };
+  }
+  if (tickSeq === latest.tickSeq && state.stateDigest !== latest.stateDigest) {
+    return {
+      ok: false,
+      reason: `the state at tick ${tickSeq} does not match its own checkpoint`,
+    };
   }
   return { ok: true };
 }
@@ -295,7 +504,7 @@ export function parseState(body) {
  *                  environment?: string|null, aliases?: string[]} | null,
  *     sentry: {configured: boolean, ok: boolean, serverEventId: string|null,
  *              browserEventId: string|null, problems?: string[],
- *              lastFreshProofAt?: string|null} | null,
+ *              verifiedAt?: string|null} | null,
  *     outboxDead: number | null,
  *     retentionSuccessAt?: string | null,
  *     unhealthyJobs?: string[] | null,
@@ -736,18 +945,22 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
       // afterwards — so on its own it certifies 24 hours on a verification done
       // at hour zero.
       ...(() => {
-        const raw = evidence.sentry?.lastFreshProofAt ?? null;
-        const at = raw ? Date.parse(raw) : NaN;
         const limitH = opts.maxObservabilityProofAgeHours;
-        if (!Number.isFinite(at)) {
+        // From the VERIFIER's own signed completion time, not from a value the
+        // controller stamped with its local clock. `lastFreshProofAt` was
+        // outside both HMACs, so the one value this gate read was the one value
+        // nothing authenticated — and a future date produced a negative age
+        // that passed `age <= limit`.
+        const ageH = sentryProofAge(evidence.sentry, now);
+        if (ageH === null) {
           return {
             ok: false,
             detail:
-              'no fresh observability proof is recorded — re-fetching the original events shows ' +
-              'they are still readable, which is not evidence that new ones can be ingested',
+              'no usable observability proof timestamp — absent, malformed, or implausibly ' +
+              'future. Re-fetching the original events shows they are still readable, which is ' +
+              'not evidence that new ones can be ingested',
           };
         }
-        const ageH = (now.getTime() - at) / 3_600_000;
         // AGE only, deliberately — not "inside the window".
         //
         // Requiring the proof to postdate the window start looks stricter and
@@ -907,10 +1120,6 @@ export function nextSentryState(persisted, verdict) {
     sourceMapsPublic: persisted?.sourceMapsPublic ?? null,
     sourceMapAssets: persisted?.sourceMapAssets ?? null,
     digest: persisted?.digest ?? null,
-    // When fresh events were last ingested. Only a re-verification moves this;
-    // an ordinary tick carries it forward, because re-reading the same two
-    // events is not new evidence.
-    lastFreshProofAt: persisted?.lastFreshProofAt ?? null,
     // The only fields a tick may update: what it observed this time.
     configured: Boolean(verdict?.configured),
     lastRevalidationOk: Boolean(verdict?.ok),
@@ -1144,6 +1353,19 @@ async function gh(path, token, init = {}) {
  * out before reaching `since`, which the continuity gate reads as "this window
  * cannot be certified" rather than silently trusting a short history.
  */
+/** Every page of a list endpoint. A soak accumulates ~48 checkpoints a day. */
+async function ghAll(path, token, maxPages = 10) {
+  const out = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const sep = path.includes('?') ? '&' : '?';
+    const batch = await gh(`${path}${sep}per_page=100&page=${page}`, token);
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    out.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return out;
+}
+
 async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
   const runs = [];
   let complete = false;
@@ -1545,6 +1767,20 @@ async function main() {
       );
       process.exit(1);
     }
+
+    // A valid signature does not mean this is the CURRENT state: an earlier
+    // valid body of the same issue carries one too. The checkpoint comments are
+    // the external monotonic reference the body cannot rewrite.
+    const comments = await ghAll(`/repos/${repo}/issues/${issue.number}/comments`, token);
+    const chain = verifyCheckpointChain(comments, state);
+    if (!chain.ok) {
+      console.error(`soak: refusing to continue — ${chain.reason}`);
+      console.error(
+        'The checkpoint chain does not agree that this is the current state. Close the issue ' +
+          'and start a new soak.',
+      );
+      process.exit(1);
+    }
   }
 
   // Re-verification mode: a fresh receipt for an EXISTING soak.
@@ -1577,7 +1813,7 @@ async function main() {
     }
     const refreshed = {
       ...state,
-      sentry: { ...seeded, lastFreshProofAt: new Date().toISOString() },
+      sentry: seeded,
       tickSeq: (typeof state.tickSeq === 'number' ? state.tickSeq : 0) + 1,
       lastTickAt: new Date().toISOString(),
     };
@@ -1585,6 +1821,15 @@ async function main() {
     await gh(`/repos/${repo}/issues/${issue.number}`, token, {
       method: 'PATCH',
       body: JSON.stringify({ body: renderState(refreshed) }),
+    });
+    await gh(`/repos/${repo}/issues/${issue.number}/comments`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        body: renderCheckpoint({
+          tickSeq: refreshed.tickSeq,
+          stateDigest: refreshed.stateDigest,
+        }),
+      }),
     });
     console.log(
       `soak: refreshed the observability proof on issue #${issue.number} ` +
@@ -1657,6 +1902,7 @@ async function main() {
 
     const startedAt = new Date().toISOString();
     state = {
+      schemaVersion: SOAK_STATE_VERSION,
       tickSeq: 0,
       releaseSha: sha,
       deploymentId: process.env.SOAK_DEPLOYMENT_ID ?? null,
@@ -1665,7 +1911,7 @@ async function main() {
       awaitingRecoverySince: null,
       restarts: [],
       lastProcessedMonitorRun: null,
-      sentry: { ...seededSentry, lastFreshProofAt: new Date().toISOString() },
+      sentry: seededSentry,
       lastTickAt: null,
     };
     state.stateDigest = soakStateDigest(process.env.CRON_SECRET, state);
@@ -1678,6 +1924,8 @@ async function main() {
       }),
     });
     console.log(`soak: started, issue #${issue.number}`);
+    // tickSeq 0 needs no checkpoint — verifyCheckpointChain() allows an empty
+    // chain only at tick 0, which is exactly this moment and no other.
   }
 
   const windowStart = state.effectiveWindowStart ?? state.startedAt;
@@ -1765,7 +2013,9 @@ async function main() {
       historyComplete: monitor.complete && backup.complete && cron.complete,
       incidents: incidents ?? [],
       deployment,
-      sentry: { ...sentry, lastFreshProofAt: state.sentry?.lastFreshProofAt ?? null },
+      // `verifiedAt` comes from the persisted, signed receipt — the verifier
+      // wrote it, and the receipt digest covers it.
+      sentry: { ...sentry, verifiedAt: state.sentry?.verifiedAt ?? null },
       outboxDead,
       unhealthyJobs,
       retentionSuccessAt,
@@ -1774,6 +2024,7 @@ async function main() {
 
   const nextState = {
     ...state,
+    schemaVersion: SOAK_STATE_VERSION,
     awaitingRecoverySince: result.awaitingRecoverySince ?? null,
     // The whole point: the restarted window is written down, so the next tick
     // starts from here even after the failing run ages out of history.
@@ -1791,6 +2042,10 @@ async function main() {
   // this, which is what makes an edited body detectable rather than merely
   // unlikely.
   nextState.stateDigest = soakStateDigest(process.env.CRON_SECRET, nextState);
+  // The checkpoint is posted AFTER the body is written, below, so a failure
+  // between the two leaves a body without its checkpoint — which the next tick
+  // reads as a gap and refuses. Failing closed is the correct direction: a
+  // missing checkpoint must never be indistinguishable from a deleted one.
 
   // Optimistic concurrency: refuse to write over a body that changed since it
   // was read, so two controllers cannot interleave conflicting windows.
@@ -1805,6 +2060,16 @@ async function main() {
   await gh(`/repos/${repo}/issues/${issue.number}`, token, {
     method: 'PATCH',
     body: JSON.stringify({ body: renderState(nextState) }),
+  });
+  // The checkpoint, immediately after the body it describes.
+  await gh(`/repos/${repo}/issues/${issue.number}/comments`, token, {
+    method: 'POST',
+    body: JSON.stringify({
+      body: renderCheckpoint({
+        tickSeq: nextState.tickSeq,
+        stateDigest: nextState.stateDigest,
+      }),
+    }),
   });
   await gh(`/repos/${repo}/issues/${issue.number}/comments`, token, {
     method: 'POST',
