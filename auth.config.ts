@@ -84,6 +84,26 @@ export function isPublicPath(path: string): boolean {
     // itself requires the CRON_SECRET bearer, exactly like /api/cron/*.
     // Exact match only — /api/health/ready stays session-gated.
     path === '/api/health/ops' ||
+    // Sentry verification probes. Reachable without a session because the
+    // caller is a GitHub Actions runner (the two API routes) or a headless
+    // browser it drives (the page) — and because a probe that redirects to
+    // /signin cannot verify anything. Measured on production 2026-09-04: all
+    // three answered 307 to /signin, so the entire verification flow was
+    // unreachable and would have reported "the probe is disabled on this
+    // deployment", sending the operator to look at the wrong variable.
+    //
+    // Past the proxy is not unauthenticated. Each handler fails closed:
+    //   /api/health/sentry-probe        bearer CRON_SECRET + rate limit
+    //   /api/health/sentry-probe/token  bearer CRON_SECRET
+    //   /probe/sentry                   single-use challenge in an HttpOnly
+    //                                   cookie, redeemed by an atomic UPDATE
+    // and all three 404 unless SENTRY_PROBE_ENABLED is exactly "true".
+    //
+    // Exact matches, deliberately. `startsWith('/api/health/')` would also
+    // expose /api/health/ready, which is session-gated on purpose.
+    path === '/api/health/sentry-probe' ||
+    path === '/api/health/sentry-probe/token' ||
+    path === '/probe/sentry' ||
     // Payment gateway webhooks are called by external services and
     // authenticate via HMAC in the handler itself.
     path.startsWith('/api/webhooks') ||
