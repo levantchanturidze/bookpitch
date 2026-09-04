@@ -36,6 +36,7 @@ import {
   isNaturalObservation,
   isNaturalSuccess,
   naturalEvidenceProblem,
+  resolveRun,
 } from './run-evidence.mjs';
 
 export const DEFAULTS = {
@@ -1206,14 +1207,33 @@ async function gh(path, token, init = {}) {
   return res.status === 204 ? null : res.json();
 }
 
+/**
+ * The most recent successful FIRST-ATTEMPT run of a workflow.
+ *
+ * Two corrections from the naive version, which took the newest `status=success`
+ * record and read `updated_at`:
+ *
+ *   * a re-run replaces the record's conclusion AND moves `updated_at`, so
+ *     re-running an old failed backup made a stale backup look minutes old;
+ *   * `created_at` is the immutable time the run began, which is what "how long
+ *     since a backup happened" actually means.
+ *
+ * A manual dispatch is accepted here, deliberately: a backup started by hand
+ * produces a real encrypted artifact, and freshness is a question about
+ * artifacts. Whether the SCHEDULER is alive is a different question, asked by
+ * the soak's own `scheduled-backup` gate, which requires natural evidence.
+ */
 async function latestSuccessfulRun(repo, token, workflowFile) {
   const data = await gh(
-    `/repos/${repo}/actions/workflows/${workflowFile}/runs?status=success&branch=main&per_page=1`,
+    `/repos/${repo}/actions/workflows/${workflowFile}/runs?status=success&branch=main&per_page=20`,
     token,
   );
-  const run = data.workflow_runs?.[0];
-  if (!run) return null;
-  return { completedAt: run.updated_at, runId: run.id };
+  for (const run of data.workflow_runs ?? []) {
+    if ((run.run_attempt ?? 0) !== 1) continue;
+    if (!run.created_at) continue;
+    return { completedAt: run.created_at, runId: run.id };
+  }
+  return null;
 }
 
 function check(id, title, ok, detail) {
@@ -1330,15 +1350,21 @@ async function main() {
       // `created_at` from the rerun-mutable `updated_at`. Filtering on the
       // event alone was not enough: a run KEEPS its `schedule` event when a
       // human presses "Re-run failed jobs".
+      // A re-run record is replaced by its authoritative FIRST attempt. Simply
+      // excluding `run_attempt > 1` stopped a re-run counting as a success and
+      // also erased the original failure from the window.
+      const attemptOne = async (id) =>
+        gh(`/repos/${repo}/actions/runs/${id}/attempts/1`, token).catch(() => null);
+      const authoritative = async (list, fallbackEvent) =>
+        Promise.all(
+          (list ?? []).map(async (r) => ({
+            ...((r.run_attempt ?? 1) > 1 ? await resolveRun(r, attemptOne) : normaliseRun(r)),
+            event: r.event ?? fallbackEvent,
+          })),
+        );
       const runs = [
-        ...(scheduledData.workflow_runs ?? []).map((r) => ({
-          ...normaliseRun(r),
-          event: r.event ?? 'schedule',
-        })),
-        ...(manualData.workflow_runs ?? []).map((r) => ({
-          ...normaliseRun(r),
-          event: r.event ?? 'workflow_dispatch',
-        })),
+        ...(await authoritative(scheduledData.workflow_runs, 'schedule')),
+        ...(await authoritative(manualData.workflow_runs, 'workflow_dispatch')),
       ];
       results.push(...evaluateCronHealth(runs, now));
     } catch (err) {

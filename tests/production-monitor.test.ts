@@ -189,6 +189,7 @@ describe('cron workflow health', () => {
       completedAt: new Date(NOW.getTime() - minutesAgo * 60_000).toISOString(),
       event,
       runAttempt,
+      scheduledAtIsExact: true,
     };
   }
 
@@ -951,7 +952,15 @@ describe('a stale cron says which failure it is', () => {
   const NOW = new Date('2026-09-01T14:20:00Z');
 
   function run(runId: number, conclusion: string, completedAt: string, event = 'schedule') {
-    return { status: 'completed', conclusion, completedAt, runId, event, runAttempt: 1 };
+    return {
+      status: 'completed',
+      conclusion,
+      completedAt,
+      runId,
+      event,
+      runAttempt: 1,
+      scheduledAtIsExact: true,
+    };
   }
 
   function staleness(runs: ReturnType<typeof run>[]) {
@@ -1047,6 +1056,7 @@ describe('manual dispatches cannot stand in for scheduled evidence', () => {
     completedAt: at,
     event: 'schedule',
     runAttempt,
+    scheduledAtIsExact: true,
   });
   const manual = (runId: number, conclusion: string, at: string) => ({
     runId,
@@ -1055,6 +1065,7 @@ describe('manual dispatches cannot stand in for scheduled evidence', () => {
     completedAt: at,
     event: 'workflow_dispatch',
     runAttempt: 1,
+    scheduledAtIsExact: true,
   });
 
   // Exactly what the GitHub API returned that afternoon, newest first.
@@ -1447,6 +1458,8 @@ describe('cron delivery lag and cron outage are different claims', () => {
     runId: 1,
     status: 'completed',
     runAttempt: 1,
+    scheduledAtIsExact: true,
+
     conclusion: 'success',
     completedAt: at(0.2),
     event: 'schedule',
@@ -1580,6 +1593,8 @@ describe('the process verdict excludes informational observations', () => {
         runId: 1,
         status: 'completed',
         runAttempt: 1,
+        scheduledAtIsExact: true,
+
         conclusion: 'success',
         completedAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
         event: 'schedule',
@@ -1636,6 +1651,8 @@ describe('re-running a scheduled run cannot make the monitor green', () => {
     completedAt: at(0.2),
     event: 'schedule',
     runAttempt: 1,
+    scheduledAtIsExact: true,
+
     ...over,
   });
   const find = (runs: ReturnType<typeof r>[], id: string) =>

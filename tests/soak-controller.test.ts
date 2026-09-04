@@ -87,6 +87,9 @@ const run = (
   conclusion,
   status: 'completed',
   runAttempt,
+  // Real runs carry an immutable created_at; `updated_at` moves when a run is
+  // re-run, so a record without one is not natural evidence.
+  scheduledAtIsExact: true,
   completedAt: new Date(new Date(START).getTime() + hoursAfterStart * 3_600_000).toISOString(),
 });
 
@@ -183,6 +186,8 @@ describe('time alone never satisfies the soak', () => {
             runId: 1,
             event: 'schedule',
             runAttempt: 1,
+            scheduledAtIsExact: true,
+
             status: 'completed',
             conclusion: 'success',
             completedAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
@@ -191,6 +196,8 @@ describe('time alone never satisfies the soak', () => {
             runId: 2,
             event: 'schedule',
             runAttempt: 1,
+            scheduledAtIsExact: true,
+
             status: 'completed',
             conclusion: 'success',
             completedAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
@@ -1110,6 +1117,8 @@ describe('the daily sweep must land inside the effective window', () => {
       runId: 100 + i,
       event: 'schedule',
       runAttempt: 1,
+      scheduledAtIsExact: true,
+
       status: 'completed',
       conclusion: 'success',
       completedAt: new Date(Date.parse(startedAt) + (i + 1) * 3_600_000).toISOString(),
@@ -1119,6 +1128,8 @@ describe('the daily sweep must land inside the effective window', () => {
         runId: 7,
         event: 'schedule',
         runAttempt: 1,
+        scheduledAtIsExact: true,
+
         status: 'completed',
         conclusion: 'success',
         completedAt: '2026-09-05T01:40:00Z',
@@ -1128,6 +1139,8 @@ describe('the daily sweep must land inside the effective window', () => {
       runId: 200 + i,
       event: 'schedule',
       runAttempt: 1,
+      scheduledAtIsExact: true,
+
       status: 'completed',
       conclusion: 'success',
       completedAt: new Date(Date.parse(startedAt) + (i + 1) * 5_400_000).toISOString(),
@@ -1343,6 +1356,8 @@ describe('every release-critical failure resets the window', () => {
             runId: 9001,
             event: 'schedule',
             runAttempt: 1,
+            scheduledAtIsExact: true,
+
             status: 'completed',
             conclusion: 'success',
             completedAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
@@ -1556,6 +1571,8 @@ describe('the observation-gap limit sits above delivery lag and below an outage'
         runId: 400 + i,
         event: 'schedule',
         runAttempt: 1,
+        scheduledAtIsExact: true,
+
         status: 'completed',
         conclusion: 'success',
         completedAt: at(h),
@@ -1643,6 +1660,8 @@ describe('a continuing failure is recorded once, not once per tick', () => {
             runId: 5001,
             event: 'schedule',
             runAttempt: 1,
+            scheduledAtIsExact: true,
+
             status: 'completed',
             conclusion: 'success',
             completedAt: recoveredAt.toISOString(),
@@ -1791,6 +1810,7 @@ describe('re-running a failed run cannot repair the window', () => {
   const rerun = (runId: number, hoursAfterStart: number) => ({
     ...run(runId, hoursAfterStart),
     runAttempt: 2,
+    scheduledAtIsExact: true,
   });
 
   it('THE DEFECT: a re-run monitor observation is not a natural observation', () => {
@@ -1841,6 +1861,8 @@ describe('re-running a failed run cannot repair the window', () => {
           {
             ...run(9001, 0),
             runAttempt: 2,
+            scheduledAtIsExact: true,
+
             completedAt: new Date(NOW.getTime() - 3_600_000).toISOString(),
           },
         ],
@@ -2494,9 +2516,7 @@ describe('an earlier valid body of the same issue cannot be replayed', () => {
 
   it('ordinary sequential ticks keep working', () => {
     const chain = [cp(1, 'a'.repeat(64), 10), cp(2, 'b'.repeat(64), 20), cp(3, 'c'.repeat(64), 30)];
-    expect(
-      verifyCheckpointChain(chain, { tickSeq: 3, stateDigest: 'c'.repeat(64) }).ok,
-    ).toBe(true);
+    expect(verifyCheckpointChain(chain, { tickSeq: 3, stateDigest: 'c'.repeat(64) }).ok).toBe(true);
   });
 
   it('non-checkpoint comments are ignored, not misread', () => {

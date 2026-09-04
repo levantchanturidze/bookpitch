@@ -37,7 +37,12 @@ import process from 'node:process';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { unhealthyJobsFrom } from './heartbeat-contract.mjs';
 import { verifyReceiptIntegrity } from './sentry-receipt.mjs';
-import { normaliseRun, isNaturalObservation, isNaturalSuccess } from './run-evidence.mjs';
+import {
+  normaliseRun,
+  isNaturalObservation,
+  isNaturalSuccess,
+  resolveRun,
+} from './run-evidence.mjs';
 import { heartbeatSuccessAt } from './heartbeat-contract.mjs';
 
 export const SOAK_DEFAULTS = {
@@ -1378,11 +1383,21 @@ async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
     const batch = data.workflow_runs ?? [];
     for (const r of batch) {
       if (r.status !== 'completed') continue;
+      // A re-run record is replaced by its authoritative FIRST attempt, fetched
+      // from GitHub. Dropping it instead — which the first fix did — erased the
+      // original failure from the window entirely, and the surrounding
+      // successes carried the gate.
+      const authoritative =
+        (r.run_attempt ?? 1) > 1
+          ? await resolveRun(r, async (id) =>
+              gh(`/repos/${repo}/actions/runs/${id}/attempts/1`, token).catch(() => null),
+            )
+          : null;
       // normaliseRun() keeps `run_attempt` and separates the immutable
       // `created_at` from the rerun-mutable `updated_at`. A run KEEPS its
       // `schedule` event when a human presses "Re-run failed jobs", so the
       // event alone never distinguished delivery from a button press.
-      const n = normaliseRun(r);
+      const n = authoritative ?? normaliseRun(r);
       runs.push({
         ...n,
         event: n.event ?? event,
@@ -1397,8 +1412,11 @@ async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
       complete = true;
       break;
     }
+    // Pagination boundary on the IMMUTABLE timestamp. `updated_at` moves when
+    // a run is re-run, so a re-run could push the boundary forward and stop the
+    // fetch before it reached the window start.
     const oldest = batch.reduce(
-      (min, r) => Math.min(min, new Date(r.updated_at).getTime()),
+      (min, r) => Math.min(min, new Date(r.created_at ?? r.updated_at).getTime()),
       Infinity,
     );
     if (since && oldest <= new Date(since).getTime()) {
