@@ -557,8 +557,15 @@ was wrong.
 
 Two practical consequences:
 
-- **Never write `closes #N`, `fixes #N` or `resolves #N` in a PR body about an
-  incident.** Refer to it as `#N` alone.
+- **Never write a closing keyword immediately before an issue reference in a PR
+  title or body** — `closes #N`, `fixes #N`, `resolves #N` and their
+  inflections. Refer to the issue as `#N` alone.
+
+  **Backticks do not help.** This happened twice to the same incident, and the
+  second time the keyword was inside a code span, in a sentence explaining the
+  first occurrence. GitHub closed it anyway. `scripts/check-pr-body.mjs` now
+  fails CI on any pull request that would do it, because a rule that depends on
+  remembering is a rule that fails on the day it matters.
 - Everything that keys on an incident does so by its **marker**
   (`<!-- bookpitch-ops-incident:<id> -->`), never by its number, so an incident
   that does get renumbered still matches.
