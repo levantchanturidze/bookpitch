@@ -99,6 +99,10 @@ function healthyEvidence(over: Record<string, unknown> = {}) {
       serverEventId: 'srv-abc',
       browserEventId: 'brw-def',
       problems: [],
+      // A fresh both-runtime proof inside the window. Re-fetching the original
+      // events proves only that they are still readable; this is the evidence
+      // that new ones can still be ingested.
+      lastFreshProofAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
     },
     outboxDead: 0,
     unhealthyJobs: [],
@@ -976,6 +980,7 @@ describe('a verified receipt can be seeded into soak state automatically', () =>
       serverSource: 'app/api/health/sentry-probe/route.ts',
       browserSource: 'app/probe/sentry/BrowserProbe.tsx',
       sourceMapsPublic: false,
+      sourceMapAssets: '/_next/static/chunks/main.js',
       digest: '',
       ...over,
     };
@@ -1118,7 +1123,13 @@ describe('the daily sweep must land inside the effective window', () => {
       // answered 200 — see the DEPLOYMENT fixture above.
       aliasReleases: { 'bookpitch.ge': 'a'.repeat(40), 'www.bookpitch.ge': 'a'.repeat(40) },
     },
-    sentry: { configured: true, ok: true, serverEventId: 's1', browserEventId: 'b1' },
+    sentry: {
+      configured: true,
+      ok: true,
+      serverEventId: 's1',
+      browserEventId: 'b1',
+      lastFreshProofAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
+    },
     outboxDead: 0,
     unhealthyJobs: [],
     historyComplete: true,
@@ -1448,6 +1459,7 @@ describe('a tampered receipt cannot survive a tick', () => {
       serverSource: 'app/api/health/sentry-probe/route.ts',
       browserSource: 'app/probe/sentry/BrowserProbe.tsx',
       sourceMapsPublic: false,
+      sourceMapAssets: '/_next/static/chunks/main.js',
       digest: '',
       ...over,
     };
@@ -1666,6 +1678,7 @@ describe('a receipt as the VERIFIER emits it survives seeding and every tick', (
       serverSource: 'app/api/health/sentry-probe/route.ts',
       browserSource: 'app/probe/sentry/BrowserProbe.tsx',
       sourceMapsPublic: false,
+      sourceMapAssets: '/_next/static/chunks/main.js',
       digest: '',
     };
     receipt.digest = receiptDigest(SECRET, receipt);
@@ -2037,5 +2050,118 @@ describe('signed state survives its own lifecycle', () => {
 
     const swapped = { ...base, sentry: { digest: 'b'.repeat(64) } };
     expect(verifySoakState(SECRET, swapped, ISSUE_CREATED).ok).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §8 — old events staying readable is not proof that new ones are ingested.
+//
+// Every tick re-fetched the SAME two events, created before the soak began. If
+// the DSN is revoked at hour 3, a quota is hit, an inbound filter is added or
+// the transport breaks, those two events remain perfectly readable through
+// Sentry's API for the whole window — and the observability gate stays green
+// while nothing new can arrive.
+//
+// So the receipt has to be refreshed inside the window, at a bounded cadence,
+// and the soak cannot certify 24 hours on a verification done before hour zero.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the soak requires ONGOING proof of ingestion', () => {
+  const at = (hoursAgo: number) => new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString();
+
+  const withProof = (hoursAgo: number | null) =>
+    healthyEvidence({
+      sentry: {
+        configured: true,
+        ok: true,
+        serverEventId: 'srv-abc',
+        browserEventId: 'brw-def',
+        problems: [],
+        lastFreshProofAt: hoursAgo === null ? null : at(hoursAgo),
+      },
+    });
+
+  it('THE DEFECT: a proof from before the window does not certify it', () => {
+    // The window is 25 hours old; the only verification happened before it
+    // started. Caught by the age limit rather than by an explicit in-window
+    // test — see the livelock note below for why that distinction matters.
+    const r = evaluateSoak({ state: state(), evidence: withProof(26), now: NOW });
+    const g = gate(r, 'observability-continuing');
+    expect(g, 'there must be a gate for this at all').toBeDefined();
+    expect(g.ok, 'a pre-window verification cannot cover the window').toBe(false);
+    expect(g.detail).toMatch(/stale/i);
+  });
+
+  it('the age limit is what enforces in-window, without livelocking a restart', () => {
+    // Requiring the proof to POSTDATE the window start livelocks: a restart
+    // begins a new window, every existing proof predates it, the gate fails,
+    // the failure is a health gate, and the soak returns to awaiting-recovery
+    // forever.
+    //
+    // The age limit gives the stronger property where it matters. Success needs
+    // 24 elapsed hours and the cadence is 6, so any proof fresh enough to pass
+    // at success time is inside the window by 18 hours.
+    expect(SOAK_DEFAULTS.maxObservabilityProofAgeHours).toBeLessThan(SOAK_DEFAULTS.windowHours);
+
+    // A window that has just restarted keeps a recent proof rather than
+    // discarding it.
+    const justRestarted = state({
+      effectiveWindowStart: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
+    });
+    const g = gate(
+      evaluateSoak({ state: justRestarted, evidence: withProof(1), now: NOW }),
+      'observability-continuing',
+    );
+    expect(g.ok, 'a fresh proof survives a restart').toBe(true);
+  });
+
+  it('a proof within the cadence satisfies it', () => {
+    expect(
+      gate(
+        evaluateSoak({ state: state(), evidence: withProof(2), now: NOW }),
+        'observability-continuing',
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('a proof older than the cadence does not', () => {
+    const limit = SOAK_DEFAULTS.maxObservabilityProofAgeHours;
+    expect(
+      gate(
+        evaluateSoak({ state: state(), evidence: withProof(limit + 1), now: NOW }),
+        'observability-continuing',
+      ).ok,
+    ).toBe(false);
+    expect(
+      gate(
+        evaluateSoak({ state: state(), evidence: withProof(limit - 1), now: NOW }),
+        'observability-continuing',
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('no proof at all is not health', () => {
+    expect(
+      gate(
+        evaluateSoak({ state: state(), evidence: withProof(null), now: NOW }),
+        'observability-continuing',
+      ).ok,
+    ).toBe(false);
+  });
+
+  it('it is a HEALTH gate, so a lapse stops the clock', () => {
+    // Ingestion breaking mid-window is a release-critical failure, not slow
+    // progress: the window it would otherwise certify was unobserved.
+    expect(SOAK_HEALTH_GATES).toContain('observability-continuing');
+    const r = evaluateSoak({ state: state(), evidence: withProof(26), now: NOW });
+    expect(r.status).toBe('awaiting-recovery');
+  });
+
+  it('the cadence is bounded, so this cannot become event spam', () => {
+    // Four probe pairs a day at six hours. Sentry quotas are finite and a soak
+    // that exhausts one has broken the thing it was measuring.
+    expect(SOAK_DEFAULTS.maxObservabilityProofAgeHours).toBeGreaterThanOrEqual(4);
+    expect(SOAK_DEFAULTS.maxObservabilityProofAgeHours).toBeLessThanOrEqual(8);
   });
 });

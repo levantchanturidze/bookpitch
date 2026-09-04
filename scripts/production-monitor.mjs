@@ -848,12 +848,30 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
     id: 'production-observability-unconfigured',
     title: 'Application errors are not being reported anywhere',
     ok: (missingObservability ?? 0) === 0,
+    // This check may OPEN this incident and may never close it.
+    //
+    // It counts how many DSN env vars are unset. Zero means two names are
+    // present — a revoked DSN, a DSN for a deleted project, or a typo all count
+    // as configured. So the moment anyone pastes two strings this check goes
+    // green, and it would close the very incident whose subject is whether
+    // errors actually reach a human.
+    //
+    // Presence is not delivery, and nothing readable from an environment
+    // variable can tell the difference. The authority for closing it is
+    // scripts/verify-sentry.mjs, which makes the deployed application emit real
+    // events in both runtimes and reads them back through Sentry's API.
+    canClose: false,
     detail:
       missingObservability === undefined
         ? 'deployment predates the observability-env metric — redeploy to enable this check'
-        : `Sentry DSN env vars unset: ${missingObservability} of 2 ` +
-          `(server + browser; names in docs/operations.md § Required production environment). ` +
-          `Uncaught exceptions are discarded while this is non-zero.`,
+        : missingObservability > 0
+          ? `Sentry DSN env vars unset: ${missingObservability} of 2 ` +
+            `(server + browser; names in docs/operations.md § Required production environment). ` +
+            `Uncaught exceptions are discarded while this is non-zero.`
+          : 'both Sentry DSN env vars are present. That is presence, not proof: a revoked or ' +
+            'mistyped DSN looks identical from here. Only the end-to-end verifier ' +
+            '(npm run verify:sentry) can establish that errors reach a human, and only it ' +
+            'closes this incident.',
   });
 
   return results;
@@ -997,6 +1015,11 @@ export function reconcileIncidents(results, openIssues) {
       if (existing) toComment.push({ result, issue: existing });
       else toOpen.push({ result });
     } else if (existing) {
+      // `canClose: false` marks a check that is competent to raise an alarm but
+      // not to declare it over — one whose green state is weaker than the
+      // claim the incident makes. Narrow by design: every other check closes
+      // its own incident on recovery.
+      if (result.canClose === false) continue;
       toClose.push({ result, issue: existing });
     }
   }

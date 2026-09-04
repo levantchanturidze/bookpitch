@@ -32,11 +32,6 @@ on:
         description: 'The exact SHA that must be serving production. Refused if it is not.'
         required: true
         type: string
-      probe_enabled_confirmed:
-        description: 'SENTRY_PROBE_ENABLED is set to "true" on the Production deployment (turn it off again afterwards).'
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -67,14 +62,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Refuse without the probe enabled
-        if: ${{ inputs.probe_enabled_confirmed != true }}
-        run: |
-          echo "::error::The browser probe needs SENTRY_PROBE_ENABLED=true on the Production"
-          echo "::error::deployment. Set it, redeploy, run this workflow, then unset it."
-          echo "::error::It is a verification switch, not a setting."
-          exit 1
 
       # ---- 1. What is production ACTUALLY serving? --------------------------
       - name: Resolve and pin the deployed release
@@ -112,19 +99,30 @@ jobs:
 
           echo "deployment_id=$dep" >> "$GITHUB_OUTPUT"
 
-      # ---- 2. Nothing release-blocking may be open --------------------------
-      - name: Refuse while an incident is open
+      # ---- 2. Nothing UNRELATED may be open ---------------------------------
+      #
+      # The observability incident is the one this workflow exists to resolve.
+      # Refusing to run while it is open was a deadlock: the incident cannot be
+      # closed without verification, and verification refused to start while it
+      # was open.
+      #
+      # Every OTHER open incident still refuses. A soak that begins with
+      # production unhealthy in some unrelated way is not evidence.
+      - name: Refuse while an unrelated incident is open
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          open=$(gh issue list --label ops-incident --state open --json number --jq 'length')
-          if [ "$open" != "0" ]; then
+          others=$(gh issue list --label ops-incident --state open --json number,body \
+            --jq '[.[] | select((.body | contains("bookpitch-ops-incident:production-observability-unconfigured")) | not)] | length')
+          if [ "$others" != "0" ]; then
             gh issue list --label ops-incident --state open --json number,title \
               --jq '.[] | "  #\(.number) \(.title)"'
-            echo "::error::$open open production incident(s). A soak that begins unhealthy is not evidence."
+            echo "::error::$others unrelated production incident(s) open."
+            echo "::error::A soak that begins with production unhealthy is not evidence."
             exit 1
           fi
+          echo "Only the observability incident may be open here; this workflow resolves it."
 
       - name: Install Chromium for the browser probe
         run: npx playwright install --with-deps chromium
@@ -143,7 +141,70 @@ jobs:
           SENTRY_RECEIPT_OUT: ${{ runner.temp }}/sentry-receipt.json
         run: node scripts/verify-sentry.mjs
 
-      # ---- 5. Start the soak from that file ---------------------------------
+      # ---- 5. Close the observability incident, BY EVIDENCE ------------------
+      #
+      # The production monitor cannot do this. Its check counts how many DSN env
+      # vars are unset, and zero only means two names are present — a revoked or
+      # mistyped DSN looks identical from there. It is marked `canClose: false`
+      # for exactly this reason.
+      #
+      # This step runs only if the verification above passed, which means real
+      # events were emitted by the deployed application in both runtimes, read
+      # back through Sentry's API, matched on release, environment, nonce and
+      # runtime, and resolved to their own source.
+      - name: Resolve the observability incident
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Written to a file: a multi-line body inline in this block would
+          # break the YAML scalar on its first blank line.
+          cat > "${RUNNER_TEMP}/resolution.md" <<'MD'
+          Resolved by end-to-end verification.
+
+          Real events were emitted by the deployed application in BOTH runtimes,
+          read back through Sentry's API, and matched on release, environment,
+          nonce and runtime, with each stack resolved to its own probe source.
+          Public source maps were affirmatively checked and found absent.
+
+          Closed by evidence rather than by configuration. The monitor's
+          `production-observability-unconfigured` check counts unset DSN
+          variable NAMES; zero only means two names are present, and a revoked
+          or mistyped DSN looks identical from there. It is marked
+          `canClose: false` so it can raise this alarm and never declare it
+          over.
+          MD
+          sed -i 's/^          //' "${RUNNER_TEMP}/resolution.md"
+          printf '\nVerification run: %s/%s/actions/runs/%s\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
+            >> "${RUNNER_TEMP}/resolution.md"
+
+          gh issue list --label ops-incident --state open --json number,body \
+            --jq '.[] | select(.body | contains("bookpitch-ops-incident:production-observability-unconfigured")) | .number' \
+            > "${RUNNER_TEMP}/observability-incidents.txt"
+
+          while read -r n; do
+            [ -n "$n" ] || continue
+            gh issue comment "$n" --body-file "${RUNNER_TEMP}/resolution.md"
+            gh issue close "$n"
+            echo "closed #$n by evidence"
+          done < "${RUNNER_TEMP}/observability-incidents.txt"
+
+      # ---- 6. Nothing blocking may remain, now ------------------------------
+      - name: Re-check that no incident is open
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          open=$(gh issue list --label ops-incident --state open --json number --jq 'length')
+          if [ "$open" != "0" ]; then
+            gh issue list --label ops-incident --state open --json number,title \
+              --jq '.[] | "  #\(.number) \(.title)"'
+            echo "::error::$open production incident(s) still open after verification."
+            exit 1
+          fi
+
+      # ---- 7. Start the soak from that file ---------------------------------
       - name: Start the soak
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

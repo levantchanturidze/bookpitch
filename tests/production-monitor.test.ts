@@ -1681,3 +1681,69 @@ describe('re-running a scheduled run cannot make the monitor green', () => {
     expect(check.ok).toBe(false);
   });
 });
+
+// -----------------------------------------------------------------------------
+// §7 — a check may raise an alarm without being competent to declare it over.
+//
+// `production-observability-unconfigured` counts how many Sentry DSN env vars
+// are UNSET. That is a real fault when it is non-zero, and it is what opened
+// #44. But zero only means "two names are present": a revoked DSN, a DSN for a
+// deleted project, or a typo all count as configured.
+//
+// So the moment somebody pastes any two strings, this check goes green and
+// CLOSES #44 — the incident whose entire subject is whether errors actually
+// reach a human. Presence is not delivery, and this check cannot tell the
+// difference.
+//
+// The end-to-end verifier can: it makes the deployed app emit real events in
+// both runtimes, reads them back through Sentry's API, and checks release,
+// environment, nonce, runtime and symbolication. That is the authority for
+// closing #44.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the observability check can open an incident but never close one', () => {
+  const check = (missing: number) =>
+    evaluateOpsMetrics({ config: { missingObservabilityEnv: missing } }).find(
+      (r: { id: string }) => r.id === 'production-observability-unconfigured',
+    )!;
+
+  it('still fails, and still opens an incident, when a DSN is missing', () => {
+    const r = check(2);
+    expect(r.ok).toBe(false);
+    expect(reconcileIncidents([r], []).toOpen.map((o) => o.result.id)).toEqual([
+      'production-observability-unconfigured',
+    ]);
+  });
+
+  it('THE DEFECT: presence alone must not close the incident', () => {
+    const r = check(0);
+    expect(r.ok, 'two names present is a legitimate pass for a CONFIG check').toBe(true);
+    const open = [
+      { number: 44, body: incidentMarker('production-observability-unconfigured'), title: 'x' },
+    ];
+    const plan = reconcileIncidents([r], open);
+    expect(plan.toClose, 'a config check cannot certify that errors reach a human').toEqual([]);
+  });
+
+  it('the check says why it is not the authority', () => {
+    expect(check(0).detail).toMatch(/presence|not proof|does not prove/i);
+  });
+
+  it('COMPLEMENT: an ordinary check still closes its own incident', () => {
+    // The `canClose` flag must be narrow, not a general weakening of recovery.
+    const ok = { id: 'outbox-dead-letters', title: 't', ok: true, detail: 'd' };
+    const open = [{ number: 9, body: incidentMarker('outbox-dead-letters'), title: 'x' }];
+    expect(reconcileIncidents([ok], open).toClose.map((c) => c.issue.number)).toEqual([9]);
+  });
+
+  it('a check that cannot close is still not able to open twice', () => {
+    const r = check(2);
+    const open = [
+      { number: 44, body: incidentMarker('production-observability-unconfigured'), title: 'x' },
+    ];
+    const plan = reconcileIncidents([r], open);
+    expect(plan.toOpen).toEqual([]);
+    expect(plan.toComment.map((c) => c.issue.number)).toEqual([44]);
+  });
+});
