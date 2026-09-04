@@ -1006,20 +1006,50 @@ describe('the soak refuses to start without Sentry receipt', () => {
     .workflow_dispatch as unknown as { inputs: Record<string, { description?: string }> };
   const steps = (doc.jobs as Record<string, { steps: Array<Record<string, string>> }>).tick.steps;
 
-  it('takes the receipt as an input and passes it to the controller', () => {
-    expect(Object.keys(dispatch.inputs)).toContain('sentry_receipt');
+  it('THE STRONGER FORM: this workflow cannot start a soak at all', () => {
+    // The receipt used to be a `sentry_receipt` workflow input — which meant a
+    // person produced it, copied it, and pasted it into a form three steps
+    // later. Every one of those steps is a place to paste last week's receipt,
+    // or one for a different release, and the soak would then spend 24 hours
+    // revalidating it perfectly.
+    //
+    // Removing the input is stronger than validating it: there is now no way to
+    // hand a receipt to this workflow, because there is no way to start a soak
+    // from it.
+    expect(Object.keys(dispatch.inputs)).not.toContain('sentry_receipt');
+    expect(Object.keys(dispatch.inputs)).not.toContain('start');
+    expect(Object.keys(dispatch.inputs)).toEqual(['dry_run']);
+
     const tick = steps.find((s) => s.name === 'Soak tick') as unknown as {
       env: Record<string, string>;
     };
-    expect(tick.env.SOAK_SENTRY_RECEIPT).toBe('${{ inputs.sentry_receipt }}');
+    expect(Object.keys(tick.env)).not.toContain('SOAK_START');
+    expect(Object.keys(tick.env)).not.toContain('SOAK_SENTRY_RECEIPT');
   });
 
-  it('has a guard step that fails a start with an empty receipt', () => {
-    const guard = steps.find((s) => /Sentry receipt/i.test(String(s.name ?? '')));
-    expect(guard, 'no guard step for a missing receipt').toBeDefined();
-    expect(String(guard!.if)).toMatch(/inputs\.start == true/);
-    expect(String(guard!.if)).toMatch(/inputs\.sentry_receipt == ''/);
-    expect(String(guard!.run)).toMatch(/exit 1/);
+  it('starting is one workflow that does every step itself', () => {
+    const { doc: starter, raw: starterRaw } = readWorkflow('release-verify-and-soak.yml');
+    const startSteps = (
+      starter as unknown as { jobs: Record<string, { steps: Array<Record<string, string>> }> }
+    ).jobs['verify-and-start'].steps;
+    const names = startSteps.map((st) => String(st.name ?? st.uses));
+
+    // The receipt is written to the runner and read from the runner, in one
+    // job. It is never an artifact, never printed, never typed.
+    expect(starterRaw).toMatch(/SENTRY_RECEIPT_OUT: \$\{\{ runner\.temp \}\}/);
+    expect(starterRaw).toMatch(/SOAK_SENTRY_RECEIPT_FILE: \$\{\{ runner\.temp \}\}/);
+    expect(starterRaw, 'the receipt must never be uploaded').not.toMatch(/upload-artifact/);
+    expect(starterRaw, 'and must be removed afterwards').toMatch(/rm -f .*sentry-receipt\.json/);
+
+    // And it refuses before verifying, rather than after.
+    expect(names.some((n) => /Resolve and pin the deployed release/.test(n))).toBe(true);
+    expect(names.some((n) => /Refuse while an incident is open/.test(n))).toBe(true);
+    const verifyAt = names.findIndex((n) => /Verify Sentry/.test(n));
+    const pinAt = names.findIndex((n) => /Resolve and pin/.test(n));
+    const startAt = names.findIndex((n) => /Start the soak/.test(n));
+    expect(pinAt).toBeGreaterThan(-1);
+    expect(verifyAt).toBeGreaterThan(pinAt);
+    expect(startAt).toBeGreaterThan(verifyAt);
   });
 
   it('the old ticked-boolean input has not come back', () => {

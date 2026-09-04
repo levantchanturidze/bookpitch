@@ -54,6 +54,12 @@ const UNSAFE_DB_ALLOWLIST = [
   // a tick spans every organization, so there is no org context to scope to.
   // One row per job, overwritten in place, holding timestamps and counts.
   'lib/cron-heartbeat.ts',
+  // Sentry probe challenge: sentry_probe_challenge has no organization_id and
+  // no tenant dimension at all — it is platform-plane bookkeeping for release
+  // verification, issued to a workflow holding CRON_SECRET and redeemed by an
+  // unauthenticated page load with no session and no organization. It holds a
+  // random id, a public nonce and two timestamps.
+  'lib/sentry-probe-challenge.ts',
   'lib/billing/service.ts',
   'lib/payments/service.ts',
 

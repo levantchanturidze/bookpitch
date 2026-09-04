@@ -35,6 +35,7 @@
 
 import process from 'node:process';
 import { unhealthyJobsFrom } from './heartbeat-contract.mjs';
+import { verifyReceiptIntegrity } from './sentry-receipt.mjs';
 
 export const SOAK_DEFAULTS = {
   /** An uninterrupted healthy window shorter than this is not a soak. */
@@ -690,6 +691,14 @@ export function nextSentryState(persisted, verdict) {
     // reason: losing them loses the only thing a later tick could re-check.
     serverEventId: verdict?.serverEventId ?? persisted?.serverEventId ?? null,
     browserEventId: verdict?.browserEventId ?? persisted?.browserEventId ?? null,
+    // Also immutable identity: the files the stacks resolved to, the
+    // affirmative public-map result, and the digest that authenticates all of
+    // it. A tick that rewrote any of these could launder a tampered receipt
+    // into a clean one on the next pass.
+    serverSource: persisted?.serverSource ?? null,
+    browserSource: persisted?.browserSource ?? null,
+    sourceMapsPublic: persisted?.sourceMapsPublic ?? null,
+    digest: persisted?.digest ?? null,
     // The only fields a tick may update: what it observed this time.
     configured: Boolean(verdict?.configured),
     lastRevalidationOk: Boolean(verdict?.ok),
@@ -720,6 +729,8 @@ export function nextSentryState(persisted, verdict) {
  * @param {string|undefined|null} json  the receipt document, or nothing
  * @returns {{nonce: string, verifiedAt: string, releaseSha: string,
  *            environment: string, serverEventId: string, browserEventId: string,
+ *            serverSource: string, browserSource: string,
+ *            sourceMapsPublic: boolean, digest: string,
  *            configured: boolean, lastRevalidationOk: boolean,
  *            lastRevalidationAt: string|null, lastProblems: string[]}|null}
  *   state to persist, or null when no receipt was supplied
@@ -741,10 +752,26 @@ export function seedSentryState(json) {
     'environment',
     'serverEventId',
     'browserEventId',
+    'serverSource',
+    'browserSource',
+    'digest',
   ];
   const missing = required.filter((k) => !r?.[k] || typeof r[k] !== 'string');
   if (missing.length) {
     throw new Error(`Sentry receipt is incomplete — missing ${missing.join(', ')}`);
+  }
+
+  // Integrity, checked at the door. The receipt is about to be written into a
+  // public issue body and trusted for 24 hours; an unsigned or edited one must
+  // never get that far. CRON_SECRET is the key both the verifier and this
+  // controller already hold.
+  const secret = process.env.CRON_SECRET;
+  if (!secret) {
+    throw new Error('CRON_SECRET is not set, so the Sentry receipt cannot be authenticated');
+  }
+  const integrity = verifyReceiptIntegrity(secret, r);
+  if (!integrity.ok) {
+    throw new Error(`Sentry receipt failed its integrity check: ${integrity.reason}`);
   }
   if (r.serverEventId === r.browserEventId) {
     throw new Error(
@@ -764,6 +791,15 @@ export function seedSentryState(json) {
     environment: r.environment,
     serverEventId: r.serverEventId,
     browserEventId: r.browserEventId,
+    // Which repository file each runtime's stack resolved to, and the
+    // affirmative public-source-map result. Re-checked on every tick, so a
+    // later event that resolves somewhere else fails the gate.
+    serverSource: r.serverSource,
+    browserSource: r.browserSource,
+    sourceMapsPublic: r.sourceMapsPublic,
+    // Kept so every tick can re-authenticate the receipt it is trusting,
+    // rather than only the tick that seeded it.
+    digest: r.digest,
     // Nothing has been revalidated yet; the first tick does that.
     configured: false,
     lastRevalidationOk: false,
@@ -1016,6 +1052,30 @@ async function verifySentryReceipt({ persisted, configured, releaseSha }) {
       ...base,
       problems: [
         'no verified server+browser event ids and nonce are persisted — run scripts/verify-sentry.mjs',
+      ],
+    };
+  }
+
+  // Re-authenticated on EVERY tick, not only the one that seeded it. The
+  // receipt lives in a public issue body for 24 hours; checking it once at the
+  // start would leave 47 ticks trusting whatever the body says now.
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) {
+    return {
+      ...base,
+      problems: ['CRON_SECRET is not set, so the receipt cannot be authenticated'],
+    };
+  }
+  const integrity = verifyReceiptIntegrity(cronSecret, persisted);
+  if (!integrity.ok) {
+    return { ...base, problems: [`persisted receipt: ${integrity.reason}`] };
+  }
+  if (persisted.releaseSha !== releaseSha) {
+    return {
+      ...base,
+      problems: [
+        `the receipt was produced for ${String(persisted.releaseSha).slice(0, 12)} but the ` +
+          `soak is measuring ${String(releaseSha).slice(0, 12)}`,
       ],
     };
   }

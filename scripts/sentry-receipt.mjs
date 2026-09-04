@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
 // -----------------------------------------------------------------------------
 // What makes a Sentry event actual RECEIPT evidence.
 //
@@ -49,25 +50,169 @@ function tag(event, key) {
  * An allow-list, not a deny-list. A deny-list of build-output shapes has to be
  * complete to be correct, and build tools invent new ones.
  */
-export function isSymbolicated(event) {
-  const frames =
-    event.entries
+
+// -----------------------------------------------------------------------------
+// Receipt integrity.
+//
+// The receipt is what the soak trusts for 24 hours. It travels as a workflow
+// input and is then stored in a public GitHub issue body, so anyone who can
+// dispatch the workflow or edit the issue could substitute event ids from an
+// older verification run against an older release — and every subsequent tick
+// would revalidate them happily, because the fields it checks would all agree
+// with each other. Internal consistency is not integrity.
+//
+// So the receipt carries an HMAC over its own bound fields, keyed with
+// CRON_SECRET, which the verifier and the soak controller both already hold and
+// neither ever prints. Editing any bound field without the key invalidates it.
+//
+// This is deliberately not a signature scheme with separate keys: the threat is
+// a hand-edited issue body, not a compromised verifier. A shared secret both
+// sides already possess is the right weight.
+// -----------------------------------------------------------------------------
+
+/**
+ * Fields the digest covers. Everything that decides whether the receipt is
+ * evidence about THIS release, produced by THIS run, from THESE events.
+ *
+ * `digest` itself is excluded, obviously. Anything added here must also be
+ * added to tests/sentry-receipt.test.ts, which edits each field in turn and
+ * asserts the digest breaks.
+ */
+export const RECEIPT_BOUND_FIELDS = Object.freeze([
+  'browserEventId',
+  'browserSource',
+  'environment',
+  'nonce',
+  'notBefore',
+  'releaseSha',
+  'serverEventId',
+  'serverSource',
+  'sourceMapsPublic',
+  'verifiedAt',
+]);
+
+/**
+ * HMAC over a canonical serialisation of the bound fields.
+ *
+ * Canonical means sorted keys and explicit types — otherwise two receipts that
+ * say the same thing in a different key order would digest differently, and a
+ * round trip through JSON would look like tampering.
+ */
+export function receiptDigest(secret, receipt) {
+  const canonical = RECEIPT_BOUND_FIELDS.map(
+    (k) => `${k}=${JSON.stringify(receipt?.[k] ?? null)}`,
+  ).join('\n');
+  return createHmac('sha256', String(secret)).update(canonical).digest('hex');
+}
+
+/**
+ * Is this receipt intact, and does it assert something acceptable?
+ *
+ * Returns a reason rather than a bare boolean so a failing soak tick can say
+ * which it was, without echoing the receipt.
+ */
+export function verifyReceiptIntegrity(secret, receipt) {
+  if (!receipt || typeof receipt !== 'object') {
+    return { ok: false, reason: 'no receipt' };
+  }
+  if (typeof receipt.digest !== 'string' || !/^[0-9a-f]{64}$/.test(receipt.digest)) {
+    return { ok: false, reason: 'the receipt carries no digest — it cannot be trusted' };
+  }
+  const expected = Buffer.from(receiptDigest(secret, receipt), 'hex');
+  const actual = Buffer.from(receipt.digest, 'hex');
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    return {
+      ok: false,
+      reason: 'the receipt digest does not match its contents — it was edited after signing',
+    };
+  }
+  // Signed correctly and still unacceptable: a release that serves its own
+  // source maps publicly is not fit to soak, and the receipt is an assertion
+  // that it is.
+  if (receipt.sourceMapsPublic !== false) {
+    return {
+      ok: false,
+      reason:
+        'the receipt does not affirmatively record that source maps are unavailable publicly ' +
+        `(sourceMapsPublic=${JSON.stringify(receipt.sourceMapsPublic)}); this check fails ` +
+        'closed, so "unknown" is a failure',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * The file each runtime's probe throws from.
+ *
+ * Required, not merely preferred. Symbolication used to be satisfied by ANY
+ * `.ts`/`.tsx` frame with context — so a middleware file, a library helper, or
+ * anything else that happened to resolve would prove "source maps work" while
+ * the probe's own frame stayed minified. The claim being made is that THIS
+ * stack is readable, and the only way to check that is to name the file.
+ */
+export const PROBE_SOURCES = Object.freeze({
+  server: 'app/api/health/sentry-probe/route.ts',
+  browser: 'app/probe/sentry/BrowserProbe.tsx',
+});
+
+/** Every frame of every exception in the event, flattened. */
+function framesOf(event) {
+  return (
+    event?.entries
       ?.filter((e) => e.type === 'exception')
       .flatMap((e) => e.data?.values ?? [])
-      .flatMap((v) => v.stacktrace?.frames ?? []) ?? [];
-  return frames.some((f) => {
-    if (!Array.isArray(f.context) || f.context.length === 0) return false;
-    const name = typeof f.filename === 'string' ? f.filename : '';
-    if (!name) return false;
-    // Ours, and written by a human.
-    if (!/\.tsx?$/.test(name)) return false;
-    // A dependency's own source map is not proof that ours were uploaded.
-    if (/(^|\/)node_modules\//.test(name)) return false;
-    // Belt and braces: nothing under a build directory, whatever its extension.
-    if (/(^|\/)\.next\//.test(name)) return false;
-    if (/^webpack-internal:/.test(name)) return false;
-    return true;
-  });
+      .flatMap((v) => v.stacktrace?.frames ?? []) ?? []
+  );
+}
+
+/**
+ * Is this frame ORIGINAL REPOSITORY SOURCE, resolved through a source map?
+ *
+ * An allow-list, not a deny-list. A deny-list of build-output shapes has to be
+ * complete to be correct, and build tools invent new ones. An earlier version
+ * excluded only `/_next/static/chunks/` and `.min.js`, so a SERVER build
+ * artefact — `.next/server/app/api/.../route.js` — with context lines counted
+ * as original source.
+ */
+function isOriginalSource(f) {
+  if (!Array.isArray(f?.context) || f.context.length === 0) return false;
+  const name = typeof f.filename === 'string' ? f.filename : '';
+  if (!name) return false;
+  if (!/\.tsx?$/.test(name)) return false;
+  // A dependency's own source map is not proof that ours were uploaded.
+  if (/(^|\/)node_modules\//.test(name)) return false;
+  // Belt and braces: nothing under a build directory, whatever its extension.
+  if (/(^|\/)\.next\//.test(name)) return false;
+  if (/^webpack-internal:/.test(name)) return false;
+  return true;
+}
+
+/**
+ * Does the event carry a readable frame from the KNOWN probe source for this
+ * runtime?
+ *
+ * `expectedSource` may be omitted, in which case any original-source frame
+ * counts — kept only so the older call shape keeps working; every caller in
+ * this repository passes one.
+ */
+export function isSymbolicated(event, expectedSource) {
+  const original = framesOf(event).filter(isOriginalSource);
+  if (original.length === 0) return false;
+  if (!expectedSource) return true;
+  // Suffix match: Sentry may report the path with or without a leading slash
+  // or a project-root prefix, depending on how the maps were uploaded.
+  return original.some((f) => String(f.filename).replace(/^\/+/, '').endsWith(expectedSource));
+}
+
+/** Which original-source files the event's stack actually resolved to. */
+export function symbolicatedSources(event) {
+  return [
+    ...new Set(
+      framesOf(event)
+        .filter(isOriginalSource)
+        .map((f) => String(f.filename)),
+    ),
+  ];
 }
 
 /**
@@ -119,8 +264,19 @@ export function verifyReceipt(event, expect) {
     );
   }
 
-  const symbolicated = isSymbolicated(event);
-  return { ok: problems.length === 0, eventId, symbolicated, problems };
+  // The expected source is derived from the runtime, so a caller cannot
+  // accidentally check the browser probe's file against a server event.
+  const expectedSource = PROBE_SOURCES[expect.runtime];
+  const symbolicated = isSymbolicated(event, expectedSource);
+  const sources = symbolicatedSources(event);
+  if (!symbolicated) {
+    problems.push(
+      sources.length === 0
+        ? 'no frame resolved to original repository source — the stack is unreadable minified output'
+        : `no frame resolved to ${expectedSource}; readable frames were: ${sources.join(', ')}`,
+    );
+  }
+  return { ok: problems.length === 0, eventId, symbolicated, sources, problems };
 }
 
 /**

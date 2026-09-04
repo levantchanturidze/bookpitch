@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   nextSentryState,
   seedSentryState,
@@ -11,6 +11,7 @@ import {
   SOAK_DEFAULTS,
   SOAK_MARKER,
 } from '../scripts/soak-controller.mjs';
+import { receiptDigest } from '../scripts/sentry-receipt.mjs';
 
 // -----------------------------------------------------------------------------
 // §13 — the durable soak controller.
@@ -945,15 +946,33 @@ describe('persisted Sentry receipt is immutable where it must be', () => {
 // Written to FAIL first.
 // -----------------------------------------------------------------------------
 describe('a verified receipt can be seeded into soak state automatically', () => {
-  const receipt = {
-    notBefore: '2026-09-03T09:00:00.000Z',
-    verifiedAt: '2026-09-03T09:02:30.000Z',
-    nonce: 'abcd1234abcd1234',
-    releaseSha: 'f'.repeat(40),
-    environment: 'production',
-    serverEventId: 'srv-1',
-    browserEventId: 'brw-2',
+  // Signed the way scripts/verify-sentry.mjs signs it. CRON_SECRET is the key
+  // both the verifier and the controller already hold; the receipt is stored in
+  // a public issue body, so an unsigned one must never be seeded.
+  const SECRET = 'seed-test-cron-secret';
+  const signed = (over: Record<string, unknown> = {}) => {
+    const r: Record<string, unknown> = {
+      notBefore: '2026-09-03T09:00:00.000Z',
+      verifiedAt: '2026-09-03T09:02:30.000Z',
+      nonce: 'abcd1234abcd1234',
+      releaseSha: 'f'.repeat(40),
+      environment: 'production',
+      serverEventId: 'srv-1',
+      browserEventId: 'brw-2',
+      serverSource: 'app/api/health/sentry-probe/route.ts',
+      browserSource: 'app/probe/sentry/BrowserProbe.tsx',
+      sourceMapsPublic: false,
+      digest: '',
+      ...over,
+    };
+    r.digest = receiptDigest(SECRET, r);
+    return r;
   };
+  const receipt = signed();
+
+  beforeEach(() => {
+    process.env.CRON_SECRET = SECRET;
+  });
 
   it('THE DEFECT: a receipt file becomes persisted sentry state', () => {
     // Without this there is no supported path at all: nextSentryState() reads
@@ -999,7 +1018,8 @@ describe('a verified receipt can be seeded into soak state automatically', () =>
   });
 
   it('the same event id for both runtimes is refused at seed time', () => {
-    expect(() => seedSentryState(JSON.stringify({ ...receipt, browserEventId: 'srv-1' }))).toThrow(
+    // Correctly signed, and still refused: one event cannot prove two SDKs.
+    expect(() => seedSentryState(JSON.stringify(signed({ browserEventId: 'srv-1' })))).toThrow(
       /same event/i,
     );
   });
@@ -1363,6 +1383,80 @@ describe('every gate is classified, so a new one cannot be silently neither', ()
     // …and no classification names a gate that does not exist.
     for (const id of [...health, ...progress]) {
       expect(ids, `${id} is classified but never emitted`).toContain(id);
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4.5 — the receipt must be authenticated on EVERY tick, not only at seed.
+//
+// It is stored in a public GitHub issue body and trusted for 24 hours. Checking
+// it once at the start leaves 47 later ticks trusting whatever the body says
+// now, and the body is editable by anyone with write access to the repository.
+// -----------------------------------------------------------------------------
+describe('a tampered receipt cannot survive a tick', () => {
+  const SECRET = 'tick-test-cron-secret';
+  const signedState = (over: Record<string, unknown> = {}) => {
+    const r: Record<string, unknown> = {
+      notBefore: '2026-09-03T09:00:00.000Z',
+      verifiedAt: '2026-09-03T09:02:30.000Z',
+      nonce: 'abcd1234abcd1234',
+      releaseSha: 'f'.repeat(40),
+      environment: 'production',
+      serverEventId: 'srv-1',
+      browserEventId: 'brw-2',
+      serverSource: 'app/api/health/sentry-probe/route.ts',
+      browserSource: 'app/probe/sentry/BrowserProbe.tsx',
+      sourceMapsPublic: false,
+      digest: '',
+      ...over,
+    };
+    r.digest = receiptDigest(SECRET, r);
+    return r;
+  };
+
+  beforeEach(() => {
+    process.env.CRON_SECRET = SECRET;
+  });
+
+  it('nextSentryState carries the digest and sources forward unchanged', () => {
+    // If a tick could rewrite these, a tampered receipt would be laundered into
+    // a clean one on the next pass.
+    const seeded = seedSentryState(JSON.stringify(signedState()))!;
+    const after = nextSentryState(seeded, { configured: true, ok: true, problems: [] });
+    expect(after.digest).toBe(seeded.digest);
+    expect(after.serverSource).toBe(seeded.serverSource);
+    expect(after.browserSource).toBe(seeded.browserSource);
+    expect(after.sourceMapsPublic).toBe(false);
+    expect(after.nonce).toBe(seeded.nonce);
+    expect(after.verifiedAt).toBe(seeded.verifiedAt);
+  });
+
+  it('a receipt that records PUBLIC source maps cannot be seeded at all', () => {
+    expect(() => seedSentryState(JSON.stringify(signedState({ sourceMapsPublic: true })))).toThrow(
+      /source maps/i,
+    );
+  });
+
+  it('an unsigned receipt cannot be seeded', () => {
+    const r = signedState();
+    delete (r as Record<string, unknown>).digest;
+    expect(() => seedSentryState(JSON.stringify(r))).toThrow(/incomplete|digest/i);
+  });
+
+  it('a receipt signed with a different key cannot be seeded', () => {
+    const r = signedState();
+    r.digest = receiptDigest('a-different-secret', r);
+    expect(() => seedSentryState(JSON.stringify(r))).toThrow(/integrity/i);
+  });
+
+  it('seeding refuses when CRON_SECRET is absent — unauthenticated is not trusted', () => {
+    const prev = process.env.CRON_SECRET;
+    delete process.env.CRON_SECRET;
+    try {
+      expect(() => seedSentryState(JSON.stringify(signedState()))).toThrow(/CRON_SECRET/);
+    } finally {
+      process.env.CRON_SECRET = prev;
     }
   });
 });

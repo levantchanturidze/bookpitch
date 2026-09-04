@@ -88,7 +88,9 @@ describe('a single job entry is judged against the LOCAL limit', () => {
   });
 
   it('a tighter remote limit does not manufacture a failure either', () => {
-    expect(evaluateHeartbeatJob('housekeeping', healthy({ maxAgeMinutes: 1 }), limit).ok).toBe(true);
+    expect(evaluateHeartbeatJob('housekeeping', healthy({ maxAgeMinutes: 1 }), limit).ok).toBe(
+      true,
+    );
   });
 
   it('a missing entry is a failure, not an absence of opinion', () => {

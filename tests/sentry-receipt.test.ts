@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { verifyReceipt, verifyReceiptPair, isSymbolicated } from '../scripts/sentry-receipt.mjs';
+import {
+  verifyReceipt,
+  verifyReceiptPair,
+  isSymbolicated,
+  PROBE_SOURCES,
+  receiptDigest,
+  verifyReceiptIntegrity,
+} from '../scripts/sentry-receipt.mjs';
 
 /** Shape of the Sentry API event payload these tests build. */
 type SentryEvent = Record<string, unknown>;
@@ -190,6 +197,10 @@ describe('symbolication is derived from the event, not asserted', () => {
 });
 
 describe('the pair must exercise two runtimes', () => {
+  // The browser event must resolve to the BROWSER probe's own file. It used to
+  // inherit the server route's frame from the shared fixture, which passed —
+  // and that is exactly the hole: a readable server stack is not evidence that
+  // the browser bundle's maps were uploaded.
   const browser = () =>
     verifyReceipt(
       event({
@@ -197,6 +208,28 @@ describe('the pair must exercise two runtimes', () => {
         tags: [
           { key: 'bookpitch_verification_nonce', value: NONCE },
           { key: 'bookpitch_runtime', value: 'browser' },
+        ],
+        entries: [
+          {
+            type: 'exception',
+            data: {
+              values: [
+                {
+                  stacktrace: {
+                    frames: [
+                      { filename: '/_next/static/chunks/4f2a.js', lineNo: 1, inApp: true },
+                      {
+                        filename: 'app/probe/sentry/BrowserProbe.tsx',
+                        lineNo: 55,
+                        inApp: true,
+                        context: [[55, '      const id = Sentry.captureException(']],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
         ],
       }),
       { ...expectation, runtime: 'browser' },
@@ -332,5 +365,201 @@ describe('each runtime must prove its OWN symbolication', () => {
       browser: verdict({ eventId: 'brw-2', symbolicated: true }),
     });
     expect(r.ok).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4.5 — symbolication must prove THIS stack is readable, not some stack.
+//
+// `isSymbolicated()` accepted any `.ts`/`.tsx` frame carrying context. So a
+// middleware file, a library helper, or anything else that happened to resolve
+// satisfied it while the probe's own frame stayed minified — and the receipt
+// then asserted "source maps are proven" about a stack nobody could read.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('symbolication is checked against the probe’s own source file', () => {
+  const withFrames = (frames: Array<Record<string, unknown>>, over: Partial<SentryEvent> = {}) =>
+    event({
+      entries: [{ type: 'exception', data: { values: [{ stacktrace: { frames } }] } }],
+      ...over,
+    });
+
+  const ctx = [[1, 'const x = 1;']];
+
+  it('THE DEFECT: an unrelated readable file does not prove the probe resolved', () => {
+    const v = verifyReceipt(
+      withFrames([{ filename: 'lib/logger.ts', lineNo: 1, context: ctx }]),
+      expectation,
+    );
+    expect(v.symbolicated).toBe(false);
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(' ')).toMatch(/app\/api\/health\/sentry-probe\/route\.ts/);
+    // The message names what DID resolve, so the failure is diagnosable.
+    expect(v.problems.join(' ')).toMatch(/lib\/logger\.ts/);
+  });
+
+  it('the server probe’s own file counts', () => {
+    const v = verifyReceipt(
+      withFrames([{ filename: 'app/api/health/sentry-probe/route.ts', lineNo: 88, context: ctx }]),
+      expectation,
+    );
+    expect(v.symbolicated).toBe(true);
+  });
+
+  it('a leading slash or project-root prefix still matches', () => {
+    for (const filename of [
+      '/app/api/health/sentry-probe/route.ts',
+      '/vercel/path0/app/api/health/sentry-probe/route.ts',
+    ]) {
+      expect(
+        verifyReceipt(withFrames([{ filename, lineNo: 88, context: ctx }]), expectation)
+          .symbolicated,
+        filename,
+      ).toBe(true);
+    }
+  });
+
+  it('THE DEFECT: the SERVER file does not satisfy a BROWSER event', () => {
+    const v = verifyReceipt(
+      withFrames([{ filename: 'app/api/health/sentry-probe/route.ts', lineNo: 88, context: ctx }], {
+        tags: [
+          { key: 'bookpitch_verification_nonce', value: NONCE },
+          { key: 'bookpitch_runtime', value: 'browser' },
+        ],
+      }),
+      { ...expectation, runtime: 'browser' },
+    );
+    expect(v.symbolicated, 'each runtime must prove its OWN maps').toBe(false);
+  });
+
+  it('the browser probe’s own file counts for a browser event', () => {
+    const v = verifyReceipt(
+      withFrames([{ filename: 'app/probe/sentry/BrowserProbe.tsx', lineNo: 55, context: ctx }], {
+        tags: [
+          { key: 'bookpitch_verification_nonce', value: NONCE },
+          { key: 'bookpitch_runtime', value: 'browser' },
+        ],
+      }),
+      { ...expectation, runtime: 'browser' },
+    );
+    expect(v.symbolicated).toBe(true);
+  });
+
+  it('reports the resolved sources so a receipt can record them', () => {
+    const v = verifyReceipt(
+      withFrames([
+        { filename: 'app/api/health/sentry-probe/route.ts', lineNo: 88, context: ctx },
+        { filename: 'lib/logger.ts', lineNo: 3, context: ctx },
+        { filename: '/_next/static/chunks/x.js', lineNo: 1 },
+      ]),
+      expectation,
+    );
+    expect(v.sources).toContain('app/api/health/sentry-probe/route.ts');
+    expect(v.sources).not.toContain('/_next/static/chunks/x.js');
+  });
+
+  it('the declared probe sources are files that actually exist', async () => {
+    // Otherwise a rename would silently make symbolication unsatisfiable, and
+    // the failure would read as "Sentry is broken".
+    const { existsSync } = await import('node:fs');
+    for (const f of Object.values(PROBE_SOURCES)) {
+      expect(existsSync(f), `${f} does not exist`).toBe(true);
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §4.5 — the receipt is the thing the soak trusts for 24 hours, so it must be
+// impossible to edit into something that passes.
+//
+// The receipt travels as a workflow input and is then stored in a public GitHub
+// issue body. Anyone who can dispatch the workflow, or edit the issue, could
+// substitute event ids from an old verification run against an old release —
+// and every subsequent tick would "revalidate" them happily, because the fields
+// it checks would all agree with each other.
+//
+// So the receipt carries an HMAC over its own bound fields, keyed with
+// CRON_SECRET, which both the verifier and the soak controller already hold.
+// Changing any bound field without the key invalidates it.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('a receipt is tamper-evident', () => {
+  const SECRET = 'cron-secret-for-receipt-tests';
+  const receipt = () => ({
+    notBefore: '2026-09-04T09:00:00.000Z',
+    verifiedAt: '2026-09-04T09:02:30.000Z',
+    nonce: NONCE,
+    releaseSha: RELEASE,
+    environment: 'production',
+    serverEventId: 'srv-1',
+    browserEventId: 'brw-2',
+    serverSource: 'app/api/health/sentry-probe/route.ts',
+    browserSource: 'app/probe/sentry/BrowserProbe.tsx',
+    sourceMapsPublic: false,
+  });
+
+  it('a signed receipt verifies', () => {
+    const r = { ...receipt(), digest: '' };
+    r.digest = receiptDigest(SECRET, r);
+    expect(verifyReceiptIntegrity(SECRET, r)).toEqual({ ok: true });
+  });
+
+  it('THE DEFECT: swapping an event id invalidates it', () => {
+    const r = { ...receipt(), digest: '' };
+    r.digest = receiptDigest(SECRET, r);
+    const tampered = { ...r, serverEventId: 'srv-from-an-old-run' };
+    expect(verifyReceiptIntegrity(SECRET, tampered).ok).toBe(false);
+  });
+
+  it('every bound field is actually bound', () => {
+    const base = { ...receipt(), digest: '' };
+    base.digest = receiptDigest(SECRET, base);
+    const edits: Array<[string, unknown]> = [
+      ['notBefore', '2020-01-01T00:00:00.000Z'],
+      ['verifiedAt', '2020-01-01T00:00:00.000Z'],
+      ['nonce', 'some-other-nonce'],
+      ['releaseSha', 'b'.repeat(40)],
+      ['environment', 'preview'],
+      ['serverEventId', 'other'],
+      ['browserEventId', 'other'],
+      ['serverSource', 'lib/logger.ts'],
+      ['browserSource', 'lib/logger.ts'],
+      ['sourceMapsPublic', true],
+    ];
+    for (const [field, value] of edits) {
+      const tampered = { ...base, [field]: value };
+      expect(verifyReceiptIntegrity(SECRET, tampered).ok, `${field} is not bound`).toBe(false);
+    }
+  });
+
+  it('a receipt signed with a different key does not verify', () => {
+    const r = { ...receipt(), digest: '' };
+    r.digest = receiptDigest('some-other-secret', r);
+    expect(verifyReceiptIntegrity(SECRET, r).ok).toBe(false);
+  });
+
+  it('a receipt with no digest at all is refused, not waved through', () => {
+    expect(verifyReceiptIntegrity(SECRET, receipt() as never).ok).toBe(false);
+    expect(verifyReceiptIntegrity(SECRET, { ...receipt(), digest: '' }).ok).toBe(false);
+    expect(verifyReceiptIntegrity(SECRET, null as never).ok).toBe(false);
+  });
+
+  it('a receipt claiming PUBLIC source maps can never be valid', () => {
+    // Signed correctly, and still refused: publishing the unminified source is
+    // a finding in itself, and a receipt is an assertion that the release is
+    // fit to soak.
+    const r = { ...receipt(), sourceMapsPublic: true, digest: '' };
+    r.digest = receiptDigest(SECRET, r);
+    const v = verifyReceiptIntegrity(SECRET, r);
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/source maps/i);
+  });
+
+  it('field order does not change the digest — canonical serialisation', () => {
+    const a = { ...receipt(), digest: '' };
+    const reordered = Object.fromEntries(Object.entries(a).reverse()) as unknown as typeof a;
+    expect(receiptDigest(SECRET, a)).toBe(receiptDigest(SECRET, reordered));
   });
 });

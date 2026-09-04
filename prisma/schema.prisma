@@ -610,6 +610,25 @@ model RateLimit {
 /// Not tenant-scoped — a tick spans every organization — so no
 /// organization_id and no RLS policy. Overwritten in place: it is a heartbeat,
 /// not a history.
+/// Single-use authorisation for the browser Sentry probe.
+///
+/// The probe page is opened by a real browser, so its authorisation cannot ride
+/// in the URL — a GET URL reaches history, referrers and logs. The challenge id
+/// travels in an HttpOnly cookie, and consuming it is an atomic UPDATE that
+/// exactly one caller can win. See migration 20260904000001.
+model SentryProbeChallenge {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Public correlation id echoed into the Sentry event. Not a secret.
+  nonce      String
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  /// Set once, by the first caller to redeem it. NULL means unused.
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([expiresAt], map: "sentry_probe_challenge_expires_idx")
+  @@map("sentry_probe_challenge")
+}
+
 model CronHeartbeat {
   job             String    @id
   /// NULL until the job has succeeded at least once. Only a success sets it.
