@@ -1,0 +1,163 @@
+name: Verify Sentry and start the soak
+
+# The one supported way a soak begins.
+#
+# §4.7: eliminate manual receipt copying and issue-body editing. Before this
+# workflow, the sequence was "run verify-sentry.mjs somewhere, copy the JSON it
+# printed, paste it into a workflow form". Every step of that is a place for a
+# human to paste last week's receipt, or a receipt for a different release, and
+# the soak would then spend 24 hours revalidating it perfectly.
+#
+# So the receipt is never handled by a person. It is written to a file on the
+# runner, read from that file by the soak controller in the SAME job, and never
+# uploaded, printed or stored. The only thing a human types is the SHA they
+# believe is deployed — and the first step refuses if production disagrees.
+#
+# Six steps, in order, each refusing rather than continuing:
+#
+#   1. resolve what production is ACTUALLY serving, and refuse if it is not the
+#      named SHA on both canonical hosts;
+#   2. refuse if any release-blocking incident is open;
+#   3. verify Sentry for real — deployed server probe, real Chromium browser
+#      probe, both events read back from Sentry's API, both stacks resolved to
+#      their own source, public source maps affirmatively absent;
+#   4. that step writes a signed receipt, or writes nothing;
+#   5. start the soak from that file;
+#   6. the soak issue is the durable evidence, written by the controller.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: 'The exact SHA that must be serving production. Refused if it is not.'
+        required: true
+        type: string
+      probe_enabled_confirmed:
+        description: 'SENTRY_PROBE_ENABLED is set to "true" on the Production deployment (turn it off again afterwards).'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # Reading the Production Deployment record to pin the soak.
+  deployments: read
+  # The controller reads workflow-run history for the monitor, backup and cron.
+  actions: read
+  # The soak issue is the durable evidence.
+  issues: write
+
+concurrency:
+  # Starting two soaks would create two windows, and whichever controller wrote
+  # last would win.
+  group: production-soak
+  cancel-in-progress: false
+
+jobs:
+  verify-and-start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Refuse without the probe enabled
+        if: ${{ inputs.probe_enabled_confirmed != true }}
+        run: |
+          echo "::error::The browser probe needs SENTRY_PROBE_ENABLED=true on the Production"
+          echo "::error::deployment. Set it, redeploy, run this workflow, then unset it."
+          echo "::error::It is a verification switch, not a setting."
+          exit 1
+
+      # ---- 1. What is production ACTUALLY serving? --------------------------
+      - name: Resolve and pin the deployed release
+        id: deployed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WANT: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          dep=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=Production&per_page=1" --jq '.[0].id')
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=Production&per_page=1" --jq '.[0].sha')
+          state=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$dep/statuses?per_page=1" --jq '.[0].state')
+          echo "deployment=$dep sha=$sha state=$state"
+
+          if [ "$sha" != "$WANT" ]; then
+            echo "::error::Production's latest deployment is $sha, not the requested $WANT."
+            exit 1
+          fi
+          if [ "$state" != "success" ]; then
+            echo "::error::Deployment $dep is in state '$state', not success."
+            exit 1
+          fi
+
+          # And the hosts must actually be serving it — a successful deployment
+          # record is not the same as an alias pointing at it.
+          for host in bookpitch.ge www.bookpitch.ge; do
+            served=$(curl -sSIL "https://$host/api/health" | tr -d '\r' \
+              | awk 'tolower($1) == "x-bookpitch-release:" { print $2 }' | tail -1)
+            echo "$host serves ${served:-(none)}"
+            if [ "$served" != "$WANT" ]; then
+              echo "::error::$host serves '${served:-nothing}', not $WANT."
+              exit 1
+            fi
+          done
+
+          echo "deployment_id=$dep" >> "$GITHUB_OUTPUT"
+
+      # ---- 2. Nothing release-blocking may be open --------------------------
+      - name: Refuse while an incident is open
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          open=$(gh issue list --label ops-incident --state open --json number --jq 'length')
+          if [ "$open" != "0" ]; then
+            gh issue list --label ops-incident --state open --json number,title \
+              --jq '.[] | "  #\(.number) \(.title)"'
+            echo "::error::$open open production incident(s). A soak that begins unhealthy is not evidence."
+            exit 1
+          fi
+
+      - name: Install Chromium for the browser probe
+        run: npx playwright install --with-deps chromium
+
+      # ---- 3 & 4. Real verification, and a signed receipt or nothing --------
+      - name: Verify Sentry against the deployed release
+        env:
+          APP_URL: https://bookpitch.ge
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_ENVIRONMENT: production
+          # Written to the runner's filesystem and read by the next step. Never
+          # uploaded as an artifact, never printed, never pasted.
+          SENTRY_RECEIPT_OUT: ${{ runner.temp }}/sentry-receipt.json
+        run: node scripts/verify-sentry.mjs
+
+      # ---- 5. Start the soak from that file ---------------------------------
+      - name: Start the soak
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          MONITOR_PRODUCTION_URL: https://bookpitch.ge
+          SOAK_START: 'true'
+          SOAK_RELEASE_SHA: ${{ inputs.release_sha }}
+          SOAK_DEPLOYMENT_ID: ${{ steps.deployed.outputs.deployment_id }}
+          SOAK_SENTRY_RECEIPT_FILE: ${{ runner.temp }}/sentry-receipt.json
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: node scripts/soak-controller.mjs
+
+      - name: Remove the receipt from the runner
+        if: always()
+        run: rm -f "${{ runner.temp }}/sentry-receipt.json"

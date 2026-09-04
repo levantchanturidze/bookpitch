@@ -56,7 +56,12 @@
 // -----------------------------------------------------------------------------
 
 import { writeFileSync } from 'node:fs';
-import { verifyReceipt, verifyReceiptPair } from './sentry-receipt.mjs';
+import {
+  verifyReceipt,
+  verifyReceiptPair,
+  receiptDigest,
+  PROBE_SOURCES,
+} from './sentry-receipt.mjs';
 
 const results = [];
 function record(level, name, ok, detail) {
@@ -128,6 +133,7 @@ try {
 // The nonce is minted server-side so this run cannot be handed one that already
 // has matching events sitting in Sentry from an earlier run.
 let probeAuth = null;
+let probeCookie = null;
 try {
   const res = await http(`${APP_URL}/api/health/sentry-probe/token`, {
     method: 'POST',
@@ -142,8 +148,19 @@ try {
   if (res.status === 401) bail('The deployment rejected CRON_SECRET.');
   if (!res.ok) bail(`Probe token endpoint answered HTTP ${res.status}.`);
   probeAuth = await res.json();
-  if (!probeAuth?.nonce || !probeAuth?.token || !probeAuth?.expiresAt) {
-    bail('Probe token endpoint returned an unusable response.');
+  // The single-use challenge id arrives as an HttpOnly cookie, never in the
+  // body and never in a URL. Parsed out here so it can be planted in the
+  // browser context; its value is never logged.
+  const setCookie = res.headers.getSetCookie?.() ?? [];
+  const match = setCookie
+    .map((c) => /^__Host-bookpitch-sentry-probe=([^;]+)/.exec(c))
+    .find(Boolean);
+  probeCookie = match ? match[1] : null;
+  if (!probeAuth?.nonce || !probeCookie) {
+    bail(
+      'Probe token endpoint returned an unusable response — expected a nonce and a\n' +
+        'single-use challenge cookie.',
+    );
   }
   note(`verification nonce ${probeAuth.nonce}`);
 } catch (err) {
@@ -205,18 +222,33 @@ let browserEventId = null;
       if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 200));
     });
 
-    const url =
-      `${APP_URL}/probe/sentry?nonce=${encodeURIComponent(probeAuth.nonce)}` +
-      `&token=${encodeURIComponent(probeAuth.token)}&exp=${probeAuth.expiresAt}`;
-    // Never logged: it carries the authorisation token.
-    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    // The challenge rides in a cookie, so the URL is bare — nothing to leak
+    // into history, a Referer header, or a CI log. It is also single-use: a
+    // reload of this page 404s, which is what makes "one-time" a property of
+    // the system rather than a label on a comment.
+    const host = new URL(APP_URL).hostname;
+    await page.context().addCookies([
+      {
+        name: '__Host-bookpitch-sentry-probe',
+        value: probeCookie,
+        domain: host,
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Strict',
+      },
+    ]);
+    const res = await page.goto(`${APP_URL}/probe/sentry`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    });
 
     if (!res || res.status() === 404) {
       record(
         1,
         'CONFIGURED (browser)',
         false,
-        'the probe page 404s — probe disabled, or the token was refused',
+        'the probe page 404s — probe disabled, or the challenge was refused (spent, expired, or never issued)',
       );
     } else {
       const el = page.locator('#probe-status');
@@ -321,63 +353,114 @@ const pair = verifyReceiptPair({ server, browser });
 record(5, 'VERIFIED', pair.ok, pair.ok ? 'both events are this run’s, and readable' : '');
 for (const p of pair.problems) note(`· ${p}`);
 
-// ── Not a level: source maps must be on Sentry and NOT on the CDN ────────────
-// `deleteSourcemapsAfterUpload` is a build option, and a build option is a
-// claim until someone checks the deployed output. Symbolication above proves
-// the maps reached Sentry; this proves they did not also reach the public.
+// ── Source maps must be on Sentry and NOT on the CDN ────────────────────────
+//
+// Symbolication above proves the maps reached Sentry. This proves they did not
+// also reach the public — serving them publishes the unminified application
+// source to anyone who asks.
+//
+// FAILS CLOSED, and that is the whole design. Every earlier version of this
+// check treated "no chunk reference found" and "the request threw" as reasons
+// to skip, printing a note and moving on, so the most likely way for the check
+// to be wrong — an unexpected page shape, a network blip — was also the way it
+// stayed quiet. Not knowing is a failure.
+//
+// Both URLs are probed for each sampled chunk: the `sourceMappingURL` the
+// bundle declares, if any, AND the conventional `<chunk>.map`. A build can omit
+// the comment while still uploading the file, so the absence of a comment is
+// not evidence of anything.
+let sourceMapsPublic = null; // null = could not determine, which is a failure
 try {
-  const html = await (await http(APP_URL)).text();
-  const chunk = /\/_next\/static\/chunks\/[A-Za-z0-9._-]+\.js/.exec(html)?.[0];
-  if (!chunk) {
-    note('source-map exposure: no chunk reference found on the landing page — not checked');
-  } else {
-    const js = await (await http(`${APP_URL}${chunk}`)).text();
-    const ref = /\/\/# sourceMappingURL=(\S+)/.exec(js)?.[1];
-    if (!ref) {
-      record(0, 'SOURCE MAPS NOT PUBLIC', true, 'no sourceMappingURL in the served bundle');
-    } else {
-      const mapUrl = new URL(ref, `${APP_URL}${chunk}`).toString();
-      const mapRes = await http(mapUrl, { method: 'GET' });
-      record(
-        0,
-        'SOURCE MAPS NOT PUBLIC',
-        !mapRes.ok,
-        mapRes.ok
-          ? `the .map is PUBLICLY READABLE (HTTP ${mapRes.status}) — the unminified ` +
-              'application source is being served to anyone'
-          : `the .map is not served (HTTP ${mapRes.status})`,
-      );
+  const pageRes = await http(APP_URL);
+  if (!pageRes.ok) throw new Error(`landing page answered HTTP ${pageRes.status}`);
+  const html = await pageRes.text();
+  const chunks = [
+    ...new Set([...html.matchAll(/\/_next\/static\/[A-Za-z0-9._\/-]+\.js/g)].map((m) => m[0])),
+  ].slice(0, 3);
+  if (chunks.length === 0) throw new Error('no /_next/static chunk reference on the landing page');
+
+  const exposed = [];
+  for (const chunk of chunks) {
+    const jsRes = await http(`${APP_URL}${chunk}`);
+    if (!jsRes.ok) throw new Error(`chunk ${chunk} answered HTTP ${jsRes.status}`);
+    const js = await jsRes.text();
+    const declared = /\/\/# sourceMappingURL=(\S+)/.exec(js)?.[1];
+
+    const candidates = new Set([`${APP_URL}${chunk}.map`]);
+    if (declared && !declared.startsWith('data:')) {
+      candidates.add(new URL(declared, `${APP_URL}${chunk}`).toString());
+    }
+    if (declared && declared.startsWith('data:')) {
+      // An inline map is public by definition — it IS the source, served.
+      exposed.push(`${chunk} (inline data: source map)`);
+      continue;
+    }
+    for (const url of candidates) {
+      const mapRes = await http(url, { method: 'GET' });
+      // 2xx is exposure. Anything else — 404, 403, a redirect to a 404 — is
+      // the map not being served.
+      if (mapRes.ok) exposed.push(url.replace(APP_URL, ''));
     }
   }
+  sourceMapsPublic = exposed.length > 0;
+  record(
+    0,
+    'SOURCE MAPS NOT PUBLIC',
+    !sourceMapsPublic,
+    sourceMapsPublic
+      ? `PUBLICLY READABLE: ${exposed.join(', ')} — the unminified application source is ` +
+          'being served to anyone'
+      : `${chunks.length} chunk(s) sampled; no .map is served`,
+  );
 } catch (err) {
-  note(`source-map exposure check could not run: ${err.message}`);
+  // Explicitly a failure, not a skip.
+  sourceMapsPublic = null;
+  record(
+    0,
+    'SOURCE MAPS NOT PUBLIC',
+    false,
+    `could not be determined (${err.message}) — this check fails closed, so "unknown" is a failure`,
+  );
 }
 
 // ── Receipt ──────────────────────────────────────────────────────────────────
 // Written only on a complete pass. A partial receipt is worse than none: the
 // soak would seed it, and the first tick would report a production fault for
 // what is really an incomplete verification.
-if (pair.ok && process.env.SENTRY_RECEIPT_OUT) {
-  writeFileSync(
-    process.env.SENTRY_RECEIPT_OUT,
-    JSON.stringify(
-      {
-        // The freshness bound, deliberately the START of this run. Using the
-        // finish time would make the receipt reject the very events it proved.
-        notBefore: notBefore.toISOString(),
-        verifiedAt: new Date().toISOString(),
-        nonce: probeAuth.nonce,
-        releaseSha,
-        environment: ENVIRONMENT,
-        serverEventId: server.eventId,
-        browserEventId: browser.eventId,
-      },
-      null,
-      2,
-    ) + '\n',
-  );
+//
+// Written ONLY on a complete pass, including the source-map check. A partial
+// receipt is worse than none: the soak would seed it and the first tick would
+// report a production fault for what is really an incomplete verification.
+const everythingPassed = pair.ok && sourceMapsPublic === false;
+if (everythingPassed && process.env.SENTRY_RECEIPT_OUT) {
+  const receipt = {
+    // The freshness bound, deliberately the START of this run. Using the finish
+    // time would make the receipt reject the very events it proved.
+    notBefore: notBefore.toISOString(),
+    verifiedAt: new Date().toISOString(),
+    nonce: probeAuth.nonce,
+    releaseSha,
+    environment: ENVIRONMENT,
+    serverEventId: server.eventId,
+    browserEventId: browser.eventId,
+    // Which repository file each runtime's stack actually resolved to. The soak
+    // re-checks these, so a later event that resolves somewhere else fails.
+    serverSource: PROBE_SOURCES.server,
+    browserSource: PROBE_SOURCES.browser,
+    // Affirmative, not assumed. `false` is the only acceptable value and the
+    // only one this line can produce.
+    sourceMapsPublic: false,
+    digest: '',
+  };
+  // Keyed with CRON_SECRET, which the soak controller also holds. The receipt
+  // is stored in a public issue body; without this, substituting event ids from
+  // an older run against an older release would revalidate perfectly.
+  receipt.digest = receiptDigest(CRON_SECRET, receipt);
+  writeFileSync(process.env.SENTRY_RECEIPT_OUT, JSON.stringify(receipt, null, 2) + '\n');
   console.log(`\nreceipt written to ${process.env.SENTRY_RECEIPT_OUT}`);
   console.log('Pass it to the soak as SOAK_SENTRY_RECEIPT (or SOAK_SENTRY_RECEIPT_FILE).');
+} else if (process.env.SENTRY_RECEIPT_OUT) {
+  console.log('\nNO receipt written — verification did not pass in full.');
 }
 
 // ── Verdict ──────────────────────────────────────────────────────────────────
@@ -388,8 +471,8 @@ const proven = Math.min(highest, firstFail - 1);
 const names = ['NOTHING', 'CONFIGURED', 'INITIALISED', 'EMITTED', 'INDEXED', 'VERIFIED'];
 console.log(`\nHighest level proven: ${proven} (${names[proven]})`);
 
-const exposed = results.find((r) => r.level === 0 && !r.ok);
-if (proven < 5 || exposed) {
+const mapCheck = results.find((r) => r.level === 0 && !r.ok);
+if (proven < 5 || mapCheck) {
   console.log('\nSentry is NOT proven operational. Do not record it as verified,');
   console.log('and do not start the soak: its observability gate reads this receipt.');
   process.exit(1);

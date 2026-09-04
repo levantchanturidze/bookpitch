@@ -3,6 +3,7 @@
 // reports on this import, and an unused disable is itself a lint warning.
 import { unsafePrismaAdmin } from '@/lib/db';
 import { auditDigestDeliveryMode, isAuditDigestDeliveryEnabled } from '@/lib/audit-digest';
+import { OWED_MIN_LEAD_MINUTES } from '@/lib/messaging/reminder-eligibility';
 import {
   HEARTBEAT_JOBS,
   HEARTBEAT_MAX_AGE_MINUTES,
@@ -1012,7 +1013,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
              -- metric does not sit permanently non-zero for a clinic taking
              -- same-day bookings.
              OR a.starts_at - a.created_at >
-                  make_interval(mins => ${HEARTBEAT_MAX_AGE_MINUTES.reminders}::int)
+                  make_interval(mins => ${OWED_MIN_LEAD_MINUTES}::int)
            )
            -- Only GENUINELY delivered states count as a reminder.
            --

@@ -356,7 +356,19 @@ DO $$
 DECLARE
   granted text;
   unsecured text;
-  unpolicied text;
+  rec record;
+  pol_count int;
+  pol_name text;
+  pol_cmd text;
+  pol_permissive boolean;
+  pol_roles text;
+  pol_using text;
+  pol_check text;
+  -- The parent's own predicate, which every partition must reproduce exactly.
+  -- Audit rows with a NULL organization are platform-plane records, visible to
+  -- everyone by design.
+  audit_predicate CONSTANT text :=
+    '((organization_id = current_org_id()) OR (organization_id IS NULL))';
 BEGIN
   SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO granted
     FROM pg_inherits i
@@ -387,25 +399,72 @@ BEGIN
     RAISE EXCEPTION 'production-verify: audit partition(s) % have no enforced row security of their own — a future GRANT would expose them', unsecured;
   END IF;
 
-  SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO unpolicied
-    FROM pg_inherits i
-    JOIN pg_class p ON p.oid = i.inhparent
-    JOIN pg_class c ON c.oid = i.inhrelid
-    JOIN pg_namespace n ON n.oid = p.relnamespace
-   WHERE n.nspname = 'public' AND p.relname = 'audit_log'
-     AND NOT EXISTS (
-       SELECT 1 FROM pg_policy pol
-        WHERE pol.polrelid = c.oid
-          AND pol.polname = 'tenant_isolation'
-          AND pol.polcmd = '*'
-          AND pg_get_expr(pol.polqual, pol.polrelid) LIKE '%current_org_id()%'
-          AND pg_get_expr(pol.polwithcheck, pol.polrelid) LIKE '%current_org_id()%'
-     );
-  IF unpolicied IS NOT NULL THEN
-    RAISE EXCEPTION 'production-verify: audit partition(s) % lack a tenant_isolation policy of their own', unpolicied;
-  END IF;
+  -- Each partition's policy, matched EXACTLY, the same way check 4c matches the
+  -- 21 parents.
+  --
+  -- This used to be an EXISTS with `pg_get_expr(...) LIKE '%current_org_id()%'`,
+  -- which is substring matching and passes on every one of these:
+  --
+  --   USING (organization_id = current_org_id() OR true)   -- tautology
+  --   USING (true)  + a second policy naming current_org_id()
+  --                                                        -- permissive
+  --                                                        -- policies are ORed,
+  --                                                        -- so one extra
+  --                                                        -- defeats the rest
+  --   a policy scoped to some other role, so bookpitch_app is unconstrained
+  --   FOR SELECT rather than FOR ALL, leaving writes unrestricted
+  --   WITH CHECK dropped, so cross-tenant INSERT is accepted
+  --
+  -- An EXISTS also cannot see an ADDITIONAL policy at all: it only asks whether
+  -- a good one is present, never whether a bad one is too.
+  FOR rec IN
+    SELECT c.oid, c.relname
+      FROM pg_inherits i
+      JOIN pg_class p ON p.oid = i.inhparent
+      JOIN pg_class c ON c.oid = i.inhrelid
+      JOIN pg_namespace n ON n.oid = p.relnamespace
+     WHERE n.nspname = 'public' AND p.relname = 'audit_log'
+     ORDER BY c.relname
+  LOOP
+    SELECT count(*) INTO pol_count FROM pg_policy WHERE polrelid = rec.oid;
+    IF pol_count <> 1 THEN
+      RAISE EXCEPTION 'production-verify: audit partition % has % policies (expected exactly 1: tenant_isolation) — permissive policies are ORed together, so any extra one overrides tenant isolation',
+        rec.relname, pol_count;
+    END IF;
 
-  RAISE NOTICE 'ok: audit partitions carry no direct bookpitch_app privileges, and each enforces its own tenant_isolation policy';
+    SELECT pol.polname, pol.polcmd::text, pol.polpermissive, pol.polroles::text,
+           pg_get_expr(pol.polqual, pol.polrelid),
+           pg_get_expr(pol.polwithcheck, pol.polrelid)
+      INTO pol_name, pol_cmd, pol_permissive, pol_roles, pol_using, pol_check
+      FROM pg_policy pol WHERE pol.polrelid = rec.oid;
+
+    IF pol_name <> 'tenant_isolation' THEN
+      RAISE EXCEPTION 'production-verify: audit partition %s single policy is named %, not tenant_isolation', rec.relname, pol_name;
+    END IF;
+    IF pol_cmd <> '*' THEN
+      RAISE EXCEPTION 'production-verify: audit partition % policy is FOR %, not FOR ALL — writes are unrestricted', rec.relname, pol_cmd;
+    END IF;
+    IF NOT pol_permissive THEN
+      -- A lone RESTRICTIVE policy grants nothing: restrictive policies only
+      -- narrow permissive ones, and with no permissive policy the table is
+      -- closed to the app entirely. Wrong in the other direction, and still
+      -- wrong.
+      RAISE EXCEPTION 'production-verify: audit partition % policy is RESTRICTIVE, not PERMISSIVE', rec.relname;
+    END IF;
+    IF pol_roles <> '{0}' THEN
+      RAISE EXCEPTION 'production-verify: audit partition % policy applies to roles % rather than PUBLIC — it does not constrain the application role', rec.relname, pol_roles;
+    END IF;
+    IF pol_using IS DISTINCT FROM audit_predicate THEN
+      RAISE EXCEPTION 'production-verify: audit partition % USING clause is % but must be exactly % — a predicate that merely mentions current_org_id() can still be a tautology',
+        rec.relname, coalesce(pol_using, '(none)'), audit_predicate;
+    END IF;
+    IF pol_check IS DISTINCT FROM audit_predicate THEN
+      RAISE EXCEPTION 'production-verify: audit partition % WITH CHECK clause is % but must be exactly % — forged cross-tenant audit rows would be accepted',
+        rec.relname, coalesce(pol_check, '(none)'), audit_predicate;
+    END IF;
+  END LOOP;
+
+  RAISE NOTICE 'ok: audit partitions carry no direct bookpitch_app privileges, and each enforces exactly one permissive FOR ALL tenant_isolation policy to PUBLIC whose USING and WITH CHECK match the parent predicate exactly';
 END $$;
 
 -- 5. F16-012: MARKETING holds no route to patient contact details. ----------

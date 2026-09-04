@@ -636,6 +636,126 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
   });
 
   // ---------------------------------------------------------------------------
+  // Check 4f — a partition's policy, matched EXACTLY.
+  //
+  // The children used to be checked with an EXISTS whose predicate was
+  // `pg_get_expr(...) LIKE '%current_org_id()%'`. Substring matching passes on
+  // every case below, and an EXISTS cannot see an ADDITIONAL policy at all: it
+  // asks whether a good policy is present, never whether a bad one is too.
+  // Permissive policies are ORed, so one extra `USING (true)` defeats every
+  // other policy on the table.
+  //
+  // `audit_log_default` is used as the target because it always exists — the
+  // dated partitions are created by the fixture and their names move with the
+  // calendar.
+  // ---------------------------------------------------------------------------
+  describe('an audit partition policy is matched exactly, not by substring', () => {
+    const T = 'public.audit_log_default';
+    const GOOD = '((organization_id = current_org_id()) OR (organization_id IS NULL))';
+    const restore = [
+      `DROP POLICY IF EXISTS tenant_isolation ON ${T}`,
+      `DROP POLICY IF EXISTS other_name ON ${T}`,
+      `DROP POLICY IF EXISTS extra_permissive ON ${T}`,
+      `CREATE POLICY tenant_isolation ON ${T} FOR ALL USING ${GOOD} WITH CHECK ${GOOD}`,
+    ];
+
+    injects(
+      'a tautology appended to USING',
+      [
+        `DROP POLICY tenant_isolation ON ${T}`,
+        `CREATE POLICY tenant_isolation ON ${T} FOR ALL USING (${GOOD} OR true) WITH CHECK ${GOOD}`,
+      ],
+      /USING clause is .* but must be exactly/,
+      restore,
+    );
+
+    injects(
+      'USING (true) — isolation replaced entirely',
+      [
+        `DROP POLICY tenant_isolation ON ${T}`,
+        `CREATE POLICY tenant_isolation ON ${T} FOR ALL USING (true) WITH CHECK ${GOOD}`,
+      ],
+      /USING clause is true/,
+      restore,
+    );
+
+    injects(
+      'an ADDITIONAL permissive policy alongside the correct one',
+      [`CREATE POLICY extra_permissive ON ${T} FOR ALL USING (true) WITH CHECK (true)`],
+      /has 2 policies \(expected exactly 1/,
+      restore,
+    );
+
+    injects(
+      'the policy scoped to a role rather than PUBLIC',
+      [
+        `DROP POLICY tenant_isolation ON ${T}`,
+        `CREATE POLICY tenant_isolation ON ${T} FOR ALL TO bookpitch_app USING ${GOOD} WITH CHECK ${GOOD}`,
+      ],
+      /applies to roles .* rather than PUBLIC/,
+      restore,
+    );
+
+    injects(
+      'FOR SELECT rather than FOR ALL — writes unrestricted',
+      [
+        `DROP POLICY tenant_isolation ON ${T}`,
+        `CREATE POLICY tenant_isolation ON ${T} FOR SELECT USING ${GOOD}`,
+      ],
+      /policy is FOR r, not FOR ALL/,
+      restore,
+    );
+
+    injects(
+      'WITH CHECK dropped — cross-tenant INSERT accepted',
+      [
+        `DROP POLICY tenant_isolation ON ${T}`,
+        `CREATE POLICY tenant_isolation ON ${T} FOR ALL USING ${GOOD}`,
+      ],
+      /WITH CHECK clause is \(none\)/,
+      restore,
+    );
+
+    injects(
+      'RESTRICTIVE rather than PERMISSIVE',
+      [
+        `DROP POLICY tenant_isolation ON ${T}`,
+        `CREATE POLICY tenant_isolation ON ${T} AS RESTRICTIVE FOR ALL USING ${GOOD} WITH CHECK ${GOOD}`,
+      ],
+      /is RESTRICTIVE, not PERMISSIVE/,
+      restore,
+    );
+
+    injects(
+      'the policy renamed',
+      [`ALTER POLICY tenant_isolation ON ${T} RENAME TO other_name`],
+      /is named other_name, not tenant_isolation/,
+      restore,
+    );
+
+    injects(
+      'no policy at all',
+      [`DROP POLICY tenant_isolation ON ${T}`],
+      /has 0 policies/,
+      restore,
+    );
+
+    injects(
+      'row security disabled on the child',
+      [`ALTER TABLE ${T} DISABLE ROW LEVEL SECURITY`],
+      /no enforced row security of their own/,
+      [`ALTER TABLE ${T} ENABLE ROW LEVEL SECURITY`, `ALTER TABLE ${T} FORCE ROW LEVEL SECURITY`],
+    );
+
+    injects(
+      'FORCE removed, so the owner escapes the policy',
+      [`ALTER TABLE ${T} NO FORCE ROW LEVEL SECURITY`],
+      /no enforced row security of their own/,
+      [`ALTER TABLE ${T} FORCE ROW LEVEL SECURITY`],
+    );
+  });
+
+  // ---------------------------------------------------------------------------
   // Check 7 — current_org_id() itself.
   //
   // Everything above verifies that the POLICIES say `= current_org_id()`. None

@@ -25,14 +25,45 @@
 import tls from 'node:tls';
 import process from 'node:process';
 
+// Re-exported so existing importers (and tests/cron-outcome.test.ts) keep one
+// name to reach the contract by, while the contract itself lives in exactly one
+// place. Held locally rather than read from the ops response: otherwise the
+// monitored system defines the terms it is graded on.
+export { EXPECTED_HEARTBEAT_JOBS } from './heartbeat-contract.mjs';
+import { EXPECTED_HEARTBEAT_JOBS, evaluateHeartbeatJob } from './heartbeat-contract.mjs';
+
 export const DEFAULTS = {
   productionUrl: 'https://bookpitch.ge',
   /** Daily backup at 01:40 UTC; 26h allows one late run before alerting. */
   backupMaxAgeHours: 26,
   /** Monthly drill on the 4th; 40 days tolerates one skipped month boundary. */
   restoreDrillMaxAgeDays: 40,
-  /** Reminders run every 15 minutes, so a 90-minute gap means something broke. */
-  cronMaxAgeMinutes: 90,
+  /**
+   * RELEASE-BLOCKING: no scheduled cron run has succeeded for this long.
+   *
+   * Measured over 191 scheduled runs of the 15-minute schedule on this account
+   * across 12.5 days: p50 0.44h, p90 2.08h, p95 2.44h, p99 3.02h. One gap
+   * exceeded 6h, and it was the seven-day Actions billing suspension — an
+   * outage, not a delivery lag.
+   *
+   * So 6h is the point at which "GitHub is being GitHub" stops being a
+   * plausible explanation. Below it, see cronDeliveryLagMinutes.
+   */
+  cronMaxAgeMinutes: 6 * 60,
+  /**
+   * WARNING, never an incident: reminders are late.
+   *
+   * This is the old cronMaxAgeMinutes, kept because the customer impact it
+   * describes is real — a booking system whose reminders are 90 minutes late is
+   * worse for the customer whatever the cause. What it is NOT is actionable:
+   * GitHub's scheduler is not tunable, and 13.7% of measured gaps exceed it, so
+   * as a gate it opened and closed an incident roughly every seventh interval
+   * (#60 was the last) and trained the reader to close it unseen.
+   *
+   * Reported on every run, excluded from the pass/fail count, and structurally
+   * incapable of touching an incident.
+   */
+  cronDeliveryLagMinutes: 90,
   /** How many recent cron runs to consider when looking for repeated failure. */
   cronRecentRuns: 10,
   /** Repeated failures within that window that constitute an incident. */
@@ -49,13 +80,13 @@ export const DEFAULTS = {
    * How long since the reminders endpoint last COMPLETED before that is an
    * incident.
    *
-   * Deliberately looser than cronMaxAgeMinutes (90). That check asks "did
-   * GitHub deliver the schedule", and GitHub's measured worst case on this
-   * account is 4h39m. This one asks "did the application actually do the
-   * work", and it must not simply restate the same delivery complaint in a
-   * second colour — it exists to catch the case where the schedule IS
-   * arriving and the endpoint is silently doing nothing. 6h clears the
-   * measured delivery worst case with margin.
+   * Same 6h as cronMaxAgeMinutes, for a different reason, and the two must not
+   * be collapsed into one constant. That one asks "did GitHub deliver the
+   * schedule". This one asks "did the application actually do the work", and
+   * exists to catch the case where the schedule IS arriving and the endpoint is
+   * silently doing nothing. They coincide today because both are bounded by the
+   * same measured delivery behaviour; if GitHub's scheduling improved, this one
+   * should tighten and that one should not.
    */
   reminderHeartbeatMaxMinutes: 6 * 60,
 };
@@ -234,6 +265,31 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
     now,
   });
 
+  // The warning half. Same measurement, tighter bound, no incident power.
+  //
+  // Split because one threshold was answering two questions. "Reminders are
+  // late" is true at 90 minutes and matters to a customer; "the scheduler has
+  // stopped" is not true until hours later. Reporting the first as a failure
+  // meant an incident opened and closed on roughly one interval in seven, and
+  // the only available response was to close it again.
+  const lag = evaluateWorkflowFreshness({
+    id: 'cron-delivery-lag',
+    title: 'Scheduled cron delivery is running late (informational)',
+    label: 'Scheduled crons',
+    latestSuccess: latestSuccess
+      ? { completedAt: latestSuccess.completedAt, runId: latestSuccess.runId }
+      : null,
+    maxAgeMs: opts.cronDeliveryLagMinutes * 60_000,
+    now,
+  });
+  lag.informational = true;
+  lag.detail = lag.ok
+    ? `${lag.detail} — delivery is within the normal measured range`
+    : `${lag.detail} — reminders are LATE for real customers. GitHub's scheduler is ` +
+      'not tunable, so this is reported, not actionable; it becomes the release-blocking ' +
+      `cron-staleness only past ${(opts.cronMaxAgeMinutes / 60).toFixed(1)}h (R-08).`;
+  results.push(lag);
+
   // Say WHICH failure this is. "Scheduled crons have not succeeded recently"
   // has two causes that need opposite responses, and the age alone cannot tell
   // them apart:
@@ -409,34 +465,6 @@ export function evaluateAuditDigest({
   };
 }
 
-/**
- * The jobs this monitor requires a heartbeat from, and how stale each one's
- * last SUCCESS may be. Held HERE, not read from the response.
- *
- * Both halves used to come from production: the loop iterated
- * `Object.entries(heartbeat.jobs)`, and the staleness threshold was
- * `j.maxAgeMinutes` out of the same document. That makes the monitored system
- * the author of its own report card. A deployment that stopped reporting a job
- * stopped being asked about it — silently, because a check that is not emitted
- * is not a failing check, it is nothing — and a deployment reporting a
- * generous limit was graded against its own generosity.
- *
- * `maxAgeMinutes` still arrives in the response and is now used only for the
- * drift check below: when the deployment's stated limit disagrees with this
- * contract, that is a finding in itself.
- *
- * Mirrors lib/cron-heartbeat-jobs.ts. It cannot import it — this is `.mjs` and
- * that is TypeScript, and Node will not load it. Duplication is the price;
- * tests/cron-outcome.test.ts pins the two against each other so they cannot
- * drift apart in silence.
- */
-export const EXPECTED_HEARTBEAT_JOBS = Object.freeze([
-  { metricKey: 'reminders', checkId: 'cron-job-reminders', maxAgeMinutes: 360 },
-  { metricKey: 'housekeeping', checkId: 'cron-job-housekeeping', maxAgeMinutes: 360 },
-  { metricKey: 'retention', checkId: 'cron-job-retention', maxAgeMinutes: 1800 },
-  { metricKey: 'auditDigest', checkId: 'cron-job-audit-digest', maxAgeMinutes: 1800 },
-]);
-
 export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
   const results = [];
   const outbox = metrics?.outbox ?? {};
@@ -593,68 +621,28 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
   const jobs = heartbeat.jobs ?? null;
   if (jobs) {
     for (const { metricKey, checkId, maxAgeMinutes: limit } of EXPECTED_HEARTBEAT_JOBS) {
-      const job = metricKey;
       const j = jobs[metricKey] ?? null;
-      let ok;
-      let detail;
-      if (!j) {
-        // The job the monitor expects is not in the document at all. Before
-        // this branch existed the loop simply never visited it, so the check
-        // vanished from the run — no failure, no incident, and a gate count
-        // one smaller than the day before.
-        ok = false;
-        detail =
-          `${job} was not reported by this deployment — the heartbeat document did not ` +
-          'include it, so nothing is known about whether it runs';
-      } else if (!j.present) {
-        // NOT VERIFIED, reported as a failure rather than passed over. A job
-        // that has never run is the case the old aggregate was blindest to.
-        ok = false;
-        detail = `no heartbeat has ever been recorded for ${job} — it has not completed once`;
-      } else if (j.outcome === null) {
-        // The row predates outcome tracking. Explicitly NOT a pass: it is an
-        // absence of evidence, and it resolves itself on the next run.
-        ok = false;
-        detail =
-          `${job} has a heartbeat but no outcome recorded (row predates outcome tracking) — ` +
-          'NOT VERIFIED until the job next completes';
-      } else if (j.outcome !== 1) {
-        ok = false;
-        detail =
-          `${job}'s last attempt ${j.outcome === 0 ? 'PARTIALLY FAILED' : 'FAILED'} — ` +
-          `${j.processedUnits ?? '?'} of ${j.expectedUnits ?? '?'} units, ${j.failedUnits ?? '?'} failed`;
-      } else if (j.successMinutesAgo === null || j.successMinutesAgo > limit) {
-        ok = false;
-        detail =
-          j.successMinutesAgo === null
-            ? `${job} reports a successful outcome but no success timestamp`
-            : `${job} last succeeded ${(j.successMinutesAgo / 60).toFixed(1)}h ago, limit ${(limit / 60).toFixed(1)}h`;
-      } else if (
-        j.expectedUnits !== null &&
-        j.processedUnits !== null &&
-        j.processedUnits < j.expectedUnits
-      ) {
-        // Coherence: a "success" that processed fewer units than it expected
-        // is not one, whatever the stored outcome says.
-        ok = false;
-        detail = `${job} reports success but processed ${j.processedUnits} of ${j.expectedUnits} units`;
-      } else {
-        ok = true;
-        detail =
-          `${job} last succeeded ${((j.successMinutesAgo ?? 0) / 60).toFixed(1)}h ago ` +
-          `(limit ${(limit / 60).toFixed(1)}h), ${j.processedUnits ?? 0} unit(s)`;
-      }
-      // The deployment's own stated limit is no longer authoritative, but a
+      // One judgement, shared with the soak controller
+      // (scripts/heartbeat-contract.mjs). Two copies of this decision is how
+      // the monitor and the soak came to disagree about what "healthy" means.
+      const { ok, reason } = evaluateHeartbeatJob(metricKey, j, limit);
+      let detail = reason;
+      // The deployment's own stated limit is not authoritative, but a
       // disagreement is worth saying out loud: it means the running code and
       // this monitor were built from different contracts.
-      if (j && j.maxAgeMinutes !== null && j.maxAgeMinutes !== limit) {
+      if (
+        j &&
+        j.maxAgeMinutes !== null &&
+        j.maxAgeMinutes !== undefined &&
+        j.maxAgeMinutes !== limit
+      ) {
         detail +=
           ` [contract drift: the deployment states a ${j.maxAgeMinutes}-minute limit for ` +
-          `${job}, the monitor requires ${limit}; graded against the monitor's]`;
+          `${metricKey}, the monitor requires ${limit}; graded against the monitor's]`;
       }
       results.push({
         id: checkId,
-        title: `Scheduled job ${job} is not completing successfully`,
+        title: `Scheduled job ${metricKey} is not completing successfully`,
         ok,
         detail,
       });

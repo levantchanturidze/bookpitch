@@ -339,6 +339,94 @@ describe('reminders after a scheduler gap', () => {
     expect(after).toBe(before);
   });
 
+  // ---------------------------------------------------------------------------
+  // §4.8 — the selection window must come from the same clock as `starts_at`.
+  //
+  // `starts_at` is a database timestamptz. The window was
+  //
+  //     const now = new Date();                       // Node, on Vercel
+  //     startsAt: { gte: now, lte: now + leadHours }   // compared to DB values
+  //
+  // so the whole window slides with the application server's clock. This is the
+  // fourth instance of this class in the project — retention, the cron
+  // heartbeat and the reminder claim lease were the first three — and it is the
+  // one that decides whether a customer is contacted at all.
+  //
+  // Skew forward and the window opens in the future: appointments starting
+  // soon are never selected, and once they start they leave the window
+  // permanently. Skew backward and the far edge falls short, so the appointments
+  // furthest out are missed until later ticks catch them.
+  //
+  // Written to FAIL first.
+  // ---------------------------------------------------------------------------
+  it('THE DEFECT: a fast Node clock does not move the selection window', async () => {
+    await withoutRls(async (tx) => {
+      await tx.messageLog.deleteMany({ where: { organizationId: orgId } });
+      await tx.appointment.deleteMany({ where: { organizationId: orgId } });
+    });
+    // Starts in 30 minutes. The org's lead is 24h, so it is squarely inside
+    // [now, now + 24h] by the database's reckoning.
+    const startsAt = new Date(Date.now() + 30 * 60_000);
+    const id = await makeAppointment(startsAt, new Date(Date.now() - 3 * 86_400_000));
+
+    // Node believes it is 25 hours later than the database does, which puts the
+    // whole window past this appointment.
+    // `toFake: ['Date']` skews `new Date()` AND `Date.now()` while leaving
+    // timers alone — a full fake-timer install stalls the Prisma pool.
+    // Mocking only Date.now() would not have bitten at all: runReminderTick
+    // builds its window from `new Date()`.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(Date.now() + 25 * 3_600_000));
+    try {
+      await runReminderTick(orgId);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const attempts = await withoutRls((tx) =>
+      tx.messageLog.count({ where: { appointmentId: id } }),
+    );
+    expect(attempts, 'the appointment was in the window by the DB clock').toBeGreaterThan(0);
+  });
+
+  it('a slow Node clock does not shrink the far edge either', async () => {
+    await withoutRls(async (tx) => {
+      await tx.messageLog.deleteMany({ where: { organizationId: orgId } });
+      await tx.appointment.deleteMany({ where: { organizationId: orgId } });
+    });
+    // Starts in 23 hours — just inside a 24-hour lead.
+    const startsAt = new Date(Date.now() + 23 * 3_600_000);
+    const id = await makeAppointment(startsAt, new Date(Date.now() - 3 * 86_400_000));
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(Date.now() - 5 * 3_600_000));
+    try {
+      await runReminderTick(orgId);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const attempts = await withoutRls((tx) =>
+      tx.messageLog.count({ where: { appointmentId: id } }),
+    );
+    expect(attempts, 'still inside the window by the DB clock').toBeGreaterThan(0);
+  });
+
+  it('COMPLEMENT: an appointment genuinely outside the window is still not selected', async () => {
+    // Without this the fix could simply be "select everything".
+    await withoutRls(async (tx) => {
+      await tx.messageLog.deleteMany({ where: { organizationId: orgId } });
+      await tx.appointment.deleteMany({ where: { organizationId: orgId } });
+    });
+    const startsAt = new Date(Date.now() + 40 * 3_600_000); // lead is 24h
+    const id = await makeAppointment(startsAt, new Date(Date.now() - 3 * 86_400_000));
+    await runReminderTick(orgId);
+    const attempts = await withoutRls((tx) =>
+      tx.messageLog.count({ where: { appointmentId: id } }),
+    );
+    expect(attempts, '40h out under a 24h lead must not be reminded yet').toBe(0);
+  });
+
   it('a cancelled appointment is not counted as missed', async () => {
     const beforeCount =
       (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;

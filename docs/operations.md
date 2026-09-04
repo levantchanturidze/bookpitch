@@ -67,6 +67,16 @@ gh secret list                    # GitHub Actions secret names + last update
 | `DATABASE_URL`, `DATABASE_URL_APP_NOBYPASSRLS`, `DATABASE_URL_LOGIN`, `DATABASE_URL_SUPERUSER_TXPOOL`, `ADMIN_DATABASE_URL`, `DIRECT_URL` | Vercel | app cannot reach the database |
 | `SENTRY_DSN` | Vercel | **every uncaught server/edge exception is discarded** (see below) |
 | `NEXT_PUBLIC_SENTRY_DSN` | Vercel | every uncaught browser exception is discarded |
+| `SENTRY_AUTH_TOKEN` | Vercel **and** GitHub | source maps are not uploaded at build time, so every production stack trace is unreadable minified frames; and events cannot be read back, so receipt cannot be proven |
+| `SENTRY_ORG`, `SENTRY_PROJECT` | Vercel **and** GitHub | as above — the upload and the API read both need to know which project |
+| `SENTRY_PROBE_ENABLED` | Vercel, temporarily | the verification probes 404. Set to `"true"` only for a verification window, then unset — it is a switch, not a setting |
+| `DATABASE_URL_SUPERUSER_MIGRATE` | GitHub | migrations and **backups** fail |
+| `BACKUP_AGE_PRIVATE_KEY` | GitHub | backups still run; nothing can be restored |
+| `APP_URL` | GitHub | cron workflow has no target |
+
+> These three rows used to sit *below* the Sentry prose that follows, outside
+> the table, so they rendered as a stray line of pipe characters and the three
+> GitHub-only secrets looked undocumented.
 
 ### Present is not valid, and not-yet-configured is not broken
 
@@ -142,13 +152,16 @@ level 5 requires original-source frames on **both** runtimes (proving the maps
 reached Sentry), and a separate check fetches a served chunk's
 `sourceMappingURL` and requires it to be **unreachable** (proving they did not
 reach the public).
-| `DATABASE_URL_SUPERUSER_MIGRATE` | GitHub | migrations and **backups** fail |
-| `BACKUP_AGE_PRIVATE_KEY` | GitHub | backups still run; nothing can be restored |
-| `APP_URL` | GitHub | cron workflow has no target |
-
 `.env.example` documents every one of these. A test
 (`tests/production-config-contract.test.ts`) fails if a required variable is
 added to the contract without being documented.
+
+> **`pg_restore --list` is not a restore.** `production-backup.yml`'s verify job
+> downloads the artifact it just uploaded, checks the checksum, decrypts it and
+> reads its table of contents. That proves the archive is intact and readable —
+> it does not prove it loads. Only `restore-drill.yml` proves that: it restores
+> into a disposable database and runs the production invariants against the
+> result. A release gate needs the drill, not the readability check.
 
 > Sensitive Vercel variables are **one-way**: they cannot be read back through
 > the API or CLI. Whatever local file holds the plaintext must be updated at

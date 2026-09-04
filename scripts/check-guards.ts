@@ -47,9 +47,10 @@ const NO_GUARD_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   {
     path: 'app/api/health/sentry-probe/token/route.ts',
     reason:
-      'Mints the short-lived HMAC that authorises the browser probe page — Bearer CRON_SECRET, ' +
-      'plus SENTRY_PROBE_ENABLED must be exactly "true" (404s otherwise). Touches no tenant ' +
-      'data: it returns a nonce, a derived token and an expiry, and never the secret itself.',
+      'Mints the single-use challenge that authorises the browser probe page — Bearer ' +
+      'CRON_SECRET, plus SENTRY_PROBE_ENABLED must be exactly "true" (404s otherwise). ' +
+      'Touches no tenant data: it returns a public nonce and sets an HttpOnly __Host- cookie ' +
+      'carrying a challenge id that can be redeemed exactly once.',
   },
   { path: 'app/api/health/route.ts', reason: 'Uptime probe — no tenant data' },
   {

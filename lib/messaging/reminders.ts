@@ -389,8 +389,6 @@ const MAX_APPOINTMENTS_PER_TICK = Math.max(
 export { MIN_REMINDER_LEAD_HOURS } from './reminder-window';
 
 export async function runReminderTick(organizationId: string): Promise<TickReport> {
-  const now = new Date();
-
   const org = await withoutRls((tx) =>
     tx.organization.findUnique({
       where: { id: organizationId },
@@ -399,22 +397,44 @@ export async function runReminderTick(organizationId: string): Promise<TickRepor
   );
   if (!org) throw new InvalidInputError('organization not found');
 
-  // Window: [now, now + leadHours]. Anything landing there this tick catches.
-  const windowFrom = now;
-  const windowTo = new Date(now.getTime() + org.reminderLeadHours * 3600_000);
-
-  const appts = await withoutRls((tx) =>
-    tx.appointment.findMany({
-      where: {
-        organizationId,
-        status: { notIn: ['cancelled', 'completed'] },
-        startsAt: { gte: windowFrom, lte: windowTo },
-      },
-      select: { id: true },
-      orderBy: { startsAt: 'asc' },
-      take: MAX_APPOINTMENTS_PER_TICK + 1,
-    }),
+  // Window: [NOW(), NOW() + leadHours], evaluated BY THE DATABASE.
+  //
+  // This used to be `const now = new Date()` with the bounds computed in Node
+  // and compared against `starts_at`, which is a PostgreSQL timestamptz. The
+  // application runs on Vercel and the database on Supabase — two machines,
+  // two clocks — so the whole window slid with the application server's. A
+  // fast clock opens it past appointments that are about to start, and once
+  // they start they leave the window permanently: there is no later tick that
+  // recovers them.
+  //
+  // Fourth instance of this class in this project, after retention, the cron
+  // heartbeat and the claim lease. The shared contract is in
+  // lib/messaging/reminder-eligibility.ts.
+  // The LEFT JOIN is deliberate: the bounds come back even when nothing matches,
+  // so the report describes the window that was actually queried rather than a
+  // second one computed afterwards from a different clock.
+  const rows = await withoutRls(
+    (tx) =>
+      tx.$queryRaw<Array<{ id: string | null; window_from: Date; window_to: Date }>>`
+      WITH w AS (
+        SELECT NOW() AS window_from,
+               NOW() + make_interval(hours => o.reminder_lead_hours) AS window_to
+          FROM organizations o
+         WHERE o.id = ${organizationId}::uuid
+      )
+      SELECT a.id, w.window_from, w.window_to
+        FROM w
+        LEFT JOIN appointments a
+          ON a.organization_id = ${organizationId}::uuid
+         AND a.status NOT IN ('cancelled', 'completed')
+         AND a.starts_at >= w.window_from
+         AND a.starts_at <= w.window_to
+       ORDER BY a.starts_at ASC
+       LIMIT ${MAX_APPOINTMENTS_PER_TICK + 1}`,
   );
+  const windowFrom = rows[0]?.window_from ?? new Date();
+  const windowTo = rows[0]?.window_to ?? new Date();
+  const appts = rows.filter((r): r is typeof r & { id: string } => r.id !== null);
   const truncated = appts.length > MAX_APPOINTMENTS_PER_TICK;
   const batch = truncated ? appts.slice(0, MAX_APPOINTMENTS_PER_TICK) : appts;
 

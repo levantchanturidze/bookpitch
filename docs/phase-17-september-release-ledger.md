@@ -652,6 +652,13 @@ are recorded as `NOT VERIFIED`, not as passing. No temporary diagnostic route
 was deployed to production; `verify:sentry` is a CLI precisely so that none is
 needed.
 
+> **Superseded 2026-09-04.** `verify:sentry` no longer has four levels, no
+> longer takes `SENTRY_DSN` alone, and no longer proves anything about the
+> machine it runs on. It drives the DEPLOYED application in both runtimes and
+> ends at level 5 VERIFIED. The current description is in `docs/operations.md`
+> § Sentry; the current state is in `docs/release-state.md`. Left here because
+> the reasoning below is still the reasoning — only the instructions changed.
+
 **The single external action:** create the Sentry project, then set `SENTRY_DSN`
 and `NEXT_PUBLIC_SENTRY_DSN` in Vercel Production and run
 `SENTRY_DSN=… npm run verify:sentry` until it reports level 4 with an event id.

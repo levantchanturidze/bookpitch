@@ -23,6 +23,39 @@ stale the moment it is written. Those live in:
 > the one that was verified, not necessarily the one serving traffic when you
 > read this. For anything that moves, follow the workflow links at the top.
 
+### Finalization round — 2026-09-04
+
+Status board with per-gate evidence: **`docs/finalization-ledger.md`**. That file
+is the resumable record; this one explains why.
+
+Ten defects, in the same two families as before — controls whose terms were set
+by the thing they measured, and controls that could never report health.
+
+| Defect | Why it mattered |
+|---|---|
+| **The soak was graded by production** | `Object.entries(jobs)` filtered against `j.maxAgeMinutes` — the identical defect the monitor had, on the gate that decides whether a 24-hour window counts. A deployment that stopped reporting `retention` dropped it silently from the soak's health check |
+| **A 24-hour window could contain no daily work** | Retention's freshness limit is 30 hours, which is longer than the window. A sweep from 26 hours *before* the soak started satisfied `cron-outcomes` for the whole soak |
+| **Unhealthy time stayed credited** | Only failed scheduled runs and in-window incidents could invalidate a window. A Sentry outage at hour 23 produced one red tick and SOAK SUCCESS at hour 24 |
+| **A failed read was a verdict** | Every deployment-identity problem returned `superseded`, including "alias evidence could not be read". One failed HTTPS request permanently ended the soak with an assertion that was not true |
+| **A soak could never recover from an incident** | Exposed by fixing the two above: `no-incident-in-window` was evaluated against the PRE-recovery window, so the incident that caused a restart was still "in the window" afterwards |
+| **One cron threshold answered two questions** | 90 minutes was set as a release-blocking gate on the premise that "reminders run every 15 minutes". Measured over 191 scheduled runs across 12.5 days: p50 0.44h, p90 2.08h, p99 3.02h, and **13.7% of gaps exceed 1.5h**. The alarm fired on one interval in seven and nothing could be done about any of them |
+| **Partition policies were matched by substring** | `LIKE '%current_org_id()%'` passes on `OR true`, on the wrong role, on `FOR SELECT`, and on a policy with no `WITH CHECK`. An EXISTS also cannot see an *additional* permissive policy — and permissive policies are ORed |
+| **The reminder window was on the Node clock** | The whole `[now, now + lead]` interval slid with the application server's clock against a database `starts_at`. Fourth instance of this class here |
+| **"Single-use" was a label** | The browser probe's authorisation was a replayable HMAC in a query string — reaching history, referrers and logs, and reusable for its whole lifetime |
+| **The receipt was editable** | It lives in a public issue body for 24 hours. Substituting event ids from an older run against an older release would have revalidated perfectly, because every field the tick checked would still agree with every other |
+
+Two things that changed shape rather than being fixed:
+
+- **`cron-staleness` did not become more permissive.** The 90-minute observation
+  is still emitted on every run as `cron-delivery-lag`; what changed is which
+  one opens an incident. Reminders being late is real customer impact and is
+  still reported; it is simply not something an operator can act on.
+- **Starting a soak is no longer a form.** `soak.yml` cannot start one at all.
+  `release-verify-and-soak.yml` resolves what production is serving, refuses if
+  it is not the named SHA on both hosts, refuses while any incident is open,
+  runs the real probes, and hands the receipt file to the controller in the same
+  job. Removing the input is stronger than validating it.
+
 ### False-green elimination round — merged 2026-09-03
 
 | | |
@@ -413,7 +446,11 @@ can complete signup, and it is now reported as a fault rather than a pause.
 
 ## What is blocked, and on whom
 
-Only these. Everything automatable is done.
+Only these — as reviewed on the date in the heading above, which is the only
+sense in which such a claim can ever be true. "Everything automatable is done"
+has now been stated three times and been wrong twice: the round after each one
+found more. What can honestly be said is that no known automatable defect is
+outstanding, and that the next review is what decides whether that holds.
 
 ### 1. Sentry — no workspace exists
 
