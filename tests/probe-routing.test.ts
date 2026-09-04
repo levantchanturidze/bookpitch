@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { isPublicPath } from '@/auth.config';
 
 // -----------------------------------------------------------------------------
@@ -79,7 +80,6 @@ describe('the Sentry probe surface is reachable past the proxy', () => {
     // Being public is only acceptable because each handler fails closed. This
     // asserts the guard is present in each file rather than trusting the
     // comment above.
-    const { readFileSync } = require('node:fs') as typeof import('node:fs');
     for (const f of [
       'app/api/health/sentry-probe/route.ts',
       'app/api/health/sentry-probe/token/route.ts',
@@ -93,7 +93,6 @@ describe('the Sentry probe surface is reachable past the proxy', () => {
   });
 
   it('the two API probe routes require the bearer secret', () => {
-    const { readFileSync } = require('node:fs') as typeof import('node:fs');
     for (const f of [
       'app/api/health/sentry-probe/route.ts',
       'app/api/health/sentry-probe/token/route.ts',
