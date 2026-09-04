@@ -1847,13 +1847,102 @@ describe('a wrongly closed incident is reopened, not duplicated', () => {
     expect(reconcileIncidents([ok], [], [closed(44)]).toReopen).toEqual([]);
   });
 
-  it('the most recent closed issue is chosen when several carry the marker', () => {
+  it('the OLDEST closed issue is chosen when several carry the marker', () => {
+    // Superseded expectation: this asserted the highest number. The canonical
+    // issue for a marker is the oldest, because that is where the history is —
+    // choosing the newest is what left #44 stranded while #67 accumulated
+    // comments.
     const plan = reconcileIncidents([failing], [], [closed(12), closed(44)]);
-    expect(plan.toReopen.map((r) => r.issue.number)).toEqual([44]);
+    expect(plan.toReopen.map((r) => r.issue.number)).toEqual([12]);
+    expect(plan.toCloseDuplicate.map((d) => d.issue.number)).toEqual([]);
   });
 
   it('informational results never reopen anything', () => {
     const info = { ...failing, informational: true };
     expect(reconcileIncidents([info], [], [closed(44)]).toReopen).toEqual([]);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// §2.7 — the canonical incident is the FIRST one, not the newest.
+//
+// PR #69 added reopening, but chose the highest-numbered closed issue as the
+// one to reopen, and only looked at closed issues when none was open. Against
+// the live state — #44 closed by a stray PR keyword, #67 opened by the next
+// monitor run — it therefore does nothing at all: #67 is open, so the
+// reconciler comments on #67 forever and #44 stays closed with three days of
+// history stranded on it.
+//
+// The canonical issue for a marker is the OLDEST one, because that is where the
+// history is. Duplicates are closed as duplicates, and only after the canonical
+// one is open.
+//
+// Written to FAIL first.
+// -----------------------------------------------------------------------------
+describe('the canonical incident is the oldest, and duplicates are folded into it', () => {
+  const MARKER = 'production-observability-unconfigured';
+  const failing = { id: MARKER, title: 't', ok: false, detail: 'still failing' };
+  const issue = (number: number, state: string) => ({
+    number,
+    state,
+    title: 't',
+    body: incidentMarker(MARKER),
+  });
+
+  it('THE LIVE CASE: canonical closed, duplicate open — reopen 44, close 67', () => {
+    const plan = reconcileIncidents([failing], [issue(67, 'open')], [issue(44, 'closed')]);
+    expect(plan.toReopen.map((r) => r.issue.number), 'the history lives on #44').toEqual([44]);
+    expect(plan.toCloseDuplicate.map((d) => d.issue.number)).toEqual([67]);
+    expect(plan.toOpen, 'a third issue would be absurd').toEqual([]);
+  });
+
+  it('exactly one issue is left open for the marker', () => {
+    const plan = reconcileIncidents([failing], [issue(67, 'open')], [issue(44, 'closed')]);
+    const openAfter = new Set([67]);
+    for (const r of plan.toReopen) openAfter.add(r.issue.number);
+    for (const d of plan.toCloseDuplicate) openAfter.delete(d.issue.number);
+    expect([...openAfter]).toEqual([44]);
+  });
+
+  it('several open duplicates: keep the oldest, close the rest', () => {
+    const plan = reconcileIncidents(
+      [failing],
+      [issue(67, 'open'), issue(71, 'open'), issue(44, 'open')],
+      [],
+    );
+    expect(plan.toComment.map((c) => c.issue.number)).toEqual([44]);
+    expect(plan.toCloseDuplicate.map((d) => d.issue.number).sort()).toEqual([67, 71]);
+  });
+
+  it('several closed duplicates: reopen the oldest only', () => {
+    const plan = reconcileIncidents([failing], [], [issue(67, 'closed'), issue(44, 'closed')]);
+    expect(plan.toReopen.map((r) => r.issue.number)).toEqual([44]);
+  });
+
+  it('a recovered check closes every issue for the marker, canonical included', () => {
+    // Evidence-based recovery must not leave a duplicate open behind it.
+    const recovered = { ...failing, ok: true };
+    const plan = reconcileIncidents(
+      [recovered],
+      [issue(44, 'open'), issue(67, 'open')],
+      [],
+    );
+    expect(plan.toClose.map((c) => c.issue.number).sort()).toEqual([44, 67]);
+  });
+
+  it('a canClose:false check still closes nothing', () => {
+    const recovered = { ...failing, ok: true, canClose: false };
+    const plan = reconcileIncidents([recovered], [issue(44, 'open')], []);
+    expect(plan.toClose).toEqual([]);
+  });
+
+  it('no issues at all still opens one', () => {
+    expect(reconcileIncidents([failing], [], []).toOpen.map((o) => o.result.id)).toEqual([MARKER]);
+  });
+
+  it('unrelated markers are untouched', () => {
+    const other = { number: 9, state: 'open', title: 'x', body: incidentMarker('outbox-backlog') };
+    const plan = reconcileIncidents([failing], [issue(67, 'open'), other], [issue(44, 'closed')]);
+    expect(plan.toCloseDuplicate.map((d) => d.issue.number)).toEqual([67]);
   });
 });

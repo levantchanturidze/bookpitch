@@ -1213,3 +1213,57 @@ describe('the observability proof is refreshed on a bounded cadence', () => {
     expect(raw, 'the receipt must never be uploaded').not.toMatch(/upload-artifact/);
   });
 });
+
+// -----------------------------------------------------------------------------
+// §2.6 — ongoing delivery monitoring, which must survive the soak ending.
+// -----------------------------------------------------------------------------
+describe('the Sentry verifier owns the observability incident', () => {
+  const { raw, doc } = readWorkflow('sentry-reverify.yml');
+  const steps = (
+    doc as unknown as { jobs: Record<string, { steps: Array<Record<string, string>> }> }
+  ).jobs.reverify.steps;
+  const at = (re: RegExp) => steps.findIndex((s) => re.test(String(s.name ?? s.uses)));
+
+  it('THE DEFECT: it verifies whether or not a soak is open', () => {
+    // Before, every step was gated on a soak being open, so outside one a
+    // production where delivery had silently stopped looked identical to one
+    // where it worked.
+    const verify = steps[at(/Verify Sentry/)];
+    expect(String(verify.if ?? ''), 'verification must not be gated on a soak').not.toMatch(
+      /soak\.outputs\.open/,
+    );
+    const reconcile = steps[at(/Reconcile the observability incident/)];
+    expect(String(reconcile.if ?? '')).not.toMatch(/soak\.outputs\.open/);
+  });
+
+  it('the soak refresh IS gated — on a soak, and on verification passing', () => {
+    const refresh = steps[at(/Hand the fresh receipt/)];
+    expect(String(refresh.if)).toMatch(/soak\.outputs\.open != '0'/);
+    expect(String(refresh.if)).toMatch(/steps\.verify\.outcome == 'success'/);
+  });
+
+  it('the incident step runs after verification, and reports the outcome itself', () => {
+    expect(at(/Reconcile the observability incident/)).toBeGreaterThan(at(/Verify Sentry/));
+    expect(raw).toMatch(/SENTRY_OUTCOME_OUT/);
+    expect(raw).toMatch(/SENTRY_OUTCOME_IN/);
+  });
+
+  it('continue-on-error is on the verifier only, and the failure still surfaces', () => {
+    // The verifier is allowed to fail so the next step can record WHY. That
+    // step then exits non-zero itself, so nothing is swallowed.
+    const verify = steps[at(/Verify Sentry/)];
+    expect(verify['continue-on-error']).toBe(true);
+    const reconcile = steps[at(/Reconcile the observability incident/)];
+    expect(reconcile['continue-on-error']).toBeUndefined();
+    const incident = readFileSync(
+      path.join(process.cwd(), 'scripts', 'sentry-incident.mjs'),
+      'utf8',
+    );
+    expect(incident, 'a non-verified outcome must exit non-zero').toMatch(/process\.exit\(1\)/);
+  });
+
+  it('provenance is passed for the controller to re-confirm', () => {
+    expect(raw).toMatch(/GITHUB_EVENT_NAME: \$\{\{ github\.event_name \}\}/);
+    expect(raw).toMatch(/GITHUB_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
+  });
+});

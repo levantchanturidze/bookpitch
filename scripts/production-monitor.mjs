@@ -1015,40 +1015,31 @@ export function reconcileIncidents(results, openIssues, closedIssues = []) {
   const markerOf = (issue) =>
     /<!-- bookpitch-ops-incident:([a-z0-9-]+) -->/.exec(issue.body ?? '')?.[1] ?? null;
 
-  const byId = new Map();
-  for (const issue of openIssues) {
-    const id = markerOf(issue);
-    if (id) byId.set(id, issue);
-  }
-
-  // Recently CLOSED incidents, so a check that is still failing reopens its own
-  // issue rather than opening a duplicate.
+  // Every issue carrying each marker, open or closed, oldest first.
   //
-  // Found the hard way: a pull-request body containing "the verifier closes #44
-  // by evidence" was read by GitHub as a closing keyword, and merging it closed
-  // the observability incident while the DSNs were still unset. `canClose:
-  // false` governs THIS monitor; it cannot govern GitHub's issue automation, a
-  // stray comment, or a person tidying up.
-  //
-  // The monitor recovered by opening a fresh issue — but with a new number, so
-  // three days of history were orphaned and anyone following the incident was
-  // following a dead link. Same number, same history, and the record shows it
-  // was closed and that closing it was wrong.
-  const closedById = new Map();
-  for (const issue of closedIssues) {
+  // The CANONICAL issue for a marker is the OLDEST one, because that is where
+  // the history is. The previous version picked the highest-numbered closed
+  // issue and only looked at closed issues when none was open — which, against
+  // the live state (#44 closed by a stray PR keyword, #67 opened by the next
+  // run), did nothing at all: #67 was open, so it commented on #67 forever and
+  // #44 stayed closed with three days of history stranded on it.
+  const byMarker = new Map();
+  for (const issue of [...(openIssues ?? []), ...(closedIssues ?? [])]) {
     const id = markerOf(issue);
     if (!id) continue;
-    const existing = closedById.get(id);
-    // Highest number wins: the most recent occurrence of this class.
-    if (!existing || (issue.number ?? 0) > (existing.number ?? 0)) closedById.set(id, issue);
+    const list = byMarker.get(id) ?? [];
+    if (!list.some((i) => i.number === issue.number)) list.push(issue);
+    byMarker.set(id, list);
   }
+  for (const list of byMarker.values()) list.sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
+
+  const isOpen = (i) => (i.state ?? 'open') === 'open';
 
   const toOpen = [];
   const toComment = [];
   const toClose = [];
   const toReopen = [];
-
-  const reportedIds = new Set(results.map((r) => r.id));
+  const toCloseDuplicate = [];
 
   for (const result of results) {
     // Informational lines are observations, never gates. `cron-manual-verification`
@@ -1057,21 +1048,36 @@ export function reconcileIncidents(results, openIssues, closedIssues = []) {
     // would give a manual dispatch power over an incident's lifecycle — the
     // exact coupling that closed #38 on displaced evidence.
     if (result.informational) continue;
-    const existing = byId.get(result.id);
+
+    const all = byMarker.get(result.id) ?? [];
+    const canonical = all[0] ?? null;
+    const duplicates = all.slice(1);
+
     if (!result.ok) {
-      if (existing) toComment.push({ result, issue: existing });
-      else if (closedById.has(result.id)) {
-        toReopen.push({ result, issue: closedById.get(result.id) });
-      } else toOpen.push({ result });
-    } else if (existing) {
-      // `canClose: false` marks a check that is competent to raise an alarm but
-      // not to declare it over — one whose green state is weaker than the
-      // claim the incident makes. Narrow by design: every other check closes
-      // its own incident on recovery.
+      if (!canonical) {
+        toOpen.push({ result });
+      } else if (isOpen(canonical)) {
+        toComment.push({ result, issue: canonical });
+      } else {
+        // An incident can be closed by something with no opinion about the
+        // condition — a PR body containing a closing keyword, a stray comment,
+        // a person tidying up. Reopening keeps the history on one issue.
+        toReopen.push({ result, issue: canonical });
+      }
+      // Anything else carrying this marker is a duplicate of the canonical one.
+      for (const dup of duplicates) {
+        if (isOpen(dup)) toCloseDuplicate.push({ result, issue: dup, canonical });
+      }
+    } else if (all.some(isOpen)) {
+      // `canClose: false` marks a check competent to raise an alarm but not to
+      // declare it over — one whose green state is weaker than the claim the
+      // incident makes.
       if (result.canClose === false) continue;
-      toClose.push({ result, issue: existing });
+      for (const issue of all.filter(isOpen)) toClose.push({ result, issue });
     }
   }
+
+  const reportedIds = new Set(results.map((r) => r.id));
 
   // Absent from `results` means one of two very different things, and treating
   // them alike closed a real incident on 2026-09-01.
@@ -1090,6 +1096,13 @@ export function reconcileIncidents(results, openIssues, closedIssues = []) {
   const unobservable = new Set(
     opsProbeFailed ? OPS_DERIVED_CHECK_IDS.filter((id) => !reportedIds.has(id)) : [],
   );
+
+  // The canonical open issue per marker, which is what the orphan sweep acts on.
+  const byId = new Map();
+  for (const [id, list] of byMarker) {
+    const openOne = list.find(isOpen);
+    if (openOne) byId.set(id, openOne);
+  }
 
   for (const [id, issue] of byId) {
     if (reportedIds.has(id)) continue;
@@ -1129,7 +1142,7 @@ export function reconcileIncidents(results, openIssues, closedIssues = []) {
     });
   }
 
-  return { toOpen, toComment, toClose, toReopen };
+  return { toOpen, toComment, toClose, toReopen, toCloseDuplicate };
 }
 
 // -----------------------------------------------------------------------------
@@ -1618,7 +1631,7 @@ async function syncIncidents(repo, token, results, now) {
     `/repos/${repo}/issues?state=closed&labels=${INCIDENT_LABEL}&per_page=50&sort=created&direction=desc`,
     token,
   );
-  const { toOpen, toComment, toClose, toReopen } = reconcileIncidents(
+  const { toOpen, toComment, toClose, toReopen, toCloseDuplicate } = reconcileIncidents(
     results,
     openIssues ?? [],
     closedIssues ?? [],
@@ -1642,6 +1655,29 @@ async function syncIncidents(repo, token, results, now) {
       body: JSON.stringify({ state: 'open' }),
     });
     console.log(`incident #${issue.number} (${result.id}) reopened — still failing`);
+  }
+
+  // Duplicates are folded into the canonical issue, which is the OLDEST one
+  // carrying the marker — that is where the history is. Closed AFTER the
+  // canonical one has been reopened above, so there is never a moment with no
+  // open incident for a condition that is still failing.
+  for (const { result, issue, canonical } of toCloseDuplicate) {
+    await gh(`/repos/${repo}/issues/${issue.number}/comments`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        body:
+          `Closing as a duplicate of #${canonical.number}, which is the canonical incident for ` +
+          `\`${result.id}\` and carries the full history.\n\n` +
+          'This issue exists because the canonical one was closed while its check was still ' +
+          'failing, so the next run had nothing to comment on and raised a new one. The ' +
+          'reconciler now reopens the original instead.',
+      }),
+    });
+    await gh(`/repos/${repo}/issues/${issue.number}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify({ state: 'closed', state_reason: 'not_planned' }),
+    });
+    console.log(`incident #${issue.number} closed as a duplicate of #${canonical.number}`);
   }
 
   for (const { result } of toOpen) {

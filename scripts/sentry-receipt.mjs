@@ -206,6 +206,139 @@ export function summariseMapProbes(probes) {
   };
 }
 
+// -----------------------------------------------------------------------------
+// Classifying a verification run, honestly.
+//
+// The production monitor detects only that DSN variable NAMES are unset.
+// Revoked, mistyped, filtered, quota-exhausted or wrong-project DSNs all leave
+// that check green — so "errors reach a human" was never actually monitored,
+// only "two strings exist".
+//
+// And a failed reverify exited before the controller, raised no incident, and
+// outside an active soak did nothing at all: a production where delivery had
+// silently stopped looked identical to one where it worked.
+//
+// Three failure states, deliberately distinct, because they need different
+// responses and conflating them is how an operator learns to ignore the alarm.
+// The distinction that matters most is the first one: not being able to check
+// is not the same as having checked and found it broken, and claiming otherwise
+// is the mirror image of claiming success on no evidence.
+// -----------------------------------------------------------------------------
+
+/** Strip anything that could identify a credential before it reaches an issue. */
+function redact(text) {
+  return (
+    String(text ?? '')
+      // Sentry DSNs carry a public key and the ingest host.
+      .replace(/https?:\/\/[^@\s]+@[^\s/]+\/\d+/g, '[redacted DSN]')
+      .replace(/\b[a-z]*\.?ingest\.[a-z.]*sentry\.io\S*/gi, '[redacted ingest host]')
+      .replace(/\bsntrys_[A-Za-z0-9_-]+/g, '[redacted token]')
+      .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+      .replace(/__Host-[A-Za-z0-9_-]+=?\S*/g, '[redacted cookie]')
+  );
+}
+
+/**
+ * What did this verification run establish?
+ *
+ * @param {{proven?: number, problems?: string[], missingInputs?: string[],
+ *          mapVerdict?: {ok?: boolean, sourceMapsPublic?: boolean|null,
+ *                        problems?: string[]}}} run
+ * @returns {{state: 'verified'|'unavailable'|'indeterminate'|'broken',
+ *            summary: string, problems: string[]}}
+ */
+export function classifyVerifierOutcome(run) {
+  const problems = (run?.problems ?? []).map(redact);
+  const joined = problems.join(' ');
+  const map = run?.mapVerdict;
+
+  // Could not be attempted at all: nothing is known, so nothing is claimed.
+  if ((run?.missingInputs ?? []).length > 0) {
+    return {
+      state: 'unavailable',
+      summary:
+        'Sentry verification could not be attempted: required configuration is absent ' +
+        `(${run.missingInputs.length} input(s) unset). Nothing is known about whether errors ` +
+        'reach a human — this is not a report that delivery is broken.',
+      problems,
+    };
+  }
+  if (/reports no SENTRY_DSN|no DSN|DSN is not configured/i.test(joined)) {
+    return {
+      state: 'unavailable',
+      summary:
+        'Sentry verification could not be attempted: the deployment reports no DSN, so the SDK ' +
+        'is inert and there is nothing to verify against.',
+      problems,
+    };
+  }
+
+  // Confirmed broken: something was emitted and demonstrably did not work.
+  if (map?.sourceMapsPublic === true) {
+    return {
+      state: 'broken',
+      summary:
+        'CONFIRMED: source maps are publicly readable, so the unminified application source is ' +
+        'being served to anyone.',
+      problems,
+    };
+  }
+  if (
+    /NOT retrievable|never became retrievable|does not match|predates this verification/i.test(
+      joined,
+    )
+  ) {
+    return {
+      state: 'broken',
+      summary:
+        'CONFIRMED: events were emitted by the deployed application and did not arrive usable. ' +
+        'Errors are not reaching a human.',
+      problems,
+    };
+  }
+
+  // Started and could not finish.
+  if (
+    /refused the token|HTTP 4\d\d|HTTP 5\d\d|quota|rate limit|timed out|could not be determined|could not establish/i.test(
+      joined,
+    ) ||
+    (map && map.ok === false && map.sourceMapsPublic !== true)
+  ) {
+    return {
+      state: 'indeterminate',
+      summary:
+        'Sentry verification could not be completed. This is NOT a confirmed delivery failure ' +
+        'and NOT a pass: the check started and could not finish, so the state of error ' +
+        'reporting is unknown.',
+      problems,
+    };
+  }
+
+  if ((run?.proven ?? 0) >= 5 && problems.length === 0 && map?.ok === true) {
+    return {
+      state: 'verified',
+      summary:
+        'Sentry verified end to end: real events from the deployed application in both ' +
+        'runtimes, read back and matched on release, environment, nonce and runtime, each ' +
+        'stack resolved to its own probe source, public source maps affirmatively absent.',
+      problems,
+    };
+  }
+
+  return {
+    state: 'indeterminate',
+    summary:
+      `Sentry verification reached level ${run?.proven ?? 0} of 5 without a clear cause. ` +
+      'Treated as unknown rather than as either outcome.',
+    problems,
+  };
+}
+
+/** Only a complete pass may close the observability incident. */
+export function shouldCloseObservabilityIncident(outcome) {
+  return outcome?.state === 'verified';
+}
+
 /**
  * The file each runtime's probe throws from.
  *
