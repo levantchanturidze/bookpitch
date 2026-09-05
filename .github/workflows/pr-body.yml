@@ -1,0 +1,58 @@
+# A pull request must not close an issue as a side effect of merging.
+#
+# This has happened twice to the same incident, the second time from inside a
+# code span while documenting the first — backticks do not protect against
+# GitHub's closing parser. The monitor reopens an incident closed while its
+# check is still failing, so the system recovers; but an incident that flaps
+# loses its assignees, drops out of notification lists, and reads as resolved to
+# anyone glancing at the issue list in between.
+#
+# SEPARATE FROM ci.yml, and that is the point.
+#
+# The guard needs the `edited` event: `pull_request` with no `types:` means
+# opened, synchronize and reopened, so a body rewritten after the check went
+# green was never re-examined. Adding `edited` to ci.yml would fire every job in
+# it on a description change. Skipping those jobs on `edited` looked like the
+# answer and was worse — proven on PR #76, run 33961699126: the edit produced a
+# newer run in which the test suite was `skipped`, and `gh pr checks` then
+# reported
+#
+#   Lint, type-check, test, and build   skipping
+#   Browser, mobile, and accessibility  skipping
+#
+# for a head whose real results were sitting in an earlier run. A displaced
+# result that reads as "nothing wrong" is this project's oldest failure mode,
+# and there is no reason to reintroduce it for a check that reads two strings.
+#
+# In its own workflow the guard triggers on whatever it likes, and every check
+# name in ci.yml keeps meaning exactly what it says.
+name: PR body
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-body-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-body:
+    name: Pull request body
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse issue-closing keywords
+        env:
+          # Through the environment, never interpolated into the shell — a PR
+          # body is attacker-controlled text.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/check-pr-body.mjs

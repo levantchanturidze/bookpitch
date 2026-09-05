@@ -5,12 +5,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    # `edited` is NOT in GitHub's default set (opened, synchronize, reopened),
-    # so a title or body changed AFTER the guard below had passed was never
-    # re-checked. A PR could be opened clean, approved, then edited to add
-    # "closes #44" and merged with a green tick — which is how #44 was closed
-    # twice, the second time from inside a code span.
-    types: [opened, synchronize, reopened, edited]
 
 # Minimal global permissions — individual jobs may declare narrower or broader.
 # NOTE: do not add `pull_request_target` — that grants write access to
@@ -20,18 +14,18 @@ permissions:
 
 # Cancel in-progress runs on the same ref to save minutes.
 #
-# Title/body edits get their OWN group. Sharing one would mean that editing a
-# description cancelled the test run already in flight on that ref — turning a
-# guard against stale metadata into a way to discard real results.
+# Every job here reports on CODE, and the trigger is deliberately the default
+# set — opened, synchronize, reopened. The title/body guard needs `edited` too,
+# and it lives in `pr-body.yml` for that reason: firing these jobs on a
+# description change, or skipping them on one, both end with a run whose check
+# names say something other than what was measured.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event.action == 'edited' && 'meta' || 'code' }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   secret-scan:
     name: Secret scanning
-    # An edited title or body changes no code; only the pr-body guard reruns.
-    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # pull-requests: read is required for gitleaks-action to read PR diff on
@@ -53,35 +47,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # A pull request must not close an issue as a side effect of merging.
-  #
-  # This has happened twice to the same incident, the second time from inside a
-  # code span while documenting the first — backticks do not protect against
-  # GitHub's closing parser. The monitor reopens an incident closed while its
-  # check is still failing, so the system recovers; but an incident that flaps
-  # loses its assignees, drops out of notification lists, and reads as resolved
-  # to anyone glancing at the issue list in between.
-  pr-body:
-    name: Pull request body
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - name: Refuse issue-closing keywords
-        env:
-          # Through the environment, never interpolated into the shell — a PR
-          # body is attacker-controlled text.
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: node scripts/check-pr-body.mjs
-
   quality:
     name: Lint, type-check, test, and build
-    # An edited title or body changes no code; only the pr-body guard reruns.
-    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -297,8 +264,6 @@ jobs:
   # ---------------------------------------------------------------------------
   e2e:
     name: Browser, mobile, and accessibility suite
-    # An edited title or body changes no code; only the pr-body guard reruns.
-    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     # Sized for: cold browser download (~3 min) + bounded apt step (<=8 min) +
     # build + the six-project suite (~4 min). Not raised speculatively — the
