@@ -46,7 +46,7 @@ Observed directly, not carried over from any earlier summary.
 | Production deployment | id **6252458484**, sha `6452f3d`, state `success` | GitHub Deployments API |
 | Aliases | `bookpitch.ge` 200, `www.bookpitch.ge` 308→200, both `x-bookpitch-release: 6452f3d…` | `curl -sI` |
 | Health body | exactly `{"ok":true}` | `curl` |
-| Migrations | 67 applied, none pending, no drift | run [33801704929](https://github.com/levantchanturidze/bookpitch/actions/runs/33801704929) |
+| Migrations | 67 applied, none pending; migration LEDGER up to date | run [33801704929](https://github.com/levantchanturidze/bookpitch/actions/runs/33801704929). Said "no drift" — see A32: `migrate status` never established that |
 | Invariants | all 7 checks pass against production | same run |
 | Latest backup | run [33800659940](https://github.com/levantchanturidze/bookpitch/actions/runs/33800659940), artifact `production-backup-33800659940-1` (id 9910927933) | Actions API |
 | Latest restore drill | run [33745143206](https://github.com/levantchanturidze/bookpitch/actions/runs/33745143206), 2026-09-03T10:35Z — **against an older artifact** | Actions API |
@@ -110,7 +110,7 @@ Observed directly, not carried over from any earlier summary.
 | B3 | Playwright full matrix | `PASSED — CI` | same runs; locally 265 passed / 3 skipped, and `npm run e2e:check` confirms all 9 required suites executed (268 tests) |
 | B4 | Secret scan | `PASSED — CI` | gitleaks green on both PRs; a local scan of a clean `git archive` of HEAD finds only the two fingerprints already accepted in `.gitleaksignore` |
 | B5 | Dependency audit | `PASSED — CI` | `found 0 vulnerabilities`. npm's audit endpoint 503'd intermittently on 2026-09-04 and the job was re-run rather than the gate weakened |
-| B6 | Migration from scratch + upgrade path | `PASSED — CI` | CI applies all 68 migrations to an empty database and runs `prisma migrate diff --exit-code` against a shadow DB; the upgrade path is migrate run [33863362248](https://github.com/levantchanturidze/bookpitch/actions/runs/33863362248), which applied 68 to the live database with no drift |
+| B6 | Migration from scratch + upgrade path | `PASSED — CI` | CI applies all 68 migrations to an empty database and runs `prisma migrate diff --exit-code` against a shadow DB; the upgrade path is migrate run [33863362248](https://github.com/levantchanturidze/bookpitch/actions/runs/33863362248), which applied 68 to the live database with its migration ledger up to date afterwards. The shadow-DB diff is a genuine drift check; the live-database half of this row was `migrate status` and is NOT a drift claim — see A32 |
 
 ### C. Production
 
@@ -118,7 +118,7 @@ Observed directly, not carried over from any earlier summary.
 |---|---|---|---|
 | C1 | Final merge to `main` | `MERGED` | **`c6d59a19e994710607720aab47b950068b611103`** — PRs #70 (`ab045c1`), #71 (`c69abcc`), #72 (`688a96c`, docs), #73 (`c6d59a1`) |
 | C2 | Deployment of that exact SHA | `DEPLOYED` | GitHub Deployment **6273536043**, state `success`; both canonical hosts serve `x-bookpitch-release: c6d59a19…`, which equals `origin/main` |
-| C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33928751924](https://github.com/levantchanturidze/bookpitch/actions/runs/33928751924) against **`c6d59a1`** — 68 applied, no drift, all 8 invariant checks pass including the exact per-partition policy match and `current_org_id()` |
+| C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33928751924](https://github.com/levantchanturidze/bookpitch/actions/runs/33928751924) against **`c6d59a1`** — 68 applied, migration ledger up to date, all 8 invariant checks pass including the exact per-partition policy match and `current_org_id()`. **"No drift" was overstated** and is withdrawn: that run had no schema comparison in it at all. The comparison exists as of A32 and its first production execution is recorded in the checkpoint below |
 | C4 | Fresh backup, **actually restored** into a disposable DB | `PRODUCTION VERIFIED` | taken AFTER the final deployment: backup [33928753998](https://github.com/levantchanturidze/bookpitch/actions/runs/33928753998) on `c6d59a1`, artifact `production-backup-33928753998-1` (id 9957780811); restore drill [33929073967](https://github.com/levantchanturidze/bookpitch/actions/runs/33929073967) **restored it into a disposable database** — all 10 restore invariants pass |
 | C5 | Production smoke + RBAC + cron/outbox/health | `PRODUCTION VERIFIED` | **Natural, first-attempt** scheduled runs on **`c6d59a1`**: monitor [33928608353](https://github.com/levantchanturidze/bookpitch/actions/runs/33928608353) — **25/28 passed, 2 paused, 2 informational, 1 failing**, and the one failure is Sentry; cron [33925555982](https://github.com/levantchanturidze/bookpitch/actions/runs/33925555982). Soak dry run [33929076260](https://github.com/levantchanturidze/bookpitch/actions/runs/33929076260) — 7/7 reads, aliases confirmed on `c6d59a1` |
 | C6 | Informational lines do not affect the verdict | `PRODUCTION VERIFIED` | monitor [33928608353](https://github.com/levantchanturidze/bookpitch/actions/runs/33928608353): two INFO lines present, verdict reads `1 production check(s) failing` |
@@ -189,9 +189,20 @@ owner's explicit acceptance of this for launch and pilot.
 compares the `_migrations` table with the migrations directory. A column added
 by hand, a dropped index, a type changed in a console — none of it is visible to
 that command, and the step asserting otherwise was called "Verify no drift after
-apply" for months. A32 adds the comparison that does look at the schema. Any
-past row citing a `migrate.yml` run for *drift* meant *ledger status*; those runs
-remain valid evidence for what they actually measured.
+apply" for months. A32 adds the comparison that does look at the schema.
+
+Every row in this document that cited a `migrate.yml` run for *drift* has been
+corrected to say *migration ledger* — the baseline row, B6's live-database half,
+and C3. Those runs remain valid evidence for what they actually measured, which
+is that the ledger is current and the invariant verifier passes. The **drift**
+claim was `NOT VERIFIED` for the whole of Phase 15–17, and the exact missing
+evidence was a schema comparison against production, which nothing ran. It runs
+now, on every `migrate.yml` invocation, read-only.
+
+Historical phase ledgers (`phase-15-*`, `phase-17-*`, `launch-checklist.md`)
+still carry the old wording. They are records of what was believed at the time
+and are not restated here; read any "no drift" in them as "migration ledger up
+to date".
 
 **The checkpoint chain does not survive an administrator.** The soak state body
 and the checkpoint comments are both mutable by anyone with repository write,

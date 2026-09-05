@@ -566,6 +566,20 @@ Two practical consequences:
   first occurrence. GitHub closed it anyway. `scripts/check-pr-body.mjs` now
   fails CI on any pull request that would do it, because a rule that depends on
   remembering is a rule that fails on the day it matters.
+
+  It runs from `.github/workflows/pr-body.yml`, **separately from `ci.yml`**, on
+  `opened`, `synchronize`, `reopened` and `edited`. The last one is the point:
+  GitHub's default `pull_request` types omit `edited`, so a body rewritten after
+  the check went green was never re-examined. It has its own workflow rather
+  than an extra event on `ci.yml`, because skipping the code jobs on an edit
+  publishes a newer, emptier run under the same check names and displaces the
+  real result — observed on PR #76, run 33961699126.
+
+  Note what this does and does not give you: **no check on this repository is an
+  enforced merge requirement.** Branch protection and rulesets both return
+  `403 Upgrade to GitHub Pro` on the current plan. The guard makes the mistake
+  visible before merge; it cannot prevent the merge. Read the conclusion, do not
+  assume it.
 - Everything that keys on an incident does so by its **marker**
   (`<!-- bookpitch-ops-incident:<id> -->`), never by its number, so an incident
   that does get renumbered still matches.

@@ -139,7 +139,7 @@ Two things that changed shape rather than being fixed:
 |---|---|
 | PRs | **#58** merged as `f2e5a59` (7 commits), **#59** merged as `09ce5c5` (1 commit) |
 | CI on #58 | run [33798794156](https://github.com/levantchanturidze/bookpitch/actions/runs/33798794156) — 120 files / **1665 tests, 0 skipped**, 268 Playwright across all 9 required suites, 0 vulnerabilities, secret scan clean, build clean |
-| Migrations | run [33801704929](https://github.com/levantchanturidze/bookpitch/actions/runs/33801704929) — **67 applied, none pending**, no drift |
+| Migrations | run [33801704929](https://github.com/levantchanturidze/bookpitch/actions/runs/33801704929) — **67 applied, none pending**; migration ledger up to date. Not a drift claim: `migrate status` compares the ledger, not the schema |
 | Invariants | same run, **all seven checks**, including Check 7 for the first time: `current_org_id() is public, 0-arg, returns uuid, LANGUAGE sql STABLE, not SECURITY DEFINER, body pinned, owned by postgres, unwritable by bookpitch_app, and NULL without context` |
 | Backup | run [33800659940](https://github.com/levantchanturidze/bookpitch/actions/runs/33800659940), artifact `production-backup-33800659940-1` (id 9910927933), fingerprint `5c9f75110f30141f` — unchanged since the restore, so the same database — downloaded, checksum verified, decrypted and `pg_restore --list`ed in a separate job |
 | Deployment | GitHub Deployment **6252144624**, `09ce5c5`, Production, state `success`; `bookpitch.ge` and `www.bookpitch.ge` both 200 with `x-bookpitch-release: 09ce5c5…` |
