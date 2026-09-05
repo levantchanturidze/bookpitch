@@ -21,8 +21,8 @@ const bgEndRoute = await import('@/app/api/platform/break-glass/end/route');
 const orgsListRoute = await import('@/app/api/platform/orgs/route');
 const { requireAuthContext, can } = await import('@/lib/rbac');
 // MFA helpers for seeding TOTP state + generating codes in tests
-const { generateSecret, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
-const { generate: totpGenerate } = await import('@otplib/totp');
+const { generateSecret } = await import('otplib');
+const { freshTotpCode } = await import('./helpers/totp');
 const { encryptField } = await import('@/lib/crypto');
 const { startBreakGlass } = await import('@/lib/platform/break-glass');
 
@@ -34,15 +34,12 @@ async function json<T = unknown>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-// TOTP plugin set shared with lib/platform/mfa.ts
-const TOTP_OPTS = {
-  crypto: new NobleCryptoPlugin(),
-  base32: new ScureBase32Plugin(),
-};
-
-async function freshTotpCode(secret: string): Promise<string> {
-  return totpGenerate({ ...TOTP_OPTS, secret });
-}
+// Codes are minted through the shared helper, which guarantees the code still
+// has validity left when the request reaches the verifier. Minting inline used
+// to race the 30-second step boundary: CI run 33962683939 generated a code
+// ~66ms before a boundary and got 400 from the line below. See
+// tests/helpers/totp.ts for the reproduction and why the fix is here rather
+// than in the verifier's window.
 
 describe('/api/platform/break-glass', () => {
   let orgId: string;
@@ -777,6 +774,73 @@ describe('/api/platform/break-glass', () => {
     // 5-second slack covers the time between dtBefore and dtAfter queries.
     expect(expMs).toBeGreaterThanOrEqual(dtBefore.nowMs + TTL_MS);
     expect(expMs).toBeLessThanOrEqual(dtAfter.nowMs + TTL_MS + 5000);
+
+    await unsafePrismaAdmin.breakGlassSession.update({
+      where: { id: sessionId },
+      data: { endedAt: new Date(), endedReason: 'test_cleanup' },
+    });
+  });
+
+  it('Phase 11 Row 12b: a SKEWED Node clock does not move expiresAt', async () => {
+    // Row 12 above compares expiresAt against the DB clock and passes under
+    // either implementation whenever the two clocks agree — which they do in
+    // CI. Its own comment admits as much: it was written against an
+    // environment observed to be >=3h out. So it proves the property only where
+    // the skew happens to exist, and proves nothing where the build runs.
+    //
+    // Verified by perturbation: swapping `dbNowAt.getTime()` for `Date.now()`
+    // in startBreakGlass left all 25 tests in this file green.
+    //
+    // This one manufactures the skew instead of waiting for it. Date.now is
+    // pushed three hours forward across BOTH the code mint and the request, so
+    // TOTP stays internally consistent, and expiresAt must still land on DB
+    // time. A Node-clock implementation would be ~3h out and fail.
+    const SKEW_MS = 3 * 60 * 60_000;
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+
+    const dtBefore = await dbTime();
+    const realNow = Date.now;
+    let res: Response;
+    try {
+      // The skew goes on FIRST, so mint and verify share one (shifted) step.
+      // Applying it only to the request put them three hours apart and the
+      // request 400'd on an expired code — the same boundary bug this round
+      // started with, reproduced by hand.
+      Date.now = () => realNow() + SKEW_MS;
+      const code = await freshTotpCode(totpSecret);
+      res = await bgRoute.POST(
+        req('http://x', {
+          method: 'POST',
+          body: JSON.stringify({
+            password: 'devpass123',
+            totpCode: code,
+            reason: 'expiry-skew',
+            ticketId: 'BG-exp-skew',
+          }),
+        }),
+      );
+    } finally {
+      Date.now = realNow;
+    }
+    expect(res.status).toBe(200);
+    const { sessionId } = await json<{ sessionId: string }>(res);
+    const dtAfter = await dbTime();
+
+    const session = await unsafePrismaAdmin.breakGlassSession.findUniqueOrThrow({
+      where: { id: sessionId },
+    });
+    const TTL_MS = 60 * 60_000;
+    const expMs = session.expiresAt.getTime();
+
+    // Anchored to the DATABASE clock, so the three-hour Node skew is invisible.
+    expect(expMs).toBeGreaterThanOrEqual(dtBefore.nowMs + TTL_MS);
+    expect(expMs).toBeLessThanOrEqual(dtAfter.nowMs + TTL_MS + 5_000);
+    // …and stated the other way, because that is the assertion that fails when
+    // someone reaches for Date.now(): it must NOT have followed the skew.
+    expect(
+      expMs,
+      'expiresAt followed the Node clock — it must come from the database',
+    ).toBeLessThan(dtBefore.nowMs + TTL_MS + SKEW_MS / 2);
 
     await unsafePrismaAdmin.breakGlassSession.update({
       where: { id: sessionId },

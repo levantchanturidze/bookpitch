@@ -15,6 +15,7 @@ const { unsafePrismaAdmin } = await import('@/lib/db');
 const impersonateRoute = await import('@/app/api/platform/impersonate/route');
 const endRoute = await import('@/app/api/platform/impersonate/end/route');
 const { requireAuthContext, can } = await import('@/lib/rbac');
+const { dbTime } = await import('./helpers/db-time');
 
 import type { NextRequest } from 'next/server';
 function req(url: string, init?: RequestInit): NextRequest {
@@ -129,6 +130,65 @@ describe('/api/platform/impersonate — start / end / restricted perms / expiry'
       })
     ).sessionVersion;
     expect(afterSV).toBe(beforeSV + 1);
+  });
+
+  it('a SKEWED Node clock does not move the session expiry', async () => {
+    // The same hole found in break-glass (ledger A36), on the sibling feature.
+    // Verified by perturbation before writing this: swapping
+    // `dbNowAt.getTime()` for `Date.now()` in startImpersonation left all 7
+    // tests in this file green, because nothing here looked at expiresAt at
+    // all — the TTL was asserted nowhere.
+    //
+    // Impersonation lets a platform admin act as another user, so how long that
+    // lasts is a security property, and it must come from the database rather
+    // than from whatever the runtime's clock happens to say.
+    await unsafePrismaAdmin.organization.update({
+      where: { id: orgId },
+      data: { allowSupportImpersonation: true },
+    });
+    authMock.mockResolvedValue(await mockPlatformJwt('platform-admin@bp.test'));
+
+    const SKEW_MS = 3 * 60 * 60_000;
+    const dtBefore = await dbTime();
+    const realNow = Date.now;
+    let res: Response;
+    try {
+      Date.now = () => realNow() + SKEW_MS;
+      res = await impersonateRoute.POST(
+        req('http://x', {
+          method: 'POST',
+          body: JSON.stringify({
+            organizationId: orgId,
+            targetUserId,
+            reason: 'clock-skew check',
+            ticketId: 'T-skew',
+          }),
+        }),
+      );
+    } finally {
+      Date.now = realNow;
+    }
+    expect(res.status).toBe(200);
+    const { sessionId } = await json<{ sessionId: string }>(res);
+    const dtAfter = await dbTime();
+
+    const session = await unsafePrismaAdmin.impersonationSession.findUniqueOrThrow({
+      where: { id: sessionId },
+    });
+    const TTL_MS = 60 * 60_000; // spec §7.1
+    const expMs = session.expiresAt.getTime();
+
+    expect(expMs).toBeGreaterThanOrEqual(dtBefore.nowMs + TTL_MS);
+    expect(expMs).toBeLessThanOrEqual(dtAfter.nowMs + TTL_MS + 5_000);
+    // The assertion that fails when someone reaches for Date.now().
+    expect(expMs, 'expiresAt followed the Node clock, not the database').toBeLessThan(
+      dtBefore.nowMs + TTL_MS + SKEW_MS / 2,
+    );
+
+    await unsafePrismaAdmin.impersonationSession.update({
+      where: { id: sessionId },
+      data: { endedAt: new Date() },
+    });
   });
 
   it('AuthContext.impersonation is populated after start', async () => {
