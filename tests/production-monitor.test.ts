@@ -11,6 +11,7 @@ import {
   incidentAssignees,
   reconcileIncidents,
   OPS_DERIVED_CHECK_IDS,
+  CRON_DERIVED_CHECK_IDS,
   incidentMarker,
   summariseResults,
   INCIDENT_LABEL,
@@ -1998,5 +1999,130 @@ describe('the canonical issue is not paginated away', () => {
     );
     expect(newestFirst.toReopen.map((r) => r.issue.number)).toEqual([44]);
     expect(oldestFirst.toReopen.map((r) => r.issue.number)).toEqual([44]);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Incident #26, on the other evaluator.
+//
+// When the GitHub Actions API call throws, `evaluateCronHealth()` never runs;
+// the catch block pushes `cron-staleness` alone. Every other cron id is then
+// absent from `results`, and the orphan sweep reads absent as REMOVED.
+//
+// Reproduced against the live reconciler before this fix: an open
+// `cron-failures` incident and an open `cron-evidence-unresolved` incident were
+// both queued for closure with "this check is no longer reported by the
+// monitor" — because GitHub returned an error, not because anything recovered.
+//
+// That is exactly how incident #26 was closed on 2026-09-01: the monitor went
+// blind and read its own blindness as an all-clear. It cost a P0 on the ops
+// evaluator, where it was then fixed. This is the same hole on the cron one,
+// and it would have auto-closed the `cron-evidence-unresolved` gate's own
+// incident.
+// -----------------------------------------------------------------------------
+describe('a cron check whose evaluator could not run is not a removed one', () => {
+  /** What the catch block pushes when the Actions API throws. */
+  const evaluatorDown = {
+    id: 'cron-staleness',
+    title: 'Scheduled cron workflow has stopped running',
+    ok: false,
+    detail: 'check failed: GitHub 500',
+    evaluatorFailed: true,
+  };
+  const healthy = { id: 'health-endpoint', title: 'h', ok: true, detail: 'fine' };
+  const cronIncidents = [
+    {
+      number: 80,
+      state: 'open',
+      title: '[ops] unreadable',
+      body: incidentMarker('cron-evidence-unresolved'),
+    },
+    { number: 81, state: 'open', title: '[ops] failing', body: incidentMarker('cron-failures') },
+  ];
+
+  it('THE DEFECT: a failed cron evaluator closes no cron incident', () => {
+    const plan = reconcileIncidents([evaluatorDown, healthy], cronIncidents, [], ALL);
+    expect(plan.toClose, 'a GitHub 500 is not a recovery').toEqual([]);
+  });
+
+  it('the incidents stay open and say why they could not be seen', () => {
+    const plan = reconcileIncidents([evaluatorDown, healthy], cronIncidents, [], ALL);
+    expect(plan.toComment.map((c: { issue: { number: number } }) => c.issue.number).sort()).toEqual(
+      [80, 81],
+    );
+    for (const c of plan.toComment) {
+      expect(c.unobservable).toBe(true);
+      expect(c.result.detail).toMatch(/GitHub Actions API/);
+      expect(c.result.detail, 'and it must not claim a recovery').not.toMatch(/no longer reported/);
+    }
+  });
+
+  it('the reason names the cron evaluator, not /api/health/ops', () => {
+    // The two evaluators fail for different reasons and an operator is told
+    // which lever to pull. Reusing the ops wording would send them to the wrong
+    // one.
+    const plan = reconcileIncidents([evaluatorDown, healthy], cronIncidents, [], ALL);
+    expect(plan.toComment[0].result.detail).not.toMatch(/health\/ops/);
+    expect(plan.toComment[0].result.detail).toMatch(/fix cron-staleness/);
+  });
+
+  it('COMPLEMENT: cron-staleness merely FAILING is not an evaluator failure', () => {
+    // The crons really having stopped is an ordinary failing check. The other
+    // cron ids are present in that case, so nothing is unobservable — and if
+    // one genuinely disappears it must still be closed as an orphan.
+    const stale = { ...evaluatorDown, evaluatorFailed: undefined, detail: 'last success 9h ago' };
+    const gone = [
+      { number: 82, state: 'open', title: '[ops] gone', body: incidentMarker('cron-renamed-away') },
+    ];
+    const plan = reconcileIncidents([stale, healthy], gone, [], ALL);
+    expect(plan.toClose).toHaveLength(1);
+    expect(plan.toClose[0].orphaned).toBe(true);
+  });
+
+  it('COMPLEMENT: a genuinely removed cron check is still closed as an orphan', () => {
+    const healthyCron = [
+      { id: 'cron-staleness', title: 's', ok: true, detail: 'fresh' },
+      { id: 'cron-failures', title: 'f', ok: true, detail: '0/10' },
+      { id: 'cron-evidence-unresolved', title: 'u', ok: true, detail: 'all readable' },
+      { id: 'cron-delivery-lag', title: 'l', ok: true, informational: true, detail: 'ok' },
+      { id: 'cron-manual-verification', title: 'm', ok: true, informational: true, detail: 'ok' },
+    ];
+    const removed = [
+      { number: 83, state: 'open', title: '[ops] renamed', body: incidentMarker('cron-old-name') },
+    ];
+    const plan = reconcileIncidents(healthyCron, removed, [], ALL);
+    expect(plan.toClose).toHaveLength(1);
+    expect(plan.toClose[0].orphaned).toBe(true);
+  });
+
+  it('CRON_DERIVED_CHECK_IDS covers every id the evaluator can emit but staleness', () => {
+    // List/evaluator parity, the same rule OPS_DERIVED_CHECK_IDS is held to. A
+    // cron check added later and left off this list would be closed as an
+    // orphan on the first API error.
+    const now = new Date('2026-09-02T00:00:00Z');
+    const run = (id: number, over: Record<string, unknown> = {}) => ({
+      runId: id,
+      event: 'schedule',
+      status: 'completed',
+      conclusion: 'success',
+      runAttempt: 1,
+      scheduledAtIsExact: true,
+      completedAt: '2026-09-01T23:30:00Z',
+      unresolved: false,
+      ...over,
+    });
+    // Every branch that can add an id: a plain history, one containing a
+    // re-run, one containing an unresolved attempt, and one with a manual
+    // dispatch.
+    const emitted = new Set(
+      [
+        [run(1)],
+        [run(1, { runAttempt: 2 })],
+        [run(1, { runAttempt: 2, conclusion: null, unresolved: true })],
+        [run(1), run(2, { event: 'workflow_dispatch' })],
+      ].flatMap((history) => evaluateCronHealth(history, now).map((r: { id: string }) => r.id)),
+    );
+    emitted.delete('cron-staleness'); // the probe itself, deliberately excluded
+    expect([...emitted].sort()).toEqual([...CRON_DERIVED_CHECK_IDS].sort());
   });
 });

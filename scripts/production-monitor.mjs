@@ -935,6 +935,30 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
  * reconciler below, from a check that was deleted. tests/production-monitor
  * pins this list against evaluateOpsMetrics() itself so it cannot drift.
  */
+/**
+ * Every id `evaluateCronHealth()` can emit APART FROM `cron-staleness`.
+ *
+ * The same reason OPS_DERIVED_CHECK_IDS exists, on the other evaluator. When
+ * the GitHub Actions API call throws, the catch block pushes `cron-staleness`
+ * alone; every other cron id is simply absent from `results`, and absent is
+ * read by the orphan sweep as REMOVED. Reproduced against the live reconciler:
+ * an open `cron-failures` incident, and an open incident for the new
+ * `cron-evidence-unresolved` gate, were both queued for closure with "this
+ * check is no longer reported by the monitor" — because GitHub returned an
+ * error, not because anything recovered.
+ *
+ * That is incident #26 exactly: the monitor going blind and reading its own
+ * blindness as an all-clear. It cost a P0 once on the ops evaluator; this is
+ * the same hole on the cron one.
+ */
+export const CRON_DERIVED_CHECK_IDS = Object.freeze([
+  'cron-delivery-lag',
+  'cron-evidence-unresolved',
+  'cron-failures',
+  'cron-manual-verification',
+  'cron-rerun-notice',
+]);
+
 export const OPS_DERIVED_CHECK_IDS = Object.freeze([
   'outbox-dead-letters',
   'outbox-stale-claims',
@@ -1063,6 +1087,17 @@ export function incidentMarker(id) {
  *   destroys an incident; the failure of this one is an incident that stays
  *   open, which someone sees.
  */
+/** Why a check could not be observed this run, in the words of its evaluator. */
+function unobservableReason(id) {
+  return CRON_DERIVED_CHECK_IDS.includes(id)
+    ? 'not evaluated this run — the GitHub Actions API call the cron checks read failed, so ' +
+        'the run history was never fetched. The incident is neither confirmed nor cleared; ' +
+        'fix cron-staleness to see it again.'
+    : 'not evaluated this run — /api/health/ops is failing, so the metric this check reads ' +
+        'was never fetched. The incident is neither confirmed nor cleared; fix ops-metrics ' +
+        'to see it again.';
+}
+
 export function reconcileIncidents(results, openIssues, closedIssues = [], options = {}) {
   const markerOf = (issue) =>
     /<!-- bookpitch-ops-incident:([a-z0-9-]+) -->/.exec(issue.body ?? '')?.[1] ?? null;
@@ -1151,9 +1186,17 @@ export function reconcileIncidents(results, openIssues, closedIssues = [], optio
   // So: a check whose evaluator could not run is UNOBSERVABLE, not gone. Its
   // incident stays open and says why.
   const opsProbeFailed = results.some((r) => r.id === 'ops-metrics' && !r.ok);
-  const unobservable = new Set(
-    opsProbeFailed ? OPS_DERIVED_CHECK_IDS.filter((id) => !reportedIds.has(id)) : [],
+  // The same question for the cron evaluator, which has its own way of failing
+  // wholesale: when the Actions API call throws, its catch block pushes
+  // `cron-staleness` marked `evaluatorFailed` and nothing else. Without this,
+  // one GitHub 500 closed every other cron incident as "no longer reported".
+  const cronEvaluatorFailed = results.some(
+    (r) => r.id === 'cron-staleness' && r.evaluatorFailed === true,
   );
+  const unobservable = new Set([
+    ...(opsProbeFailed ? OPS_DERIVED_CHECK_IDS.filter((id) => !reportedIds.has(id)) : []),
+    ...(cronEvaluatorFailed ? CRON_DERIVED_CHECK_IDS.filter((id) => !reportedIds.has(id)) : []),
+  ]);
 
   // The canonical open issue per marker, which is what the orphan sweep acts on.
   const byId = new Map();
@@ -1176,10 +1219,7 @@ export function reconcileIncidents(results, openIssues, closedIssues = [], optio
           id,
           title: issue.title ?? id,
           ok: false,
-          detail:
-            'not evaluated this run — /api/health/ops is failing, so the metric this ' +
-            'check reads was never fetched. The incident is neither confirmed nor ' +
-            'cleared; fix ops-metrics to see it again.',
+          detail: unobservableReason(id),
         }),
         issue,
         unobservable: true,
@@ -1444,14 +1484,19 @@ async function main() {
       ];
       results.push(...evaluateCronHealth(runs, now));
     } catch (err) {
-      results.push(
-        check(
+      // `evaluatorFailed` marks this as "the cron evaluator could not run",
+      // which is different from "the crons are stale". The reconciler reads it
+      // so the OTHER cron checks — absent from `results` because this threw —
+      // are treated as unobservable rather than removed.
+      results.push({
+        ...check(
           'cron-staleness',
           'Scheduled cron workflow has stopped running',
           false,
           `check failed: ${err instanceof Error ? err.message : 'unknown'}`,
         ),
-      );
+        evaluatorFailed: true,
+      });
     }
 
     // --- 9. Backup freshness ---------------------------------------------
