@@ -119,7 +119,7 @@ Observed directly, not carried over from any earlier summary.
 | C1 | Final merge to `main` | `MERGED` | **`c6d59a19e994710607720aab47b950068b611103`** — PRs #70 (`ab045c1`), #71 (`c69abcc`), #72 (`688a96c`, docs), #73 (`c6d59a1`) |
 | C2 | Deployment of that exact SHA | `DEPLOYED` | GitHub Deployment **6273536043**, state `success`; both canonical hosts serve `x-bookpitch-release: c6d59a19…`, which equals `origin/main` |
 | C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33928751924](https://github.com/levantchanturidze/bookpitch/actions/runs/33928751924) against **`c6d59a1`** — 68 applied, migration ledger up to date, all 8 invariant checks pass including the exact per-partition policy match and `current_org_id()`. **"No drift" was overstated** and is withdrawn: that run had no schema comparison in it at all. The comparison exists as of A32 and its first production execution is recorded in the checkpoint below |
-| C4 | Fresh backup, **actually restored** into a disposable DB | `PRODUCTION VERIFIED` | taken AFTER the final deployment: backup [33928753998](https://github.com/levantchanturidze/bookpitch/actions/runs/33928753998) on `c6d59a1`, artifact `production-backup-33928753998-1` (id 9957780811); restore drill [33929073967](https://github.com/levantchanturidze/bookpitch/actions/runs/33929073967) **restored it into a disposable database** — all 10 restore invariants pass |
+| C4 | Fresh backup, **actually restored** into a disposable DB | `PRODUCTION VERIFIED` | backup [33928753998](https://github.com/levantchanturidze/bookpitch/actions/runs/33928753998) on `c6d59a1`, artifact `production-backup-33928753998-1` (id 9957780811); restore drill [33929073967](https://github.com/levantchanturidze/bookpitch/actions/runs/33929073967) **restored that artifact into a disposable database** — all 10 restore invariants pass. That backup was a `workflow_dispatch`; the schedule has since delivered one unaided — [33949390174](https://github.com/levantchanturidze/bookpitch/actions/runs/33949390174), `event=schedule`, 2026-09-05T06:17Z — so the nightly job is proven to run without being pressed. The drill still names the dispatched artifact, because that is the one it actually restored |
 | C5 | Production smoke + RBAC + cron/outbox/health | `PRODUCTION VERIFIED` | **Natural, first-attempt** scheduled runs on **`c6d59a1`**: monitor [33928608353](https://github.com/levantchanturidze/bookpitch/actions/runs/33928608353) — **25/28 passed, 2 paused, 2 informational, 1 failing**, and the one failure is Sentry; cron [33925555982](https://github.com/levantchanturidze/bookpitch/actions/runs/33925555982). Soak dry run [33929076260](https://github.com/levantchanturidze/bookpitch/actions/runs/33929076260) — 7/7 reads, aliases confirmed on `c6d59a1` |
 | C6 | Informational lines do not affect the verdict | `PRODUCTION VERIFIED` | monitor [33928608353](https://github.com/levantchanturidze/bookpitch/actions/runs/33928608353): two INFO lines present, verdict reads `1 production check(s) failing` |
 | C7 | Corrected incident reconciliation, against live state | `PRODUCTION VERIFIED` | monitor [33920833148](https://github.com/levantchanturidze/bookpitch/actions/runs/33920833148), unprompted: `incident #44 … reopened — still failing` then `incident #67 closed as a duplicate of #44`. Exactly one open incident for the marker, history restored to #44. Independently repeated by the reverify job (C8) after the second stray-keyword closure |
@@ -152,7 +152,7 @@ Observed directly, not carried over from any earlier summary.
 
 | C8 | `sentry-reverify.yml` + `sentry-incident.mjs` proven end to end | `PRODUCTION VERIFIED` | first NATURAL run [33925659120](https://github.com/levantchanturidze/bookpitch/actions/runs/33925659120) (`schedule`, attempt 1, `c6d59a1`). Classified `unavailable` — *"could not be attempted … this is not a report that delivery is broken"* — reopened **#44**, skipped the soak refresh, and failed the run so it is visible. Exactly the designed behaviour, in production, on the failure path |
 
-## Resumption checkpoint — 2026-09-05T00:45Z
+## Resumption checkpoint — 2026-09-05T11:20Z
 
 Everything below is current as of this line. To continue, say only:
 
@@ -161,12 +161,28 @@ Everything below is current as of this line. To continue, say only:
 
 | | |
 |---|---|
-| Evidence SHA | `c6d59a19e994710607720aab47b950068b611103` — every C-row below was gathered against this, after its deployment |
-| Deployed SHA | `f45515d04ba5fbd82f0799f1d71d921aae902cb2`, GitHub Deployment **6274698464** (`success`), served by both aliases. Differs from the evidence SHA by `docs/finalization-ledger.md` alone — verified, not asserted: `git diff --name-only c6d59a1 f45515d` returns that one path |
-| Branch | `main`; no open PRs; working tree clean |
-| Open incident | **#44** (canonical). Closed twice by stray PR keywords and reopened twice by the monitor and the reverify job; #67 closed as a duplicate. CI now refuses a PR that would do it again |
-| Soak | never started; refused by three independent gates while Sentry is unverified (E1) |
+| Deployed SHA | **`9cc658265ab2bf24d932b15b55a9840d8cfc7120`** — GitHub Deployment **6280288517** (`success`). Both aliases serve it: `bookpitch.ge` 200 and `www.bookpitch.ge` 308→200, each `x-bookpitch-release: 9cc6582…`, body exactly `{"ok":true}` |
+| Evidence SHA | **the same commit.** No delta this round: the D-row and E-row evidence below was gathered after `9cc6582` was deployed, against `9cc6582`. Earlier rounds carried a one-commit documentation regress; this one does not, because the merge that produced the deployment is the merge the evidence describes |
+| CI on the merged head | run [33962285998](https://github.com/levantchanturidze/bookpitch/actions/runs/33962285998) on `98284af`, `pull_request`, **attempt 1**, no reruns — `Lint, type-check, test, and build`, `Browser, mobile, and accessibility suite` and `Secret scanning` all success. **2030 tests passed, 0 skipped.** The guard ran as its own workflow, run [33962286005](https://github.com/levantchanturidze/bookpitch/actions/runs/33962286005) |
+| Migrations + drift | run [33962683985](https://github.com/levantchanturidze/bookpitch/actions/runs/33962683985), **`event=push`, attempt 1** — natural, not dispatched. 68 migrations, ledger up to date, **and the first schema comparison this project has ever run against production**: `No difference detected.` The same log carries `migrate status`'s `Database schema is up to date!` seconds earlier — two commands, two sentences, two different claims (A32). All 8 invariant checks pass |
+| Soak evidence collection | dry run [33962765974](https://github.com/levantchanturidze/bookpitch/actions/runs/33962765974) — 7/7 reads on `9cc6582`; deployment and both alias headers agree with the curl above. **`workflow_dispatch`, therefore DIAGNOSTIC ONLY** — it exercises the changed `runsFor` against real data and must never be cited as natural evidence |
+| Branch | `main` at `9cc6582`; no open PRs; working tree clean |
+| Open incident | **#44** (canonical). Closed twice by stray PR keywords and reopened twice by the monitor and the reverify job; #67 closed as its duplicate. The guard that refuses a third occurrence now also runs on `edited` (A31) |
+| Soak | **never started**; refused by three independent gates while Sentry is unverified (E1) |
+| Pending, not blocking | the first **natural** scheduled monitor run on `9cc6582` has not been delivered yet — the last was [33961792526](https://github.com/levantchanturidze/bookpitch/actions/runs/33961792526) at 10:52Z on `e27593b`, and scheduled workflows run from `main` HEAD, so the next one picks up the new code and will be the first to emit `cron-evidence-unresolved` in the live list. Not a fault: measured delivery on this account is p50 0.82h / p90 2.25h / p95 4.13h (R-08). The check is unit-tested and deployed; what is missing is only the observation |
 | Next action | supply the three human inputs below. Everything after them is automatic |
+
+### What this round changed, in one line each
+
+A28 scoped incident reconciliation · A29 an unknown outcome blocks instead of
+vanishing · A30 exact checkpoint-tip agreement and truncation refused · A31 the
+PR guard runs on `edited`, in its own workflow · A32 a drift check that looks at
+the schema · A33 a failed cron evaluator is unobservable, not removed.
+
+Two of those were corrections to this round's own work, kept visible rather than
+tidied away: the first fix for A31 displaced real CI results with a skipped run
+and was reverted (production found it, not a test), and A32 forced the
+withdrawal of every "no drift" claim in this document.
 
 ## What is checked and what is merely observed
 
@@ -259,24 +275,47 @@ category: they ran naturally on 2026-09-04 (C8) and behaved correctly on the
 failure path. What has not been exercised is their SUCCESS path, which also
 requires D1.
 
-**The C-rows now all name `c6d59a1`, the deployed head.** Migration
-(33928751924), backup (33928753998), the restore drill that actually restored
-that artifact (33929073967), the soak dry run (33929076260) and all three
-natural first-attempt scheduled runs — cron 33925555982, monitor 33928608353,
-reverify 33925659120 — were gathered against it, after its deployment. Nothing
-is carried over from an earlier SHA, which is what the previous two rounds
-did.
+**The C-rows name `c6d59a1`, which is no longer the deployed head — and that is
+stated, not relabelled.** Migration (33928751924), backup (33928753998), the
+restore drill that actually restored that artifact (33929073967), the soak dry
+run (33929076260) and three natural first-attempt scheduled runs — cron
+33925555982, monitor 33928608353, reverify 33925659120 — were gathered against
+`c6d59a1`, after its deployment. Production now serves `9cc6582`.
 
-Merging this ledger produces one further documentation-only commit, and the one
-before it is already deployed and checked: `f45515d` differs from the evidence
-SHA `c6d59a1` in `docs/finalization-ledger.md` and nothing else. So the C-row
-evidence still describes the running application, and that is a verified diff
-rather than a promise about what the commit contains. Where a row names a SHA,
-that is the SHA the evidence was gathered against.
+Two rounds were rejected for exactly this gap, so here is the mechanical
+account of what carries over rather than an assurance that it does.
 
-This is the only regress in the ledger and it terminates here: a documentation
-commit cannot change application behaviour, and the check that proves it is
-mechanical.
+```
+$ git diff --name-only c6d59a1 9cc6582 | cut -d/ -f1 | sort -u
+.github
+docs
+scripts
+tests
+
+$ git diff --name-only c6d59a1 9cc6582 -- app/ lib/ components/ prisma/ \
+      proxy.ts package.json package-lock.json
+(no output)
+```
+
+The delta is workflows, operational scripts, documentation and tests. **No
+application surface and no schema changed at all.** So:
+
+- **Application evidence carries over.** Nothing in the served bundle differs
+  between the two commits. The C5 smoke results describe the same application
+  that is running now, and this is checkable in one command rather than
+  believed.
+- **Database evidence carries over.** `prisma/` is untouched; both the C3 run
+  and the `9cc6582` run report 68 migrations; and the `9cc6582` run adds the
+  schema comparison the C3 run never had — `No difference detected.` A backup
+  and a restore drill taken against that schema still describe it.
+- **What does NOT carry over is anything about the changed scripts**, which is
+  precisely what this round altered. That evidence is fresh and is listed in the
+  checkpoint above: CI 33962285998, migrate 33962683985 (`event=push`), the
+  deployment and both alias headers, and the diagnostic soak dry run 33962765974.
+
+The regress that ran through the previous rounds — evidence describing a commit
+other than the one serving traffic — is closed here by the delta being empty
+where it matters, not by asserting the commits are equivalent.
 
 ---
 
