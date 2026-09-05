@@ -624,6 +624,7 @@ Checks, each of which is its own incident class:
 | `cron-staleness` | no successful **first-attempt scheduled** cron run in **6 hours** |
 | `cron-delivery-lag` | **INFO only.** No such run in 90 minutes — reminders are late |
 | `cron-failures` | 3+ of the last 10 cron runs failed |
+| `cron-evidence-unresolved` | a scheduled run was re-run and its **first attempt could not be retrieved**, so the failure count above is a lower bound. Unknown is not health |
 | `backup-freshness` | no successful backup in 26 hours |
 | `restore-drill-stale` | no successful drill in 40 days |
 | `ops-metrics` | `/api/health/ops` is unreachable or non-200 |
