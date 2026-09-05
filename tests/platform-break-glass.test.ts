@@ -781,6 +781,73 @@ describe('/api/platform/break-glass', () => {
     });
   });
 
+  it('Phase 11 Row 12b: a SKEWED Node clock does not move expiresAt', async () => {
+    // Row 12 above compares expiresAt against the DB clock and passes under
+    // either implementation whenever the two clocks agree — which they do in
+    // CI. Its own comment admits as much: it was written against an
+    // environment observed to be >=3h out. So it proves the property only where
+    // the skew happens to exist, and proves nothing where the build runs.
+    //
+    // Verified by perturbation: swapping `dbNowAt.getTime()` for `Date.now()`
+    // in startBreakGlass left all 25 tests in this file green.
+    //
+    // This one manufactures the skew instead of waiting for it. Date.now is
+    // pushed three hours forward across BOTH the code mint and the request, so
+    // TOTP stays internally consistent, and expiresAt must still land on DB
+    // time. A Node-clock implementation would be ~3h out and fail.
+    const SKEW_MS = 3 * 60 * 60_000;
+    authMock.mockResolvedValue(await mockPlatformJwt('superadmin@bp.test'));
+
+    const dtBefore = await dbTime();
+    const realNow = Date.now;
+    let res: Response;
+    try {
+      // The skew goes on FIRST, so mint and verify share one (shifted) step.
+      // Applying it only to the request put them three hours apart and the
+      // request 400'd on an expired code — the same boundary bug this round
+      // started with, reproduced by hand.
+      Date.now = () => realNow() + SKEW_MS;
+      const code = await freshTotpCode(totpSecret);
+      res = await bgRoute.POST(
+        req('http://x', {
+          method: 'POST',
+          body: JSON.stringify({
+            password: 'devpass123',
+            totpCode: code,
+            reason: 'expiry-skew',
+            ticketId: 'BG-exp-skew',
+          }),
+        }),
+      );
+    } finally {
+      Date.now = realNow;
+    }
+    expect(res.status).toBe(200);
+    const { sessionId } = await json<{ sessionId: string }>(res);
+    const dtAfter = await dbTime();
+
+    const session = await unsafePrismaAdmin.breakGlassSession.findUniqueOrThrow({
+      where: { id: sessionId },
+    });
+    const TTL_MS = 60 * 60_000;
+    const expMs = session.expiresAt.getTime();
+
+    // Anchored to the DATABASE clock, so the three-hour Node skew is invisible.
+    expect(expMs).toBeGreaterThanOrEqual(dtBefore.nowMs + TTL_MS);
+    expect(expMs).toBeLessThanOrEqual(dtAfter.nowMs + TTL_MS + 5_000);
+    // …and stated the other way, because that is the assertion that fails when
+    // someone reaches for Date.now(): it must NOT have followed the skew.
+    expect(
+      expMs,
+      'expiresAt followed the Node clock — it must come from the database',
+    ).toBeLessThan(dtBefore.nowMs + TTL_MS + SKEW_MS / 2);
+
+    await unsafePrismaAdmin.breakGlassSession.update({
+      where: { id: sessionId },
+      data: { endedAt: new Date(), endedReason: 'test_cleanup' },
+    });
+  });
+
   it('Phase 11 Row 17: newly created session is visible via requireAuthContext', async () => {
     // End-to-end: call the POST route → session created → requireAuthContext
     // returns isBreakGlass=true with the correct sessionId.
