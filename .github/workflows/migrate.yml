@@ -78,10 +78,52 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: npx prisma migrate deploy
 
-      - name: Verify no drift after apply
+      # NAME CHANGED, because the old one was wrong. This step ran
+      # `prisma migrate status` under the heading "Verify no drift after
+      # apply", and every ledger that cited this run repeated the claim.
+      # `migrate status` compares the _migrations table with the migrations
+      # directory. It is a LEDGER check: it cannot see a column added by hand,
+      # a dropped index, or a type changed in the console. Those are drift, and
+      # this step never looked for them.
+      - name: Verify the migration ledger is up to date
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: npx prisma migrate status
+
+      # The drift check the step above was named after.
+      #
+      # `migrate diff --from-config-datasource --to-schema` introspects the live
+      # database and compares the SHAPE it finds with the committed datamodel.
+      # Prisma documents this command as read-only — "does not write to your
+      # datasource(s)" — and it needs no shadow database, because neither side
+      # is a migrations directory. Nothing here resets, migrates or otherwise
+      # modifies production; introspection is SELECT against the catalogues.
+      #
+      # `--exit-code` makes the verdict mechanical: 0 empty, 2 not empty, 1
+      # error. Any of the last two fails the step, which is the right direction
+      # — an unreadable schema is not a schema that matches.
+      #
+      # Output is filtered so a connection string cannot reach the log if the
+      # command fails while parsing the URL (F-12).
+      - name: Verify no schema drift against production (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          set +e
+          npx prisma migrate diff \
+            --from-config-datasource \
+            --to-schema prisma/schema.prisma \
+            --exit-code > diff.out 2>&1
+          code=$?
+          set -e
+          sed -E 's#(postgres(ql)?://)[^[:space:]]*#\1[redacted]#g' diff.out
+          rm -f diff.out
+          if [ "$code" -eq 2 ]; then
+            echo "::error::The live schema differs from prisma/schema.prisma. Something changed the database outside a migration."
+            exit 1
+          fi
+          exit "$code"
 
       # `prisma migrate status` proves the migration ledger and nothing else.
       # It cannot see that bookpitch_app came back from a restore with

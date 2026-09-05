@@ -46,7 +46,7 @@ Observed directly, not carried over from any earlier summary.
 | Production deployment | id **6252458484**, sha `6452f3d`, state `success` | GitHub Deployments API |
 | Aliases | `bookpitch.ge` 200, `www.bookpitch.ge` 308→200, both `x-bookpitch-release: 6452f3d…` | `curl -sI` |
 | Health body | exactly `{"ok":true}` | `curl` |
-| Migrations | 67 applied, none pending, no drift | run [33801704929](https://github.com/levantchanturidze/bookpitch/actions/runs/33801704929) |
+| Migrations | 67 applied, none pending; migration LEDGER up to date | run [33801704929](https://github.com/levantchanturidze/bookpitch/actions/runs/33801704929). Said "no drift" — see A32: `migrate status` never established that |
 | Invariants | all 7 checks pass against production | same run |
 | Latest backup | run [33800659940](https://github.com/levantchanturidze/bookpitch/actions/runs/33800659940), artifact `production-backup-33800659940-1` (id 9910927933) | Actions API |
 | Latest restore drill | run [33745143206](https://github.com/levantchanturidze/bookpitch/actions/runs/33745143206), 2026-09-03T10:35Z — **against an older artifact** | Actions API |
@@ -92,7 +92,14 @@ Observed directly, not carried over from any earlier summary.
 | A25 | Canonical incident is the oldest issue | `MERGED` | duplicates closed after the canonical is reopened, so there is never a moment with no open incident for a failing condition |
 | A26 | Email DNS — suspected defect DISPROVED | `PRODUCTION VERIFIED` | re-verified by `dig` 2026-09-04: SPF, DKIM, bounce MX and DMARC (`p=none`) all present. They live at `send.send.bookpitch.ge` — a `send.` child of the sending domain — so a query aimed at `send.bookpitch.ge` finds nothing and wrongly concludes they are missing. That misreading is what Phase 13 recorded as "unverified" |
 
-| A27 | A PR cannot close an issue on merge | `PRODUCTION VERIFIED` | it happened TWICE to #44 — PR #66 in prose, PR #72 from inside a code span while documenting PR #66. Backticks do not protect against GitHub's closing parser. `scripts/check-pr-body.mjs` is a required CI job; it passed on its own PR (#73) and refuses the exact sentences that caused both closures |
+| A27 | A PR cannot close an issue on merge | `PRODUCTION VERIFIED` | it happened TWICE to #44 — PR #66 in prose, PR #72 from inside a code span while documenting PR #66. Backticks do not protect against GitHub's closing parser. `scripts/check-pr-body.mjs` runs as the `Pull request body` CI job; it passed on its own PR (#73) and refuses the exact sentences that caused both closures. **Superseded by A31** on two counts: it ran only on `opened`/`synchronize`/`reopened`, so an edit after the check went green was never re-examined; and "required" overstated it — see the enforcement note under *What is checked and what is merely observed* |
+
+| A28 | The Sentry verifier acts only on the incident it owns | `MERGED` | `sentry-incident.mjs` passed ONE result to `reconcileIncidents()`, whose orphan sweep retires incidents no check reported — reasonable when the caller reports every check, and it reports one. Reproduced against the real reconciler: outcome `unavailable` with #44 plus an `ops-metrics` and a `backup-workflow-stale` incident open produced `toClose -> [90 (orphaned), 91 (orphaned)]`, and the caller closes each with *"Resolved by end-to-end verification."* A run that could not reach Sentry at all would have declared two unrelated incidents resolved by evidence it never gathered. `reconcileIncidents` now takes `ownedCheckIds`, defaulting to **the ids present in `results`** — a partial caller retires nothing. The monitor declares `'all'` at its call site because it alone reports the complete set. **Reachable, not realised**: verified against the issue history — every open `ops-incident` during the verifier's lifetime has been #44 or its duplicate #67, so the sweep never had an unrelated incident to take |
+| A29 | An unknown outcome blocks instead of disappearing | `MERGED` | `resolveRun()` keeps an unreadable first attempt and marks it `unresolved` — then left the LATEST attempt's number on it, and `isNaturalObservation()` required attempt 1, so both consumers filtered it straight back out. The fix protected the record and the predicate discarded it one line later. Reproduced through `evaluateSoak()`: with eight clean observations around it an unreadable in-window first attempt returned **`success`**, while the same attempt retrieved as a failure returned `awaiting-recovery`. Reading the outcome decided the verdict; failing to read it decided the verdict too, the other way, in the direction that ships. Unknown is now an observation: `monitor-clean` excludes it, the new `evidence-resolved` gate blocks on it, and the monitor's new `cron-evidence-unresolved` check fails on it. It does **not** restart the window — a GitHub read error is not a production failure. Also fixed: a re-run whose latest attempt is still in progress carried that attempt's status, so `status === 'completed'` dropped the record before its first attempt was ever resolved |
+| A30 | The chain tip must agree exactly | `MERGED` | `verifyCheckpointChain()` refused a rolled-back body and a forked, deleted or reordered chain — and returned `ok: true` when the body was AHEAD of the tip. The persistence order is body first, checkpoint second, and the comment at that call site claimed the next tick "reads as a gap and refuses". It did not: the one crash the ordering was designed around was the one case that passed silently, certifying a tick with no external anchor at all. Exact tip agreement is now required, and no recovery protocol is offered — re-anchoring would write the missing checkpoint from the state under suspicion. Separately, `ghAll()` now reports truncation: GitHub returns issue comments **oldest first**, so exhausting the page budget drops the newest checkpoints and leaves a stale tip the body legitimately sits ahead of |
+| A31 | The PR guard runs when the text it guards changes | `MERGED` | `pull_request` with no `types:` means `opened`, `synchronize`, `reopened`. Not `edited`. A PR could be opened clean, pass, then have "closes #44" added to its body and merge with a green tick — the exact failure the guard exists to prevent, reachable by editing a textarea. **The first fix was wrong and production said so.** Adding `edited` to `ci.yml` and skipping the heavy jobs on it produced, on PR #76, run [33961699126](https://github.com/levantchanturidze/bookpitch/actions/runs/33961699126): the edit created a NEWER run in which the test suite was `skipped`, and `gh pr checks` then read `Lint, type-check, test, and build — skipping` for a head whose real results sat in an earlier run. A displaced result that reads as "nothing wrong" is this project's oldest failure mode, reintroduced for a check that reads two strings. The guard now lives in its own `pr-body.yml` with its own trigger and concurrency group; `ci.yml` keeps the default event set and every check name in it means what it says. The check keeps the name `Pull request body`, so earlier citations stay valid |
+| A32 | A drift check that actually looks at the schema | `MERGED` | `migrate.yml` had a step named **"Verify no drift after apply"** that ran `prisma migrate status`, and every ledger citing that run repeated the claim. `migrate status` compares the `_migrations` table with the migrations directory: it is a LEDGER check and cannot see a column added by hand, a dropped index or a type changed in a console. Renamed to what it does, and a real read-only comparison added beside it — `prisma migrate diff --from-config-datasource --to-schema --exit-code`, which Prisma documents as *"a read-only command that does not write to your datasource(s)"* and which needs no shadow database. Nothing resets or modifies production. Verified locally against a live database before it was wired in: exit 0, *"No difference detected."* The step's shell was then exercised against all three exit codes with a stub, because workflow shell is code that otherwise runs for the first time in production: **0** passes and prints the summary; **2** fails the step with a `::error::` annotation and the diff visible; **1** fails, and the F-12 filter turns a P1001 error reading `postgresql://user:pw@db…` into `postgresql://[redacted]` — without it, an unreachable database would print the production password into the Actions log |
+| A33 | Incident #26's shape, on the other evaluator | `MERGED` | found while testing A29. When the GitHub Actions API call throws, `evaluateCronHealth()` never runs and the catch block pushes `cron-staleness` alone — so every other cron id is absent from `results`, and the orphan sweep reads absent as REMOVED. Reproduced against the live reconciler: an open `cron-failures` incident **and the new `cron-evidence-unresolved` gate's own incident** were both queued for closure with *"this check is no longer reported by the monitor"*, because GitHub returned an error. That is precisely how #26 was closed on 2026-09-01 — the monitor going blind and reading its own blindness as an all-clear, which cost a P0 on the ops evaluator and was fixed there and only there. `CRON_DERIVED_CHECK_IDS` plus an `evaluatorFailed` marker now make those checks *unobservable* rather than gone, with a reason that names the cron evaluator instead of `/api/health/ops` so an operator is pointed at the right lever. List/evaluator parity is asserted, as it is for the ops list |
 
 ### B. Verification
 
@@ -103,7 +110,7 @@ Observed directly, not carried over from any earlier summary.
 | B3 | Playwright full matrix | `PASSED — CI` | same runs; locally 265 passed / 3 skipped, and `npm run e2e:check` confirms all 9 required suites executed (268 tests) |
 | B4 | Secret scan | `PASSED — CI` | gitleaks green on both PRs; a local scan of a clean `git archive` of HEAD finds only the two fingerprints already accepted in `.gitleaksignore` |
 | B5 | Dependency audit | `PASSED — CI` | `found 0 vulnerabilities`. npm's audit endpoint 503'd intermittently on 2026-09-04 and the job was re-run rather than the gate weakened |
-| B6 | Migration from scratch + upgrade path | `PASSED — CI` | CI applies all 68 migrations to an empty database and runs `prisma migrate diff --exit-code` against a shadow DB; the upgrade path is migrate run [33863362248](https://github.com/levantchanturidze/bookpitch/actions/runs/33863362248), which applied 68 to the live database with no drift |
+| B6 | Migration from scratch + upgrade path | `PASSED — CI` | CI applies all 68 migrations to an empty database and runs `prisma migrate diff --exit-code` against a shadow DB; the upgrade path is migrate run [33863362248](https://github.com/levantchanturidze/bookpitch/actions/runs/33863362248), which applied 68 to the live database with its migration ledger up to date afterwards. The shadow-DB diff is a genuine drift check; the live-database half of this row was `migrate status` and is NOT a drift claim — see A32 |
 
 ### C. Production
 
@@ -111,7 +118,7 @@ Observed directly, not carried over from any earlier summary.
 |---|---|---|---|
 | C1 | Final merge to `main` | `MERGED` | **`c6d59a19e994710607720aab47b950068b611103`** — PRs #70 (`ab045c1`), #71 (`c69abcc`), #72 (`688a96c`, docs), #73 (`c6d59a1`) |
 | C2 | Deployment of that exact SHA | `DEPLOYED` | GitHub Deployment **6273536043**, state `success`; both canonical hosts serve `x-bookpitch-release: c6d59a19…`, which equals `origin/main` |
-| C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33928751924](https://github.com/levantchanturidze/bookpitch/actions/runs/33928751924) against **`c6d59a1`** — 68 applied, no drift, all 8 invariant checks pass including the exact per-partition policy match and `current_org_id()` |
+| C3 | Production migrations + strengthened invariants | `PRODUCTION VERIFIED` | run [33928751924](https://github.com/levantchanturidze/bookpitch/actions/runs/33928751924) against **`c6d59a1`** — 68 applied, migration ledger up to date, all 8 invariant checks pass including the exact per-partition policy match and `current_org_id()`. **"No drift" was overstated** and is withdrawn: that run had no schema comparison in it at all. The comparison exists as of A32 and its first production execution is recorded in the checkpoint below |
 | C4 | Fresh backup, **actually restored** into a disposable DB | `PRODUCTION VERIFIED` | taken AFTER the final deployment: backup [33928753998](https://github.com/levantchanturidze/bookpitch/actions/runs/33928753998) on `c6d59a1`, artifact `production-backup-33928753998-1` (id 9957780811); restore drill [33929073967](https://github.com/levantchanturidze/bookpitch/actions/runs/33929073967) **restored it into a disposable database** — all 10 restore invariants pass |
 | C5 | Production smoke + RBAC + cron/outbox/health | `PRODUCTION VERIFIED` | **Natural, first-attempt** scheduled runs on **`c6d59a1`**: monitor [33928608353](https://github.com/levantchanturidze/bookpitch/actions/runs/33928608353) — **25/28 passed, 2 paused, 2 informational, 1 failing**, and the one failure is Sentry; cron [33925555982](https://github.com/levantchanturidze/bookpitch/actions/runs/33925555982). Soak dry run [33929076260](https://github.com/levantchanturidze/bookpitch/actions/runs/33929076260) — 7/7 reads, aliases confirmed on `c6d59a1` |
 | C6 | Informational lines do not affect the verdict | `PRODUCTION VERIFIED` | monitor [33928608353](https://github.com/levantchanturidze/bookpitch/actions/runs/33928608353): two INFO lines present, verdict reads `1 production check(s) failing` |
@@ -131,13 +138,13 @@ Observed directly, not carried over from any earlier summary.
 | D5 | Mailbox UAT | `BLOCKED — MANUAL` | depends on D4 |
 | D6 | Legal operator identity + approval | `BLOCKED — MANUAL` | Two separate things. (a) **Data**: `OPERATOR_IDENTITY` in `lib/legal.ts` is all-null — legal name, registration number, postal address, contact. Only the operator has these. (b) **Approval**: `LEGAL_DOCUMENT_STATUS` is `'draft'`, and flipping it asserts that a qualified person reviewed the published privacy notice and terms against the actual processing this system performs. Scope is `docs/legal-review-checklist.md`. Neither is inferable from a green build, and an agent supplying either would be fabricating a representation to data subjects |
 
-| A12 | Sentry lifecycle: closure authority, ordering, real assets, ongoing proof | `MERGED` | `canClose: false` on the config check; starter refuses only unrelated incidents, closes #44 by evidence, re-checks, then starts; probe enable flag removed (its redeploy broke soak identity); map check uses the probe's own assets and fails closed; `observability-continuing` gate + `sentry-reverify.yml` every 6h |
+| A12 | Sentry lifecycle: closure authority, ordering, real assets, ongoing proof | `MERGED` | `canClose: false` on the config check; starter refuses only unrelated incidents, closes #44 by evidence, re-checks, then starts; probe enable flag removed (its redeploy broke soak identity); map check uses the probe's own assets and fails closed; `observability-continuing` gate + `sentry-reverify.yml` every **4h** (`35 */4 * * *`), against a 14h proof expiry — see A23 |
 
 ### E. Soak
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| E1 | Soak preconditions satisfied | `BLOCKED — MANUAL` | refused by **four** independent gates while D3 is unmet (the observability incident is now **#67**, reopened/re-raised after #44 was closed by a stray PR keyword): `release-verify-and-soak.yml` refuses without a probe-enabled confirmation, refuses if production is not serving the named SHA on both hosts, refuses while any `ops-incident` is open (#44 is), and `verify-sentry.mjs` writes no receipt without a complete pass. The controller then refuses to start without one |
+| E1 | Soak preconditions satisfied | `BLOCKED — MANUAL` | refused by **three** independent gates while D3 is unmet. The canonical observability incident is **#44** (#67 was closed as its duplicate — see A25). `release-verify-and-soak.yml` refuses if production is not serving the named SHA on both canonical hosts; refuses while any **unrelated** `ops-incident` is open — #44 itself is explicitly permitted, because requiring it closed was a deadlock: the incident cannot close without verification and verification would not start while it was open; and `verify-sentry.mjs` writes no receipt without a complete pass, after which the starter closes #44 by evidence and re-checks. The controller then refuses to start without a receipt. **Three, not four**: the earlier count included a probe-enable confirmation that no longer exists — the flag lived in Vercel and changing it redeployed production, which broke the soak's own release identity (A12) |
 | E2 | Uninterrupted 24h window on one SHA | `NOT STARTED` | Cannot begin until E1. Everything else it needs is proven: dry run [33867622778](https://github.com/levantchanturidze/bookpitch/actions/runs/33867622778) exercised all 7 evidence reads against production, including the shared heartbeat contract and the retention instant |
 | E3 | Natural scheduled evidence inside the window | `NOT STARTED` | Feasibility measured rather than assumed: monitor delivery p99 5.03h against a 6h gap limit, cron p99 3.02h. `retention-in-window` will hold a soak open until the nightly sweep runs inside it — by design, and the reason the window is 24 hours |
 
@@ -158,8 +165,84 @@ Everything below is current as of this line. To continue, say only:
 | Deployed SHA | `f45515d04ba5fbd82f0799f1d71d921aae902cb2`, GitHub Deployment **6274698464** (`success`), served by both aliases. Differs from the evidence SHA by `docs/finalization-ledger.md` alone — verified, not asserted: `git diff --name-only c6d59a1 f45515d` returns that one path |
 | Branch | `main`; no open PRs; working tree clean |
 | Open incident | **#44** (canonical). Closed twice by stray PR keywords and reopened twice by the monitor and the reverify job; #67 closed as a duplicate. CI now refuses a PR that would do it again |
-| Soak | never started; refused by four independent gates while Sentry is unverified |
+| Soak | never started; refused by three independent gates while Sentry is unverified (E1) |
 | Next action | supply the three human inputs below. Everything after them is automatic |
+
+## What is checked and what is merely observed
+
+Four claims in this document were stronger than the mechanism behind them. They
+are corrected here rather than quietly softened, because each one was cited as
+evidence at some point.
+
+**No CI job on this repository is an enforced merge requirement.** Branch
+protection and rulesets are unavailable on this plan — the API answers `403
+Upgrade to GitHub Pro or make this repository public` for both
+`/branches/main/protection` and `/rulesets`. So `Pull request body`,
+`Lint, type-check, test, and build`, the browser suite and secret scanning are
+all *observed* checks: they run, they go red, and nothing stops a merge on top
+of a red one except the person doing it. Where this document said "required CI
+job" (A27), read "CI job whose result is visible before merge, and which was
+read before merging". R-07 in `docs/phase-15-risk-register.md` carries the
+owner's explicit acceptance of this for launch and pilot.
+
+**`prisma migrate status` never proved the absence of schema drift.** It
+compares the `_migrations` table with the migrations directory. A column added
+by hand, a dropped index, a type changed in a console — none of it is visible to
+that command, and the step asserting otherwise was called "Verify no drift after
+apply" for months. A32 adds the comparison that does look at the schema.
+
+Every row in this document that cited a `migrate.yml` run for *drift* has been
+corrected to say *migration ledger* — the baseline row, B6's live-database half,
+and C3. Those runs remain valid evidence for what they actually measured, which
+is that the ledger is current and the invariant verifier passes. The **drift**
+claim was `NOT VERIFIED` for the whole of Phase 15–17, and the exact missing
+evidence was a schema comparison against production, which nothing ran. It runs
+now, on every `migrate.yml` invocation, read-only.
+
+Historical phase ledgers (`phase-15-*`, `phase-17-*`, `launch-checklist.md`)
+still carry the old wording. They are records of what was believed at the time
+and are not restated here; read any "no drift" in them as "migration ledger up
+to date".
+
+**The checkpoint chain does not survive an administrator.** The soak state body
+and the checkpoint comments are both mutable by anyone with repository write,
+and a checkpoint carries no secret of its own — only a digest the controller
+produced earlier. An actor with that access can delete every comment after tick
+N and restore the tick-N body, leaving a complete, internally consistent,
+correctly signed chain. Nothing in the controller can tell that apart from a
+soak that genuinely stopped at N. What the chain does buy is mechanical
+detection, on the next tick and with no operator vigilance, of: a body rolled
+back on its own, a checkpoint deleted or forked or reordered, and a tick that
+wrote its body but not its checkpoint (A30). Defending the administrator case
+needs an append-only store outside GitHub, which is a larger project than this
+soak and is not being started here.
+
+**Missing Sentry configuration proves unavailable access, not an absent
+account.** Vercel Production carries `SENTRY_ENVIRONMENT` and
+`NEXT_PUBLIC_SENTRY_ENVIRONMENT` and neither DSN, and the repository holds no
+Sentry secret. That establishes exactly one thing: this system has no
+authenticated route to Sentry. Whether a workspace exists somewhere is not
+something the repository can see, and earlier wording that read as "no Sentry
+account exists" overstated a read failure. `sentry-reverify.yml` classifies this
+as `unavailable` — distinct from `failed` — for the same reason.
+
+### Skipped tests: two different numbers
+
+`npx vitest run` reports **41 skipped** locally and **0 skipped in CI**. Every
+one is in `tests/production-invariants.test.ts`, behind
+`describe.skipIf(!runnable)`, where `runnable` requires a superuser URL pointing
+at a *disposable* host. CI provides one (localhost postgres in a service
+container), so the suite executes there; a developer without
+`INVARIANT_TEST_DATABASE_URL` gets skips. The skips are a local-environment
+artefact, not suppressed coverage — and the suite is the one that proves the
+invariant verifier catches a *broken* database, so it must never be quietly
+lost.
+
+Playwright's skips are unrelated and are counted separately: 3 of 268, from
+per-project conditions in the browser matrix. `npm run e2e:check` asserts that
+all 9 required suites executed, which is the check that would catch a suite
+silently vanishing. Do not add the two numbers together or cite one for the
+other.
 
 ## What has never run, and what predates the current SHA
 

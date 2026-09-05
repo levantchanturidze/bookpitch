@@ -41,6 +41,8 @@ import {
   normaliseRun,
   isNaturalObservation,
   isNaturalSuccess,
+  isUnknownObservation,
+  isJudgeable,
   resolveRun,
 } from './run-evidence.mjs';
 import { heartbeatSuccessAt } from './heartbeat-contract.mjs';
@@ -166,6 +168,7 @@ export const SOAK_HEALTH_GATES = Object.freeze([
  */
 export const SOAK_PROGRESS_GATES = Object.freeze([
   'window-elapsed',
+  'evidence-resolved',
   'monitor-observations',
   'scheduled-backup',
   'scheduled-cron',
@@ -313,7 +316,10 @@ export function sentryProofAge(sentry, now) {
  *
  * @param {string} secret
  * @param {object} state
- * @param {string|null} issueCreatedAt  the soak issue's creation time, from GitHub
+ * @param {string|null} [issueCreatedAt]  the soak issue's creation time, from
+ *   GitHub. Optional only so the signature and schema checks can be exercised
+ *   on their own; the controller always passes it, and the window-vs-issue
+ *   comparison below is skipped without it.
  */
 export function verifySoakState(secret, state, issueCreatedAt) {
   if (!state || typeof state !== 'object') return { ok: false, reason: 'no state' };
@@ -397,11 +403,30 @@ export function verifySoakState(secret, state, issueCreatedAt) {
 //   forking      two checkpoints claiming one tick;
 //   reordering   comment id order must agree with tickSeq order.
 //
-// LIMITATION, stated rather than papered over: an actor with repository write
-// can delete every checkpoint. The controller then sees no chain for a soak
-// that is past tick 0 and REFUSES — it does not fall back to trusting the body.
-// GitHub offers no append-only primitive an agent can use here; this is the
-// strongest available construction, and where it ends, the controller stops.
+// TRUST BOUNDARY, stated plainly because an overstated one is worse than none.
+//
+// The body and the comments are BOTH mutable by anyone with repository write,
+// and the checkpoint carries no secret of its own — only a digest the
+// controller produced earlier. So an actor with that access can delete every
+// comment after tick N and restore the tick-N body, and the result is a
+// complete, internally consistent, correctly signed chain that ends at N. It is
+// indistinguishable from a soak that genuinely stopped at N, and nothing in
+// this file can tell the difference.
+//
+// What the chain therefore DOES buy:
+//
+//   * a body rolled back on its own, with the comments left alone, is caught;
+//   * a checkpoint deleted, forked or reordered is caught;
+//   * a tick that wrote its body but not its checkpoint is caught;
+//   * every one of those is caught mechanically, on the next tick, with no
+//     operator vigilance required.
+//
+// What it does NOT buy: protection against a determined actor holding
+// repository write, which is administrator-level access to the very records
+// being used as evidence. Defending that would need an append-only store
+// outside GitHub, and standing up such a thing is a larger project than this
+// soak — so it is named as a limit, not quietly implied away. Where the
+// construction ends, the controller stops rather than guessing.
 // -----------------------------------------------------------------------------
 
 const CHECKPOINT_MARKER = '<!-- bookpitch-soak-checkpoint -->';
@@ -428,14 +453,30 @@ export function parseCheckpoint(body) {
  *
  * @param {Array<{id:number, body:string}>} comments  every comment on the issue
  * @param {{tickSeq:number, stateDigest:string}} state
+ * @param {{complete?: boolean}} [options]  `complete: false` means the comment
+ *   list was truncated by the page budget, which is refused outright.
  */
-export function verifyCheckpointChain(comments, state) {
+export function verifyCheckpointChain(comments, state, options = {}) {
   const chain = (comments ?? [])
     .map((c) => ({ id: c.id, cp: parseCheckpoint(c.body) }))
     .filter((c) => c.cp)
     .sort((a, b) => a.id - b.id);
 
   const tickSeq = typeof state?.tickSeq === 'number' ? state.tickSeq : -1;
+
+  // A capped read is not a history. GitHub returns issue comments oldest first,
+  // so running out of page budget drops the NEWEST checkpoints — leaving an old
+  // tip that the body legitimately sits ahead of. Every check below reasons
+  // about the tip, so they are all wrong on a truncated list.
+  if (options.complete === false) {
+    return {
+      ok: false,
+      reason:
+        'the checkpoint comment history could not be read in full — the page budget ran out, ' +
+        'and GitHub returns comments oldest first, so the MOST RECENT checkpoints are the ones ' +
+        'missing. A partial history cannot establish the chain tip',
+    };
+  }
 
   if (chain.length === 0) {
     // A soak that has never ticked has nothing to prove yet. One that has is
@@ -484,6 +525,32 @@ export function verifyCheckpointChain(comments, state) {
       reason:
         `the state is at tick ${tickSeq}, older than the latest checkpoint (tick ` +
         `${latest.tickSeq}) — the issue body was rolled back`,
+    };
+  }
+  if (tickSeq > latest.tickSeq) {
+    // The body was written and its checkpoint was not.
+    //
+    // The persistence order is body first, checkpoint second, and the comment
+    // at that call site claimed "a failure between the two leaves a body
+    // without its checkpoint — which the next tick reads as a gap and refuses."
+    // It did not. This branch fell through to `ok: true`, so the one crash the
+    // ordering was designed around was the one case that passed silently — and
+    // the tick it certified had no external anchor at all, which is precisely
+    // what the chain exists to provide.
+    //
+    // No recovery protocol is offered, deliberately. Re-anchoring the tick here
+    // would mean writing the missing checkpoint from the same state that is
+    // under suspicion, which proves nothing it did not already assume. A window
+    // with a hole in its state history is not certifiable; starting a fresh
+    // soak is cheap and honest.
+    const missing =
+      tickSeq - latest.tickSeq === 1 ? `tick ${tickSeq}` : `ticks ${latest.tickSeq + 1}–${tickSeq}`;
+    return {
+      ok: false,
+      reason:
+        `the state is at tick ${tickSeq} but the chain ends at tick ${latest.tickSeq} — ` +
+        `${missing} was never checkpointed. Either a tick wrote its body and died before its ` +
+        'checkpoint, or the checkpoint was removed; the two are indistinguishable from here',
     };
   }
   if (tickSeq === latest.tickSeq && state.stateDigest !== latest.stateDigest) {
@@ -835,6 +902,11 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
 
   const addFailures = (runs, label) => {
     for (const r of after(scheduled(runs), windowStart)) {
+      // An unreadable first attempt is not an observed failure and must not
+      // restart the window — that would invent a failure from a GitHub API
+      // error. It is not a success either: the `evidence-resolved` gate below
+      // blocks certification while any remain.
+      if (isUnknownObservation(r)) continue;
       if (r.conclusion !== 'success') {
         criticalMoments.push({
           at: r.completedAt,
@@ -928,6 +1000,22 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
   const crons = after(scheduled(evidence.cronRuns), windowStart).filter(
     (r) => r.conclusion === 'success',
   );
+
+  // Scheduled runs inside the window whose authoritative first attempt could
+  // not be read, from every source. These used to disappear before reaching any
+  // gate: `resolveRun` marked them `unresolved` but left the LATEST attempt's
+  // number on them, and the observation filter required attempt 1. Reproduced
+  // through this function — with enough clean observations either side, an
+  // unreadable in-window first attempt returned `success`, while retrieving
+  // that same attempt as a failure restarted the window. The outcome decided
+  // the verdict, and not being able to read the outcome decided it too, the
+  // other way.
+  const unknownRuns = [
+    ...after(scheduled(evidence.monitorRuns), windowStart).filter(isUnknownObservation),
+    ...after(scheduled(evidence.backupRuns), windowStart).filter(isUnknownObservation),
+    ...after(scheduled(evidence.cronRuns), windowStart).filter(isUnknownObservation),
+  ];
+  const unknownIds = unknownRuns.map((r) => r.runId);
   const elapsedHours = (now.getTime() - windowStart.getTime()) / 3_600_000;
 
   // Largest hole between consecutive natural observations, including the tail
@@ -976,8 +1064,29 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
     },
     {
       id: 'monitor-clean',
-      ok: observations.length === cleanObservations.length,
-      detail: `${observations.length - cleanObservations.length} non-successful observations in the window`,
+      // Unknowns are excluded here on purpose. `monitor-clean` is a HEALTH
+      // gate: failing it restarts the window, which is the right response to an
+      // observed failure and the wrong response to a GitHub read error. The
+      // `evidence-resolved` gate blocks the verdict instead, without discarding
+      // hours of legitimate evidence over a transient API fault.
+      ok: observations.filter((r) => !isUnknownObservation(r)).length === cleanObservations.length,
+      detail:
+        `${observations.filter((r) => !isUnknownObservation(r)).length - cleanObservations.length}` +
+        ` non-successful observations in the window` +
+        (unknownRuns.length ? ` (${unknownRuns.length} unreadable, counted separately)` : ''),
+    },
+    {
+      id: 'evidence-resolved',
+      // Unknown is not health, and it is not failure either. It blocks.
+      ok: unknownRuns.length === 0,
+      detail:
+        unknownRuns.length === 0
+          ? 'every scheduled run in the window has a readable first-attempt outcome'
+          : `${unknownRuns.length} scheduled run(s) in the window were re-run and their first ` +
+            `attempt could not be retrieved: ${unknownIds.join(', ')}. Their real outcome is ` +
+            'unknown, so this window cannot be certified either way. It does NOT restart the ' +
+            'window — a GitHub read error is not a production failure. If the attempt stays ' +
+            'unreadable, start a fresh soak rather than certifying around it.',
     },
     {
       id: 'scheduled-backup',
@@ -1497,17 +1606,28 @@ async function gh(path, token, init = {}) {
  * out before reaching `since`, which the continuity gate reads as "this window
  * cannot be certified" rather than silently trusting a short history.
  */
-/** Every page of a list endpoint. A soak accumulates ~48 checkpoints a day. */
+/**
+ * Every page of a list endpoint, and whether that is genuinely every page.
+ *
+ * `complete` matters. GitHub returns issue comments OLDEST FIRST, so exhausting
+ * the page budget drops the NEWEST ones — the recent checkpoints. The chain
+ * verifier would then see an old tip, conclude the state body was merely ahead
+ * of it, and pass. A capped read must never be presented as a complete history.
+ *
+ * @returns {Promise<{items: any[], complete: boolean}>}
+ */
 async function ghAll(path, token, maxPages = 10) {
   const out = [];
   for (let page = 1; page <= maxPages; page++) {
     const sep = path.includes('?') ? '&' : '?';
     const batch = await gh(`${path}${sep}per_page=100&page=${page}`, token);
-    if (!Array.isArray(batch) || batch.length === 0) break;
+    if (!Array.isArray(batch) || batch.length === 0) return { items: out, complete: true };
     out.push(...batch);
-    if (batch.length < 100) break;
+    if (batch.length < 100) return { items: out, complete: true };
   }
-  return out;
+  // The budget ran out on a full page: there may be more, and what is missing
+  // is the most recent.
+  return { items: out, complete: false };
 }
 
 async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
@@ -1521,17 +1641,22 @@ async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
     );
     const batch = data.workflow_runs ?? [];
     for (const r of batch) {
-      if (r.status !== 'completed') continue;
       // A re-run record is replaced by its authoritative FIRST attempt, fetched
       // from GitHub. Dropping it instead — which the first fix did — erased the
       // original failure from the window entirely, and the surrounding
       // successes carried the gate.
+      //
+      // RESOLVE BEFORE JUDGING COMPLETENESS. The `status !== 'completed'` skip
+      // used to sit above this, and a re-run carries the LATEST attempt's
+      // status: starting a re-run and not waiting for it was enough to drop the
+      // record, first attempt and all.
       const authoritative =
         (r.run_attempt ?? 1) > 1
           ? await resolveRun(r, async (id) =>
               gh(`/repos/${repo}/actions/runs/${id}/attempts/1`, token).catch(() => null),
             )
           : null;
+      if (!isJudgeable(authoritative ?? r)) continue;
       // normaliseRun() keeps `run_attempt` and separates the immutable
       // `created_at` from the rerun-mutable `updated_at`. A run KEEPS its
       // `schedule` event when a human presses "Re-run failed jobs", so the
@@ -1928,8 +2053,11 @@ async function main() {
     // A valid signature does not mean this is the CURRENT state: an earlier
     // valid body of the same issue carries one too. The checkpoint comments are
     // the external monotonic reference the body cannot rewrite.
-    const comments = await ghAll(`/repos/${repo}/issues/${issue.number}/comments`, token);
-    const chain = verifyCheckpointChain(comments, state);
+    const { items: comments, complete: commentsComplete } = await ghAll(
+      `/repos/${repo}/issues/${issue.number}/comments`,
+      token,
+    );
+    const chain = verifyCheckpointChain(comments, state, { complete: commentsComplete });
     if (!chain.ok) {
       console.error(`soak: refusing to continue — ${chain.reason}`);
       console.error(
@@ -2221,9 +2349,15 @@ async function main() {
   // unlikely.
   nextState.stateDigest = soakStateDigest(process.env.CRON_SECRET, nextState);
   // The checkpoint is posted AFTER the body is written, below, so a failure
-  // between the two leaves a body without its checkpoint — which the next tick
-  // reads as a gap and refuses. Failing closed is the correct direction: a
-  // missing checkpoint must never be indistinguishable from a deleted one.
+  // between the two leaves a body without its checkpoint. The next tick sees a
+  // state ahead of the chain tip and REFUSES.
+  //
+  // That refusal is new. This comment previously asserted it while
+  // `verifyCheckpointChain` returned `ok: true` for exactly that case — the one
+  // crash the write order was designed around was the one it did not catch.
+  // Failing closed is the correct direction: a missing checkpoint must never be
+  // indistinguishable from a deleted one, and from here they are not
+  // distinguishable at all.
 
   // Optimistic concurrency: refuse to write over a body that changed since it
   // was read, so two controllers cannot interleave conflicting windows.

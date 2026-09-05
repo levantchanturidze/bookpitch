@@ -27,6 +27,28 @@ stale the moment it is written. Those live in:
 > the one that was verified, not necessarily the one serving traffic when you
 > read this. For anything that moves, follow the workflow links at the top.
 
+### Continuation round — 2026-09-05
+
+`ENGINEERING COMPLETE` was rejected again, and again the findings were inside
+the previous round's fixes. Five defects, four of them a guard that existed and
+did not reach the path it guarded.
+
+| Defect | Why it mattered |
+|---|---|
+| **The Sentry verifier could close incidents it knew nothing about** | `sentry-incident.mjs` handed `reconcileIncidents()` a single result. That function's orphan sweep retires incidents no check reported — correct when the caller reports every check, and it reports one. Reproduced against the real reconciler: with Sentry `unavailable` and unrelated `ops-metrics` and `backup-workflow-stale` incidents open, the plan queued both as orphans, and the caller closes every `toClose` entry with *"Resolved by end-to-end verification."* A run that never reached Sentry would have resolved other people's incidents by evidence it never gathered. **It never actually did**: every open `ops-incident` during the verifier's lifetime so far has been #44 or its duplicate #67, so the sweep had nothing else to take. Reachable, not realised — which is the only reason this is a fix and not an incident report. Reconciliation now carries an explicit scope, defaulting to the ids in `results`, so a partial caller retires nothing |
+| **An unreadable outcome disappeared instead of blocking** | `resolveRun()` keeps an unreadable first attempt and marks it `unresolved` — then left the latest attempt's number on it, and the observation predicate required attempt 1. The record was protected and discarded one line apart. Through `evaluateSoak()`, with eight clean observations around it, an unreadable in-window attempt returned **`success`**; the same attempt retrieved as a failure restarted the window. Reading the outcome decided the verdict and failing to read it decided the verdict too, in the direction that ships. Unknown now blocks: it cannot restart a window (a GitHub read error is not a production failure) and it cannot be certified around |
+| **A body ahead of the checkpoint chain was accepted** | Writes go body first, checkpoint second, and the comment there said the next tick "reads as a gap and refuses". It did not — `tickSeq > tip` fell through to `ok: true`, so the single crash the write order was designed around was the single case that passed silently, certifying a tick with no external anchor. Exact tip agreement is now required. Separately, GitHub returns issue comments **oldest first**, so a capped read drops the newest checkpoints and leaves a stale tip; truncation is now refused rather than treated as a short chain |
+| **The PR guard did not run when the body changed** | `pull_request` without `types:` means `opened`, `synchronize`, `reopened`. Not `edited`. A PR could be opened clean, pass, then have a closing keyword typed into its body and merge green — the exact failure the guard exists to prevent, reachable through a textarea. The first fix added `edited` to `ci.yml` and skipped the heavy jobs on it; PR #76 then showed why that was wrong, live — the edit produced a newer run reporting `Lint, type-check, test, and build — skipping`, displacing the real result. The guard is now its own workflow with its own trigger, and `ci.yml` keeps the default event set |
+| **"Verify no drift after apply" did not check for drift** | The step ran `prisma migrate status`, which compares the `_migrations` table with the migrations directory. It cannot see a hand-added column, a dropped index or a type changed in a console — and every ledger citing that run repeated the claim. The step is renamed to what it does, and a genuine read-only schema comparison sits beside it |
+
+Four of the five share a shape the project keeps producing: **a control that
+was correct in isolation and never reached the path that runs.** The scope
+existed and defaulted open; the unresolved marker was set and then filtered out;
+the write order was designed for a check that returned `ok: true`; the guard was
+written and wired to the wrong events. In every case the test that would have
+caught it is the complement — remove the control, watch the behaviour change —
+and in every case that test is now present.
+
 ### Terminal remediation round — 2026-09-04
 
 The previous verdict, `ENGINEERING COMPLETE — BLOCKED ONLY ON MANUAL EXTERNAL
@@ -117,7 +139,7 @@ Two things that changed shape rather than being fixed:
 |---|---|
 | PRs | **#58** merged as `f2e5a59` (7 commits), **#59** merged as `09ce5c5` (1 commit) |
 | CI on #58 | run [33798794156](https://github.com/levantchanturidze/bookpitch/actions/runs/33798794156) — 120 files / **1665 tests, 0 skipped**, 268 Playwright across all 9 required suites, 0 vulnerabilities, secret scan clean, build clean |
-| Migrations | run [33801704929](https://github.com/levantchanturidze/bookpitch/actions/runs/33801704929) — **67 applied, none pending**, no drift |
+| Migrations | run [33801704929](https://github.com/levantchanturidze/bookpitch/actions/runs/33801704929) — **67 applied, none pending**; migration ledger up to date. Not a drift claim: `migrate status` compares the ledger, not the schema |
 | Invariants | same run, **all seven checks**, including Check 7 for the first time: `current_org_id() is public, 0-arg, returns uuid, LANGUAGE sql STABLE, not SECURITY DEFINER, body pinned, owned by postgres, unwritable by bookpitch_app, and NULL without context` |
 | Backup | run [33800659940](https://github.com/levantchanturidze/bookpitch/actions/runs/33800659940), artifact `production-backup-33800659940-1` (id 9910927933), fingerprint `5c9f75110f30141f` — unchanged since the restore, so the same database — downloaded, checksum verified, decrypted and `pg_restore --list`ed in a separate job |
 | Deployment | GitHub Deployment **6252144624**, `09ce5c5`, Production, state `success`; `bookpitch.ge` and `www.bookpitch.ge` both 200 with `x-bookpitch-release: 09ce5c5…` |
@@ -459,7 +481,7 @@ fact. It is three, and only the first two have been established in production:
 |---|---|---|
 | **Migration ledger is current** | `prisma migrate status` — every migration in `prisma/migrations` is recorded applied, none unfinished or rolled back | ✅ 65 applied |
 | **Selected invariants hold** | `scripts/verify-production-invariants.sql` — the specific properties someone thought to write down | ✅ all pass |
-| **No arbitrary schema drift** | `prisma migrate diff --from-migrations --to-schema --exit-code` against a shadow database, which catches a column someone added by hand | ✅ in CI, on a disposable database — **not** run against production. `prisma migrate status` does NOT establish this and must not be cited for it: it compares the ledger, not the schema |
+| **No arbitrary schema drift** | `prisma migrate diff --from-migrations --to-schema --exit-code` against a shadow database, which catches a column someone added by hand | ✅ in CI, on a disposable database. **As of 2026-09-05 also against production**, read-only: `migrate.yml` runs `prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code`, which Prisma documents as a read-only command needing no shadow database. `prisma migrate status` does NOT establish this and must not be cited for it: it compares the ledger, not the schema |
 
 The third is the one that is easy to over-claim. Prisma's drift detection needs
 a shadow database it can create and drop; pointing it at production is not
