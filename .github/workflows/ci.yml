@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `edited` is NOT in GitHub's default set (opened, synchronize, reopened),
+    # so a title or body changed AFTER the guard below had passed was never
+    # re-checked. A PR could be opened clean, approved, then edited to add
+    # "closes #44" and merged with a green tick — which is how #44 was closed
+    # twice, the second time from inside a code span.
+    types: [opened, synchronize, reopened, edited]
 
 # Minimal global permissions — individual jobs may declare narrower or broader.
 # NOTE: do not add `pull_request_target` — that grants write access to
@@ -13,13 +19,19 @@ permissions:
   contents: read
 
 # Cancel in-progress runs on the same ref to save minutes.
+#
+# Title/body edits get their OWN group. Sharing one would mean that editing a
+# description cancelled the test run already in flight on that ref — turning a
+# guard against stale metadata into a way to discard real results.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event.action == 'edited' && 'meta' || 'code' }}
   cancel-in-progress: true
 
 jobs:
   secret-scan:
     name: Secret scanning
+    # An edited title or body changes no code; only the pr-body guard reruns.
+    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # pull-requests: read is required for gitleaks-action to read PR diff on
@@ -68,6 +80,8 @@ jobs:
 
   quality:
     name: Lint, type-check, test, and build
+    # An edited title or body changes no code; only the pr-body guard reruns.
+    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -283,6 +297,8 @@ jobs:
   # ---------------------------------------------------------------------------
   e2e:
     name: Browser, mobile, and accessibility suite
+    # An edited title or body changes no code; only the pr-body guard reruns.
+    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     # Sized for: cold browser download (~3 min) + bounded apt step (<=8 min) +
     # build + the six-project suite (~4 min). Not raised speculatively — the

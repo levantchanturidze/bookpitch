@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { load } from 'js-yaml';
 import { findClosingReferences } from '../scripts/check-pr-body.mjs';
 
 // -----------------------------------------------------------------------------
@@ -98,5 +100,62 @@ describe('a PR body that would close an issue is refused', () => {
     const src = readFileSync('scripts/check-pr-body.mjs', 'utf8');
     expect(src).toMatch(/see #44|incident #44/);
     expect(src, 'and it must exit non-zero').toMatch(/process\.exit\(1\)/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The predicate above was correct the whole time. The TRIGGER was not.
+//
+// `pull_request` with no `types:` means GitHub's default set — opened,
+// synchronize, reopened. `edited` is not in it. So the guard ran once when the
+// PR was opened and never again: a description could be rewritten after the
+// check went green, and the merge would close an issue with a green tick
+// showing. The check was real, its coverage was not.
+// -----------------------------------------------------------------------------
+describe('the guard runs when the text it guards can change', () => {
+  const ci = load(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+    on: { pull_request: { types?: string[] } };
+    concurrency: { group: string };
+    jobs: Record<string, { name: string; if?: string; steps?: unknown[] }>;
+  };
+
+  it('THE DEFECT: `edited` is in the trigger types', () => {
+    const types = ci.on.pull_request.types ?? [];
+    expect(types, 'a body edited after the check passed was never re-checked').toContain('edited');
+  });
+
+  it('the ordinary events are still covered', () => {
+    const types = ci.on.pull_request.types ?? [];
+    // Naming `types` at all REPLACES the default set, so omitting one of these
+    // would silently stop the guard running on a push to the branch.
+    for (const t of ['opened', 'synchronize', 'reopened']) {
+      expect(types, t).toContain(t);
+    }
+  });
+
+  it('an edit does not cancel the test run already in flight', () => {
+    // Same concurrency group would make editing a description a way to kill a
+    // running suite on that ref.
+    expect(ci.concurrency.group).toMatch(/edited/);
+  });
+
+  it('an edit reruns the guard and nothing else', () => {
+    expect(ci.jobs['pr-body'].if).not.toMatch(/edited/);
+    for (const id of ['secret-scan', 'quality', 'e2e']) {
+      expect(ci.jobs[id].if, id).toBe("github.event.action != 'edited'");
+    }
+  });
+
+  it('the text reaches the script through the environment, never the shell', () => {
+    // A PR body is attacker-controlled. Interpolating it into `run:` would be
+    // command injection with extra steps.
+    const raw = readFileSync('.github/workflows/ci.yml', 'utf8');
+    const job = raw.slice(raw.indexOf('  pr-body:'), raw.indexOf('  quality:'));
+    expect(job).toMatch(/PR_TITLE: \$\{\{ github\.event\.pull_request\.title \}\}/);
+    expect(job).toMatch(/PR_BODY: \$\{\{ github\.event\.pull_request\.body \}\}/);
+    expect(job, 'the run line must interpolate nothing').toMatch(
+      /run: node scripts\/check-pr-body\.mjs/,
+    );
+    expect(job.split('run:')[1]).not.toMatch(/github\.event/);
   });
 });

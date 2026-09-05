@@ -404,6 +404,12 @@ describe('operational metrics judgement', () => {
   });
 });
 
+// Retiring an incident nobody reported is authority the MONITOR has and no
+// other caller does: it is the only process that reports the complete set of
+// checks. It says so at its call site, and these tests say the same thing, so
+// what is under test is the path that actually runs. A caller that omits this
+// retires nothing — see tests/sentry-incident-scope.test.ts.
+const ALL = { ownedCheckIds: 'all' } as const;
 describe('incident deduplication', () => {
   const failing = {
     id: 'health-endpoint',
@@ -477,7 +483,7 @@ describe('incident deduplication', () => {
     const existing = [
       { number: 11, title: '[ops] gone', body: incidentMarker('a-check-that-no-longer-exists') },
     ];
-    const { toOpen, toComment, toClose } = reconcileIncidents([passing], existing);
+    const { toOpen, toComment, toClose } = reconcileIncidents([passing], existing, [], ALL);
     expect(toOpen).toHaveLength(0);
     expect(toComment).toHaveLength(0);
     expect(toClose).toHaveLength(1);
@@ -538,7 +544,7 @@ describe('an unobservable check is not a resolved one', () => {
   const configIncident = [{ number: 26, body: incidentMarker('production-config-invalid') }];
 
   it('keeps an ops-derived incident OPEN while /api/health/ops is failing', () => {
-    const { toClose, toComment } = reconcileIncidents([opsDown], configIncident);
+    const { toClose, toComment } = reconcileIncidents([opsDown], configIncident, [], ALL);
     expect(toClose, 'incident #26 was closed by a probe failure').toHaveLength(0);
     expect(toComment).toHaveLength(1);
     expect(toComment[0].unobservable).toBe(true);
@@ -564,7 +570,7 @@ describe('an unobservable check is not a resolved one', () => {
     // Without this, the fix could have been "never close anything absent",
     // which reintroduces the incident that never closes.
     const removed = [{ number: 99, body: incidentMarker('simulated-failure') }];
-    const { toClose } = reconcileIncidents([opsUp], removed);
+    const { toClose } = reconcileIncidents([opsUp], removed, [], ALL);
     expect(toClose).toHaveLength(1);
     expect(toClose[0].orphaned).toBe(true);
   });
@@ -573,7 +579,7 @@ describe('an unobservable check is not a resolved one', () => {
     // The exemption is scoped to the ids that /api/health/ops actually feeds.
     // A removed TLS check must not be kept alive by an unrelated outage.
     const removed = [{ number: 98, body: incidentMarker('simulated-failure') }];
-    const { toClose } = reconcileIncidents([opsDown], removed);
+    const { toClose } = reconcileIncidents([opsDown], removed, [], ALL);
     expect(toClose).toHaveLength(1);
     expect(toClose[0].orphaned).toBe(true);
   });
@@ -1204,10 +1210,11 @@ describe('manual dispatches cannot stand in for scheduled evidence', () => {
 
   // List/evaluator parity: every id the evaluator emits is accounted for, and
   // the reliability ids are exactly the two that gate the run.
-  it('emits exactly the four cron ids, two gating and two informational', () => {
+  it('emits exactly the five cron ids, three gating and two informational', () => {
     const results = evaluateCronHealth(REAL_HISTORY, NOW);
     expect(results.map((r: { id: string }) => r.id).sort()).toEqual([
       'cron-delivery-lag',
+      'cron-evidence-unresolved',
       'cron-failures',
       'cron-manual-verification',
       'cron-staleness',
@@ -1219,7 +1226,7 @@ describe('manual dispatches cannot stand in for scheduled evidence', () => {
       results
         .filter((r: { informational?: boolean }) => !r.informational)
         .map((r: { id: string }) => r.id),
-    ).toEqual(['cron-staleness', 'cron-failures']);
+    ).toEqual(['cron-staleness', 'cron-evidence-unresolved', 'cron-failures']);
   });
 });
 

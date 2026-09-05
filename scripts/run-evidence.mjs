@@ -62,12 +62,51 @@ export function normaliseRun(r) {
 export function isNaturalObservation(run) {
   return (
     run?.event === 'schedule' &&
-    run?.runAttempt === 1 &&
     // An immutable scheduling time is required, not merely preferred. Falling
     // back to `updated_at` — which a re-run moves — would let someone slide a
     // run across a window boundary.
-    run?.scheduledAtIsExact === true
+    run?.scheduledAtIsExact === true &&
+    // Attempt 1 is the authoritative record — OR the record is one whose
+    // attempt 1 could not be READ.
+    //
+    // Requiring `runAttempt === 1` alone reopened the hole `resolveRun` was
+    // written to close. An unreadable first attempt comes back carrying the
+    // LATEST attempt's number, which is 2 or more, so every consumer filtering
+    // on this predicate dropped it — and the surrounding successes carried the
+    // gate again. Reproduced through evaluateSoak(): with enough clean
+    // observations either side, an unreadable in-window first attempt returned
+    // `success`, while the same first attempt retrieved as a failure restarted
+    // the window.
+    //
+    // So an unresolved record IS an observation. What it observes is UNKNOWN,
+    // which `isNaturalSuccess` refuses and the consumers' gates block on.
+    (run?.runAttempt === 1 || run?.unresolved === true)
   );
+}
+
+/**
+ * A scheduled run that reached us with no readable outcome.
+ *
+ * Not a failure — nothing was observed to fail — and emphatically not a
+ * success. Consumers must let this BLOCK a verdict rather than resolve one in
+ * either direction.
+ */
+export function isUnknownObservation(run) {
+  return isNaturalObservation(run) && run?.unresolved === true;
+}
+
+/**
+ * Is this record ready to be judged at all?
+ *
+ * Both consumers filtered on `status === 'completed'`, which is right for a run
+ * genuinely still executing and wrong for a RE-RUN whose latest attempt is in
+ * progress: attempt 1 finished long ago, possibly by failing, and the record
+ * carries the latest attempt's status. Dropping it hid the original failure
+ * behind a re-run someone had only just started — the same erasure, reached by
+ * pressing the button and not waiting.
+ */
+export function isJudgeable(run) {
+  return run?.status === 'completed' || run?.unresolved === true;
 }
 
 /** Natural, complete, and successful. The only thing that counts toward a gate. */
@@ -90,6 +129,15 @@ export function naturalEvidenceProblem(run) {
   if (run?.event !== 'schedule') {
     return `run ${run?.runId} was triggered by ${run?.event ?? 'an unknown event'}, not the schedule`;
   }
+  // Ahead of the attempt-number branch: an unresolved record carries the LATEST
+  // attempt's number, so that branch would report "re-run by hand" for a record
+  // whose actual problem is that its first attempt could not be read.
+  if (run?.unresolved === true) {
+    return (
+      `run ${run.runId}'s first attempt could not be retrieved, so its authoritative outcome ` +
+      'is unknown — which is not success and not failure, and blocks a verdict either way'
+    );
+  }
   if (run?.runAttempt !== 1) {
     return (
       `run ${run.runId} is attempt ${run.runAttempt || 'unknown'} — it was re-run by hand, so its ` +
@@ -101,9 +149,6 @@ export function naturalEvidenceProblem(run) {
       `run ${run.runId} carries no immutable created_at; updated_at moves when a run is ` +
       're-run, so it cannot stand in as the scheduling time'
     );
-  }
-  if (run?.unresolved === true) {
-    return `run ${run.runId}'s first attempt could not be retrieved`;
   }
   return null;
 }

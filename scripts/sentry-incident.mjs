@@ -20,8 +20,46 @@ import process from 'node:process';
 import { reconcileIncidents, incidentMarker, INCIDENT_LABEL } from './production-monitor.mjs';
 import { shouldCloseObservabilityIncident } from './sentry-receipt.mjs';
 
-const CHECK_ID = 'production-observability-unconfigured';
+export const CHECK_ID = 'production-observability-unconfigured';
 const TITLE = 'Application errors are not being reported anywhere';
+
+/**
+ * Everything this verifier is competent to decide, which is one incident class.
+ *
+ * It runs `verify-sentry.mjs` and nothing else. It has made no observation
+ * about ops metrics, backups, cron delivery or TLS, so it must not act on their
+ * incidents — and before this list existed it did: `reconcileIncidents` sweeps
+ * for incidents no check reported, and with a single result every other open
+ * incident looked abandoned. A run with Sentry unavailable and an `ops-metrics`
+ * incident open closed that incident saying "Resolved by end-to-end
+ * verification."
+ */
+export const OWNED_CHECK_IDS = Object.freeze([CHECK_ID]);
+
+/**
+ * Decide what to do to which issues, given a verification outcome and the
+ * current incident issues. Pure — no network, no clock in the decision.
+ *
+ * @param {Record<string, any>} outcome  the verifier's outcome document
+ * @param {Array<Record<string, any>>} openIssues
+ * @param {Array<Record<string, any>>} closedIssues
+ */
+export function planSentryReconciliation(outcome, openIssues = [], closedIssues = []) {
+  const verified = shouldCloseObservabilityIncident(outcome);
+  const result = {
+    id: CHECK_ID,
+    title: TITLE,
+    ok: verified,
+    detail: outcome?.summary,
+    // The one thing allowed to close this incident is a complete pass, which is
+    // exactly what `verified` means here.
+    canClose: true,
+  };
+  const plan = reconcileIncidents([result], openIssues, closedIssues, {
+    ownedCheckIds: [...OWNED_CHECK_IDS],
+  });
+  return { verified, result, plan };
+}
 
 async function gh(path, token, init = {}) {
   const res = await fetch(`https://api.github.com${path}`, {
@@ -64,17 +102,6 @@ async function main() {
     };
   }
 
-  const verified = shouldCloseObservabilityIncident(outcome);
-  const result = {
-    id: CHECK_ID,
-    title: TITLE,
-    ok: verified,
-    detail: outcome.summary,
-    // The one thing allowed to close this incident is a complete pass, which is
-    // exactly what `verified` means here.
-    canClose: true,
-  };
-
   const open = await gh(
     `/repos/${repo}/issues?state=open&labels=${INCIDENT_LABEL}&per_page=100`,
     token,
@@ -85,7 +112,7 @@ async function main() {
     `/repos/${repo}/issues?state=closed&labels=${INCIDENT_LABEL}&per_page=100&sort=created&direction=asc`,
     token,
   );
-  const plan = reconcileIncidents([result], open ?? [], closed ?? []);
+  const { verified, plan } = planSentryReconciliation(outcome, open ?? [], closed ?? []);
 
   const body = (lead) =>
     [
@@ -170,7 +197,12 @@ async function main() {
   console.log('\nSentry verified end to end.');
 }
 
-main().catch((err) => {
-  console.error(`sentry-incident: ${err instanceof Error ? err.message : 'unknown'}`);
-  process.exit(1);
-});
+// Only run when invoked directly, so tests can import the pure planner.
+const invokedDirectly =
+  process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(`sentry-incident: ${err instanceof Error ? err.message : 'unknown'}`);
+    process.exit(1);
+  });
+}

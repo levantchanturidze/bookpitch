@@ -35,6 +35,8 @@ import {
   normaliseRun,
   isNaturalObservation,
   isNaturalSuccess,
+  isUnknownObservation,
+  isJudgeable,
   naturalEvidenceProblem,
   resolveRun,
 } from './run-evidence.mjs';
@@ -250,7 +252,12 @@ export function evaluateWorkflowFreshness({ id, title, label, latestSuccess, max
 export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
   const results = [];
 
-  const completed = runs.filter((r) => r.status === 'completed');
+  // Judgeable, not merely `status === 'completed'`. A re-run whose LATEST
+  // attempt is still in progress carries that attempt's status, so filtering on
+  // completion dropped the record before its authoritative first attempt could
+  // be considered — pressing the button was enough to hide a failure, without
+  // even waiting for the re-run to finish.
+  const completed = runs.filter(isJudgeable);
 
   // Fail closed on an unknown trigger. A run whose event is missing — an older
   // cached payload, or a GitHub response shape change — must not be counted as
@@ -338,9 +345,13 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
           ` — the most recent SCHEDULED run (${latest.runId}) SUCCEEDED ${(gapMs / 3_600_000).toFixed(1)}h ago,` +
           ' so the endpoint is healthy and GitHub has not delivered the schedule since.' +
           ' Reminders are late; the application is not broken (R-08).';
+      } else if (latest.unresolved === true) {
+        staleness.detail +=
+          ` — the most recent SCHEDULED run (${latest.runId}) was re-run and its first attempt` +
+          ' could not be read, so whether the endpoint failed is UNKNOWN. Treated as neither.';
       } else {
         staleness.detail +=
-          ` — the most recent SCHEDULED run (${latest.runId}) ${latest.conclusion.toUpperCase()},` +
+          ` — the most recent SCHEDULED run (${latest.runId}) ${String(latest.conclusion).toUpperCase()},` +
           ' so this is the application or the endpoint, not schedule delivery.';
       }
     }
@@ -350,6 +361,24 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
 
   const recent = scheduled.slice(0, opts.cronRecentRuns);
   const failed = recent.filter((r) => r.conclusion === 'failure');
+
+  // A gate, not a note. An unknown outcome inside the examined window means the
+  // failure count below is a lower bound, and a lower bound must not be
+  // reported as if it were the answer.
+  const unknownRecent = recent.filter(isUnknownObservation);
+  results.push({
+    id: 'cron-evidence-unresolved',
+    title: 'A scheduled cron run has no readable outcome',
+    ok: unknownRecent.length === 0,
+    detail:
+      unknownRecent.length === 0
+        ? 'every scheduled run in the window has a readable first-attempt outcome'
+        : `${unknownRecent.length} scheduled run(s) were re-run and their first attempt could ` +
+          `not be retrieved: ${unknownRecent.map((r) => r.runId).join(', ')}. ` +
+          'Their real outcome is unknown, so the failure count below is a lower bound. ' +
+          'Unknown is not health.',
+  });
+
   results.push({
     id: 'cron-failures',
     title: 'Scheduled cron workflow is failing repeatedly',
@@ -1011,7 +1040,30 @@ export function incidentMarker(id) {
   return `<!-- bookpitch-ops-incident:${id} -->`;
 }
 
-export function reconcileIncidents(results, openIssues, closedIssues = []) {
+/**
+ * @param {Array<Record<string, any>>} results
+ * @param {Array<Record<string, any>>} openIssues
+ * @param {Array<Record<string, any>>} [closedIssues]
+ * @param {object} [options]
+ * @param {'all'|string[]} [options.ownedCheckIds]
+ *   Which incident classes this caller is competent to RETIRE — that is, to
+ *   close as orphaned because no check reported them.
+ *
+ *   `'all'` is only correct when `results` is the COMPLETE set of checks, which
+ *   is true of the monitor and of nothing else. The default is the ids actually
+ *   present in `results`, which means a partial caller retires nothing: it can
+ *   never conclude that a check it did not run has ceased to exist.
+ *
+ *   Fail closed, and deliberately so. `sentry-incident.mjs` passed a single
+ *   result and inherited authority over every open incident: with Sentry
+ *   unavailable and an `ops-metrics` incident open, the orphan sweep queued
+ *   that unrelated incident and the caller closed it saying "Resolved by
+ *   end-to-end verification." The Sentry verifier had made no observation about
+ *   ops metrics whatsoever. The failure of an unscoped default is silent and
+ *   destroys an incident; the failure of this one is an incident that stays
+ *   open, which someone sees.
+ */
+export function reconcileIncidents(results, openIssues, closedIssues = [], options = {}) {
   const markerOf = (issue) =>
     /<!-- bookpitch-ops-incident:([a-z0-9-]+) -->/.exec(issue.body ?? '')?.[1] ?? null;
 
@@ -1079,6 +1131,12 @@ export function reconcileIncidents(results, openIssues, closedIssues = []) {
 
   const reportedIds = new Set(results.map((r) => r.id));
 
+  // See `options.ownedCheckIds`. `null` means "every marker".
+  const ownsEverything = options.ownedCheckIds === 'all';
+  const ownedIds = ownsEverything
+    ? null
+    : new Set(options.ownedCheckIds ?? results.map((r) => r.id));
+
   // Absent from `results` means one of two very different things, and treating
   // them alike closed a real incident on 2026-09-01.
   //
@@ -1107,9 +1165,14 @@ export function reconcileIncidents(results, openIssues, closedIssues = []) {
   for (const [id, issue] of byId) {
     if (reportedIds.has(id)) continue;
 
+    // Not this caller's incident to judge. Placed ahead of the unobservable
+    // branch as well: a partial caller must not comment on an unrelated
+    // incident any more than it may close one.
+    if (!ownsEverything && !ownedIds.has(id)) continue;
+
     if (unobservable.has(id)) {
       toComment.push({
-        result: {
+        result: /** @type {Record<string, any>} */ ({
           id,
           title: issue.title ?? id,
           ok: false,
@@ -1117,7 +1180,7 @@ export function reconcileIncidents(results, openIssues, closedIssues = []) {
             'not evaluated this run — /api/health/ops is failing, so the metric this ' +
             'check reads was never fetched. The incident is neither confirmed nor ' +
             'cleared; fix ops-metrics to see it again.',
-        },
+        }),
         issue,
         unobservable: true,
       });
@@ -1131,12 +1194,12 @@ export function reconcileIncidents(results, openIssues, closedIssues = []) {
     // set, so its issue was never in `results` on the next healthy run and
     // stayed open forever. The same would happen to any check that is renamed.
     toClose.push({
-      result: {
+      result: /** @type {Record<string, any>} */ ({
         id,
         title: issue.title ?? id,
         ok: true,
         detail: 'this check is no longer reported by the monitor',
-      },
+      }),
       issue,
       orphaned: true,
     });
@@ -1640,6 +1703,10 @@ async function syncIncidents(repo, token, results, now) {
     results,
     openIssues ?? [],
     closedIssues ?? [],
+    // The monitor, and only the monitor, reports the complete set of checks, so
+    // it is the only caller that may conclude an unreported check has been
+    // removed. Every other caller reports a subset and retires nothing.
+    { ownedCheckIds: 'all' },
   );
 
   for (const { result, issue } of toReopen) {
