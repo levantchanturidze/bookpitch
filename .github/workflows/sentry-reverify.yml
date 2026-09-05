@@ -90,9 +90,11 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Verify Sentry against the deployed release
-        # continue-on-error is NOT used. The next step turns the outcome into an
-        # incident and then exits non-zero itself, so a failure is both visible
-        # and recorded rather than swallowed.
+        # continue-on-error here does NOT swallow the failure. It exists so the
+        # next step still runs and can turn the outcome into an incident; that
+        # step then exits non-zero itself, which is what fails the run. Proven
+        # in production by run 33925659120: verification was impossible, the
+        # incident was reopened, and the run went red.
         id: verify
         continue-on-error: true
         env:
