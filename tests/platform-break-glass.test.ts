@@ -21,8 +21,8 @@ const bgEndRoute = await import('@/app/api/platform/break-glass/end/route');
 const orgsListRoute = await import('@/app/api/platform/orgs/route');
 const { requireAuthContext, can } = await import('@/lib/rbac');
 // MFA helpers for seeding TOTP state + generating codes in tests
-const { generateSecret, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
-const { generate: totpGenerate } = await import('@otplib/totp');
+const { generateSecret } = await import('otplib');
+const { freshTotpCode } = await import('./helpers/totp');
 const { encryptField } = await import('@/lib/crypto');
 const { startBreakGlass } = await import('@/lib/platform/break-glass');
 
@@ -34,15 +34,12 @@ async function json<T = unknown>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-// TOTP plugin set shared with lib/platform/mfa.ts
-const TOTP_OPTS = {
-  crypto: new NobleCryptoPlugin(),
-  base32: new ScureBase32Plugin(),
-};
-
-async function freshTotpCode(secret: string): Promise<string> {
-  return totpGenerate({ ...TOTP_OPTS, secret });
-}
+// Codes are minted through the shared helper, which guarantees the code still
+// has validity left when the request reaches the verifier. Minting inline used
+// to race the 30-second step boundary: CI run 33962683939 generated a code
+// ~66ms before a boundary and got 400 from the line below. See
+// tests/helpers/totp.ts for the reproduction and why the fix is here rather
+// than in the verifier's window.
 
 describe('/api/platform/break-glass', () => {
   let orgId: string;

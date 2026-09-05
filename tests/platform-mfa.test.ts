@@ -28,10 +28,12 @@ const confirmRoute = await import('@/app/api/platform/mfa/confirm/route');
 const recoveryCodesRoute = await import('@/app/api/platform/mfa/recovery-codes/route');
 const { getRemainingRecoveryCodeCount } = await import('@/lib/platform/mfa');
 
-// Use same TOTP plugin set as lib/platform/mfa.ts
-const { generateSecret, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
-const { generate: totpGenerate } = await import('@otplib/totp');
-const TOTP_OPTS = { crypto: new NobleCryptoPlugin(), base32: new ScureBase32Plugin() };
+// Same TOTP plugin set as lib/platform/mfa.ts, via the shared helper — which
+// also guarantees a minted code still has validity left when it is verified.
+// See tests/helpers/totp.ts: minting inline raced the 30-second step boundary
+// and failed CI run 33962683939.
+const { generateSecret } = await import('otplib');
+const { freshTotpCode } = await import('./helpers/totp');
 
 import type { NextRequest } from 'next/server';
 function req(url: string, init?: RequestInit): NextRequest {
@@ -41,7 +43,7 @@ async function json<T = unknown>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 async function freshCode(secret: string) {
-  return totpGenerate({ ...TOTP_OPTS, secret });
+  return freshTotpCode(secret);
 }
 
 // Matches the default authSessionId returned by mockPlatformJwt so that
