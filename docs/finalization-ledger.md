@@ -156,7 +156,7 @@ Observed directly, not carried over from any earlier summary.
 
 | C8 | `sentry-reverify.yml` + `sentry-incident.mjs` proven end to end | `PRODUCTION VERIFIED` | first NATURAL run [33925659120](https://github.com/levantchanturidze/bookpitch/actions/runs/33925659120) (`schedule`, attempt 1, `c6d59a1`). Classified `unavailable` — *"could not be attempted … this is not a report that delivery is broken"* — reopened **#44**, skipped the soak refresh, and failed the run so it is visible. Exactly the designed behaviour, in production, on the failure path |
 
-## Resumption checkpoint — 2026-09-05T11:20Z
+## Resumption checkpoint — 2026-09-05T21:45Z
 
 Everything below is current as of this line. To continue, say only:
 
@@ -165,12 +165,13 @@ Everything below is current as of this line. To continue, say only:
 
 | | |
 |---|---|
-| Deployed SHA | **`9cc658265ab2bf24d932b15b55a9840d8cfc7120`** — GitHub Deployment **6280288517** (`success`). Both aliases serve it: `bookpitch.ge` 200 and `www.bookpitch.ge` 308→200, each `x-bookpitch-release: 9cc6582…`, body exactly `{"ok":true}` |
-| Evidence SHA | **the same commit.** No delta this round: the D-row and E-row evidence below was gathered after `9cc6582` was deployed, against `9cc6582`. Earlier rounds carried a one-commit documentation regress; this one does not, because the merge that produced the deployment is the merge the evidence describes |
-| CI on the merged head | run [33962285998](https://github.com/levantchanturidze/bookpitch/actions/runs/33962285998) on `98284af`, `pull_request`, **attempt 1**, no reruns — `Lint, type-check, test, and build`, `Browser, mobile, and accessibility suite` and `Secret scanning` all success. **2030 tests passed, 0 skipped.** The guard ran as its own workflow, run [33962286005](https://github.com/levantchanturidze/bookpitch/actions/runs/33962286005) |
+| Deployed SHA | **`77f6226a262d1edc5044893c181060bb01e316e1`** — GitHub Deployment **6283944113** (`success`). Both aliases serve it: `bookpitch.ge` 200 and `www.bookpitch.ge` 308→200, each `x-bookpitch-release: 77f6226…`, body exactly `{"ok":true}` |
+| **PUSH build on the merge commit** | run [33981908715](https://github.com/levantchanturidze/bookpitch/actions/runs/33981908715), `event=push`, **attempt 1**, all three jobs success — **129 files, 2044 tests passed, 0 skipped**. Recorded as its own row because skipping this check is what let [33962683939](https://github.com/levantchanturidze/bookpitch/actions/runs/33962683939) sit red and unreported (A34). Verifying the PR head is necessary and not sufficient: the merge commit is a different commit, and nothing on this repository enforces a check on it. **Read this after every merge** |
+| CI on the merged PR head | run [33981486417](https://github.com/levantchanturidze/bookpitch/actions/runs/33981486417) on `9ac2f58`, `pull_request`, attempt 1, no reruns — all four green. The guard ran as its own workflow, run [33981486391](https://github.com/levantchanturidze/bookpitch/actions/runs/33981486391) |
+| Evidence SHA | `9cc6582` for the migrate/drift and soak-read rows below; `6d80980` for the natural monitor run; **`77f6226`** for CI and the deployment. The delta from `9cc6582` is **docs and tests only** — `git diff --name-only 9cc6582 77f6226 -- app/ lib/ components/ prisma/ proxy.ts package.json` returns nothing — so the application evidence and the schema evidence still describe what is running, checkably rather than by assurance. `migrate.yml` did not re-run, correctly: its path filter matched nothing in this change |
 | Migrations + drift | run [33962683985](https://github.com/levantchanturidze/bookpitch/actions/runs/33962683985), **`event=push`, attempt 1** — natural, not dispatched. 68 migrations, ledger up to date, **and the first schema comparison this project has ever run against production**: `No difference detected.` The same log carries `migrate status`'s `Database schema is up to date!` seconds earlier — two commands, two sentences, two different claims (A32). All 8 invariant checks pass |
 | Soak evidence collection | dry run [33962765974](https://github.com/levantchanturidze/bookpitch/actions/runs/33962765974) — 7/7 reads on `9cc6582`; deployment and both alias headers agree with the curl above. **`workflow_dispatch`, therefore DIAGNOSTIC ONLY** — it exercises the changed `runsFor` against real data and must never be cited as natural evidence |
-| Branch | `main` at `9cc6582`; no open PRs; working tree clean |
+| Branch | `main` at `77f6226`; no open PRs; working tree clean |
 | Open incident | **#44** (canonical). Closed twice by stray PR keywords and reopened twice by the monitor and the reverify job; #67 closed as its duplicate. The guard that refuses a third occurrence now also runs on `edited` (A31) |
 | Soak | **never started**; refused by three independent gates while Sentry is unverified (E1) |
 | Sentry verifier, natural run on the merged code | run [33964634407](https://github.com/levantchanturidze/bookpitch/actions/runs/33964634407), **`event=schedule`, attempt 1**, head `9cc6582`, 11:55Z. Classified `unavailable`, took **exactly one incident action — `commented on #44`** — and exited non-zero so the run is red. **What this does and does not prove:** it proves the scoped reconciliation still does its legitimate work on the real system, and it is the first natural run of `sentry-incident.mjs` since A28. It does **not** demonstrate the scope guard refusing an unrelated incident, because #44 is currently the only open `ops-incident` — with nothing else open, the unscoped code would also have done nothing else. The refusal itself is proven by the 11 tests in `tests/sentry-incident-scope.test.ts`, all of which go red when the guard is removed |
@@ -265,6 +266,36 @@ the PR head's checks were verified before merging and the push build on the
 merge result was not. Verifying the head is necessary and is not sufficient —
 the merge commit is a different commit, and on this repository nothing enforces
 a check on it. Read the push build after every merge.
+
+### Four defects, zero application changes
+
+The 2026-09-05 continuation round (A34–A37) changed no application code at all.
+`git diff --name-only 9cc6582 77f6226` touches only `docs/` and `tests/`.
+
+That is worth stating plainly, because it is the opposite of the usual finding.
+In each case the application was correct and the test was wrong:
+
+| | The test said | What was true |
+|---|---|---|
+| A34 | correct password + TOTP returns 200 | it did, unless the request crossed a 30s step boundary — the code really had expired |
+| A35 | the verifier's window is not widened | it asserted a string (`window:`) that cannot appear in this library |
+| A36 | expiry uses PostgreSQL time, not Node time | it passed either way unless the machine had clock skew |
+| A37 | — | the impersonation TTL was asserted nowhere |
+
+Three of the four were found by **perturbing the application and watching the
+tests**, not by reading them. A35 is the argument for that method: it was
+written in this round, by the same hand, specifically to prevent this class of
+mistake, and it was an instance of it. Reading a test tells you what it claims;
+only breaking the code tells you what it checks.
+
+Two of the perturbations produced **zero** failures before the fixes:
+
+```
+break-glass expiry, DB clock -> Node clock    before: 0 red   after: 1 red
+impersonation TTL, DB clock -> Node clock     before: 0 red   after: 1 red
+```
+
+"Preserving existing coverage" would have preserved nothing there.
 
 ### Skipped tests: two different numbers
 
