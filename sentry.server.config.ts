@@ -9,9 +9,10 @@ if (process.env.SENTRY_DSN) {
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
     environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV,
-    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0.05),
-    // Send at most one event per second per session; noisy repeats add
-    // no signal.
+    // Error-only rollout: beforeSend does not scrub transactions or logs.
+    // Re-enabling those channels requires its own payload/privacy review.
+    tracesSampleRate: 0,
+    enableLogs: false,
     beforeSend: (event) => sentryBeforeSend(event) as Sentry.ErrorEvent,
     // Explicit rather than inherited: this is what decides whether cookies,
     // headers and IP addresses ride along with every event. On a clinical

@@ -82,7 +82,7 @@ export const log = {
 // Serialisation limits — prevent log blowout from large objects.
 // -----------------------------------------------------------------------------
 
-import { scrubSensitive } from './scrub';
+import { scrubSensitive, scrubSentryEvent } from './scrub';
 
 // Re-exported so every existing `from "@/lib/logger"` import keeps working.
 export { scrubSensitive, scrubPhi, sanitizeErrorMessage } from './scrub';
@@ -104,7 +104,8 @@ function safeStringify(v: unknown): string {
 // Signature matches Sentry's beforeSend hook so plugging in Sentry is one line.
 export function sentryBeforeSend(event: unknown): unknown {
   const ctx = storage.getStore();
-  const scrubbed = scrubSensitive(event) as Record<string, unknown>;
+  const scrubbed = scrubSentryEvent(event) as Record<string, unknown> | null;
+  if (!scrubbed) return null;
   if (ctx) {
     scrubbed.tags = { ...(scrubbed.tags ?? {}), orgId: ctx.orgId, requestId: ctx.requestId };
   }
