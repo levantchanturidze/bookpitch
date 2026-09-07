@@ -430,6 +430,10 @@ try {
   }
 
   const probes = [];
+  // Directories that produced a 403, and whether any real asset in them was
+  // served to us. Both feed the control evidence below.
+  const blockedDirs = new Set();
+  let servedSibling = false;
   for (const asset of checkedAssets) {
     const assetUrl = `${APP_URL}${asset}`;
     // The declared map, if the bundle names one, AND the conventional path. A
@@ -439,6 +443,9 @@ try {
     try {
       const jsRes = await http(assetUrl);
       if (jsRes.ok) {
+        // The same client, the same host, the same moment: whatever refuses the
+        // maps below is not refusing us in general.
+        servedSibling = true;
         const declared = /\/\/# sourceMappingURL=(\S+)/.exec(await jsRes.text())?.[1];
         if (declared?.startsWith('data:')) {
           // An inline map IS the source, served. No request needed.
@@ -465,17 +472,69 @@ try {
       } catch (err) {
         outcome = { error: err.message };
       }
-      probes.push({ url: url.replace(APP_URL, ''), classification: classifyMapProbe(outcome) });
+      const classification = classifyMapProbe(outcome);
+      if (classification === 'blocked') {
+        const path = url.replace(APP_URL, '');
+        blockedDirs.add(path.slice(0, path.lastIndexOf('/') + 1));
+      }
+      probes.push({ url: url.replace(APP_URL, ''), classification });
     }
   }
 
-  sourceMapVerdict = summariseMapProbes(probes);
+  // ---- Control evidence, only if something answered 403 --------------------
+  //
+  // A 403 says nothing on its own. It is worth something once we show that a
+  // map path which CANNOT exist is refused identically — that makes the refusal
+  // a blanket rule about the extension rather than a wall around a real file —
+  // and that a real asset was served to the same client at the same time, which
+  // excludes throttling and an authentication wall.
+  //
+  // The fabricated name is random per run so it cannot be pre-seeded, and it
+  // goes in the SAME directory as the blocked map so it meets the same routing
+  // rules. EVERY blocked directory has to answer the same way; one that does
+  // not leaves the check failing.
+  let control = null;
+  if (blockedDirs.size) {
+    const outcomes = [];
+    for (const dir of blockedDirs) {
+      const fabricated =
+        `${APP_URL}${dir}bookpitch-map-control-` +
+        `${Math.random().toString(36).slice(2, 10)}-does-not-exist.js.map`;
+      let outcome;
+      try {
+        const res = await http(fabricated, { method: 'GET', redirect: 'manual' });
+        outcome = { status: res.status };
+      } catch (err) {
+        outcome = { error: err.message };
+      }
+      outcomes.push({ dir, classification: classifyMapProbe(outcome) });
+    }
+    const agreeing = outcomes.filter((o) => o.classification === 'blocked');
+    control = {
+      refusedNonexistent: agreeing.length === outcomes.length,
+      servedSibling,
+    };
+    note(
+      `map control: ${agreeing.length}/${outcomes.length} fabricated path(s) refused the same ` +
+        `way; sibling asset served: ${servedSibling}`,
+    );
+    for (const o of outcomes) {
+      if (o.classification !== 'blocked') {
+        note(`· ${o.dir} answered a fabricated map with '${o.classification}', not the same 403`);
+      }
+    }
+  }
+
+  sourceMapVerdict = summariseMapProbes(probes, control);
   record(
     0,
     'SOURCE MAPS NOT PUBLIC',
     sourceMapVerdict.ok,
     sourceMapVerdict.ok
-      ? `${checkedAssets.length} probe asset(s), ${probes.length} map URL(s) — all absent`
+      ? `${checkedAssets.length} probe asset(s), ${probes.length} map URL(s) — none retrievable` +
+          (blockedDirs.size
+            ? `; ${blockedDirs.size} director(y/ies) refuse every map path, control-confirmed`
+            : '')
       : sourceMapVerdict.problems.join('; '),
   );
 } catch (err) {
