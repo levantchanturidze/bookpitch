@@ -27,6 +27,31 @@ stale the moment it is written. Those live in:
 > the one that was verified, not necessarily the one serving traffic when you
 > read this. For anything that moves, follow the workflow links at the top.
 
+### Sentry round — 2026-09-07
+
+The Sentry blockers (D1, D2) cleared by human action: DSNs, an auth token and
+the org/project slugs went into Vercel Production and GitHub Actions, and
+production was redeployed so the build could inline `NEXT_PUBLIC_SENTRY_DSN`.
+The monitor recorded the transition without being asked — `FAIL … DSN env vars
+unset: 2 of 2` at 05:53Z, `PASS … both Sentry DSN env vars are present` at
+12:10Z, with no other failing check in the list.
+
+That gave this project the first chance it has ever had to run the end-to-end
+verifier against a Sentry it could actually reach. **The verifier failed, and
+both failures were in the verifier.**
+
+| Defect | Why it mattered |
+|---|---|
+| **The event shape was read from the code's assumption, not the API** | `verifyReceipt()` read `event.environment` and `event.release` as plain strings. The project events endpoint returns no top-level `environment` — it is a row in `tags` — and `release` as a Release object. So level 5 reported `environment is (none)` and `release is [object Object]` on both runtimes, against a project that was delivering correctly: the nonce matched, the runtime tag matched, both events were fresh, and **both stacks symbolicated to their own probe source**. Every check reading a field that exists was green. The consequence was not a false pass but its opposite — a correct production reported as a fault, no receipt written, and a soak that could not start |
+| **The unit fixture confirmed the bug** | The test event was built with a top-level `environment` string and a string `release` — the shape the code assumed. A fixture that mirrors the code under test can only ever agree with it, which is how 73 passing tests coexisted with a verifier that could not read a real event. There is now a second fixture built from the documented payload, and the original stays so both shapes remain accepted |
+| **A gate that could not go green on the host it runs against** | Vercel refuses **every** `*.map` with a bare `403`, whatever the path and whether or not the file exists — measured: the real chunk `200`, its map `403`, a fabricated map `403`, the same chunk as `.txt` `404`, `/foo/bar.js.map` `403`. The source-map check accepted only `404`/`410`, so it was unsatisfiable here while the maps genuinely were not served. This is the inverse of a false green and it hides better: nothing looks wrong, the gate simply never passes. Fixed with more evidence rather than a lower bar — a `403` counts as absence only when a random fabricated path in the same directory draws the identical refusal *and* a real sibling asset was served `200` to the same client in the same run |
+
+Three of the four rounds recorded in this document have ended the same way: the
+application was right and the thing watching it was wrong. This round is the
+first where that cost a *green* rather than hiding a red, and the lesson is the
+same one — a fixture written from the implementation is documentation that
+compiles.
+
 ### Continuation round — 2026-09-05
 
 `ENGINEERING COMPLETE` was rejected again, and again the findings were inside
