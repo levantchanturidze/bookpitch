@@ -282,3 +282,150 @@ export function sanitizeErrorMessage(err: unknown): string {
     return '[error-message-unavailable]';
   }
 }
+
+// Sentry receives SERIALIZED exceptions, not Error instances. Keep this
+// stricter egress policy separate from the operational logger: applying only
+// scrubSensitive to exception.values[].value left embedded addresses and URL
+// credentials intact. This closes known patterns, not arbitrary clinical prose.
+const SENTRY_OMITTED_KEYS = new Set([
+  'user',
+  'headers',
+  'cookie',
+  'cookies',
+  'query_string',
+  'body',
+  'requestbody',
+  'request_body',
+  'responsebody',
+  'response_body',
+  'vars',
+  'locals',
+  '__proto__',
+  'constructor',
+  'prototype',
+]);
+const SENTRY_PRIVATE_KEYS = new Set([
+  'access_token',
+  'refresh_token',
+  'session_token',
+  'id_token',
+  'clientsecret',
+  'client_secret',
+  'sentry_auth_token',
+  'dsn',
+]);
+const SENTRY_URL_KEYS = new Set([
+  'url',
+  'uri',
+  'abs_path',
+  'filename',
+  'from',
+  'to',
+  'href',
+  'src',
+  'referer',
+  'referrer',
+  'path',
+]);
+
+/** Strip opaque URL components without changing source-map path spelling. */
+function stripSentryUrl(value: string): string {
+  // String operations deliberately handle relative and malformed URLs too;
+  // a parser failure must never return a credential-bearing original URL.
+  const path = value.split(/[?#]/, 1)[0];
+  return path.replace(/^((?:[a-z][a-z\d+.-]*:)?\/\/)[^/]*@/i, '$1') || '[redacted-url]';
+}
+
+function sanitizeSentryText(value: string, key: string): string {
+  // Dropping an oversized string also avoids retaining a partially truncated
+  // credential whose suffix would have been needed to recognize its format.
+  if (value.length > MAX_STRING_LEN) return '[truncated]';
+
+  const clean = (text: string): string => {
+    if (SENTRY_URL_KEYS.has(key) || /^(?:\.{0,2}\/|[?#])/.test(text)) {
+      text = stripSentryUrl(text);
+    }
+    // URLs can occur inside serialized exception and breadcrumb messages, not
+    // only fields named "url". Remove their opaque components before contact
+    // redaction, which could otherwise hide the @ separating URL credentials.
+    text = text.replace(/(?:[a-z][a-z\d+.-]*:)?\/\/[^\s"'<>]+/gi, stripSentryUrl);
+    text = text.replace(
+      /(^|[\s("'=])((?:\.{0,2}\/)[^\s"'<>]*[?#][^\s"'<>]*)/g,
+      (_, prefix: string, url: string) => prefix + stripSentryUrl(url),
+    );
+    return sanitizeErrorMessage(text)
+      .replace(/\b[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[token]')
+      .replace(/\bsntry[su]_[A-Za-z0-9+/_=-]+/g, '[token]')
+      .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[ip]');
+  };
+
+  // Percent-encoded addresses/URLs are still sensitive. Decode only for
+  // detection, with a small bound; never rewrite encoded source-map paths.
+  let decoded = value;
+  for (let i = 0; i < 2 && decoded.includes('%'); i++) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  if (decoded !== value && clean(decoded) !== decoded) return '[redacted]';
+  return looksLikeSecret(value) ? '[redacted]' : clean(value);
+}
+
+/**
+ * Error-event egress policy shared by browser/server/edge beforeSend hooks.
+ * Copies rather than mutates; retains symbolication and release-probe fields.
+ * Opaque HTTP bodies, headers/cookies, users and frame locals are not telemetry.
+ * Other structured fields retain the logger's sensitive-key policy, with
+ * additional string/URL sanitization. This is not an arbitrary-PHI classifier.
+ */
+export function scrubSentryEvent<T>(event: T): T | null {
+  const seen = new WeakSet<object>();
+  const visit = (value: unknown, key = '', depth = 0): unknown => {
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string') return sanitizeSentryText(value, key);
+    if (typeof value === 'bigint') return value.toString();
+    if (typeof value === 'function' || typeof value === 'symbol') return '[unsupported]';
+    if (typeof value !== 'object') return value;
+    if (depth >= MAX_DEPTH) return '[truncated]';
+    if (seen.has(value)) return '[circular]';
+    seen.add(value);
+    if (value instanceof Error) {
+      return {
+        _error: true,
+        name: sanitizeSentryText(value.name, 'name'),
+        message: sanitizeSentryText(value.message, 'message'),
+      };
+    }
+    if (Array.isArray(value)) {
+      return value.slice(0, MAX_ARRAY_LEN).map((item) => visit(item, key, depth + 1));
+    }
+    const out: Record<string, unknown> = {};
+    const keys = Object.keys(value);
+    for (const field of keys.slice(0, MAX_KEYS)) {
+      const lower = field.toLowerCase();
+      if (SENTRY_OMITTED_KEYS.has(lower)) continue;
+      // No body, query, header, environment or other unreviewed request fields.
+      if (key === 'request' && lower !== 'url' && lower !== 'method') continue;
+      if (SENSITIVE_KEYS.has(lower) || SENTRY_PRIVATE_KEYS.has(lower)) {
+        out[field] = '[redacted]';
+      } else {
+        out[field] = visit((value as Record<string, unknown>)[field], lower, depth + 1);
+      }
+    }
+    if (keys.length > MAX_KEYS) out._truncated = true;
+    return out;
+  };
+
+  try {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
+    return visit(event) as T;
+  } catch {
+    // A hostile getter/proxy must not bypass scrubbing or break the request.
+    // Sentry interprets null from beforeSend as a deliberately dropped event.
+    return null;
+  }
+}

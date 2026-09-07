@@ -101,6 +101,44 @@ a string.
 
 ### Sentry (P17-007)
 
+#### Error-only activation boundary (2026-09-07)
+
+Browser, server and edge errors pass through `scrubSentryEvent` before leaving
+the application. It sanitizes serialized exception/breadcrumb strings and URL
+credentials/query/fragment components, excludes HTTP bodies/headers/cookies,
+user objects and stack-frame variables, and preserves release-probe and source
+map identity. Tests invoke the actual runtime hooks and the installed SDK with
+an in-memory transport and synthetic canaries. This closes demonstrated
+payload gaps; it is **not** a claim that arbitrary clinical prose in every
+custom field can be identified automatically.
+
+All three runtimes enforce `tracesSampleRate: 0` and `enableLogs: false`;
+browser Replay rates are also zero and no Replay integration is installed.
+Legacy trace-rate environment values cannot enable another egress channel.
+Performance tracing, logs, profiling or Replay require their own privacy
+review and tests before a deliberate code change enables them.
+
+Use separate least-privilege credentials under the same variable name:
+
+- Vercel Production `SENTRY_AUTH_TOKEN`: organization build token, `org:ci`
+  (source-map upload, release creation and code mappings).
+- GitHub Actions `SENTRY_AUTH_TOKEN`: internal-integration token with
+  `project:read` for the verifier's individual-event API. No write/admin,
+  webhook subscription, or CI permission is needed on this credential.
+
+Never put credential values in this repository, PRs, logs or command arguments.
+Rotate in Sentry and replace the relevant platform's sensitive secret. Do not
+reuse the build credential in the verifier or broaden scopes to mask a failed
+verification. Validate the actual API operation before declaring it working.
+
+For the initial rollout, organization/project slugs are both `bookpitch`;
+the organization is in the EU region. Project-side default data scrubbing,
+additional sensitive-field matching and IP-address suppression are secondary
+controls, not a substitute for application-side filtering. Account/project
+creation or saving environment variables is **not** production verification.
+Keep incident #44 open until the existing release verifier establishes both
+runtime events and source maps and the controller records its evidence.
+
 Every `Sentry.init()` in this repository sits inside `if (process.env.…_DSN)`.
 An absent DSN is therefore not a degraded mode — no client is created and
 `captureException` is a no-op. Production ran that way with
