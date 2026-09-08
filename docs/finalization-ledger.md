@@ -195,6 +195,51 @@ broken and the application was fine — and the first where a correct production
 was reported as a fault. The cost was not a false green: it was a real green
 that could not be recorded, and a soak that could not start.
 
+## Resumption checkpoint — 2026-09-08T09:43Z — A SOAK IS RUNNING
+
+**Do not merge anything to `main` until this soak certifies or fails.** A merge
+produces a new commit, Vercel deploys it, `VERCEL_GIT_COMMIT_SHA` changes, and
+the soak is pinned to one release — the window would be measuring a deployment
+that is no longer serving. This file is on an unmerged branch for exactly that
+reason; land it together with the soak result.
+
+| | |
+|---|---|
+| Soak issue | **[#84](https://github.com/levantchanturidze/bookpitch/issues/84)** — `[soak] 24-hour production soak — 9c65845` |
+| Pinned release | **`9c658450ce6ee1be3b486baee5b70f940fc2f600`** |
+| Pinned deployment | GitHub Production **6324725944**, state `success` |
+| Effective window | `2026-09-08T09:42:53.822Z` → nominal `2026-09-09T09:42:53Z` |
+| Started by | run [34211356813](https://github.com/levantchanturidze/bookpitch/actions/runs/34211356813), all 12 steps green — the only supported entry point, and the first time this workflow has ever succeeded |
+| Aliases | `bookpitch.ge` and `www.bookpitch.ge` both serve the pinned SHA; health body exactly `{"ok":true}` |
+| PUSH build on the merge commit | run [34210603074](https://github.com/levantchanturidze/bookpitch/actions/runs/34210603074), `event=push`, **attempt 1**, all three jobs success. Read, per A34 |
+| CI on the merged PR head | run [34209886391](https://github.com/levantchanturidze/bookpitch/actions/runs/34209886391) on `4abb059`, `pull_request`, attempt 1 |
+| Open incidents | **none.** #44 was closed BY EVIDENCE at 09:10:36Z by run [34208400168](https://github.com/levantchanturidze/bookpitch/actions/runs/34208400168), not by a keyword and not by hand |
+| Sentry on the pinned release | `Highest level proven: 5 (VERIFIED)`; server event `64c3f513bd294a7f914623128de1f3cb`, browser event `01e943e69a274c53982b1f9a5b6ac5a1`, nonce `8124d86eb2fa00b90ea29d611762f507`; source maps affirmatively absent, control-confirmed |
+| Durable scheduler | GitHub Actions, not a session: `soak.yml` `20,50 * * * *`, `sentry-reverify.yml` `35 */4 * * *`, monitor `5,35 * * * *`, backup `40 1 * * *`, cron `*/15` |
+
+### What still has to happen, and by what
+
+Nothing here needs a person. Every remaining soak gate is fed by a scheduled
+workflow:
+
+| Gate | Fed by | Due inside the window |
+|---|---|---|
+| `window-elapsed` | time | 2026-09-09T09:42Z |
+| `monitor-observations` (≥6 natural) | `production-monitor.yml` | ~48 slots |
+| `observation-gap` (≤6h) | same | R-08: p95 4.13h, p99 5.03h |
+| `scheduled-backup` (≥1 in window) | `production-backup.yml` | 2026-09-09T01:40Z |
+| `retention-in-window` | `cron.yml` nightly sweep | 2026-09-09T02:17Z |
+| `scheduled-cron` (≥4) | `cron.yml` | every 15 min |
+| `observability-continuing` | `sentry-reverify.yml` | every 4h, 14h expiry |
+| `evidence-resolved` | every first-attempt outcome readable | continuous |
+
+### To resume
+
+> Read `docs/finalization-ledger.md`, check soak issue #84, and continue.
+
+Re-observe rather than trusting this table: the soak issue body is the
+authority, it is signed, and it moves every 30 minutes.
+
 ## Resumption checkpoint — 2026-09-05T21:45Z
 
 Everything below is current as of this line. To continue, say only:
