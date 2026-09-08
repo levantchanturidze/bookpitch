@@ -360,10 +360,38 @@ jobs:
       # would only have paid the same cost for longer.
       - name: Point apt at a reachable mirror
         run: |
-          set -eux
-          sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' \
-            /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
-            /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          set -euo pipefail
+          # THIS STEP REWROTE NOTHING FOR MONTHS. Ubuntu 24.04 runners resolve
+          # mirrors through a MIRRORLIST — sources carry
+          # `mirror+file:/etc/apt/apt-mirrors.txt` and the hostnames live in
+          # that file, not in sources.list. The previous version sed'd only
+          # sources.list* and ended `2>/dev/null || true`, so it swallowed the
+          # miss and stayed green while apt went on using the dead mirror.
+          #
+          # Proven in CI run 34135292204: both attempts logged
+          #   Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+          #   Get:2 http://azure.archive.ubuntu.com/ubuntu ...
+          # and then crawled — 3.5 MB in 2m09s — until the step hit its 10
+          # minute bound with 114 MB still to fetch. The browser suite never
+          # ran, twice.
+          for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list \
+                   /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' "$f"
+          done
+
+          # Assert the rewrite instead of hoping for it. A step that cannot
+          # fail is not a step, which is exactly how the old one survived.
+          still=$(grep -l 'azure\.archive\.ubuntu\.com' \
+                    /etc/apt/apt-mirrors.txt /etc/apt/sources.list \
+                    /etc/apt/sources.list.d/*.list \
+                    /etc/apt/sources.list.d/*.sources 2>/dev/null || true)
+          if [ -n "$still" ]; then
+            echo "::error::apt is still pointed at azure.archive.ubuntu.com in: $still"
+            exit 1
+          fi
+          echo "apt mirror list now:"
+          cat /etc/apt/apt-mirrors.txt 2>/dev/null || echo "(no mirrorlist on this image)"
           sudo apt-get update -qq
 
       # WebKit is the engine that actually needs these (libgtk-4, libgraphene,
