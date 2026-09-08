@@ -8,6 +8,9 @@ import {
   verifyReceiptIntegrity,
   classifyMapProbe,
   summariseMapProbes,
+  describeMissingMapControl,
+  eventEnvironment,
+  eventRelease,
   RECEIPT_BOUND_FIELDS,
   classifyVerifierOutcome,
   shouldCloseObservabilityIncident,
@@ -592,7 +595,7 @@ describe('a source-map probe only passes on an explicit absence', () => {
   });
 
   it('THE DEFECT: throttling, server errors and redirects are NOT proof', () => {
-    for (const status of [301, 302, 307, 401, 403, 429, 500, 502, 503, 504]) {
+    for (const status of [301, 302, 307, 401, 429, 500, 502, 503, 504]) {
       expect(classifyMapProbe({ status }), String(status)).toBe('indeterminate');
     }
   });
@@ -602,10 +605,14 @@ describe('a source-map probe only passes on an explicit absence', () => {
     expect(classifyMapProbe({})).toBe('indeterminate');
   });
 
-  it('403 is deliberately not "private"', () => {
-    // A CDN that forbids us may still serve the file to someone else, and some
-    // hosts answer 403 when rate limiting.
-    expect(classifyMapProbe({ status: 403 })).toBe('indeterminate');
+  it('403 is still not "private" — it is its own unresolved answer', () => {
+    // A host that forbids us may serve the file to someone else, and some hosts
+    // answer 403 when rate limiting. `blocked` is not a softer `private`: it is
+    // an unknown that corroborating evidence can resolve, and without that
+    // evidence summariseMapProbes() fails on it exactly as it fails on any
+    // other unknown.
+    expect(classifyMapProbe({ status: 403 })).toBe('blocked');
+    expect(classifyMapProbe({ status: 403 })).not.toBe('private');
   });
 });
 
@@ -644,6 +651,212 @@ describe('the map verdict fails closed', () => {
   it('the checked assets are bound into the signature', () => {
     expect(RECEIPT_BOUND_FIELDS).toContain('sourceMapAssets');
     expect(RECEIPT_BOUND_FIELDS).toContain('sourceMapsPublic');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// A 403 on every map URL — the shape production actually has.
+//
+// Vercel refuses `*.map` with a blanket 403 regardless of path or existence.
+// Demanding a 404 made this gate unsatisfiable on the host this project runs
+// on: it failed on 2026-09-07 with "could not establish that 15 map URL(s) are
+// private" against a deployment whose maps were, in fact, not served at all.
+//
+// The resolution is corroboration, not a lower bar. Every test below that ends
+// in a pass carries BOTH control facts; every test that removes either one goes
+// back to failing.
+// -----------------------------------------------------------------------------
+describe('a 403 passes only with control evidence, and fails without it', () => {
+  const probe = (url: string, classification: string) => ({ url, classification });
+  const BOTH = { refusedNonexistent: true, servedSibling: true };
+
+  it('the control evidence is complete only when both facts hold', () => {
+    expect(describeMissingMapControl(BOTH)).toBeNull();
+    expect(describeMissingMapControl({ refusedNonexistent: true, servedSibling: false })).toMatch(
+      /sibling asset/,
+    );
+    expect(describeMissingMapControl({ refusedNonexistent: false, servedSibling: true })).toMatch(
+      /fabricated map path/,
+    );
+    expect(describeMissingMapControl(undefined)).toMatch(/fabricated map path/);
+  });
+
+  it('a blanket 403, corroborated both ways, is absence', () => {
+    const v = summariseMapProbes([probe('/a.js.map', 'blocked'), probe('/b.js.map', 'blocked')], {
+      ...BOTH,
+    });
+    expect(v).toEqual({ ok: true, sourceMapsPublic: false, problems: [] });
+  });
+
+  it('COMPLEMENT: the same probes with no control at all still fail', () => {
+    const v = summariseMapProbes([probe('/a.js.map', 'blocked'), probe('/b.js.map', 'blocked')]);
+    expect(v.ok, 'a bare 403 is not absence').toBe(false);
+    expect(v.sourceMapsPublic).toBeNull();
+    expect(v.problems.join(' ')).toMatch(/refused with 403/);
+  });
+
+  it('COMPLEMENT: a fabricated path answered differently keeps it failing', () => {
+    // The 403 was about THIS asset, not about the extension — an auth wall.
+    const v = summariseMapProbes([probe('/a.js.map', 'blocked')], {
+      refusedNonexistent: false,
+      servedSibling: true,
+    });
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(' ')).toMatch(/fabricated map path/);
+  });
+
+  it('COMPLEMENT: no sibling served means throttling is not excluded', () => {
+    const v = summariseMapProbes([probe('/a.js.map', 'blocked')], {
+      refusedNonexistent: true,
+      servedSibling: false,
+    });
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(' ')).toMatch(/sibling asset/);
+  });
+
+  it('COMPLEMENT: control evidence never rescues an exposed map', () => {
+    const v = summariseMapProbes([probe('/a.js.map', 'blocked'), probe('/b.js.map', 'exposed')], {
+      ...BOTH,
+    });
+    expect(v.ok).toBe(false);
+    expect(v.sourceMapsPublic, 'served source is served source').toBe(true);
+    expect(v.problems.join(' ')).toMatch(/b\.js\.map/);
+  });
+
+  it('COMPLEMENT: control evidence never rescues a genuine unknown', () => {
+    // A 502 stays a 502. The corroboration licenses reading a 403 as a blanket
+    // rule; it says nothing about a request that never completed.
+    const v = summariseMapProbes(
+      [probe('/a.js.map', 'blocked'), probe('/b.js.map', 'indeterminate')],
+      {
+        ...BOTH,
+      },
+    );
+    expect(v.ok).toBe(false);
+    expect(v.sourceMapsPublic).toBeNull();
+    expect(v.problems.join(' ')).toMatch(/fails closed/);
+  });
+
+  it('a truthy-but-not-true control does not count', () => {
+    // Guarding the shape as well as the value: `null`, a string or a 1 must not
+    // satisfy a fact that has to be established.
+    for (const bogus of [null, undefined, 1, 'yes', {}]) {
+      const v = summariseMapProbes([probe('/a.js.map', 'blocked')], {
+        refusedNonexistent: bogus as never,
+        servedSibling: bogus as never,
+      });
+      expect(v.ok, JSON.stringify(bogus)).toBe(false);
+    }
+  });
+
+  it('mixed 404 and 403 are each judged on their own evidence', () => {
+    const v = summariseMapProbes([probe('/a.js.map', 'private'), probe('/b.js.map', 'blocked')], {
+      ...BOTH,
+    });
+    expect(v).toEqual({ ok: true, sourceMapsPublic: false, problems: [] });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The event shape the API actually returns.
+//
+// The fixture at the top of this file was built from the shape the verifier
+// ASSUMED — a top-level `environment` string and a string `release`. The
+// endpoint the verifier calls returns neither. Every test below uses the
+// documented shape instead, so it would have caught the defect that made the
+// 2026-09-07 run report `environment is (none)` and `release is [object Object]`
+// against a project that was delivering correctly.
+//
+//   https://docs.sentry.io/api/events/retrieve-an-event-for-a-project/
+// -----------------------------------------------------------------------------
+describe('environment and release are read from the shape Sentry returns', () => {
+  /** An event as the project events endpoint really serialises it. */
+  function apiEvent(over: Partial<SentryEvent> = {}): SentryEvent {
+    const base = event() as Record<string, unknown>;
+    // The API returns neither of these in the shape the fixture above uses.
+    delete base.environment;
+    delete base.release;
+    return {
+      ...base,
+      // No top-level `environment` at all, and `release` as a Release object.
+      release: { version: RELEASE, dateCreated: '2026-09-03T00:00:00Z', commitCount: 3 },
+      tags: [
+        ...(base.tags as Array<{ key: string; value: string }>),
+        { key: 'environment', value: 'production' },
+        { key: 'release', value: RELEASE },
+      ],
+      ...over,
+    };
+  }
+
+  it('THE DEFECT: the real API shape used to fail every check', () => {
+    // Reading the documented payload the way the old code did.
+    const raw = apiEvent() as Record<string, unknown>;
+    expect(raw.environment, 'there is no top-level environment').toBeUndefined();
+    expect(typeof raw.release, 'release is an object, not a string').toBe('object');
+    expect(String(raw.release)).toBe('[object Object]');
+  });
+
+  it('the documented payload verifies', () => {
+    const v = verifyReceipt(apiEvent(), expectation);
+    expect(v.problems).toEqual([]);
+    expect(v.ok).toBe(true);
+  });
+
+  it('a Release object is unwrapped to its version', () => {
+    expect(eventRelease({ release: { version: RELEASE } })).toBe(RELEASE);
+  });
+
+  it('a string release still works — both shapes are accepted', () => {
+    expect(eventRelease({ release: RELEASE })).toBe(RELEASE);
+    expect(eventEnvironment({ environment: 'production' })).toBe('production');
+  });
+
+  it('the environment tag is read when there is no top-level field', () => {
+    expect(eventEnvironment({ tags: [{ key: 'environment', value: 'preview' }] })).toBe('preview');
+  });
+
+  it('COMPLEMENT: a wrong release in the object shape is still rejected', () => {
+    const v = verifyReceipt(apiEvent({ release: { version: 'b'.repeat(40) } }), expectation);
+    expect(v.ok, 'a different release must not pass').toBe(false);
+    expect(v.problems.join(' ')).toMatch(/release is bbbb/);
+  });
+
+  it('COMPLEMENT: a wrong environment in the tag shape is still rejected', () => {
+    const v = verifyReceipt(
+      apiEvent({
+        tags: [
+          { key: 'bookpitch_verification_nonce', value: NONCE },
+          { key: 'bookpitch_runtime', value: 'server' },
+          { key: 'environment', value: 'preview' },
+        ],
+      }),
+      expectation,
+    );
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(' ')).toMatch(/environment is preview/);
+  });
+
+  it('COMPLEMENT: an event carrying neither shape fails closed', () => {
+    expect(eventRelease({})).toBeNull();
+    expect(eventEnvironment({})).toBeNull();
+    const v = verifyReceipt(apiEvent({ release: undefined, tags: [] }), expectation);
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(' ')).toMatch(/release is \(none\)/);
+    expect(v.problems.join(' ')).toMatch(/environment is \(none\)/);
+  });
+
+  it('COMPLEMENT: a malformed release object is not silently accepted', () => {
+    for (const bogus of [{}, { version: '' }, { version: 42 }, []]) {
+      expect(eventRelease({ release: bogus }), JSON.stringify(bogus)).toBeNull();
+    }
+  });
+
+  it('the failure message names the value it actually saw', () => {
+    // `[object Object]` told an operator nothing. The observed value is now in
+    // the message, which is how the next shape surprise gets diagnosed.
+    const v = verifyReceipt(apiEvent({ release: { version: 'deadbeef' } }), expectation);
+    expect(v.problems.join(' ')).toMatch(/release is deadbeef/);
   });
 });
 

@@ -30,6 +30,73 @@ function tag(event, key) {
   return event.tags?.find((t) => t.key === key)?.value;
 }
 
+// -----------------------------------------------------------------------------
+// Reading `environment` and `release` off a Sentry API event.
+//
+// THE DEFECT these two functions exist to fix. The verifier read
+// `event.environment` and `event.release` as plain strings. Neither is that
+// shape on the endpoint it actually calls —
+// GET /projects/{org}/{project}/events/{id}/ — which documents:
+//
+//   * NO top-level `environment` at all. It is a row in the `tags` array.
+//   * `release` as a Release OBJECT (`{version, dateCreated, commitCount, …}`),
+//     not a string.
+//
+//   https://docs.sentry.io/api/events/retrieve-an-event-for-a-project/
+//
+// So against a correctly configured, correctly delivering project, level 5
+// reported:
+//
+//   · server: environment is (none), expected production
+//   · server: release is [object Object], expected c274409a217a
+//
+// Both events were genuinely this run's: the nonce tag matched, the runtime tag
+// matched, the timestamps were fresh and BOTH stacks symbolicated to their own
+// probe source. The verifier was wrong, not the pipeline — it reported a
+// working Sentry as broken and refused to write a receipt, which is what kept
+// the soak from ever starting.
+//
+// The unit tests did not catch it because their fixture was built from the
+// shape the verifier assumed rather than the shape the API returns: a
+// top-level `environment` string and a string `release`. A fixture that mirrors
+// the code under test can only ever confirm it.
+//
+// Both readers still fail closed. An event carrying neither form returns null,
+// which cannot equal an expected environment or a 40-character SHA, so the
+// comparison in verifyReceipt() still rejects it.
+// -----------------------------------------------------------------------------
+
+/**
+ * The environment an event was reported under, from either shape.
+ *
+ * @param {any} event a Sentry API event payload
+ * @returns {string|null}
+ */
+export function eventEnvironment(event) {
+  const top = event?.environment;
+  if (typeof top === 'string' && top) return top;
+  const tagged = tag(event ?? {}, 'environment');
+  return typeof tagged === 'string' && tagged ? tagged : null;
+}
+
+/**
+ * The release version an event was reported under, from either shape.
+ *
+ * A Release object is unwrapped to its `version`, which is the string the SDK
+ * was configured with and the string this project compares against the SHA the
+ * deployment serves in `x-bookpitch-release`.
+ *
+ * @param {any} event a Sentry API event payload
+ * @returns {string|null}
+ */
+export function eventRelease(event) {
+  const r = event?.release;
+  if (typeof r === 'string' && r) return r;
+  if (r && typeof r === 'object' && typeof r.version === 'string' && r.version) return r.version;
+  const tagged = tag(event ?? {}, 'release');
+  return typeof tagged === 'string' && tagged ? tagged : null;
+}
+
 /**
  * True when at least one stack frame resolves to ORIGINAL REPOSITORY SOURCE.
  *
@@ -165,9 +232,14 @@ export function classifyMapProbe(outcome) {
   if (status >= 200 && status < 300) return 'exposed';
   // The only two answers that mean "there is no such asset here".
   if (status === 404 || status === 410) return 'private';
-  // 403 is deliberately NOT private: a CDN that forbids anonymous access may
-  // still serve the file to someone else, and some hosts return 403 for
-  // rate-limited requests.
+  // 403 is still NOT private on its own, for exactly the reasons it never was:
+  // a host that forbids us may serve the file to someone else, and some hosts
+  // answer 403 when rate limiting. It is now its OWN classification rather than
+  // a generic unknown, because it is the one unknown that corroborating
+  // evidence can resolve — see summariseMapProbes(). Nothing about a lone 403
+  // has been relaxed: `blocked` passes only with that evidence attached, and
+  // fails closed without it.
+  if (status === 403) return 'blocked';
   return 'indeterminate';
 }
 
@@ -176,7 +248,80 @@ export function classifyMapProbe(outcome) {
  *
  * @param {Array<{url: string, classification: string}>} probes
  */
-export function summariseMapProbes(probes) {
+/**
+ * What is MISSING from the control evidence offered for a 403, if anything.
+ *
+ * -----------------------------------------------------------------------------
+ * Why this exists.
+ *
+ * Vercel refuses every `*.map` URL with a 403 and an empty body, whatever the
+ * path and whether or not the file exists. Measured against production on
+ * 2026-09-07, from one client in one moment:
+ *
+ *   /_next/static/immutable/chunks/16pnwa_au3un4.js          200   (648 bytes)
+ *   /_next/static/immutable/chunks/16pnwa_au3un4.js.map      403   (empty)
+ *   /_next/static/immutable/chunks/DOES-NOT-EXIST.js.map     403   (empty)
+ *   /_next/static/immutable/chunks/DOES-NOT-EXIST.js         404
+ *   /_next/static/immutable/chunks/16pnwa_au3un4.js.txt      404
+ *   /foo/bar.js.map                                          403   (empty)
+ *
+ * So the refusal is scoped to the `.map` extension, not to the asset: a chunk
+ * that CANNOT exist is refused identically, and the same chunk under a
+ * different extension 404s. On a host that behaves this way the status code
+ * carries no information about existence at all, and a check that demands a 404
+ * can never go green — the gate would be permanently unsatisfiable, which is
+ * this project's other failure mode and hides better than a false green.
+ *
+ * The fix is more evidence, not a lower bar. Two facts, gathered in the same
+ * run against the same host, are what license reading a 403 as absence:
+ *
+ *   refusedNonexistent  a map URL that provably cannot exist was refused the
+ *                       SAME way. If a fabricated path is refused identically,
+ *                       the refusal is a blanket extension rule and says
+ *                       nothing about any particular file — which is precisely
+ *                       what makes it safe: no map is retrievable here.
+ *
+ *   servedSibling       a real asset in the same directory answered 200 to the
+ *                       same client at the same time. This is what excludes the
+ *                       two readings that would make a 403 alarming: we are not
+ *                       being rate limited, and we are not behind an
+ *                       authentication wall that would serve the file to
+ *                       someone holding a credential.
+ *
+ * Either one alone is insufficient and is reported as such. Without the
+ * fabricated-path control, a 403 on a real map could be an auth wall around
+ * that one file. Without the served sibling, a blanket 403 could be a
+ * deployment-wide block that would lift for an authorised requester.
+ *
+ * Note which way this fails. `null`/`undefined` control, a control that was not
+ * attempted, or a control that came back with a different status all return a
+ * reason, and a reason is a failure. Passing requires both facts to be
+ * literally `true`.
+ *
+ * @param {{refusedNonexistent?: boolean|null, servedSibling?: boolean|null}} [control]
+ * @returns {string|null} why the 403 is still unresolved, or null if it is not
+ */
+export function describeMissingMapControl(control) {
+  const refused = control?.refusedNonexistent === true;
+  const served = control?.servedSibling === true;
+  if (refused && served) return null;
+  const missing = [];
+  if (!refused) {
+    missing.push(
+      'no fabricated map path was shown to be refused the same way, so the 403 has not been ' +
+        'shown to be a blanket rule rather than a wall around this asset',
+    );
+  }
+  if (!served) {
+    missing.push(
+      'no sibling asset was served 200 to the same client, so throttling and an ' +
+        'authentication wall are not excluded',
+    );
+  }
+  return `${missing.join('; ')}.`;
+}
+
+export function summariseMapProbes(probes, control) {
   if (!Array.isArray(probes) || probes.length === 0) {
     return {
       ok: false,
@@ -185,6 +330,7 @@ export function summariseMapProbes(probes) {
     };
   }
   const exposed = probes.filter((p) => p.classification === 'exposed');
+  const blocked = probes.filter((p) => p.classification === 'blocked');
   const unknown = probes.filter((p) => p.classification === 'indeterminate');
   const problems = [];
   if (exposed.length) {
@@ -192,6 +338,17 @@ export function summariseMapProbes(probes) {
       `publicly readable source map(s): ${exposed.map((p) => p.url).join(', ')} — the ` +
         'unminified application source is being served to anyone',
     );
+  }
+  if (blocked.length) {
+    const missing = describeMissingMapControl(control);
+    if (missing) {
+      problems.push(
+        `${blocked.length} map URL(s) were refused with 403 and nothing discriminates that ` +
+          `refusal: ${blocked.map((p) => p.url).join(', ')}. ${missing} A bare 403 cannot ` +
+          'tell "this host serves no map at any path" from "this map exists and we were ' +
+          'forbidden it", so it fails closed',
+      );
+    }
   }
   if (unknown.length) {
     problems.push(
@@ -435,14 +592,15 @@ export function verifyReceipt(event, expect) {
   const eventId = event.id ?? event.eventID ?? null;
   if (!eventId) problems.push('the event carries no id');
 
-  if (event.environment !== expect.environment) {
-    problems.push(
-      `environment is ${event.environment ?? '(none)'}, expected ${expect.environment}`,
-    );
+  const environment = eventEnvironment(event);
+  if (environment !== expect.environment) {
+    problems.push(`environment is ${environment ?? '(none)'}, expected ${expect.environment}`);
   }
-  if (event.release !== expect.releaseSha) {
+  const release = eventRelease(event);
+  if (release !== expect.releaseSha) {
     problems.push(
-      `release is ${event.release ?? '(none)'}, expected ${expect.releaseSha.slice(0, 12)}`,
+      `release is ${release ? String(release).slice(0, 60) : '(none)'}, ` +
+        `expected ${expect.releaseSha.slice(0, 12)}`,
     );
   }
   if (tag(event, 'bookpitch_verification_nonce') !== expect.nonce) {

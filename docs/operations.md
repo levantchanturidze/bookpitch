@@ -201,6 +201,43 @@ level 5 requires original-source frames on **both** runtimes (proving the maps
 reached Sentry), and a separate check fetches a served chunk's
 `sourceMappingURL` and requires it to be **unreachable** (proving they did not
 reach the public).
+
+**How "unreachable" is established on Vercel.** Vercel answers every `*.map`
+URL with a bare `403` and an empty body, whatever the path and whether or not
+the file exists. Measured against production on 2026-09-07:
+
+| Request | Answer |
+|---|---|
+| `…/chunks/16pnwa_au3un4.js` | `200`, 648 bytes |
+| `…/chunks/16pnwa_au3un4.js.map` | `403`, empty |
+| `…/chunks/DOES-NOT-EXIST.js.map` | `403`, empty |
+| `…/chunks/DOES-NOT-EXIST.js` | `404` |
+| `…/chunks/16pnwa_au3un4.js.txt` | `404` |
+| `/foo/bar.js.map` | `403`, empty |
+
+The refusal is scoped to the **extension**, not to the asset. So the check
+originally required a `404` and could never pass here — it failed on
+2026-09-07 with *"could not establish that 15 map URL(s) are private"* against a
+deployment whose maps genuinely were not served. An unsatisfiable gate is not a
+safe gate; it is the mirror of a false green and it hides better.
+
+A `403` is therefore its own classification, `blocked`, and it counts as absence
+only with **two corroborating facts gathered in the same run against the same
+host**:
+
+- a **fabricated** map path in the same directory — random per run, so it
+  cannot be pre-seeded — is refused *identically*. If a file that cannot exist
+  draws the same answer, the refusal is a blanket rule about the extension and
+  tells us nothing about any particular file, which is exactly what makes it
+  safe: no map is retrievable here.
+- a **real sibling asset answered `200`** to the same client at the same moment.
+  This is what excludes the two readings that would make a `403` alarming — we
+  are not being rate limited, and we are not behind an authentication wall that
+  would hand the file to someone holding a credential.
+
+Either fact alone fails, and both must be literally `true` — a truthy value does
+not count. `2xx` is still exposure, `404`/`410` are still absence on their own,
+and every other status is still an unresolved unknown that fails closed.
 `.env.example` documents every one of these. A test
 (`tests/production-config-contract.test.ts`) fails if a required variable is
 added to the contract without being documented.
