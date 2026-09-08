@@ -52,6 +52,30 @@ first where that cost a *green* rather than hiding a red, and the lesson is the
 same one — a fixture written from the implementation is documentation that
 compiles.
 
+### The three gates that could not go green — 2026-09-08
+
+Configuring Sentry did not start the soak. Three separate controls stood
+between a verified release and a running window, and **none of them was
+protecting anything** — each was refusing, or failing, for a reason unrelated to
+production health.
+
+| Defect | What it refused, and why |
+|---|---|
+| **The source-map check demanded a `404` from a host that answers `403`** | Vercel refuses every `*.map` with a blanket `403` — the same answer for a path that cannot exist, while the sibling `.js` serves `200`. The gate was unsatisfiable on the only host this project deploys to, while the maps genuinely were not served. Fixed with more evidence, not a lower bar: a `403` counts as absence only when a random fabricated path draws the identical refusal *and* a real sibling was served `200` to the same client in the same run |
+| **A CI repair that stopped reaching the file it repairs** | The step named *"Point apt at a reachable mirror"* rewrote `sources.list`, but Ubuntu 24.04 runners keep mirror hostnames in `/etc/apt/apt-mirrors.txt`. The `sed` matched nothing and a trailing `\|\| true` swallowed it, so the step was green on every run for months while apt kept using the dead mirror. It only cost something when that mirror got slow enough to blow a 10-minute bound: `114 MB` outstanding at timeout, the browser suite never ran, twice. After the fix, `Fetched 114 MB in 4s` |
+| **The release gate refused a release it had just cleared** | The first ever run of `release-verify-and-soak.yml` verified Sentry completely, wrote a receipt, resolved the observability incident by evidence at `09:10:36.658` — and then re-listed open incidents at `09:10:37.797` and was handed that same incident as open. `gh issue list` reads GitHub's eventually-consistent search index; the per-issue REST record already said otherwise. `Start the soak` was skipped and the valid receipt was deleted by the cleanup step. Since every successful verification resolves that incident one step earlier, this gate lost the race as a matter of course |
+
+The pattern is now four rounds old and did not change: **the application was
+right every time.** What differs here is the direction of the harm. Earlier
+rounds found controls that stayed green while something was broken; these three
+stayed red, or silently did nothing, while everything they guarded was fine.
+A gate that cannot pass teaches an operator to route around it, which is the
+same corrosion as a gate that always passes, arriving by the opposite road.
+
+Error delivery itself was never broken. It was proven working on the first run
+that could reach Sentry at all, and every scheduled re-verification since has
+emitted, indexed and retrieved **fresh** events in both runtimes.
+
 ### Continuation round — 2026-09-05
 
 `ENGINEERING COMPLETE` was rejected again, and again the findings were inside
