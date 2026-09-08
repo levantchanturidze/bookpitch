@@ -1130,14 +1130,20 @@ describe('the observability incident is closed by evidence, in the right order',
   it('THE DEADLOCK: it does not refuse to run while the incident it resolves is open', () => {
     // The incident cannot be closed without verification, and verification
     // refused to start while it was open.
+    //
+    // The exclusion used to be a jq filter inline in this step; it now lives in
+    // scripts/blocking-incidents.mjs behind `--allow-observability`, which
+    // tests/blocking-incidents.test.ts drives as a real process. What is
+    // checked HERE is only that this step asks for that behaviour.
     const guard = steps.find((s) => /unrelated incident/i.test(String(s.name ?? '')))!;
     expect(guard, 'the incident guard must exclude the observability incident').toBeDefined();
-    expect(String(guard.run)).toMatch(/production-observability-unconfigured/);
-    expect(String(guard.run)).toMatch(/not\)/);
+    expect(String(guard.run)).toMatch(/blocking-incidents\.mjs\s+--allow-observability/);
   });
 
   it('every OTHER incident still refuses', () => {
     const guard = steps.find((s) => /unrelated incident/i.test(String(s.name ?? '')))!;
+    // The script exits non-zero on anything it confirms open, and the step
+    // turns that into a failure rather than swallowing it.
     expect(String(guard.run)).toMatch(/exit 1/);
   });
 
@@ -1154,7 +1160,39 @@ describe('the observability incident is closed by evidence, in the right order',
 
   it('and the re-check refuses if anything is still open', () => {
     const recheck = steps.find((s) => /Re-check that no incident/.test(String(s.name ?? '')))!;
-    expect(String(recheck.run)).toMatch(/exit 1/);
+    // It delegates to the confirming script, which exits 1 on anything it
+    // confirms open — asserted as a real exit code in
+    // tests/blocking-incidents.test.ts rather than as a string here.
+    expect(String(recheck.run)).toMatch(/node scripts\/blocking-incidents\.mjs/);
+  });
+
+  it('the re-check counts the observability incident; the pre-flight guard does not', () => {
+    // This is the whole difference between the two calls, and getting it
+    // backwards would either deadlock the workflow or let it start a soak with
+    // error reporting still broken.
+    const guard = steps.find((s) => /unrelated incident/i.test(String(s.name ?? '')))!;
+    const recheck = steps.find((s) => /Re-check that no incident/.test(String(s.name ?? '')))!;
+    expect(String(guard.run)).toMatch(/--allow-observability/);
+    expect(String(recheck.run)).not.toMatch(/--allow-observability/);
+  });
+
+  it('the re-check does not decide on the search index alone', () => {
+    // `gh issue list` is eventually consistent and returned a CLOSED incident
+    // as open 1.1s after this workflow closed it (run 34208400168), which
+    // refused a fully verified release and skipped the soak.
+    //
+    // Comments are stripped before matching: the step explains that history in
+    // prose, and asserting against the prose would fail on the explanation
+    // rather than on the code.
+    const recheck = steps.find((s) => /Re-check that no incident/.test(String(s.name ?? '')))!;
+    const code = String(recheck.run)
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n');
+    expect(code).not.toMatch(/gh issue list/);
+    expect(code, 'it must still actually run the confirming script').toMatch(
+      /node scripts\/blocking-incidents\.mjs/,
+    );
   });
 
   it('the closing step names the reason it, and not the monitor, is the authority', () => {
