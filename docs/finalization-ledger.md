@@ -151,6 +151,20 @@ Observed directly, not carried over from any earlier summary.
 
 ### E. Soak
 
+> **Scope — read before citing any row in this table.** Every E row below is
+> evidence about **`9c658450ce6ee1be3b486baee5b70f940fc2f600` and deployment
+> `6324725944`, and about nothing else.** That release was superseded the same
+> day: PR #86 landed the dependency advisories as `8572634` and PR #85's merge
+> produced `207b555`, so the certified release is no longer the deployed one.
+>
+> A soak binds to one SHA and one deployment permanently. These rows therefore
+> **do not** certify `207b555`, do not certify the merge commit this file lands
+> in, and do not carry forward to any later candidate. The final release's soak
+> is a **different window, in a different issue**, and its evidence lives there
+> rather than being copied back into this table — a post-soak commit would
+> change `main` and invalidate the very certification it was recording.
+
+
 | # | Gate | Status | Evidence |
 |---|---|---|---|
 | E1 | Soak preconditions satisfied | `PRODUCTION VERIFIED` | All three refusals cleared on 2026-09-08: production served the named SHA on both canonical hosts, no unrelated incident was open, and `verify-sentry.mjs` wrote a receipt after a complete pass. Run [34211356813](https://github.com/levantchanturidze/bookpitch/actions/runs/34211356813), all 12 steps green — the first time this workflow has ever succeeded |
@@ -194,6 +208,220 @@ This is the fourth entry in this document's own pattern — the signal looked
 broken and the application was fine — and the first where a correct production
 was reported as a fault. The cost was not a false green: it was a real green
 that could not be recorded, and a soak that could not start.
+
+## RESOLVED — Actions runner allocation: blocked 10:26Z, recovered 20:38Z, 2026-09-09
+
+**Blocked for 10h12m. Recovered.** Between 2026-09-09T10:26:22Z and
+2026-09-09T19:24:22Z no job on this repository was ever assigned a runner. The
+first successful allocation was observed at **2026-09-09T20:38:57Z**. The record
+of the outage is kept below in the tense it was written; the resolution follows.
+
+### The outage, as measured
+
+| Fact | Evidence |
+|---|---|
+| Last run that got a runner | [34339539456](https://github.com/levantchanturidze/bookpitch/actions/runs/34339539456) at **10:18:48Z** — jobs report 22, 5 and 25 steps |
+| First run that did not | [34340209674](https://github.com/levantchanturidze/bookpitch/actions/runs/34340209674) at **10:26:22Z**, the push build on merge `207b555` |
+| Shape of the failure | all jobs `conclusion: failure` **~2 seconds** after creation, `steps: []`, `runner_id: 0`, `runner_name: ""` — the jobs never started |
+| Annotation, every failed job | `The job was not started because recent account payments have failed or your spending limit needs to be increased.` |
+| Actions itself | `enabled: true`, `allowed_actions: all`; all 11 workflows `active`; no runs queued or waiting |
+| Runner class | every job in all 11 workflows is `runs-on: ubuntu-latest` — the free standard GitHub-hosted class. **No paid larger-runner SKU is selected anywhere**, so no repository-scoped runner-label change could have fixed this |
+| Total runs lost | **15**, across 6 workflows: CI, PR body, Scheduled crons, Production monitor, Production soak, Verify Sentry delivery |
+
+Jobs created, instantly failed, never assigned a runner, with Actions enabled
+and nothing queued, is an **account-level entitlement refusal**, not a
+repository misconfiguration. It was not confirmable from here in either
+direction: `/users/{user}/settings/billing/actions` requires the `user` token
+scope, which this token does not carry.
+
+### Resolution — and what the evidence does and does not show
+
+The repository was made **public** at 2026-09-09T10:31:10Z. That is a disclosure
+decision, correctly taken by a person and not by an agent.
+
+**Public visibility did not restore allocation at the moment it was applied, and
+this ledger will not claim it did.** Fourteen further runs were created after
+the repository became public and every one of them failed with `runner_id: 0`
+and the identical billing annotation:
+
+```
+10:31:29Z  34340673308  PR body                    schedule/pull_request  runner_id=0
+10:31:29Z  34340673354  CI                         pull_request           runner_id=0
+11:11:19Z  34344220014  Scheduled crons            schedule               runner_id=0
+11:46:30Z  34347306440  Production monitor         schedule               runner_id=0
+13:05:05Z  34354863087  Verify Sentry delivery     schedule               runner_id=0
+13:34:03Z  34357894212  Scheduled crons            schedule               runner_id=0
+14:39:12Z  34365025066  Production soak            schedule               runner_id=0
+15:07:25Z  34368156204  Scheduled crons            schedule               runner_id=0
+16:23:29Z  34376420321  Production monitor         schedule               runner_id=0
+17:41:30Z  34384452831  Scheduled crons            schedule               runner_id=0
+18:01:27Z  34386481831  Production soak            schedule               runner_id=0
+18:35:50Z  34389975329  Scheduled crons            schedule               runner_id=0
+19:21:57Z  34394616842  Verify Sentry delivery     schedule               runner_id=0
+19:24:22Z  34394859847  Production monitor         schedule               runner_id=0
+```
+
+So the recovery boundary is **between 19:24:22Z and 20:38:57Z**, eight to nine
+hours *after* the visibility change. Public visibility is a necessary condition
+for free standard runners on this plan, and it was not a sufficient one here.
+What else changed in that window — an allowance reset, a payment clearing, a
+spending limit being raised — is **not observable from this repository**, and
+naming one of them would be a guess. The honest statement is: allocation was
+refused at 19:24Z, allocation succeeded at 20:38Z, and the cause of the
+transition is unattributed.
+
+### Recovery evidence — real runners, real steps
+
+Recovery was proven by re-running the failed jobs of the very run that first hit
+the blocker, per `docs/phase-15-actions-restoration-runbook.md` step 1, whose
+gate is `steps > 0`:
+
+| | |
+|---|---|
+| Run | [34340209674](https://github.com/levantchanturidze/bookpitch/actions/runs/34340209674), `event=push`, `head_sha=207b555d2ed0172e9f0069ef98adc50b20ef8410` |
+| **Attempt** | **3** — attempts 1 and 2 failed without runners at 10:26Z and 10:28Z. This is a re-run, and it is labelled as one everywhere it is cited |
+| Started | 2026-09-09T20:38:57Z |
+| Secret scanning | `success`, `runner_id=1000002813`, **5 steps** |
+| Lint, type-check, test, and build | `success`, `runner_id=1000002814`, **25 steps** |
+| Browser, mobile, and accessibility suite | `success`, `runner_id=1000002815`, **22 steps** |
+
+Non-zero runner ids, non-empty step lists, and three green jobs. The runbook
+gate is met.
+
+**A natural scheduled run also recovered**, which the re-run alone would not
+prove: [34402573223](https://github.com/levantchanturidze/bookpitch/actions/runs/34402573223)
+— `Scheduled crons`, `event=schedule`, `run_attempt=1`, `conclusion=success`,
+created 2026-09-09T20:41:37Z. Scheduling is live again, unattended.
+
+### `207b555` is now CI-verified on the merge commit
+
+The previous revision of this section said the push build on `207b555` had never
+produced a result and must not be recorded as CI-verified. That is now
+superseded by the run above: the push build on the merge commit is **green**, on
+real runners, with every job executing its full step list.
+
+The A34 rule that produced that warning — *read the push build after every
+merge, the merge commit is a different commit from the PR head* — is unchanged
+and still binding. What changed is only that the build finally ran.
+
+**The attempt number stays attached to the claim.** `207b555` is green on
+`event=push`, **attempt 3**. It is not a first-attempt result and is never to be
+cited as one.
+
+### What is still unverified for the final release
+
+- **`207b555` is not the final release SHA.** Merging this file produces a newer
+  commit, a newer deployment, and therefore a new candidate. Every SHA-bound
+  gate re-runs against that SHA.
+- **`207b555` is NOT soaked, and neither is anything after it.** Soak #84
+  certifies `9c65845` and deployment `6324725944` only. It must never be cited
+  for a later SHA.
+- **Release-bound Sentry verification has not run for this release.**
+- The fresh 24-hour soak has not started.
+
+## Public-repository threat model — audited 2026-09-09T20:37Z–20:45Z
+
+The repository became public at 2026-09-09T10:31:10Z. Everything reachable from
+it — history, refs, issues, PRs, **Actions logs and Actions artifacts** — is now
+world-readable. This audit ran **before** any secret-bearing workflow was
+allowed to run again. A previous scan had concluded "only synthetic test
+credentials"; that conclusion was **re-derived from scratch here**, not
+inherited.
+
+### Credential exposure — full history
+
+Every blob reachable from every ref was scanned (**4,659 named blobs**) for
+Postgres URLs with passwords, AWS access-key ids, GitHub tokens, PEM private-key
+blocks, real Sentry DSNs, Slack tokens, live Stripe keys and JWTs.
+
+| Pattern | Files | Verdict |
+|---|---|---|
+| AWS access key id, GitHub token, private-key block, Sentry DSN, Slack token, live Stripe key, JWT | **0** | clean |
+| Postgres URL carrying a password | 7 | **all synthetic** |
+
+All 14 distinct occurrences were classified by host **without printing any
+password** (F-12 rule): `localhost:5432` and `127.0.0.1:5432` CI service
+containers; `db.host`, `db.internal`, `db.example.com`, `db.example.invalid`,
+`host:5432` log-redaction fixtures; and one documentation template whose
+"credential" is the literal text `postgres.<project-ref>@aws-<n>-<region>.pooler…`.
+`db.abcdefgh.supabase.co` in `tests/phase15-db-guard.test.ts` is a fake project
+ref. **No real credential is present in any commit, and none has been.** Nothing
+required rotation.
+
+Only `.env.example` and `prototype/.env.example` have ever been committed;
+`.gitignore` carries `.env*` with an `!.env.example` exception. No `.pem`,
+`.key`, `.p12`, `.pfx`, `.jks` or `.ppk` file appears anywhere in history.
+
+### Workflow attack surface
+
+| Check | Result |
+|---|---|
+| `pull_request_target` | **absent** — and `ci.yml` carries a standing comment forbidding it |
+| `workflow_run`, `issue_comment`, `repository_dispatch` | **absent** |
+| Secrets reachable from a fork PR | **none.** Every secret-bearing workflow triggers on `schedule`, `workflow_dispatch` or `push` only. The two workflows that do run on `pull_request` are `ci.yml`, whose only secret is `GITHUB_TOKEN` (read-only for forks), and `pr-body.yml`, which uses **no** secrets |
+| Script injection from attacker-controlled event fields | **none.** Every `github.event.*` interpolation — `pr-body.yml`'s `PR_TITLE`/`PR_BODY`, `sentry-reverify.yml`'s `GITHUB_EVENT_NAME` — is bound to an **env var**, never inlined into a `run:` string |
+| Default token permissions | `default_workflow_permissions: read`, `can_approve_pull_request_reviews: false`; every workflow additionally declares an explicit narrow `permissions:` block |
+| Production workflows triggerable from a non-main ref | `production-backup.yml` guards `github.ref == 'refs/heads/main'`; `migrate.yml`'s `push` trigger is restricted to `branches: [main]` and to `prisma/**` paths. `workflow_dispatch` requires repository write access, which no fork has |
+| Runner class | all 19 job definitions are `runs-on: ubuntu-latest` — free standard GitHub-hosted, no paid SKU |
+
+### Publicly downloadable artifacts
+
+204 artifacts exist and are now world-readable. Two kinds:
+
+- **`gitleaks-results.sarif`** — inspected artifact `10123933389`: `results: 0`,
+  208 rules, tool `gitleaks`. A SARIF *with* findings would embed the matched
+  snippets; this one has no findings, so no value is disclosed. Every one is
+  byte-identical at 6,768 B.
+- **`production-backup-*`** — real production database dumps. These are
+  **age-encrypted** to the public recipient in `ops/backup-age-recipient.txt`
+  (verified to contain an `age1…` **recipient** only — no `AGE-SECRET-KEY`), and
+  `production-backup.yml` runs an explicit pre-upload gate that fails the job if
+  any staged file lacks the `age-encryption.org` header or is a raw `pg_dump`
+  archive.
+
+**This is the one place where the threat model genuinely moved.** Confidentiality
+of production dumps previously rested on repository access control *and* age
+encryption; it now rests on **age encryption alone**. The encryption is real and
+the private key is held only as the `BACKUP_AGE_PRIVATE_KEY` secret, so this is
+a defensible posture — but it is a reduction in defence depth and it is recorded
+as such rather than reported as "no change".
+
+### Dependency advisories
+
+`npm audit`: **0 vulnerabilities** — info 0, low 0, moderate 0, high 0,
+critical 0. Dependabot alerts are disabled repository-side (`403` from the API);
+the CI `npm audit --audit-level=high` gate is what covers this, and it fails
+closed on a transport outage rather than skipping.
+
+### Verdict
+
+**No confirmed credential exposure. No rotation required. No P0.**
+
+One finding was **fixed in this round rather than recorded**: the two
+third-party actions were pinned by mutable tag. A tag is a pointer its owner can
+move, so `@v2` is a standing agreement to run whatever it names on the day it
+runs — and on a public repository both of these execute on inputs this project
+does not control. They are now pinned to full commit SHAs, with the tag kept in
+a trailing comment so the version is still legible:
+
+| Action | Was | Now | Why it matters here |
+|---|---|---|---|
+| `gitleaks/gitleaks-action` | `@v2` | `@ff98106e4c7b2bc287b24eaf42907196329070c7` | runs on every push **and every fork pull request** |
+| `grafana/setup-k6-action` | `@v1` | `@db07bd9765aac508ef18982e52ab937fe633a065` | runs in the job holding `STAGING_URL` and `STAGING_PUBLIC_SLUG` |
+
+Every other `uses:` in this repository is first-party `actions/*`, left on major
+tags deliberately: they are published by the same vendor that runs the runner,
+so a SHA pin there buys nothing that the platform trust boundary does not
+already give. `sha_pinning_required` remains `false` at the repository level —
+the pins are in the workflow files, which is where they are readable in review.
+
+**One item is carried forward rather than fixed**, because fixing it is a
+policy decision and not an engineering one: the backup-artifact defence-depth
+reduction described above. Production dumps are age-encrypted and world-readable
+as artifacts. Shortening `retention-days`, or moving the dumps off Actions
+artifacts entirely, would restore the second layer — and both change the
+restore-drill and backup-freshness guarantees, so neither belongs in a release
+freeze.
 
 ## SOAK CERTIFIED — 2026-09-09T09:51:25Z
 
