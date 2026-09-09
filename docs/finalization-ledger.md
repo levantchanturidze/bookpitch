@@ -151,6 +151,20 @@ Observed directly, not carried over from any earlier summary.
 
 ### E. Soak
 
+> **Scope — read before citing any row in this table.** Every E row below is
+> evidence about **`9c658450ce6ee1be3b486baee5b70f940fc2f600` and deployment
+> `6324725944`, and about nothing else.** That release was superseded the same
+> day: PR #86 landed the dependency advisories as `8572634` and PR #85's merge
+> produced `207b555`, so the certified release is no longer the deployed one.
+>
+> A soak binds to one SHA and one deployment permanently. These rows therefore
+> **do not** certify `207b555`, do not certify the merge commit this file lands
+> in, and do not carry forward to any later candidate. The final release's soak
+> is a **different window, in a different issue**, and its evidence lives there
+> rather than being copied back into this table — a post-soak commit would
+> change `main` and invalidate the very certification it was recording.
+
+
 | # | Gate | Status | Evidence |
 |---|---|---|---|
 | E1 | Soak preconditions satisfied | `PRODUCTION VERIFIED` | All three refusals cleared on 2026-09-08: production served the named SHA on both canonical hosts, no unrelated incident was open, and `verify-sentry.mjs` wrote a receipt after a complete pass. Run [34211356813](https://github.com/levantchanturidze/bookpitch/actions/runs/34211356813), all 12 steps green — the first time this workflow has ever succeeded |
