@@ -52,6 +52,61 @@ first where that cost a *green* rather than hiding a red, and the lesson is the
 same one — a fixture written from the implementation is documentation that
 compiles.
 
+### The soak passed — 2026-09-09
+
+**Release `9c658450ce6ee1be3b486baee5b70f940fc2f600`, deployment 6324725944,
+survived 24.1 uninterrupted hours with zero restarts.** Soak issue #84, closed
+by the controller at `2026-09-09T09:51:25Z` with 14 of 14 gates green. It is the
+first soak this project has ever started and the first it has ever finished.
+
+What makes it evidence rather than elapsed time:
+
+- **Nothing was pressed.** 6 monitor observations, 1 backup, 15 cron runs and 4
+  Sentry re-verifications, every one of them `event=schedule` and
+  `run_attempt=1`. No dispatch and no rerun was counted anywhere, and
+  `evidence-resolved` separately confirms every scheduled run in the window had
+  a readable first-attempt outcome — an unreadable one would have blocked
+  certification rather than being skipped past.
+- **The window really was one window.** `main`'s newest commit landed at
+  09:32:52Z, ten minutes *before* the window opened, and nothing was committed
+  or deployed for the next 24.1 hours. The checkpoint documenting the running
+  soak was deliberately parked on an unmerged draft branch so that recording it
+  could not disturb it.
+- **Ingestion was re-proven, not re-read.** The `observability` gate revalidates
+  the original receipt, which stays readable no matter what happens to
+  ingestion afterwards. `observability-continuing` is the one that matters, and
+  four scheduled re-verifications fed it fresh event pairs — new ids each time,
+  emitted by the deployed application in both runtimes, indexed and retrieved,
+  each reaching `Highest level proven: 5 (VERIFIED)`.
+- **The margins were real but not comfortable.** `monitor-observations` finished
+  at exactly 6 of 6, and the largest gap between observations was 5.4h against a
+  6h limit. GitHub's scheduling on this account is the binding constraint, not
+  production: measured over 48 scheduled monitor runs across the preceding week,
+  p50 3.10h, p95 5.21h, max 6.28h — one gap already past the limit. A repeat
+  soak has roughly a one-in-seven chance of restarting on that gate alone. That
+  is a property of the plan the repository is on, and the correct response is
+  not to widen the threshold.
+
+**And it was superseded the same day.** Hours after certification, `npm audit`
+went from 0 findings to 5 with nothing in the repository having changed —
+`next` 16.3.0 landed inside a CRITICAL RCE range and `sharp` 0.35.3 inside a
+HIGH one. Taking the patches changes a dependency the application ships, so the
+patched release is a different release and needs its own window. The soak
+certifies `9c65845` and nothing else.
+
+That is worth stating without apology. A 24-hour soak is a statement about one
+immutable commit, not a standing property of "production", and the moment it is
+allowed to drift into the latter it stops being evidence. What the window
+bought is not transferable safety — it is proof that the release path, the
+controller and all fourteen gates work end to end, which had never been true
+before and does not have to be re-proven from scratch.
+
+The controller's own caveat is the last word, and it is not boilerplate:
+
+> This is the TECHNICAL gate only... Releasing additionally requires legal
+> approval and designated-mailbox UAT, neither of which is observable from here.
+> **A green soak is not a green release.**
+
 ### The three gates that could not go green — 2026-09-08
 
 Configuring Sentry did not start the soak. Three separate controls stood
