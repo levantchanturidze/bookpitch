@@ -195,6 +195,60 @@ broken and the application was fine — and the first where a correct production
 was reported as a fault. The cost was not a false green: it was a real green
 that could not be recorded, and a soak that could not start.
 
+## BLOCKED — GitHub Actions stopped allocating runners, 2026-09-09T10:26Z
+
+**No workflow can run on this repository right now.** This blocks the re-soak of
+the patched release, and it will also stop the monitor, cron, backup and
+Sentry re-verification schedules.
+
+| Fact | Evidence |
+|---|---|
+| Last run that got a runner | [34339539456](https://github.com/levantchanturidze/bookpitch/actions/runs/34339539456) at **10:18:48Z** — jobs report 22, 5 and 25 steps |
+| First run that did not | [34340209674](https://github.com/levantchanturidze/bookpitch/actions/runs/34340209674) at **10:26:22Z**, the push build on merge `207b555` |
+| Shape of the failure | all three jobs `conclusion: failure` **2 seconds** after creation, `steps: []`, `runner_id: 0`, `runner_name: ""` — the jobs never started |
+| Re-run | attempt 2 at 10:28:32Z behaved **identically**. Not transient |
+| Actions itself | `enabled: true`, `allowed_actions: all`; all 11 workflows `active`; no runs queued or waiting |
+| Repository plan | private — `branches/main/protection` answers `403 Upgrade to GitHub Pro` (R-07) |
+
+Jobs that are created, immediately fail, and are never assigned a runner, on a
+**private** repository with Actions enabled and nothing queued, is the signature
+of **exhausted included Actions minutes with no spending limit set**. It cannot
+be confirmed from here: `/users/{user}/settings/billing/actions` requires the
+`user` token scope, which this token does not carry.
+
+### This is a human-only gate
+
+Resolving it is a spending or plan decision and is therefore not something an
+agent may take. One of:
+
+- raise or set the Actions spending limit, or
+- wait for the monthly minutes allowance to reset, or
+- make the repository public, which makes Actions free — **a disclosure
+  decision, not a billing one**, and not one to take casually for a product
+  holding client PII.
+
+### What is NOT blocked
+
+- **The security fix is live.** Vercel deploys independently of Actions:
+  production serves `207b555` on both canonical hosts, `HTTP 200`, body exactly
+  `{"ok":true}`, built from the lock file carrying `next` 16.3.4 and `sharp`
+  0.35.4. The critical RCE exposure is closed in production even though CI
+  cannot attest to the merge commit.
+- **Soak #84's certification of `9c65845` stands.** It completed before this.
+- Both PRs merged here (#86, #85) were **green on their heads** before runner
+  allocation stopped.
+
+### What IS unverified, and must not be claimed
+
+- **The push build on `207b555` has never run.** Per A34 this is exactly the
+  check whose omission previously let a red merge sit unnoticed. Attempts 1 and
+  2 produced no result at all — which is *worse* than a red build, because
+  there is nothing to read. Do not record `207b555` as CI-verified on the merge
+  commit.
+- **`207b555` is NOT soaked.** Soak #84 certifies `9c65845`. The patched release
+  needs its own release-bound Sentry verification and its own 24-hour window,
+  and neither can start without runners.
+
 ## SOAK CERTIFIED — 2026-09-09T09:51:25Z
 
 The first 24-hour production soak this project has ever run **passed**, on its
