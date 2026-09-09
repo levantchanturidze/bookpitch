@@ -43,7 +43,14 @@ jobs:
           fetch-depth: 0
 
       - name: Scan for secrets with gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        # Pinned to a full commit SHA, not the mutable `v2` tag. This
+        # repository is public: every workflow here is world-readable and
+        # this action runs on every push and every fork pull request. A tag
+        # is a pointer its owner can move, so `@v2` is a standing agreement
+        # to execute whatever that pointer names on the day it runs. The SHA
+        # is the same code every time or the job fails to resolve it.
+        # `ff98106` is what `v2` resolved to on 2026-09-09.
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

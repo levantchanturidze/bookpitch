@@ -58,7 +58,12 @@ jobs:
           done
           echo "target host is not production — proceeding"
 
-      - uses: grafana/setup-k6-action@v1
+      # Pinned to a full commit SHA rather than the mutable `v1` tag — same
+      # reasoning as the gitleaks pin in ci.yml, and it matters more here:
+      # this job holds STAGING_URL and STAGING_PUBLIC_SLUG, so a moved tag
+      # would run attacker-chosen code in a step that can read them.
+      # `db07bd9` is what `v1` resolved to on 2026-09-09.
+      - uses: grafana/setup-k6-action@db07bd9765aac508ef18982e52ab937fe633a065 # v1
         if: steps.gate.outputs.run == 'true'
 
       - name: Run scheduler-read scenario

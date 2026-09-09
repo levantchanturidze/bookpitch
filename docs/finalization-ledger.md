@@ -395,11 +395,33 @@ closed on a transport outage rather than skipping.
 
 ### Verdict
 
-**No confirmed credential exposure. No rotation required. No P0.** Two items
-carried forward, both recorded rather than fixed silently: the backup-artifact
-defence-depth reduction above, and third-party actions pinned by tag rather than
-SHA (`grafana/setup-k6-action@v1`, `gitleaks/gitleaks-action@v2`; all others are
-first-party `actions/*`). `sha_pinning_required` is `false`.
+**No confirmed credential exposure. No rotation required. No P0.**
+
+One finding was **fixed in this round rather than recorded**: the two
+third-party actions were pinned by mutable tag. A tag is a pointer its owner can
+move, so `@v2` is a standing agreement to run whatever it names on the day it
+runs — and on a public repository both of these execute on inputs this project
+does not control. They are now pinned to full commit SHAs, with the tag kept in
+a trailing comment so the version is still legible:
+
+| Action | Was | Now | Why it matters here |
+|---|---|---|---|
+| `gitleaks/gitleaks-action` | `@v2` | `@ff98106e4c7b2bc287b24eaf42907196329070c7` | runs on every push **and every fork pull request** |
+| `grafana/setup-k6-action` | `@v1` | `@db07bd9765aac508ef18982e52ab937fe633a065` | runs in the job holding `STAGING_URL` and `STAGING_PUBLIC_SLUG` |
+
+Every other `uses:` in this repository is first-party `actions/*`, left on major
+tags deliberately: they are published by the same vendor that runs the runner,
+so a SHA pin there buys nothing that the platform trust boundary does not
+already give. `sha_pinning_required` remains `false` at the repository level —
+the pins are in the workflow files, which is where they are readable in review.
+
+**One item is carried forward rather than fixed**, because fixing it is a
+policy decision and not an engineering one: the backup-artifact defence-depth
+reduction described above. Production dumps are age-encrypted and world-readable
+as artifacts. Shortening `retention-days`, or moving the dumps off Actions
+artifacts entirely, would restore the second layer — and both change the
+restore-drill and backup-freshness guarantees, so neither belongs in a release
+freeze.
 
 ## SOAK CERTIFIED — 2026-09-09T09:51:25Z
 
