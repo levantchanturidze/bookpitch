@@ -142,7 +142,7 @@ Observed directly, not carried over from any earlier summary.
 |---|---|---|---|
 | D1 | An accessible Sentry workspace | `PRODUCTION VERIFIED` | **Cleared 2026-09-07 by the operator.** The workspace is reachable from CI: run [34132603049](https://github.com/levantchanturidze/bookpitch/actions/runs/34132603049) authenticated against `bookpitch`/`bookpitch` (EU) and read two events back through the API (level 4 INDEXED). The earlier `BLOCKED` reading is preserved below and was accurate when written — it recorded an unreachable Sentry, which is not the same as an absent one |
 | D2 | Sentry DSNs + auth token configured | `PRODUCTION VERIFIED` | Vercel Production carries `SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_DSN`, `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT` and both environment variables; GitHub Actions carries the token, org and project. Observed by the monitor rather than asserted: run [34088552353](https://github.com/levantchanturidze/bookpitch/actions/runs/34088552353) 05:53Z `FAIL … DSN env vars unset: 2 of 2`, run [34120437200](https://github.com/levantchanturidze/bookpitch/actions/runs/34120437200) 12:10Z `PASS … both Sentry DSN env vars are present`, **27/29 passed, 2 paused, 2 informational, no failing check**. Presence is not delivery and the check says so itself — that is D3 |
-| D3 | Server + browser Sentry receipt | `IN PROGRESS` | No longer blocked on a human. The first run that could reach Sentry proved levels 1–4 in both runtimes **and symbolicated both stacks to their own probe source**, then failed level 5 and the source-map check for two defects in the verifier itself (A38, A40). Both are fixed; the receipt is written by the next passing run of `release-verify-and-soak.yml`. **Not yet passed — do not read this row as evidence** |
+| D3 | Server + browser Sentry receipt | `PRODUCTION VERIFIED` | Proven on the soaked release `9c65845` by run [34211356813](https://github.com/levantchanturidze/bookpitch/actions/runs/34211356813): `Highest level proven: 5 (VERIFIED)`, server event `64c3f513bd294a7f914623128de1f3cb`, browser event `01e943e69a274c53982b1f9a5b6ac5a1`, both stacks resolved to their own probe source, public source maps affirmatively absent and control-confirmed. Then re-proven **four more times unattended** inside the soak window, every one `event=schedule` / `run_attempt=1`, each with a fresh event pair |
 | D4 | Designated test mailbox | `BLOCKED — MANUAL` | none nominated |
 | D5 | Mailbox UAT | `BLOCKED — MANUAL` | depends on D4 |
 | D6 | Legal operator identity + approval | `BLOCKED — MANUAL` | Two separate things. (a) **Data**: `OPERATOR_IDENTITY` in `lib/legal.ts` is all-null — legal name, registration number, postal address, contact. Only the operator has these. (b) **Approval**: `LEGAL_DOCUMENT_STATUS` is `'draft'`, and flipping it asserts that a qualified person reviewed the published privacy notice and terms against the actual processing this system performs. Scope is `docs/legal-review-checklist.md`. Neither is inferable from a green build, and an agent supplying either would be fabricating a representation to data subjects |
@@ -153,9 +153,9 @@ Observed directly, not carried over from any earlier summary.
 
 | # | Gate | Status | Evidence |
 |---|---|---|---|
-| E1 | Soak preconditions satisfied | `IN PROGRESS` | **Reclassified 2026-09-07: the human input arrived, so this is no longer `BLOCKED — MANUAL`.** Of the three refusals below, the release/alias gate and the unrelated-incident gate are both satisfied (production serves one SHA on both hosts; #44 is the only open `ops-incident` and is explicitly permitted here). The third — a receipt from a complete verification — waits on D3. The original description is preserved: refused by **three** independent gates while D3 is unmet. The canonical observability incident is **#44** (#67 was closed as its duplicate — see A25). `release-verify-and-soak.yml` refuses if production is not serving the named SHA on both canonical hosts; refuses while any **unrelated** `ops-incident` is open — #44 itself is explicitly permitted, because requiring it closed was a deadlock: the incident cannot close without verification and verification would not start while it was open; and `verify-sentry.mjs` writes no receipt without a complete pass, after which the starter closes #44 by evidence and re-checks. The controller then refuses to start without a receipt. **Three, not four**: the earlier count included a probe-enable confirmation that no longer exists — the flag lived in Vercel and changing it redeployed production, which broke the soak's own release identity (A12) |
-| E2 | Uninterrupted 24h window on one SHA | `NOT STARTED` | Cannot begin until E1. Everything else it needs is proven: dry run [33867622778](https://github.com/levantchanturidze/bookpitch/actions/runs/33867622778) exercised all 7 evidence reads against production, including the shared heartbeat contract and the retention instant |
-| E3 | Natural scheduled evidence inside the window | `NOT STARTED` | Feasibility measured rather than assumed: monitor delivery p99 5.03h against a 6h gap limit, cron p99 3.02h. `retention-in-window` will hold a soak open until the nightly sweep runs inside it — by design, and the reason the window is 24 hours |
+| E1 | Soak preconditions satisfied | `PRODUCTION VERIFIED` | All three refusals cleared on 2026-09-08: production served the named SHA on both canonical hosts, no unrelated incident was open, and `verify-sentry.mjs` wrote a receipt after a complete pass. Run [34211356813](https://github.com/levantchanturidze/bookpitch/actions/runs/34211356813), all 12 steps green — the first time this workflow has ever succeeded |
+| E2 | Uninterrupted 24h window on one SHA | `SOAK VERIFIED` | **[#84](https://github.com/levantchanturidze/bookpitch/issues/84), closed `2026-09-09T09:51:25Z`: `SOAK SUCCESS — 24 uninterrupted hours on one deployment`, 14/14 gates, 24.1h, 0 restarts, 12 ticks** on release `9c658450ce6ee1be3b486baee5b70f940fc2f600` / deployment 6324725944. Nothing was committed or redeployed during the window — `main`'s newest commit predates the window start by 10 minutes |
+| E3 | Natural scheduled evidence inside the window | `SOAK VERIFIED` | 6 natural monitor observations (largest gap **5.4h** against a 6h limit), 1 scheduled backup (34319928259), 15 scheduled cron runs, retention executed `2026-09-09T07:23:49.852Z` **inside** the window, and 4 scheduled first-attempt Sentry re-verifications. No manual dispatch and no rerun was counted anywhere; `evidence-resolved` confirms every scheduled run in the window had a readable first-attempt outcome |
 
 ---
 
@@ -195,50 +195,94 @@ broken and the application was fine — and the first where a correct production
 was reported as a fault. The cost was not a false green: it was a real green
 that could not be recorded, and a soak that could not start.
 
-## Resumption checkpoint — 2026-09-08T09:43Z — A SOAK IS RUNNING
+## SOAK CERTIFIED — 2026-09-09T09:51:25Z
 
-**Do not merge anything to `main` until this soak certifies or fails.** A merge
-produces a new commit, Vercel deploys it, `VERCEL_GIT_COMMIT_SHA` changes, and
-the soak is pinned to one release — the window would be measuring a deployment
-that is no longer serving. This file is on an unmerged branch for exactly that
-reason; land it together with the soak result.
+The first 24-hour production soak this project has ever run **passed**, on its
+first attempt, with **zero restarts**.
 
 | | |
 |---|---|
-| Soak issue | **[#84](https://github.com/levantchanturidze/bookpitch/issues/84)** — `[soak] 24-hour production soak — 9c65845` |
-| Pinned release | **`9c658450ce6ee1be3b486baee5b70f940fc2f600`** |
-| Pinned deployment | GitHub Production **6324725944**, state `success` |
-| Effective window | `2026-09-08T09:42:53.822Z` → nominal `2026-09-09T09:42:53Z` |
-| Started by | run [34211356813](https://github.com/levantchanturidze/bookpitch/actions/runs/34211356813), all 12 steps green — the only supported entry point, and the first time this workflow has ever succeeded |
-| Aliases | `bookpitch.ge` and `www.bookpitch.ge` both serve the pinned SHA; health body exactly `{"ok":true}` |
-| PUSH build on the merge commit | run [34210603074](https://github.com/levantchanturidze/bookpitch/actions/runs/34210603074), `event=push`, **attempt 1**, all three jobs success. Read, per A34 |
-| CI on the merged PR head | run [34209886391](https://github.com/levantchanturidze/bookpitch/actions/runs/34209886391) on `4abb059`, `pull_request`, attempt 1 |
-| Open incidents | **none.** #44 was closed BY EVIDENCE at 09:10:36Z by run [34208400168](https://github.com/levantchanturidze/bookpitch/actions/runs/34208400168), not by a keyword and not by hand |
-| Sentry on the pinned release | `Highest level proven: 5 (VERIFIED)`; server event `64c3f513bd294a7f914623128de1f3cb`, browser event `01e943e69a274c53982b1f9a5b6ac5a1`, nonce `8124d86eb2fa00b90ea29d611762f507`; source maps affirmatively absent, control-confirmed |
-| Durable scheduler | GitHub Actions, not a session: `soak.yml` `20,50 * * * *`, `sentry-reverify.yml` `35 */4 * * *`, monitor `5,35 * * * *`, backup `40 1 * * *`, cron `*/15` |
+| Soak issue | **[#84](https://github.com/levantchanturidze/bookpitch/issues/84)**, closed by the controller at `2026-09-09T09:51:25Z` |
+| **Soaked release** | **`9c658450ce6ee1be3b486baee5b70f940fc2f600`** |
+| **Soaked deployment** | GitHub Production **6324725944** |
+| Effective window | `2026-09-08T09:42:53.822Z` → `2026-09-09T09:51:23Z`, **24.1h, uninterrupted** |
+| Restarts | **0** |
+| Ticks | 12, checkpoint chain 1→12 intact and monotonic |
+| Started by | run [34211356813](https://github.com/levantchanturidze/bookpitch/actions/runs/34211356813) — `release-verify-and-soak.yml`, the only supported entry point |
+| Verdict | `SOAK SUCCESS — 24 uninterrupted hours on one deployment`, **14 of 14 gates green** |
 
-### What still has to happen, and by what
+### The gates, as the controller reported them
 
-Nothing here needs a person. Every remaining soak gate is fed by a scheduled
-workflow:
+| gate | detail |
+|---|---|
+| `window-elapsed` | 24.1h of an uninterrupted 24h window |
+| `history-continuity` | fetched monitor history reaches back past the window start |
+| `monitor-observations` | **6** natural observations (need 6); manual dispatches not counted |
+| `monitor-clean` | 0 non-successful observations in the window |
+| `evidence-resolved` | every scheduled run in the window has a readable first-attempt outcome |
+| `scheduled-backup` | **1** successful scheduled backup inside the window |
+| `scheduled-cron` | **15** successful SCHEDULED cron runs (need 4) |
+| `observation-gap` | largest gap **5.4h** (limit 6h) |
+| `no-incident-in-window` | no incident opened during the window, and none open now |
+| `outbox-clean` | 0 dead-lettered outbox rows |
+| `cron-outcomes` | every required scheduled job has a fresh successful heartbeat |
+| `retention-in-window` | retention succeeded `2026-09-09T07:23:49.852Z`, inside the window |
+| `observability-continuing` | fresh events ingested 4.8h before the verdict (limit 14h) |
+| `observability` | receipt revalidated: server `542dfa8b8628`, browser `7d17a7d312a3`, a frame resolved to original source |
 
-| Gate | Fed by | Due inside the window |
-|---|---|---|
-| `window-elapsed` | time | 2026-09-09T09:42Z |
-| `monitor-observations` (≥6 natural) | `production-monitor.yml` | ~48 slots |
-| `observation-gap` (≤6h) | same | R-08: p95 4.13h, p99 5.03h |
-| `scheduled-backup` (≥1 in window) | `production-backup.yml` | 2026-09-09T01:40Z |
-| `retention-in-window` | `cron.yml` nightly sweep | 2026-09-09T02:17Z |
-| `scheduled-cron` (≥4) | `cron.yml` | every 15 min |
-| `observability-continuing` | `sentry-reverify.yml` | every 4h, 14h expiry |
-| `evidence-resolved` | every first-attempt outcome readable | continuous |
+### Natural evidence, named
 
-### To resume
+- **Monitor** (6, all scheduled, all first-attempt): 34319542102, 34297953956,
+  34288262675, 34273171777, 34256710651, 34232146093
+- **Backup** (1): 34319928259
+- **Cron** (15): 34331247098, 34323615591, 34317094814, 34308708789,
+  34298127791, 34292826866, 34288560666, 34282013470, 34276441406, 34263248350,
+  34259938359, 34241835006, 34236568301, 34217831045, 34212702574
+- **Sentry re-verification** (4, every one `event=schedule` and `run_attempt=1`,
+  no reruns and no dispatches):
+  [34229256051](https://github.com/levantchanturidze/bookpitch/actions/runs/34229256051),
+  [34269337699](https://github.com/levantchanturidze/bookpitch/actions/runs/34269337699),
+  [34288119252](https://github.com/levantchanturidze/bookpitch/actions/runs/34288119252),
+  [34313189815](https://github.com/levantchanturidze/bookpitch/actions/runs/34313189815).
+  Each emitted, indexed and retrieved a **fresh** pair of events in both
+  runtimes and reached `Highest level proven: 5 (VERIFIED)`, refreshing the
+  proof rather than re-reading the original one.
 
-> Read `docs/finalization-ledger.md`, check soak issue #84, and continue.
+### Identity held for the whole window
 
-Re-observe rather than trusting this table: the soak issue body is the
-authority, it is signed, and it moves every 30 minutes.
+`origin/main`'s newest commit is the merge of PR #83 at **09:32:52Z**, which is
+**before** the window opened at 09:42:53Z. Nothing was committed, merged or
+redeployed for the whole 24.1 hours; the checkpoint for this soak was
+deliberately parked on an unmerged draft branch to keep it that way. Throughout
+and at the verdict, both canonical hosts served the pinned SHA and
+`/api/health` returned exactly `{"ok":true}`.
+
+### What this certifies, and what it does not
+
+The controller says it itself, and it is worth repeating rather than
+paraphrasing away:
+
+> This is the TECHNICAL gate only, and it is the ONLY thing this controller can
+> attest to. Releasing additionally requires legal approval and
+> designated-mailbox UAT, neither of which is observable from here. **A green
+> soak is not a green release.**
+
+### The SHA this document is committed under is NOT the soaked SHA
+
+Merging this file produces a new commit and Vercel deploys it, so the SHA
+serving production after this merge is **not** `9c65845`. That is unavoidable
+and is not a gap, but it must not be blurred:
+
+- **`9c658450ce6ee1be3b486baee5b70f940fc2f600` is the soaked release.** Every
+  number above describes that commit and deployment 6324725944.
+- The commit that records this is a later, **documentation-only** change. It
+  alters no application surface and no schema, which is checkable in one
+  command rather than asserted:
+  `git diff --name-only 9c65845 <this merge> -- app/ lib/ components/ prisma/ proxy.ts package.json` returns nothing.
+- A future reader must not read "production is soaked" as applying to whatever
+  SHA is serving when they look. It applies to `9c65845`. If a later commit
+  changes application behaviour, that release is **not** soaked and needs its
+  own window.
 
 ## Resumption checkpoint — 2026-09-05T21:45Z
 
