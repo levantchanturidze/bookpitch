@@ -267,6 +267,27 @@ paraphrasing away:
 > designated-mailbox UAT, neither of which is observable from here. **A green
 > soak is not a green release.**
 
+### Superseded the day it was certified — by a security patch, not a defect
+
+Hours after this soak certified, `npm audit` went from **0 findings** to **5**
+with no change in this repository: the advisories were published overnight.
+`next` 16.3.0 fell inside a **CRITICAL** range
+([GHSA-p293-qw3h-jr36](https://github.com/advisories/GHSA-p293-qw3h-jr36),
+[GHSA-2xp9-vwfh-vxw4](https://github.com/advisories/GHSA-2xp9-vwfh-vxw4)) and
+`sharp` 0.35.3 in a HIGH one. Taking the patches bumps a dependency the
+application ships, so:
+
+**The soak above certifies `9c65845` and only `9c65845`.** It does not
+transfer to the patched release. That release gets its own release-bound Sentry
+verification and its own 24-hour window, because the alternative — treating a
+soak as a property of "production" rather than of one immutable commit — is
+exactly the class of claim this ledger exists to refuse.
+
+Recorded here rather than quietly re-pointed, so that the relationship between
+the evidence and the commit it describes stays exact. The certification is not
+diminished by being superseded: it proved the release path, the controller and
+the gates all work end to end, which is what had never been true before.
+
 ### The SHA this document is committed under is NOT the soaked SHA
 
 Merging this file produces a new commit and Vercel deploys it, so the SHA

@@ -87,6 +87,20 @@ What makes it evidence rather than elapsed time:
   is a property of the plan the repository is on, and the correct response is
   not to widen the threshold.
 
+**And it was superseded the same day.** Hours after certification, `npm audit`
+went from 0 findings to 5 with nothing in the repository having changed —
+`next` 16.3.0 landed inside a CRITICAL RCE range and `sharp` 0.35.3 inside a
+HIGH one. Taking the patches changes a dependency the application ships, so the
+patched release is a different release and needs its own window. The soak
+certifies `9c65845` and nothing else.
+
+That is worth stating without apology. A 24-hour soak is a statement about one
+immutable commit, not a standing property of "production", and the moment it is
+allowed to drift into the latter it stops being evidence. What the window
+bought is not transferable safety — it is proof that the release path, the
+controller and all fourteen gates work end to end, which had never been true
+before and does not have to be re-proven from scratch.
+
 The controller's own caveat is the last word, and it is not boilerplate:
 
 > This is the TECHNICAL gate only... Releasing additionally requires legal
