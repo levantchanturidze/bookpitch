@@ -633,31 +633,32 @@ has now been stated three times and been wrong twice: the round after each one
 found more. What can honestly be said is that no known automatable defect is
 outstanding, and that the next review is what decides whether that holds.
 
-### 1. Sentry — no accessible workspace or configuration
+### 1. Sentry — RESOLVED 2026-09-07, closed by evidence 2026-09-08
 
-`production-observability-unconfigured` fails; issue **#44** is open. Every
-uncaught exception in production is discarded.
+**This item is no longer blocked.** It is kept, rather than deleted, because the
+shape of how it cleared is the useful part.
 
-What is actually established, and the distinction matters: **no authenticated
-Sentry session or configuration is reachable from here.** Navigating to
-`sentry.io/organizations/new/` redirects to `/auth/login/`; Vercel Production
-holds `SENTRY_ENVIRONMENT` and `NEXT_PUBLIC_SENTRY_ENVIRONMENT` and neither DSN;
-the repository holds no Sentry secret. Earlier versions of this document said
-"no Sentry workspace exists", which is a claim about the world that this
-evidence does not support — an organisation may well exist that nothing here can
-reach. Signing in requires the operator's credentials, and creating one requires
-accepting Sentry's terms on their behalf; both are out of scope for an agent.
+A person created/nominated the Sentry organisation and project and set the DSNs,
+`SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT` in Vercel Production and
+as repository secrets; production was redeployed so the build could inline
+`NEXT_PUBLIC_SENTRY_DSN`. The monitor recorded the transition unprompted — `FAIL
+… DSN env vars unset: 2 of 2` at 05:53Z, `PASS … both Sentry DSN env vars are
+present` at 12:10Z.
 
-**Needs a person to:** create or nominate a Sentry organisation and project,
-then set, in Vercel Production, `SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_DSN` and
-`SENTRY_AUTH_TOKEN` / `SENTRY_ORG` / `SENTRY_PROJECT` (the last three are what
-uploads source maps at build time and what reads events back afterwards), and
-the same three as repository secrets so the soak can re-verify.
+Issue **#44** — *[ops] Application errors are not being reported anywhere* —
+was **closed 2026-09-08T09:10:36Z**, by the monitor's own recovery path rather
+than by hand. Uncaught production exceptions are no longer discarded.
 
-Checked read-only on 2026-09-03: Vercel Production holds `SENTRY_ENVIRONMENT`
-and `NEXT_PUBLIC_SENTRY_ENVIRONMENT` and neither DSN; the repository holds
-**no** Sentry secret at all. Nothing here is a step somebody forgot — there is
-still nothing to configure against.
+What the paragraphs below described — "no authenticated Sentry session or
+configuration is reachable from here" — was accurate when written on
+2026-09-03 and is now history. The distinction it drew still matters and is
+worth keeping: what was ever established was *unreachability from this
+environment*, never the non-existence of an account. That wording error is why
+this section is rewritten rather than quietly deleted.
+
+The verifier itself is unchanged and its level table below is still the
+definition of what counts as proof.
+
 
 Afterwards `npm run verify:sentry` proves it end to end. It was rewritten this
 round and no longer proves anything about the machine it runs on:
@@ -711,15 +712,28 @@ No mailbox has been named, so signup and email-receipt UAT **has not been
 performed** and is not claimed anywhere. Inspecting an inbox is the only thing
 that proves delivery; a 200 from the provider is not.
 
-### 4. Branch protection — accepted risk, not a gap
+### 4. Branch protection — the premise changed on 2026-09-09
 
-Unavailable for private repositories on the current plan. Recorded as **R-07**
-in `docs/phase-15-risk-register.md` with explicit owner acceptance for launch
-and pilot, mitigated by verifying each required check against the exact head
-SHA before merging. This is a documented accepted risk, not an outstanding
-item.
+This previously read: *"Unavailable for private repositories on the current
+plan. Recorded as R-07 … with explicit owner acceptance."* **That premise no
+longer holds.** The repository was made public at 2026-09-09T10:31:10Z, and
+`repos/…/branches/main/protection` now answers `404 Branch not protected`
+instead of `403 Upgrade to GitHub Pro`. Branch protection is therefore
+*available* and simply *not configured*.
 
----
+It was deliberately **not enabled during this release freeze**. Turning on
+required status checks mid-programme, on a single-maintainer repository, risks
+exactly the failure this project keeps cataloguing: a gate that cannot go green
+— the final merge blocked behind checks that cannot complete, or an unattended
+scheduled soak unable to make progress. Enabling it is a real improvement and a
+real change of workflow, and it belongs to a round where it can be turned on and
+then *tested by watching it refuse a merge*, not asserted.
+
+Until then R-07 stands in `docs/phase-15-risk-register.md`, with its stated
+mitigation — verify each required check against the exact head SHA before
+merging — and with its justification corrected: it is now a **deferred
+configuration choice**, not a plan limitation.
+
 
 ## Release verdict
 
@@ -739,7 +753,46 @@ never run. Those are not softer failures. They are the same defect wearing a
 patient face, and a queue of them is how a release stays permanently three days
 away.
 
-The soak has not started and **must not** be started while `#44` is open. That
-is now enforced rather than intended: the controller refuses to start without a
-Sentry receipt for the release under soak, and no receipt can be produced,
-because there is no Sentry workspace to produce one against.
+~~The soak has not started and **must not** be started while `#44` is open.~~
+**Superseded.** `#44` closed 2026-09-08T09:10:36Z. The controller's refusal to
+start without a Sentry receipt is unchanged and still enforced — what changed is
+that a receipt can now be produced.
+
+## Since that verdict — 2026-09-09
+
+Three things happened after the paragraphs above were written, and all three
+change what the verdict means rather than the verdict itself.
+
+**A soak ran and passed.** Issue **#84** — *[soak] 24-hour production soak —
+`9c65845`* — closed **2026-09-09T09:51:25Z**, 14/14 gates, 0 restarts. It is the
+first 24-hour soak this project has completed. It certifies `9c65845` and
+deployment `6324725944` **and nothing else**: not `207b555`, not the release
+this document is being merged into. A soak is bound to one SHA and one
+deployment, permanently.
+
+**A security patch superseded the certified release.** PR #86 merged
+dependency advisories as `8572634`, and PR #85's merge produced `207b555`. So
+the soaked release is no longer the deployed release, and the deployed release
+is not soaked. That is the normal cost of patching after certification, and it
+is stated rather than glossed: **the certified release and the running release
+are different commits, and the running one needs its own 24-hour window.**
+
+**GitHub Actions stopped allocating runners for 10h12m.** From
+2026-09-09T10:26:22Z no job was assigned a runner; 15 runs across 6 workflows
+were lost. Allocation recovered by 2026-09-09T20:38:57Z. The repository was made
+public at 10:31:10Z as part of resolving it, which is a **disclosure decision, a
+person's to make**, and it did not by itself restore allocation — fourteen runs
+failed identically after it. The full measured record, including what the
+evidence does *not* establish about the cause, is in
+`docs/finalization-ledger.md` § *RESOLVED — Actions runner allocation*.
+
+The consequence for this document: the repository is **public**. Every
+Actions log, artifact and workflow run on it is world-readable. That was audited
+before secret-bearing workflows were run again — full-history credential scan,
+workflow trigger and permission review, artifact content review — and the result
+is recorded in the finalization ledger. Nothing found required rotation.
+
+**The verdict stands as written, with its scope corrected:** engineering
+complete as reviewed, blocked externally on items 2 and 3 only — legal/operator
+sign-off and a designated test mailbox. Item 1 is resolved and item 4 is now a
+deferred configuration choice rather than a plan limitation.
