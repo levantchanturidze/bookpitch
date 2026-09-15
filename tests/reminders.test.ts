@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 
 // Reminders code imports @/auth transitively via lib/auth's ForbiddenError
 // (imported by lib/messaging/reminders.ts via lib/auth exports). Stub so
@@ -13,7 +13,8 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 
 const { withoutRls } = await import('@/lib/db');
 const { renderTemplate, DEFAULT_SMS_TEMPLATE } = await import('@/lib/messaging/templates');
-const { runReminderTick, sendForAppointment } = await import('@/lib/messaging/reminders');
+const { runReminderTick, sendForAppointment, activeChannels } =
+  await import('@/lib/messaging/reminders');
 
 async function clearMessageLogs(appointmentIds: string[]) {
   if (!appointmentIds.length) return;
@@ -258,7 +259,16 @@ describe('runReminderTick / sendForAppointment', () => {
     }
   });
 
-  it('missing customer contact records a failed row and does not throw', async () => {
+  // Incident #90. This test used to assert `state === 'failed'`, which is the
+  // behaviour that helped cause it: a customer with no phone number and a dead
+  // SMS gateway produced identical rows, so the operator could not tell a data
+  // gap from an outage — and because `failed` is deliberately OUTSIDE the dedup
+  // set, every tick for the whole lead window wrote another one.
+  //
+  // The assertion is kept and strengthened rather than relaxed: same entry
+  // point, same outcome code, and now three properties the old test did not
+  // check at all.
+  it('missing customer contact records a SKIPPED row, deduped, and does not throw', async () => {
     if (!noContactApptId) return; // scenario didn't seed cleanly
     const sms = await sendForAppointment(noContactApptId, 'sms');
     expect(sms.outcome).toBe('skipped_missing_contact');
@@ -269,7 +279,82 @@ describe('runReminderTick / sendForAppointment', () => {
       }),
     );
     expect(logs.length).toBe(1);
-    expect(logs[0].state).toBe('failed');
+    // A data condition, not a provider failure.
+    expect(logs[0].state).toBe('skipped');
     expect(logs[0].toAddress).toBe('');
+  });
+
+  it('repeated ticks do not accumulate missing-contact rows without bound', async () => {
+    if (!noContactApptId) return;
+    // The unbounded-growth complement. Before the fix this wrote one row per
+    // tick, for as long as the appointment sat inside the lead window.
+    for (let i = 0; i < 4; i += 1) {
+      const r = await sendForAppointment(noContactApptId, 'sms');
+      expect(r.outcome).toBe('skipped_missing_contact');
+    }
+    const logs = await withoutRls((tx) =>
+      tx.messageLog.findMany({ where: { appointmentId: noContactApptId!, channel: 'sms' } }),
+    );
+    expect(logs.length).toBe(1);
+  });
+
+  it('a skipped row does NOT block a real send once contact details are added', async () => {
+    if (!noContactApptId) return;
+    // The other half of the dedup decision, and the reason `skipped` is deduped
+    // at the write site rather than inside alreadyReminded(): the skip explains
+    // the silence, it must never become the reason for it.
+    await sendForAppointment(noContactApptId, 'sms'); // leaves a skipped row
+
+    const appt = await withoutRls((tx) =>
+      tx.appointment.findUnique({
+        where: { id: noContactApptId! },
+        select: { customerId: true },
+      }),
+    );
+    await withoutRls((tx) =>
+      tx.customer.update({
+        where: { id: appt!.customerId },
+        data: { phone: '+995500000001' },
+      }),
+    );
+
+    const after = await sendForAppointment(noContactApptId, 'sms');
+    expect(after.outcome).toBe('sent');
+
+    const logs = await withoutRls((tx) =>
+      tx.messageLog.findMany({ where: { appointmentId: noContactApptId!, channel: 'sms' } }),
+    );
+    expect(logs.map((l) => l.state).sort()).toEqual(['sent', 'skipped']);
+  });
+
+  // ---- the sender asks the policy module, not a private list ----------------
+  //
+  // The policy being correct is worth nothing if runReminderTick() still holds
+  // its own array — that WAS incident #90. activeChannels() is the function the
+  // scheduled tick and "Send now" both call, so this asserts the thing that
+  // runs rather than a parallel copy of the rule.
+  //
+  // It lives in this file because importing lib/messaging/reminders from a
+  // file without the DB harness breaks next-auth module resolution (the same
+  // constraint tests/reminder-gap-recovery.test.ts documents).
+  describe('the reminder sender consumes the channel policy', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('dials ONLY the live channel when SMS is deferred in production', () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('EMAIL_PROVIDER', 'resend');
+      vi.stubEnv('SMS_PROVIDER', 'mock');
+      // getSmsProvider() throws on mock in production. A hard-coded
+      // ['sms','email'] loop would dial it here and manufacture the failure row
+      // that made the UAT appointment look unreminded.
+      expect(activeChannels()).toEqual(['email']);
+    });
+
+    it('dials both once SMS is really configured', () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('EMAIL_PROVIDER', 'resend');
+      vi.stubEnv('SMS_PROVIDER', 'smsoffice');
+      expect(activeChannels().slice().sort()).toEqual(['email', 'sms']);
+    });
   });
 });

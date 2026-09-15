@@ -71,6 +71,12 @@ enum MessageState {
   sent
   failed
   delivered
+  // Incident #90. The channel was live and owed, but the customer had no
+  // address on it — a DATA condition, not a provider failure. It used to be
+  // written as `failed`, which put a gateway outage and a blank phone number
+  // in the same bucket and made `failed` mean two different things to the
+  // operator. It is also deduplicated, which `failed` deliberately is not.
+  skipped
 
   @@map("message_state")
 }
