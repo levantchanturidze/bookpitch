@@ -20,15 +20,23 @@ type Props = {
   timezone: string;
 };
 
-export default function ReschedulePanel({ appointments, staff, timezone }: Props) {
+export default function ReschedulePanel({
+  appointments,
+  staff,
+  timezone,
+}: Props) {
   const router = useRouter();
   const candidates = useMemo(
-    () => appointments.filter((a) => a.status === 'pending' || a.status === 'confirmed'),
+    () =>
+      appointments.filter(
+        (a) => a.status === 'pending' || a.status === 'confirmed',
+      ),
     [appointments],
   );
 
   const [appointmentId, setAppointmentId] = useState(candidates[0]?.id ?? '');
-  const selected = candidates.find((a) => a.id === appointmentId) ?? candidates[0] ?? null;
+  const selected =
+    candidates.find((a) => a.id === appointmentId) ?? candidates[0] ?? null;
   const [staffId, setStaffId] = useState(selected?.staffId ?? '');
   const [date, setDate] = useState(selected?.date ?? '');
   const [time, setTime] = useState(selected?.time ?? '');
@@ -105,7 +113,9 @@ export default function ReschedulePanel({ appointments, staff, timezone }: Props
 
       if (!result.ok) {
         if (result.error === 'slot_taken') {
-          setError('That slot was taken while you were rescheduling. Available times were refreshed.');
+          setError(
+            'That slot was taken while you were rescheduling. Available times were refreshed.',
+          );
           setRefreshToken((v) => v + 1);
         } else if (result.error === 'slot_outside_availability') {
           setError("That time is outside the staff member's availability.");
@@ -143,20 +153,28 @@ export default function ReschedulePanel({ appointments, staff, timezone }: Props
       className="rounded-xl border border-slate-200 bg-white p-6"
     >
       <div className="mb-4">
-        <h2 id="reschedule-appointment-heading" className="text-base font-bold text-slate-800">
+        <h2
+          id="reschedule-appointment-heading"
+          className="text-base font-bold text-slate-800"
+        >
           Reschedule Appointment
         </h2>
         <p className="mt-1 text-xs text-slate-500">
-          Move an existing pending or confirmed booking without letting it block its own slot.
+          Move an existing pending or confirmed booking without letting it block
+          its own slot.
         </p>
       </div>
 
       {candidates.length === 0 || !selected ? (
-        <StatusMessage>No pending or confirmed appointments are available in this month.</StatusMessage>
+        <StatusMessage>
+          No pending or confirmed appointments are available in this month.
+        </StatusMessage>
       ) : (
         <div className="grid gap-4 lg:grid-cols-4">
           <label className="block lg:col-span-2">
-            <span className="mb-1 block text-xs font-bold text-slate-500">Appointment</span>
+            <span className="mb-1 block text-xs font-bold text-slate-500">
+              Appointment
+            </span>
             <select
               aria-label="Appointment"
               value={selected.id}
@@ -172,7 +190,9 @@ export default function ReschedulePanel({ appointments, staff, timezone }: Props
           </label>
 
           <label className="block">
-            <span className="mb-1 block text-xs font-bold text-slate-500">Staff</span>
+            <span className="mb-1 block text-xs font-bold text-slate-500">
+              Staff
+            </span>
             <select
               aria-label="Staff"
               value={staffId}
@@ -193,7 +213,9 @@ export default function ReschedulePanel({ appointments, staff, timezone }: Props
           </label>
 
           <label className="block">
-            <span className="mb-1 block text-xs font-bold text-slate-500">Date</span>
+            <span className="mb-1 block text-xs font-bold text-slate-500">
+              Date
+            </span>
             <input
               aria-label="Date"
               type="date"
@@ -210,9 +232,17 @@ export default function ReschedulePanel({ appointments, staff, timezone }: Props
 
           <div className="lg:col-span-2">
             <div className="mb-1 flex items-center justify-between gap-2">
-              <span className="text-xs font-bold text-slate-500">Available time</span>
+              <span className="text-xs font-bold text-slate-500">
+                Available time
+              </span>
               <span className="text-[10px] text-slate-500">
-                Current: <strong data-testid="reschedule-current-time" className="font-mono">{selected.time}</strong>
+                Current:{' '}
+                <strong
+                  data-testid="reschedule-current-time"
+                  className="font-mono"
+                >
+                  {selected.time}
+                </strong>
               </span>
             </div>
             {slotsLoading ? (
@@ -259,7 +289,9 @@ export default function ReschedulePanel({ appointments, staff, timezone }: Props
           </div>
 
           <div className="lg:col-span-4">
-            <StatusMessage tone={error ? 'error' : success ? 'success' : 'info'}>
+            <StatusMessage
+              tone={error ? 'error' : success ? 'success' : 'info'}
+            >
               {error ?? success}
             </StatusMessage>
           </div>
