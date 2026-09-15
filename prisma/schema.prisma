@@ -354,6 +354,11 @@ model StaffAvailability {
   weekday   Int      @db.SmallInt
   startTime DateTime @map("start_time") @db.Time(6)
   endTime   DateTime @map("end_time") @db.Time(6)
+  /// Data-version boundary for the UTC->local conversion. Always 'local' for
+  /// rows this application writes; 'utc_legacy' exists only inside migration
+  /// 20260915000002, which converts and clears it. Its purpose is to make
+  /// double conversion impossible rather than merely unlikely.
+  timeBasis String   @default("local") @map("time_basis")
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 

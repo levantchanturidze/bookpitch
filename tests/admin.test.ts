@@ -288,6 +288,45 @@ describe('admin CRUD × 4 surfaces', () => {
     expect(hhmm(w!.endTime as unknown as Date)).toBe('23:00');
   });
 
+  // ---------------------------------------------------------------------------
+  // Migration 20260915000002 — the data-version boundary, asserted in CI.
+  //
+  // The conversion itself was proven against a production-shaped fixture
+  // (five Asia/Tbilisi rows, 05:00-13:00 -> 09:00-17:00) before deployment.
+  // What must not drift afterwards is the INVARIANT that makes re-conversion
+  // impossible: every row this application writes is already local, so nothing
+  // is ever eligible for conversion again.
+  // ---------------------------------------------------------------------------
+  it('every row the application writes is marked local, never legacy', async () => {
+    await setAvailability(ownerSession, trackedStaffIds[0], [
+      { weekday: 1, startTime: '09:00', endTime: '17:00' },
+    ]);
+    const rows = await withoutRls((tx) =>
+      tx.staffAvailability.findMany({
+        where: { staffId: trackedStaffIds[0] },
+        select: { timeBasis: true },
+      }),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.timeBasis === 'local')).toBe(true);
+  });
+
+  it('refuses a time_basis the migration does not define', async () => {
+    // The CHECK constraint is what stops a future writer inventing a third
+    // basis and quietly making the boundary meaningless.
+    await setAvailability(ownerSession, trackedStaffIds[0], [
+      { weekday: 2, startTime: '09:00', endTime: '17:00' },
+    ]);
+    await expect(
+      withoutRls((tx) =>
+        tx.$executeRawUnsafe(
+          `UPDATE staff_availability SET time_basis = 'utc_guess' WHERE staff_id = $1::uuid`,
+          trackedStaffIds[0],
+        ),
+      ),
+    ).rejects.toThrow();
+  });
+
   it('deleteLocation refuses when staff exist (ConflictError 409)', async () => {
     await expect(deleteLocation(ownerSession, trackedLocationIds[0])).rejects.toMatchObject({
       name: 'ConflictError',
