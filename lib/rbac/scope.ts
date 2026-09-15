@@ -23,7 +23,7 @@
 // -----------------------------------------------------------------------------
 
 import { withOrg } from '@/lib/db';
-import type { AuthContext } from './types';
+import type { AuthContext, Resource } from './types';
 import { perm } from './types';
 
 /**
@@ -142,4 +142,66 @@ export async function scopedLocationIds(ctx: AuthContext): Promise<string[] | nu
     }),
   );
   return rows.map((r) => r.legacyLocationId!).filter((v): v is string => v !== null);
+}
+
+// -----------------------------------------------------------------------------
+// 5.2 — the resource shape a CONCRETE appointment must be authorised against.
+//
+// `can()` grants `:own` and `:branch` when no ownerUserId / branchId is passed.
+// That fallback is LIST mode and it is deliberate — without it a role holding
+// only `booking.read:own` could never list anything. The cost is that a
+// MUTATION which forgets to name its resource silently takes the same path and
+// is allowed against any row in the organisation.
+//
+// components/scheduler/actions.ts did exactly that: it authorised
+// `{ organizationId }` only, then loaded the appointment on the next line. This
+// helper exists so every mutation path — Server Action, API route, reschedule —
+// builds the same shape from the same two fields, and so "did we name the
+// resource" is one grep rather than a reading exercise.
+//
+// `ownerUserId` is OMITTED, never nulled, when the assigned staff member has no
+// linked user account (Staff.userId is nullable). Passing `null` through as a
+// string would compare `'' === ctx.userId` and deny everyone; omitting it lets
+// the decision fall through to the branch check, which is the honest answer
+// when the row has no owner to compare against.
+// -----------------------------------------------------------------------------
+export function appointmentResource(
+  organizationId: string,
+  opts: { ownerUserId?: string | null; locationId?: string | null } = {},
+): Resource {
+  return {
+    organizationId,
+    ...(opts.locationId ? { branchId: opts.locationId } : {}),
+    ...(opts.ownerUserId ? { ownerUserId: opts.ownerUserId } : {}),
+  };
+}
+
+/**
+ * Resolve ONE appointment into the resource its mutation must be authorised
+ * against — owner and branch together.
+ *
+ * `resolveBookingOwner` above resolves the owner only, which fixed `:own`
+ * (F-09) and left `:branch` still taking can()'s list-mode fallback on the API
+ * path. Both facts come from the same row, so fetching them separately only
+ * created the opportunity to forget one.
+ *
+ * Returns `null` when the id does not resolve INSIDE the caller's organisation.
+ * The read goes through withOrg, so a cross-tenant id is indistinguishable from
+ * a non-existent one here — which is the correct answer to give the caller.
+ */
+export async function resolveAppointmentResource(
+  appointmentId: string,
+  activeOrganizationId: string,
+): Promise<Resource | null> {
+  const row = await withOrg(activeOrganizationId, (tx) =>
+    tx.appointment.findFirst({
+      where: { id: appointmentId },
+      select: { locationId: true, staff: { select: { userId: true } } },
+    }),
+  );
+  if (!row) return null;
+  return appointmentResource(activeOrganizationId, {
+    locationId: row.locationId,
+    ownerUserId: row.staff?.userId ?? null,
+  });
 }

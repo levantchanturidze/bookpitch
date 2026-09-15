@@ -45,6 +45,19 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Saturday: 6,
 };
 
+/**
+ * Working hours are LOCAL to the staff member's location.
+ *
+ * The digits written here are the digits an operator would type into the
+ * availability editor. That was already true, but only by accident: the editor
+ * used to convert local -> UTC before storing while this seed stored raw, so
+ * the two wrote different meanings into the same column. Availability is stored
+ * local now (see the StaffAvailability doc comment) and this is the model both
+ * paths share.
+ *
+ * The trailing `Z` keeps Prisma reading the same wall-clock digits back out of
+ * a Time column; it does not mean the value is UTC.
+ */
 function parseHours(hours: string): { start: Date; end: Date } {
   const [rawStart, rawEnd] = hours.split(/\s*-\s*/);
   const toTime = (hhmm: string) => new Date(`1970-01-01T${hhmm}:00Z`);
@@ -148,6 +161,9 @@ async function main() {
           // future use.
           calendarColor: s.color,
           rating: s.rating,
+          // Seeded staff count as CONFIGURED, so a day with no window is a day
+          // off rather than falling through to "bookable at any hour".
+          availabilityConfiguredAt: new Date(),
           availability: {
             create: s.availability.days.map((day) => ({
               weekday: WEEKDAY_INDEX[day],

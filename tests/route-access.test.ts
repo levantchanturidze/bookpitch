@@ -30,7 +30,22 @@ vi.mock('@/lib/active-location', async () => {
 });
 
 // Dynamic imports so the mocks are in place first.
-const pages: Record<string, () => Promise<{ default: () => Promise<unknown> }>> = {
+// Page components take their route props (params/searchParams) as an optional
+// argument — /scheduler reads `searchParams.month` since the month became
+// route state. Typed loosely here because this suite only cares whether the
+// page renders or throws ForbiddenError, never what it renders.
+type PageProps = { searchParams: Promise<Record<string, string | string[] | undefined>> };
+type PageModule = { default: (props: PageProps) => Promise<unknown> };
+
+/**
+ * Next passes route props to every page. /scheduler reads `searchParams.month`
+ * since the month became route state, so the props must be supplied here —
+ * calling the page bare would exercise a signature Next never uses.
+ */
+const routeProps = (search: Record<string, string> = {}): PageProps => ({
+  searchParams: Promise.resolve(search),
+});
+const pages: Record<string, () => Promise<PageModule>> = {
   scheduler: () => import('@/app/(app)/scheduler/page'),
   patients: () => import('@/app/(app)/patients/page'),
   reminders: () => import('@/app/(app)/reminders/page'),
@@ -163,10 +178,10 @@ describe('page-level guards match NAV_ITEMS.requiredPermission', () => {
           authMock.mockResolvedValue(await jwtFor(user.email));
           const { default: Page } = await load();
           if (shouldAllow) {
-            const result = await Page();
+            const result = await Page(routeProps());
             expect(result).toBeDefined();
           } else {
-            await expect(Page()).rejects.toMatchObject({ digest: FORBIDDEN_DIGEST });
+            await expect(Page(routeProps())).rejects.toMatchObject({ digest: FORBIDDEN_DIGEST });
           }
         });
       }
@@ -176,6 +191,6 @@ describe('page-level guards match NAV_ITEMS.requiredPermission', () => {
   it('anonymous → UnauthenticatedError on /scheduler', async () => {
     authMock.mockResolvedValue(null);
     const { default: Page } = await pages.scheduler();
-    await expect(Page()).rejects.toBeInstanceOf(UnauthenticatedError);
+    await expect(Page(routeProps())).rejects.toBeInstanceOf(UnauthenticatedError);
   });
 });

@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { ctxToSession, NotFoundError, SlotTakenError, withApi } from '@/lib/auth';
-import { requireAuthContext, requirePermission, resolveBookingOwner } from '@/lib/rbac';
+import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { resolveAppointmentResource } from '@/lib/rbac/scope';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import {
@@ -30,17 +31,20 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const requiredPerm = raw?.status === 'cancelled' ? 'booking.cancel' : 'booking.update';
     const session = ctxToSession(ctx);
     const { id } = await params;
-    // F-09 companion: resolve booking owner before the permission check
-    // so :own-scoped roles (PROVIDER's booking.update:own / booking.cancel:own)
-    // are evaluated against the actual booking owner rather than falling
+    // Resolve the concrete resource before the permission check, so `:own` AND
+    // `:branch` are both evaluated against this appointment rather than falling
     // through can()'s list-mode fallback.
-    const ownerUserId = await resolveBookingOwner(id, ctx.activeOrganizationId!);
-    requirePermission(
-      ctx,
-      requiredPerm,
-      { organizationId: ctx.activeOrganizationId!, ownerUserId: ownerUserId ?? undefined },
-      'appointments',
-    );
+    //
+    // F-09 fixed the owner half here and left the branch half: this passed
+    // `{ organizationId, ownerUserId }` with no branchId, so a `:branch`-scoped
+    // caller still matched can()'s `!resource?.branchId` fallback and could
+    // PATCH an appointment in a branch they do not hold. Both facts live on the
+    // same row; fetching them separately only created the chance to forget one.
+    const resource = await resolveAppointmentResource(id, ctx.activeOrganizationId!);
+    // Same shape the rest of this handler uses for a missing row (line ~127),
+    // so a cross-tenant id and a deleted one are indistinguishable to the caller.
+    if (!resource) throw new NotFoundError('appointment not found');
+    requirePermission(ctx, requiredPerm, resource, 'appointments');
     const input = parseUpdateInput(await req.json().catch(() => null));
 
     try {

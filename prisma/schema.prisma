@@ -71,6 +71,12 @@ enum MessageState {
   sent
   failed
   delivered
+  // Incident #90. The channel was live and owed, but the customer had no
+  // address on it — a DATA condition, not a provider failure. It used to be
+  // written as `failed`, which put a gateway outage and a blank phone number
+  // in the same bucket and made `failed` mean two different things to the
+  // operator. It is also deduplicated, which `failed` deliberately is not.
+  skipped
 
   @@map("message_state")
 }
@@ -308,6 +314,14 @@ model Staff {
   avatarUrl      String?  @map("avatar_url")
   calendarColor  String?  @map("calendar_color")
   rating         Decimal? @db.Decimal(3, 2)
+  /// When availability was last saved through the editor.
+  ///
+  /// Distinguishes "nobody has ever configured this staff member" from
+  /// "configured, and this day is deliberately a day off". Enforcement used to
+  /// treat both as `windows.length === 0 -> return`, i.e. fail OPEN, so
+  /// clearing a day made it bookable around the clock instead of closed.
+  /// NULL keeps the legacy fall-through for rows nobody has touched.
+  availabilityConfiguredAt DateTime? @map("availability_configured_at") @db.Timestamptz(6)
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
@@ -322,12 +336,29 @@ model Staff {
   @@map("staff")
 }
 
+/// Working windows, expressed in the LOCATION'S LOCAL calendar.
+///
+/// `weekday` and the two times are all local. They used to disagree: the editor
+/// wrote the LOCAL weekday alongside times converted to UTC, while
+/// assertWithinAvailability() read the UTC weekday and UTC time. For Tbilisi
+/// (UTC+4) a 08:00-23:00 window survives that round trip by luck; a window
+/// whose UTC conversion crosses midnight does not, and lands on the wrong day.
+///
+/// Local storage removes the class rather than correcting instances of it: a
+/// window means the same thing whatever the reader's timezone, and the single
+/// conversion now happens at enforcement time against the APPOINTMENT'S date —
+/// not, as before, against whatever offset "today" happened to have.
 model StaffAvailability {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   staffId   String   @map("staff_id") @db.Uuid
   weekday   Int      @db.SmallInt
   startTime DateTime @map("start_time") @db.Time(6)
   endTime   DateTime @map("end_time") @db.Time(6)
+  /// Data-version boundary for the UTC->local conversion. Always 'local' for
+  /// rows this application writes; 'utc_legacy' exists only inside migration
+  /// 20260915000002, which converts and clears it. Its purpose is to make
+  /// double conversion impossible rather than merely unlikely.
+  timeBasis String   @default("local") @map("time_basis")
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 

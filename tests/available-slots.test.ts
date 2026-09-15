@@ -53,8 +53,14 @@ describe('getAvailableSlots', () => {
   /** Staff with a 09:00–18:00 UTC window used for boundary tests. */
   let staffWindowed: string;
   /**
-   * Staff with 05:00–14:00 UTC windows = 09:00–18:00 Asia/Tbilisi (UTC+4).
-   * Used to verify timezone-aware slot computation.
+   * Staff whose windows are stored as 05:00–14:00 LOCAL.
+   *
+   * These digits used to be read as UTC and shifted by the location offset on
+   * every read. Availability is stored in the location's local wall clock now,
+   * so the digits ARE the local window and no offset is applied to them. What
+   * the timezone still decides is which local DAY a date maps to and how a
+   * booked appointment's UTC instant lands in local minutes — which is what the
+   * timezone test below now measures instead.
    */
   let staffTbilisi: string;
   let customerId: string;
@@ -276,10 +282,14 @@ describe('getAvailableSlots', () => {
   });
 
   // ---------------------------------------------------------------------------
-  it('timezone: same staff returns local HH:MM; Tbilisi shifts by +4h vs UTC', async () => {
-    // staffTbilisi has windows stored as 05:00–14:00 UTC = 09:00–18:00 Tbilisi.
-    // With timezone='UTC': slots are in UTC HH:MM → 05:00 … 13:30.
-    // With timezone='Asia/Tbilisi': slots are in local HH:MM → 09:00 … 17:30.
+  it('a stored window means the same local hours whatever the location timezone', async () => {
+    // THE MODEL CHANGE, stated as an assertion. This test previously asserted
+    // the opposite: that one stored row produced 05:00 slots under UTC and
+    // 09:00 slots under Asia/Tbilisi, because the reader added the offset. That
+    // is precisely the bug — the write path never added it, so the picker and
+    // assertWithinAvailability() disagreed by exactly the offset.
+    //
+    // 05:00-14:00 stored is 05:00-14:00 local, in either location.
     const utcSlots = await withoutRls((tx) =>
       getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'UTC'),
     );
@@ -287,22 +297,74 @@ describe('getAvailableSlots', () => {
       getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'Asia/Tbilisi'),
     );
 
-    // UTC view: first slot 05:00, last 13:30 (window 05:00–14:00 UTC; 14:00+30 > 14:00)
     expect(utcSlots).toContain('05:00');
     expect(utcSlots).toContain('13:30');
-    expect(utcSlots).not.toContain('14:00'); // 14:00+30=14:30 > window end
+    expect(utcSlots).not.toContain('14:00'); // 14:00+30 > window end
 
-    // Tbilisi view: window is 09:00–18:00 local; first slot 09:00, last 17:30
-    expect(tbilisiSlots).toContain('09:00');
-    expect(tbilisiSlots).toContain('17:30');
-    expect(tbilisiSlots).not.toContain('05:00'); // 05:00 local = 01:00 UTC, outside window
-    expect(tbilisiSlots).not.toContain('18:00'); // 18:00+30=18:30 > local window end
+    expect(tbilisiSlots).toContain('05:00');
+    expect(tbilisiSlots).toContain('13:30');
+    expect(tbilisiSlots).not.toContain('14:00');
 
-    // Same number of slots — same window width, just labelled differently.
-    expect(tbilisiSlots.length).toBe(utcSlots.length);
-    // First slot in Tbilisi is exactly 4 hours ahead of first UTC slot.
-    expect(utcSlots[0]).toBe('05:00');
-    expect(tbilisiSlots[0]).toBe('09:00');
+    // Same window, same labels. The offset is applied exactly once now, at
+    // enforcement, against the appointment's own date.
+    expect(tbilisiSlots).toEqual(utcSlots);
+  });
+
+  it('EXCLUDES the appointment being rescheduled from its own occupancy', async () => {
+    // Without this the slot a booking already occupies is reported as taken —
+    // by itself — so the one time a user is most likely to keep is the one time
+    // the reschedule picker hides.
+    const appt = await withoutRls((tx) =>
+      tx.appointment.create({
+        data: {
+          organizationId: orgId,
+          locationId,
+          customerId,
+          staffId: staffTbilisi,
+          serviceName: 'Self exclusion',
+          price: 0,
+          startsAt: ts(9, 6),
+          endsAt: ts(9, 6, 30),
+          status: 'confirmed',
+        },
+        select: { id: true },
+      }),
+    );
+    createdAppointments.push(appt.id);
+
+    const without = await withoutRls((tx) =>
+      getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'UTC'),
+    );
+    expect(without, 'its own slot is blocked by itself').not.toContain('06:00');
+
+    const excluding = await withoutRls((tx) =>
+      getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'UTC', appt.id),
+    );
+    expect(excluding, 'excluded, so the slot is offered again').toContain('06:00');
+
+    // The complement: excluding one appointment must not unblock a DIFFERENT
+    // booking's slot, or reschedule would happily double-book.
+    const other = await withoutRls((tx) =>
+      tx.appointment.create({
+        data: {
+          organizationId: orgId,
+          locationId,
+          customerId,
+          staffId: staffTbilisi,
+          serviceName: 'Someone else',
+          price: 0,
+          startsAt: ts(9, 7),
+          endsAt: ts(9, 7, 30),
+          status: 'confirmed',
+        },
+        select: { id: true },
+      }),
+    );
+    createdAppointments.push(other.id);
+    const stillBlocked = await withoutRls((tx) =>
+      getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'UTC', appt.id),
+    );
+    expect(stillBlocked).not.toContain('07:00');
   });
 });
 

@@ -210,19 +210,49 @@ export async function assertWithinAvailability(
   startsAt: Date,
   endsAt: Date,
 ): Promise<void> {
-  const weekday = startsAt.getUTCDay();
+  // Availability is stored in the LOCATION'S LOCAL calendar, so the appointment
+  // has to be read in the same calendar before anything is compared.
+  //
+  // This used to compare UTC weekday and UTC time-of-day against rows whose
+  // weekday was LOCAL and whose time had been shifted to UTC. For Tbilisi
+  // (UTC+4) an 08:00-23:00 window happens to survive that; a window whose UTC
+  // form crosses midnight does not, and was evaluated against the wrong day.
+  const staff = await tx.staff.findUnique({
+    where: { id: staffId },
+    select: {
+      availabilityConfiguredAt: true,
+      location: { select: { timezone: true } },
+    },
+  });
+  const tz = staff?.location?.timezone ?? 'UTC';
+
+  // The offset on the APPOINTMENT'S date, not on whatever date this code runs.
+  const localDate = toLocalDate(startsAt, tz);
+  const weekday = localDateWeekday(localDate, tz);
+
   const windows = await tx.staffAvailability.findMany({
     where: { staffId, weekday },
     select: { startTime: true, endTime: true },
   });
-  if (windows.length === 0) return; // no configured windows → fall through
 
-  const slotStartMin = startsAt.getUTCHours() * 60 + startsAt.getUTCMinutes();
-  const slotEndMin =
-    endsAt.getUTCHours() * 60 +
-    endsAt.getUTCMinutes() +
-    // If the appointment crosses midnight, adjust; usually not needed.
-    (endsAt.getUTCDate() !== startsAt.getUTCDate() ? 24 * 60 : 0);
+  if (windows.length === 0) {
+    // Fail CLOSED once somebody has configured this staff member. Clearing a
+    // day means "day off", and the previous unconditional `return` turned that
+    // into "bookable around the clock" — the UI said closed and the backend
+    // said open. NULL still falls through, for staff nobody has ever edited.
+    if (staff?.availabilityConfiguredAt) {
+      throw new InvalidInputError('slot_outside_availability');
+    }
+    return;
+  }
+
+  const localStart = toLocalTimeHHMM(startsAt, tz);
+  const slotStartMin = hhmmToMinutes(localStart);
+  // Duration is timezone-independent, so the end is derived from it rather than
+  // converted separately — that also keeps a DST transition inside the
+  // appointment from making the end look earlier than the start.
+  const durationMin = Math.round((endsAt.getTime() - startsAt.getTime()) / 60_000);
+  const slotEndMin = slotStartMin + durationMin;
 
   const fits = windows.some((w) => {
     const wStart = w.startTime.getUTCHours() * 60 + w.startTime.getUTCMinutes();
@@ -231,6 +261,11 @@ export async function assertWithinAvailability(
   });
 
   if (!fits) throw new InvalidInputError('slot_outside_availability');
+}
+
+function hhmmToMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
 }
 
 // -----------------------------------------------------------------------------
@@ -275,31 +310,52 @@ export async function getAvailableSlots(
   date: string, // YYYY-MM-DD in the location's local timezone
   durationMinutes: number,
   timezone = 'UTC', // IANA timezone of the location
+  /**
+   * An appointment that must NOT block its own slots.
+   *
+   * Rescheduling asks "where could this booking go", and without this the
+   * booking's current slot is reported as taken — by itself — so the one time
+   * the user is most likely to keep is the one time the picker hides.
+   */
+  excludeAppointmentId?: string,
 ): Promise<string[]> {
   const weekday = localDateWeekday(date, timezone);
   const { start: dayStart, end: dayEnd } = localDayRange(date, timezone);
+
+  const staff = await tx.staff.findUnique({
+    where: { id: staffId },
+    select: { availabilityConfiguredAt: true },
+  });
 
   const windows = await tx.staffAvailability.findMany({
     where: { staffId, weekday },
     select: { startTime: true, endTime: true },
   });
 
-  // Availability windows are stored as UTC time-of-day values (1970-01-01T<HH:MM>Z).
-  // Convert to local minutes for comparison with local slot start times.
+  // Availability is stored in the LOCATION'S LOCAL wall clock, so the stored
+  // digits ARE the local minutes. This used to run them through
+  // utcTimeValueToLocalMin(), i.e. add the offset a second time, while
+  // assertWithinAvailability() compared them directly — so the picker offered
+  // slots the write path then refused, and refused slots it would have taken.
   const ranges =
     windows.length === 0
-      ? [{ startMin: 7 * 60, endMin: 21 * 60 }] // default working day (local)
-      : windows.map((w) => {
-          const localStart = utcTimeValueToLocalMin(w.startTime, timezone);
-          const localEnd = utcTimeValueToLocalMin(w.endTime, timezone);
-          return { startMin: localStart, endMin: localEnd };
-        });
+      ? // Fail CLOSED once configured: an explicit day off has no slots. This
+        // used to fall back to a 07:00-21:00 "default working day", which is
+        // the picker half of the same fail-open that let a Sunday be booked.
+        staff?.availabilityConfiguredAt
+        ? []
+        : [{ startMin: 7 * 60, endMin: 21 * 60 }] // never configured — legacy fall-through
+      : windows.map((w) => ({
+          startMin: w.startTime.getUTCHours() * 60 + w.startTime.getUTCMinutes(),
+          endMin: w.endTime.getUTCHours() * 60 + w.endTime.getUTCMinutes(),
+        }));
 
   const booked = await tx.appointment.findMany({
     where: {
       staffId,
       status: { not: 'cancelled' },
       startsAt: { gte: dayStart, lt: dayEnd },
+      ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
     },
     select: { startsAt: true, endsAt: true },
   });
