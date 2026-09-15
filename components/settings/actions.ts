@@ -10,7 +10,6 @@ import {
   createService,
   createStaff,
   deleteLocation,
-  deleteService,
   deleteStaff,
   removeMember,
   setAvailability,
@@ -20,15 +19,17 @@ import {
   updateStaff,
 } from '@/lib/admin';
 import { createInvitation, type CreateInvitationResult } from '@/lib/invitations';
+import {
+  assertStaffHardDeleteSafe,
+  cleanupServiceById,
+  requireExactCleanupId,
+} from '@/lib/cleanup-lifecycle';
 
-// Every mutation revalidates all four /settings tabs since some cross-
-// reference each other (deleting a location removes services + staff view).
 const REVALIDATE_ALL = () => {
   revalidatePath('/settings/locations');
   revalidatePath('/settings/staff');
   revalidatePath('/settings/services');
   revalidatePath('/settings/members');
-  // Also blast the shell so the header switcher picks up new locations.
   revalidatePath('/', 'layout');
 };
 
@@ -38,7 +39,6 @@ async function ctxFor(permission: string, module: string) {
   return ctxToSession(ctx);
 }
 
-// -------------------- Locations ---------------------------------------------
 export async function createLocationAction(input: unknown) {
   const session = await ctxFor('org.branch.manage', 'admin');
   const result = await createLocation(session, input);
@@ -56,6 +56,7 @@ export type DeleteResult = { ok: true } | { ok: false; error: string };
 export async function deleteLocationAction(id: string): Promise<DeleteResult> {
   const session = await ctxFor('org.branch.manage', 'admin');
   try {
+    requireExactCleanupId(id, 'locationId');
     await deleteLocation(session, id);
     REVALIDATE_ALL();
     return { ok: true };
@@ -67,7 +68,6 @@ export async function deleteLocationAction(id: string): Promise<DeleteResult> {
   }
 }
 
-// -------------------- Staff --------------------------------------------------
 export async function createStaffAction(input: unknown) {
   const session = await ctxFor('staff.update', 'admin');
   const result = await createStaff(session, input);
@@ -83,6 +83,7 @@ export async function updateStaffAction(id: string, input: unknown) {
 export async function deleteStaffAction(id: string): Promise<DeleteResult> {
   const session = await ctxFor('staff.deactivate', 'admin');
   try {
+    await assertStaffHardDeleteSafe(session, id);
     await deleteStaff(session, id);
     REVALIDATE_ALL();
     return { ok: true };
@@ -95,25 +96,11 @@ export async function deleteStaffAction(id: string): Promise<DeleteResult> {
 }
 export async function setAvailabilityAction(id: string, windows: AvailabilityWindow[]) {
   const session = await ctxFor('staff.schedule.manage', 'admin');
-  // Load the staff member's location timezone so we can convert the
-  // local times the editor submitted back to UTC for storage.
-  // No conversion. Availability is STORED in the location's local calendar now
-  // (see the StaffAvailability doc comment): this used to call
-  // localHHMMToUtcHHMM per field, which shifts the time modularly across
-  // midnight while leaving `weekday` as the LOCAL day — so a window whose UTC
-  // form crosses midnight was filed against the wrong day, and the conversion
-  // used TODAY's offset rather than the offset on the date being booked.
-  //
-  // The single conversion now happens once, at enforcement, against the
-  // appointment's own date.
   const result = await setAvailability(session, id, windows);
   REVALIDATE_ALL();
-  // Handed back so the editor can report what was actually persisted rather
-  // than closing on a resolved promise and assuming.
   return result;
 }
 
-// -------------------- Services -----------------------------------------------
 export async function createServiceAction(input: unknown) {
   const session = await ctxFor('service.manage', 'admin');
   const result = await createService(session, input);
@@ -129,7 +116,7 @@ export async function updateServiceAction(id: string, input: unknown) {
 export async function deleteServiceAction(id: string): Promise<DeleteResult> {
   const session = await ctxFor('service.manage', 'admin');
   try {
-    await deleteService(session, id);
+    await cleanupServiceById(session, id);
     REVALIDATE_ALL();
     return { ok: true };
   } catch (err) {
@@ -140,13 +127,6 @@ export async function deleteServiceAction(id: string): Promise<DeleteResult> {
   }
 }
 
-// -------------------- Members ------------------------------------------------
-/**
- * Phase 4: sends an invitation LINK (never a password). The invitee clicks
- * the link and sets their own password. Return shape carries the URL so the
- * UI can show it to the sender (in case email delivery failed / isn't
- * configured).
- */
 export async function inviteMemberAction(input: {
   email: string;
   role: UserRole;
@@ -158,11 +138,13 @@ export async function inviteMemberAction(input: {
 }
 export async function updateMemberRoleAction(membershipId: string, role: UserRole) {
   const session = await ctxFor('staff.role.assign', 'admin');
+  requireExactCleanupId(membershipId, 'membershipId');
   await updateMemberRole(session, membershipId, role);
   REVALIDATE_ALL();
 }
 export async function removeMemberAction(membershipId: string) {
   const session = await ctxFor('staff.deactivate', 'admin');
+  requireExactCleanupId(membershipId, 'membershipId');
   await removeMember(session, membershipId);
   REVALIDATE_ALL();
 }
