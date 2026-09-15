@@ -6,11 +6,7 @@ import {
   scopedByOwn,
   scopedLocationIds,
 } from '@/lib/rbac';
-import {
-  currentLocalYearMonth,
-  localMonthRange,
-  MONTH_PARAM_RE,
-} from '@/lib/tz';
+import { currentLocalYearMonth, localMonthRange, MONTH_PARAM_RE } from '@/lib/tz';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { loadLocationsForOrg } from '@/lib/active-location';
@@ -42,10 +38,7 @@ export default async function SchedulerPage({
     typeof requested === 'string' && MONTH_PARAM_RE.test(requested)
       ? requested
       : currentLocalYearMonth(tz);
-  const { anchorLocalDate, start: monthStart, end: monthEnd } = localMonthRange(
-    yearMonth,
-    tz,
-  );
+  const { anchorLocalDate, start: monthStart, end: monthEnd } = localMonthRange(yearMonth, tz);
   const spanDays = (monthEnd.getTime() - monthStart.getTime()) / 86_400_000;
   if (spanDays > 62) {
     throw new Error(`scheduler range of ${spanDays}d exceeds the 62d bound`);
@@ -144,13 +137,7 @@ export default async function SchedulerPage({
         appointments={appointments}
         monthAnchor={anchorLocalDate}
       />
-      {canReschedule && (
-        <ReschedulePanel
-          appointments={appointments}
-          staff={staff}
-          timezone={tz}
-        />
-      )}
+      {canReschedule && <ReschedulePanel appointments={appointments} staff={staff} timezone={tz} />}
     </div>
   );
 }
