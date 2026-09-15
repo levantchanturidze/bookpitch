@@ -76,6 +76,28 @@ describe('platform MFA (F2 — TOTP enrollment + verification)', () => {
         where: { bucket: { startsWith: 'recovery:' } },
       })
       .catch(() => {});
+    // The comment above has promised "and reauth grants" since this block was
+    // written, and only the rate-limit halves were ever deleted.
+    await unsafePrismaAdmin.platformReauthGrant
+      .deleteMany({ where: { userId: superUserId } })
+      .catch(() => {});
+
+    // And the one that actually bit. The break-glass tests below END the
+    // session they open — but only on the success path, in the body of the
+    // test. When one of them fails, the session survives, and the route then
+    // answers 409 "already active" for every later run against the same
+    // database. So the two break-glass tests passed only on a freshly seeded
+    // database and failed on the second run, forever, in a way CI could never
+    // see: its database is new every time.
+    //
+    // Ending them here rather than in the tests means isolation no longer
+    // depends on the previous test having succeeded.
+    await unsafePrismaAdmin.breakGlassSession
+      .updateMany({
+        where: { actorUserId: superUserId, endedAt: null },
+        data: { endedAt: new Date(), endedReason: 'test_isolation_reset' },
+      })
+      .catch(() => {});
     await __clearPasswordReauthCache();
     // Reset MFA state to a known enrolled state with a controlled secret.
     const secret = generateSecret();
