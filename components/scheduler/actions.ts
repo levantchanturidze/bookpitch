@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { ctxToSession, InvalidInputError, SlotTakenError } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { appointmentResource } from '@/lib/rbac/scope';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
@@ -128,8 +129,36 @@ export async function updateAppointmentAction(
   }
   // Cancel transitions warrant the stronger cancel permission.
   const needed = parsed.status === 'cancelled' ? 'booking.cancel' : 'booking.update';
-  requirePermission(ctx, needed, { organizationId: ctx.activeOrganizationId! }, 'appointments');
   const session = ctxToSession(ctx);
+
+  // RESOLVE THE RESOURCE BEFORE AUTHORISING IT.
+  //
+  // This used to be `requirePermission(ctx, needed, { organizationId }, …)`
+  // followed by the load. `can()` grants `:own` and `:branch` when no owner or
+  // branch is supplied — that is LIST mode, and it is deliberate — so a
+  // mutation naming no resource took the list-mode path and every `:own` and
+  // `:branch` caller could update ANY appointment in the organisation by
+  // passing its id. Tenant isolation held; scope inside the tenant did not.
+  //
+  // The read is tenant-scoped via withOrg, so a cross-tenant id resolves to
+  // null here and is refused as not-found without ever reaching can().
+  const target = await withOrg(session.organizationId, (tx) =>
+    tx.appointment.findUnique({
+      where: { id },
+      select: { id: true, locationId: true, staff: { select: { userId: true } } },
+    }),
+  );
+  if (!target) return { ok: true, appointment: null };
+
+  requirePermission(
+    ctx,
+    needed,
+    appointmentResource(session.organizationId, {
+      locationId: target.locationId,
+      ownerUserId: target.staff?.userId ?? null,
+    }),
+    'appointments',
+  );
 
   try {
     const appointment = await withOrg(session.organizationId, async (tx) => {
