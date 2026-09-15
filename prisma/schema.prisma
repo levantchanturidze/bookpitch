@@ -314,6 +314,14 @@ model Staff {
   avatarUrl      String?  @map("avatar_url")
   calendarColor  String?  @map("calendar_color")
   rating         Decimal? @db.Decimal(3, 2)
+  /// When availability was last saved through the editor.
+  ///
+  /// Distinguishes "nobody has ever configured this staff member" from
+  /// "configured, and this day is deliberately a day off". Enforcement used to
+  /// treat both as `windows.length === 0 -> return`, i.e. fail OPEN, so
+  /// clearing a day made it bookable around the clock instead of closed.
+  /// NULL keeps the legacy fall-through for rows nobody has touched.
+  availabilityConfiguredAt DateTime? @map("availability_configured_at") @db.Timestamptz(6)
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
@@ -328,6 +336,18 @@ model Staff {
   @@map("staff")
 }
 
+/// Working windows, expressed in the LOCATION'S LOCAL calendar.
+///
+/// `weekday` and the two times are all local. They used to disagree: the editor
+/// wrote the LOCAL weekday alongside times converted to UTC, while
+/// assertWithinAvailability() read the UTC weekday and UTC time. For Tbilisi
+/// (UTC+4) a 08:00-23:00 window survives that round trip by luck; a window
+/// whose UTC conversion crosses midnight does not, and lands on the wrong day.
+///
+/// Local storage removes the class rather than correcting instances of it: a
+/// window means the same thing whatever the reader's timezone, and the single
+/// conversion now happens at enforcement time against the APPOINTMENT'S date —
+/// not, as before, against whatever offset "today" happened to have.
 model StaffAvailability {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   staffId   String   @map("staff_id") @db.Uuid

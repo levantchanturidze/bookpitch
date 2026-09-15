@@ -5,7 +5,6 @@ import type { UserRole } from '@prisma/client';
 import { ConflictError, InvalidInputError, ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
-import { localHHMMToUtcHHMM } from '@/lib/tz';
 import {
   type AvailabilityWindow,
   createLocation,
@@ -99,20 +98,20 @@ export async function setAvailabilityAction(id: string, windows: AvailabilityWin
   const session = await ctxFor('staff.schedule.manage', 'admin');
   // Load the staff member's location timezone so we can convert the
   // local times the editor submitted back to UTC for storage.
-  const staffRec = await withOrg(session.organizationId, (tx) =>
-    tx.staff.findUnique({
-      where: { id },
-      select: { location: { select: { timezone: true } } },
-    }),
-  );
-  const tz = staffRec?.location.timezone ?? 'UTC';
-  const utcWindows: AvailabilityWindow[] = windows.map((w) => ({
-    weekday: w.weekday,
-    startTime: localHHMMToUtcHHMM(w.startTime, tz),
-    endTime: localHHMMToUtcHHMM(w.endTime, tz),
-  }));
-  await setAvailability(session, id, utcWindows);
+  // No conversion. Availability is STORED in the location's local calendar now
+  // (see the StaffAvailability doc comment): this used to call
+  // localHHMMToUtcHHMM per field, which shifts the time modularly across
+  // midnight while leaving `weekday` as the LOCAL day — so a window whose UTC
+  // form crosses midnight was filed against the wrong day, and the conversion
+  // used TODAY's offset rather than the offset on the date being booked.
+  //
+  // The single conversion now happens once, at enforcement, against the
+  // appointment's own date.
+  const result = await setAvailability(session, id, windows);
   REVALIDATE_ALL();
+  // Handed back so the editor can report what was actually persisted rather
+  // than closing on a resolved promise and assuming.
+  return result;
 }
 
 // -------------------- Services -----------------------------------------------

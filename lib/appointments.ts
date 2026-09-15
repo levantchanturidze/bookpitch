@@ -210,19 +210,49 @@ export async function assertWithinAvailability(
   startsAt: Date,
   endsAt: Date,
 ): Promise<void> {
-  const weekday = startsAt.getUTCDay();
+  // Availability is stored in the LOCATION'S LOCAL calendar, so the appointment
+  // has to be read in the same calendar before anything is compared.
+  //
+  // This used to compare UTC weekday and UTC time-of-day against rows whose
+  // weekday was LOCAL and whose time had been shifted to UTC. For Tbilisi
+  // (UTC+4) an 08:00-23:00 window happens to survive that; a window whose UTC
+  // form crosses midnight does not, and was evaluated against the wrong day.
+  const staff = await tx.staff.findUnique({
+    where: { id: staffId },
+    select: {
+      availabilityConfiguredAt: true,
+      location: { select: { timezone: true } },
+    },
+  });
+  const tz = staff?.location?.timezone ?? 'UTC';
+
+  // The offset on the APPOINTMENT'S date, not on whatever date this code runs.
+  const localDate = toLocalDate(startsAt, tz);
+  const weekday = localDateWeekday(localDate, tz);
+
   const windows = await tx.staffAvailability.findMany({
     where: { staffId, weekday },
     select: { startTime: true, endTime: true },
   });
-  if (windows.length === 0) return; // no configured windows → fall through
 
-  const slotStartMin = startsAt.getUTCHours() * 60 + startsAt.getUTCMinutes();
-  const slotEndMin =
-    endsAt.getUTCHours() * 60 +
-    endsAt.getUTCMinutes() +
-    // If the appointment crosses midnight, adjust; usually not needed.
-    (endsAt.getUTCDate() !== startsAt.getUTCDate() ? 24 * 60 : 0);
+  if (windows.length === 0) {
+    // Fail CLOSED once somebody has configured this staff member. Clearing a
+    // day means "day off", and the previous unconditional `return` turned that
+    // into "bookable around the clock" — the UI said closed and the backend
+    // said open. NULL still falls through, for staff nobody has ever edited.
+    if (staff?.availabilityConfiguredAt) {
+      throw new InvalidInputError('slot_outside_availability');
+    }
+    return;
+  }
+
+  const localStart = toLocalTimeHHMM(startsAt, tz);
+  const slotStartMin = hhmmToMinutes(localStart);
+  // Duration is timezone-independent, so the end is derived from it rather than
+  // converted separately — that also keeps a DST transition inside the
+  // appointment from making the end look earlier than the start.
+  const durationMin = Math.round((endsAt.getTime() - startsAt.getTime()) / 60_000);
+  const slotEndMin = slotStartMin + durationMin;
 
   const fits = windows.some((w) => {
     const wStart = w.startTime.getUTCHours() * 60 + w.startTime.getUTCMinutes();
@@ -231,6 +261,11 @@ export async function assertWithinAvailability(
   });
 
   if (!fits) throw new InvalidInputError('slot_outside_availability');
+}
+
+function hhmmToMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
 }
 
 // -----------------------------------------------------------------------------

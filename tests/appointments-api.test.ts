@@ -249,7 +249,13 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
     // constraint (23P01) ensures only one row lands; the other must come back
     // as 409 slot_taken — not a 500 or an unhandled throw.
     authMock.mockResolvedValue(await mkSession(primaryOrgId, primaryOwnerId));
-    const slot = iso(11, 15);
+    // Day 12 is a MONDAY. This used to be day 11 — a Sunday, which no seeded
+    // staff member works — and it only booked successfully because
+    // assertWithinAvailability() returned early when a weekday had no windows.
+    // That fail-open is the 5.3 defect: the UI said "day off" and the backend
+    // said "bookable at any hour". This test is about the concurrency
+    // behaviour, so it now asks for a slot the staff member actually works.
+    const slot = iso(12, 15);
     const [a, b] = await Promise.all([book(slot), book(slot)]);
 
     const statuses = [a.status, b.status].sort();
@@ -270,7 +276,7 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
       tx.appointment.count({
         where: {
           staffId: clinicStaffId,
-          startsAt: { gte: new Date(slot), lt: new Date(iso(11, 16)) },
+          startsAt: { gte: new Date(slot), lt: new Date(iso(12, 16)) },
           status: { not: 'cancelled' },
         },
       }),

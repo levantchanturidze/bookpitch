@@ -262,22 +262,32 @@ export async function setAvailability(
   staffId: string,
   windows: AvailabilityWindow[],
 ) {
-  // Simple validation: weekday 0-6, HH:MM start < end, no overlaps per weekday.
-  const byDay = new Map<number, AvailabilityWindow[]>();
+  // Validation. `byDay` was already being built here and then thrown away — the
+  // comment promised "no overlaps per weekday" and nothing ever compared two
+  // windows, so Mon 09:00-17:00 and Mon 13:00-14:00 both saved happily and the
+  // slot picker offered the overlap twice.
+  const byDay = new Map<number, Array<{ start: number; end: number; w: AvailabilityWindow }>>();
   for (const w of windows) {
     if (!Number.isInteger(w.weekday) || w.weekday < 0 || w.weekday > 6) {
       throw new InvalidInputError('weekday must be 0..6');
     }
-    if (!/^\d{2}:\d{2}$/.test(w.startTime) || !/^\d{2}:\d{2}$/.test(w.endTime)) {
-      throw new InvalidInputError('times must be HH:MM');
-    }
-    const [sh, sm] = w.startTime.split(':').map(Number);
-    const [eh, em] = w.endTime.split(':').map(Number);
-    if (eh * 60 + em <= sh * 60 + sm) {
-      throw new InvalidInputError(`window ${w.startTime}-${w.endTime} has end <= start`);
+    // `/^\d{2}:\d{2}$/` accepted 99:99 and 25:61. `new Date('1970-01-01T99:99:00Z')`
+    // is an Invalid Date, which Prisma then stored or threw on depending on the
+    // driver — either way the operator was told nothing useful.
+    const start = parseClock(w.startTime);
+    const end = parseClock(w.endTime);
+    if (end <= start) {
+      throw new InvalidInputError(`window ${w.startTime}-${w.endTime} ends at or before it starts`);
     }
     const list = byDay.get(w.weekday) ?? [];
-    list.push(w);
+    for (const other of list) {
+      if (start < other.end && other.start < end) {
+        throw new InvalidInputError(
+          `window ${w.startTime}-${w.endTime} overlaps ${other.w.startTime}-${other.w.endTime} on the same day`,
+        );
+      }
+    }
+    list.push({ start, end, w });
     byDay.set(w.weekday, list);
   }
 
@@ -285,6 +295,9 @@ export async function setAvailability(
     await tx.staffAvailability.deleteMany({ where: { staffId } });
     if (windows.length > 0) {
       await tx.staffAvailability.createMany({
+        // Stored as LOCAL time now — see the StaffAvailability doc comment. The
+        // `Z` keeps Prisma reading back the same wall-clock digits; it does not
+        // mean the value is UTC.
         data: windows.map((w) => ({
           staffId,
           weekday: w.weekday,
@@ -293,8 +306,28 @@ export async function setAvailability(
         })),
       });
     }
+    // Marks this staff member as CONFIGURED even when `windows` is empty, which
+    // is what makes "every day off" enforceable instead of falling open.
+    await tx.staff.update({
+      where: { id: staffId },
+      data: { availabilityConfiguredAt: new Date() },
+    });
     await writeAudit(tx, session, 'update', 'staff', staffId, { availability: windows.length });
+    // Returned so the caller can SHOW what was persisted. The editor used to
+    // close on a resolved promise and report nothing, which is how two saves of
+    // an empty array looked identical to two successful saves.
+    return { persisted: windows.length };
   });
+}
+
+/** Minutes past local midnight, or a refusal. Rejects 99:99, 25:00 and 12:60. */
+function parseClock(value: string): number {
+  const m = /^(\d{2}):(\d{2})$/.exec(value ?? '');
+  if (!m) throw new InvalidInputError(`time "${value}" must be HH:MM`);
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (hh > 23 || mm > 59) throw new InvalidInputError(`time "${value}" is not a real clock time`);
+  return hh * 60 + mm;
 }
 
 // -----------------------------------------------------------------------------
