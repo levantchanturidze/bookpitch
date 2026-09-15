@@ -4,7 +4,6 @@ import { revalidatePath } from 'next/cache';
 import type { UserRole } from '@prisma/client';
 import { ConflictError, InvalidInputError, ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
-import { withOrg } from '@/lib/db';
 import {
   type AvailabilityWindow,
   createLocation,
