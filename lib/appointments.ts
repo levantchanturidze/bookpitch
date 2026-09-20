@@ -293,8 +293,12 @@ export function isExclusionViolation(err: unknown): boolean {
 // durationMinutes: min(durationMinutes, 30) so a 15-min service offers every
 // 15 minutes rather than every 30.
 //
-// Availability windows constrain the range when configured; 07:00–21:00 LOCAL
-// is the fallback when no windows exist (fail-open, same as assertWithinAvailability).
+// Availability windows constrain the range. When a staff member has been
+// CONFIGURED (staff.availability_configured_at is set) and has no window for
+// that local weekday, there are no slots — an explicit day off is closed, not
+// open. The 07:00–21:00 LOCAL fallback survives only for staff nobody has ever
+// configured, which is the same rule assertWithinAvailability() applies, so the
+// picker and the write path cannot disagree.
 //
 // Slots that overlap with existing non-cancelled appointments are excluded.
 // Day boundaries use the local calendar day of the location's timezone so a
