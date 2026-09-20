@@ -311,6 +311,22 @@ const STATE_BADGE: Record<MessageState, string> = {
   sent: 'bg-emerald-50 text-emerald-700 border-emerald-100',
   delivered: 'bg-blue-50 text-blue-700 border-blue-100',
   failed: 'bg-rose-50 text-rose-700 border-rose-100',
+  // Amber, not rose. Nothing is broken: the channel was live and owed, and the
+  // customer has no address on it. Showing this in the failure colour is what
+  // made a blank phone number read as an outage.
+  skipped: 'bg-amber-50 text-amber-700 border-amber-100',
+};
+
+/**
+ * What the operator can DO about each state. `skipped` is the only one whose
+ * remedy is a data edit rather than a retry, so it says so.
+ */
+const STATE_LABEL: Record<MessageState, string> = {
+  queued: 'queued',
+  sent: 'sent',
+  delivered: 'delivered',
+  failed: 'failed',
+  skipped: 'no contact',
 };
 
 function LogCard({ log }: { log: LogEntry[] }) {
@@ -368,7 +384,7 @@ function LogCard({ log }: { log: LogEntry[] }) {
                     <span
                       className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${STATE_BADGE[row.state]}`}
                     >
-                      {row.state}
+                      {STATE_LABEL[row.state]}
                     </span>
                   </td>
                 </tr>
