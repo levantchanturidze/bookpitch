@@ -310,6 +310,68 @@ describe('getAvailableSlots', () => {
     expect(tbilisiSlots).toEqual(utcSlots);
   });
 
+  it('reads a utc_legacy row through the location offset, and a local row as-is', async () => {
+    // The compatibility contract that lets migrate.yml and Vercel deploy in
+    // parallel. Migration 20260915000002 changes no VALUES — it only labels the
+    // rows that already existed — so the previous release keeps reading exactly
+    // the bytes it expects while the new one reads both bases correctly.
+    //
+    // Same digits, two bases, two meanings. If this ever collapses to one
+    // answer, the overlap window becomes a four-hour error.
+    const staff = await withoutRls((tx) =>
+      tx.staff.create({
+        data: {
+          organizationId: orgId,
+          locationId,
+          name: 'Dual basis',
+          roleTitle: 'Provider',
+          availabilityConfiguredAt: new Date(),
+        },
+        select: { id: true },
+      }),
+    );
+
+    const weekday = new Date(`${dateStr(9)}T12:00:00Z`).getUTCDay();
+    await withoutRls((tx) =>
+      tx.staffAvailability.create({
+        data: {
+          staffId: staff.id,
+          weekday,
+          startTime: new Date('1970-01-01T05:00:00Z'),
+          endTime: new Date('1970-01-01T13:00:00Z'),
+          timeBasis: 'utc_legacy',
+        },
+      }),
+    );
+
+    // 05:00-13:00 UTC is 09:00-17:00 in Tbilisi.
+    const legacy = await withoutRls((tx) =>
+      getAvailableSlots(tx, staff.id, dateStr(9), 30, 'Asia/Tbilisi'),
+    );
+    expect(legacy).toContain('09:00');
+    expect(legacy).toContain('16:30');
+    expect(legacy).not.toContain('05:00');
+
+    // The same digits written as `local` mean 05:00-13:00 on the wall.
+    await withoutRls((tx) =>
+      tx.staffAvailability.updateMany({
+        where: { staffId: staff.id },
+        data: { timeBasis: 'local' },
+      }),
+    );
+    const local = await withoutRls((tx) =>
+      getAvailableSlots(tx, staff.id, dateStr(9), 30, 'Asia/Tbilisi'),
+    );
+    expect(local).toContain('05:00');
+    expect(local).toContain('12:30');
+    expect(local).not.toContain('16:30');
+
+    await withoutRls(async (tx) => {
+      await tx.staffAvailability.deleteMany({ where: { staffId: staff.id } });
+      await tx.staff.delete({ where: { id: staff.id } });
+    });
+  });
+
   it('EXCLUDES the appointment being rescheduled from its own occupancy', async () => {
     // Without this the slot a booking already occupies is reported as taken —
     // by itself — so the one time a user is most likely to keep is the one time

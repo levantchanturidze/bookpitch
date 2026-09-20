@@ -2,10 +2,7 @@ import { ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { listLocations, listStaff } from '@/lib/admin';
 import StaffPanel, { type LocationRef, type StaffRow } from '@/components/settings/StaffPanel';
-/** Read the stored wall-clock digits back out of a Prisma Time column. */
-function hhmm(t: Date): string {
-  return `${String(t.getUTCHours()).padStart(2, '0')}:${String(t.getUTCMinutes()).padStart(2, '0')}`;
-}
+import { availabilityHHMM } from '@/lib/availability-basis';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,10 +38,10 @@ export default async function SettingsStaffPage() {
       // setAvailabilityAction converts them back to UTC before storage.
       availability: s.availability.map((a) => ({
         weekday: a.weekday,
-        // Already local — stored that way since the availability migration.
-        // Converting here as well would shift every window by the offset twice.
-        startTime: hhmm(a.startTime),
-        endTime: hhmm(a.endTime),
+        // Read by the row's own basis: legacy rows are still UTC until the
+        // normalisation step runs, and both must display local wall-clock time.
+        startTime: availabilityHHMM(a.startTime, a.timeBasis, locTz),
+        endTime: availabilityHHMM(a.endTime, a.timeBasis, locTz),
       })),
     };
   });

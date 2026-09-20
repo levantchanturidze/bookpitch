@@ -69,71 +69,27 @@ ALTER TABLE "staff_availability"
   ADD CONSTRAINT "staff_availability_time_basis_check"
   CHECK ("time_basis" IN ('local', 'utc_legacy'));
 
--- FAIL CLOSED BEFORE MUTATING. A legacy row whose location has no timezone
--- cannot be converted, and guessing UTC would silently shift a real schedule.
-DO $$
-DECLARE
-  unconvertible INT;
-BEGIN
-  SELECT count(*) INTO unconvertible
-    FROM "staff_availability" sa
-    JOIN "staff" s ON s."id" = sa."staff_id"
-    LEFT JOIN "locations" l ON l."id" = s."location_id"
-   WHERE sa."time_basis" = 'utc_legacy'
-     AND (l."timezone" IS NULL OR btrim(l."timezone") = '');
-  IF unconvertible > 0 THEN
-    RAISE EXCEPTION
-      'refusing to convert availability: % legacy row(s) have no location timezone', unconvertible;
-  END IF;
-END $$;
-
-UPDATE "staff_availability" sa
-   SET "start_time" = ((DATE '2026-01-01' + sa."start_time") AT TIME ZONE 'UTC'
-                         AT TIME ZONE l."timezone")::time,
-       "end_time"   = ((DATE '2026-01-01' + sa."end_time")   AT TIME ZONE 'UTC'
-                         AT TIME ZONE l."timezone")::time,
-       "time_basis" = 'local'
-  FROM "staff" s
-  JOIN "locations" l ON l."id" = s."location_id"
- WHERE sa."staff_id" = s."id"
-   AND sa."time_basis" = 'utc_legacy';
-
--- Every row the application writes from here on is already local.
+-- Everything written from here on is local. The column was created with
+-- DEFAULT 'utc_legacy' so that ADD COLUMN itself marked exactly the rows that
+-- already existed; flipping the default now means new writes are labelled
+-- correctly without a second UPDATE touching anything.
 ALTER TABLE "staff_availability" ALTER COLUMN "time_basis" SET DEFAULT 'local';
 
--- POSTCONDITIONS. Assert rather than hope: nothing unconverted, no interval
--- inverted by the shift, no overlap created on a weekday.
-DO $$
-DECLARE
-  leftover INT;
-  inverted INT;
-  overlapping INT;
-BEGIN
-  SELECT count(*) INTO leftover
-    FROM "staff_availability" WHERE "time_basis" <> 'local';
-  IF leftover > 0 THEN
-    RAISE EXCEPTION 'availability conversion incomplete: % row(s) still legacy', leftover;
-  END IF;
-
-  SELECT count(*) INTO inverted
-    FROM "staff_availability" WHERE "end_time" <= "start_time";
-  IF inverted > 0 THEN
-    RAISE EXCEPTION
-      'availability conversion produced % window(s) ending at or before their start', inverted;
-  END IF;
-
-  SELECT count(*) INTO overlapping
-    FROM "staff_availability" a
-    JOIN "staff_availability" b
-      ON b."staff_id" = a."staff_id"
-     AND b."weekday"  = a."weekday"
-     AND b."id" <> a."id"
-     AND a."start_time" < b."end_time"
-     AND b."start_time" < a."end_time";
-  IF overlapping > 0 THEN
-    RAISE EXCEPTION 'availability conversion produced % overlapping window pair(s)', overlapping;
-  END IF;
-END $$;
+-- NO VALUES ARE REWRITTEN HERE, DELIBERATELY.
+--
+-- migrate.yml applies migrations on push to main while Vercel deploys from the
+-- same push IN PARALLEL, so the PREVIOUS release serves for a minute or two
+-- against this schema. If this migration rewrote 05:00 into 09:00, that build —
+-- which still reads the column as UTC — would enforce every window four hours
+-- out; and an availability save during the window would write a UTC value into
+-- a column now defaulting to 'local', mislabelling it at birth and then
+-- protecting it from correction by the very marker meant to prevent double
+-- conversion.
+--
+-- So legacy rows keep the exact bytes the old build expects. lib/availability-basis.ts
+-- teaches the new build to read both bases, which makes the overlap a
+-- non-event. Normalising the legacy rows to 'local' is a separate, guarded step
+-- that can run once the old build is drained, and nothing depends on when.
 
 -- Staff who already have windows were configured by somebody, so the day-off
 -- semantics apply to them. Staff with none keep NULL and the legacy

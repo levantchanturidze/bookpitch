@@ -10,6 +10,7 @@ import type {
 import { InvalidInputError, SlotTakenError } from '@/lib/auth';
 import { isValidIcd10 } from '@/lib/icd10';
 import { localDayRange, localDateWeekday, toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
+import { availabilityRangeMinutes } from '@/lib/availability-basis';
 export { SlotTakenError };
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
@@ -232,7 +233,7 @@ export async function assertWithinAvailability(
 
   const windows = await tx.staffAvailability.findMany({
     where: { staffId, weekday },
-    select: { startTime: true, endTime: true },
+    select: { startTime: true, endTime: true, timeBasis: true },
   });
 
   if (windows.length === 0) {
@@ -255,9 +256,8 @@ export async function assertWithinAvailability(
   const slotEndMin = slotStartMin + durationMin;
 
   const fits = windows.some((w) => {
-    const wStart = w.startTime.getUTCHours() * 60 + w.startTime.getUTCMinutes();
-    const wEnd = w.endTime.getUTCHours() * 60 + w.endTime.getUTCMinutes();
-    return slotStartMin >= wStart && slotEndMin <= wEnd;
+    const { startMin, endMin } = availabilityRangeMinutes(w, tz);
+    return slotStartMin >= startMin && slotEndMin <= endMin;
   });
 
   if (!fits) throw new InvalidInputError('slot_outside_availability');
@@ -333,11 +333,10 @@ export async function getAvailableSlots(
 
   const windows = await tx.staffAvailability.findMany({
     where: { staffId, weekday },
-    select: { startTime: true, endTime: true },
+    select: { startTime: true, endTime: true, timeBasis: true },
   });
 
-  // Availability is stored in the LOCATION'S LOCAL wall clock, so the stored
-  // digits ARE the local minutes. This used to run them through
+  // Each row is read according to its own basis. This used to run them through
   // utcTimeValueToLocalMin(), i.e. add the offset a second time, while
   // assertWithinAvailability() compared them directly — so the picker offered
   // slots the write path then refused, and refused slots it would have taken.
@@ -349,10 +348,7 @@ export async function getAvailableSlots(
         staff?.availabilityConfiguredAt
         ? []
         : [{ startMin: 7 * 60, endMin: 21 * 60 }] // never configured — legacy fall-through
-      : windows.map((w) => ({
-          startMin: w.startTime.getUTCHours() * 60 + w.startTime.getUTCMinutes(),
-          endMin: w.endTime.getUTCHours() * 60 + w.endTime.getUTCMinutes(),
-        }));
+      : windows.map((w) => availabilityRangeMinutes(w, timezone));
 
   const booked = await tx.appointment.findMany({
     where: {
