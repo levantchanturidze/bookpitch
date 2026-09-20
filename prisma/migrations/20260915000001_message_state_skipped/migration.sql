@@ -1,0 +1,15 @@
+-- Incident #90 — distinguish "no contact details" from "the provider failed".
+--
+-- Forward-only and additive. `ALTER TYPE ... ADD VALUE` is permitted inside a
+-- transaction on PostgreSQL 12+ provided the new value is not USED in the same
+-- transaction; this migration only declares it, so Prisma's transactional
+-- migration runner is safe here. Production is PostgreSQL 17.
+--
+-- ROLLBACK: none is required and none is safe. Removing a value from an enum
+-- is not supported by PostgreSQL, and no existing row changes meaning: every
+-- historical row keeps the state it was written with. Rolling the APPLICATION
+-- back to a build that predates this value is safe as long as no row has been
+-- written as 'skipped'; once one has, the older build would fail to decode it,
+-- so roll forward rather than back. The value is inert until
+-- lib/messaging/reminders.ts writes it.
+ALTER TYPE "message_state" ADD VALUE IF NOT EXISTS 'skipped';
