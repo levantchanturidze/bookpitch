@@ -198,7 +198,12 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     id: 'a2',
     patientId: 'p2',
     staffId: 's2',
-    date: '2026-07-21', // Today
+    // Wednesday. s2 works Monday/Wednesday/Friday, and this used to sit on the
+    // Tuesday — an appointment booked on a day its own staff member does not
+    // work. Harmless while availability failed open; now that an unconfigured
+    // weekday means "closed", it produced a booking with no reschedulable
+    // slots and the reschedule journey had nothing to select.
+    date: '2026-07-22', // Tomorrow
     time: '11:00',
     duration: 45,
     service: 'Cardiology Assessment',
@@ -226,7 +231,8 @@ export const INITIAL_APPOINTMENTS: Appointment[] = [
     id: 'a4',
     patientId: 'p4',
     staffId: 's5',
-    date: '2026-07-22', // Tomorrow
+    // Thursday. s5 works Tuesday/Thursday/Friday; same defect as a2.
+    date: '2026-07-23',
     time: '10:00',
     duration: 45,
     service: 'Physiotherapy Session',

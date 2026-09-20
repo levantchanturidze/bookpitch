@@ -94,6 +94,14 @@ async function main() {
       await tx.service.deleteMany();
       await tx.location.deleteMany();
       await tx.membership.deleteMany();
+      // Session-ish rows that FK to app_users. The seed never creates these —
+      // the test suites do — but `prisma db seed` has to be runnable against a
+      // database that has had tests run on it, which is the only kind of
+      // database it is ever pointed at. Without this, appUser.deleteMany()
+      // fails on impersonation_sessions_actor_fkey and the whole reset aborts.
+      await tx.impersonationSession.deleteMany().catch(() => {});
+      await tx.breakGlassSession.deleteMany().catch(() => {});
+      await tx.platformReauthGrant.deleteMany().catch(() => {});
       await tx.appUser.deleteMany();
       await tx.organization.deleteMany();
     });
