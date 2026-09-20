@@ -295,14 +295,22 @@ export async function setAvailability(
     await tx.staffAvailability.deleteMany({ where: { staffId } });
     if (windows.length > 0) {
       await tx.staffAvailability.createMany({
-        // Stored as LOCAL time now — see the StaffAvailability doc comment. The
-        // `Z` keeps Prisma reading back the same wall-clock digits; it does not
-        // mean the value is UTC.
+        // STAGE B writes the LEGACY UTC form, with the marker stated outright.
+        //
+        // Not local yet, deliberately. A pre-marker instance of the previous
+        // release can still be serving during this deployment, and it ignores
+        // time_basis entirely — a local value would be read by it as UTC, four
+        // hours out. Local writes are Stage C, after those instances drain.
+        //
+        // `timeBasis` is written EXPLICITLY rather than left to the column
+        // default. Provenance that depends on a default is provenance that a
+        // future migration can silently change underneath the writer.
         data: windows.map((w) => ({
           staffId,
           weekday: w.weekday,
           startTime: new Date(`1970-01-01T${w.startTime}:00Z`),
           endTime: new Date(`1970-01-01T${w.endTime}:00Z`),
+          timeBasis: 'utc_legacy' as const,
         })),
       });
     }

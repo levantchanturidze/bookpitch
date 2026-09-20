@@ -96,6 +96,7 @@ describe('getAvailableSlots', () => {
               weekday: wd,
               startTime: timeVal(9),
               endTime: timeVal(18),
+              timeBasis: 'utc_legacy' as const,
             })),
           },
         },
@@ -107,11 +108,15 @@ describe('getAvailableSlots', () => {
           name: 'Tbilisi Staff',
           roleTitle: 'Consultant',
           // 05:00–14:00 UTC = 09:00–18:00 Asia/Tbilisi. All weekdays.
+          // Marked explicitly: these digits really are UTC, and the Stage A
+          // default happens to agree — but a fixture that relies on a default
+          // stops meaning anything the moment Stage D changes it.
           availability: {
             create: [0, 1, 2, 3, 4, 5, 6].map((wd) => ({
               weekday: wd,
               startTime: timeVal(5),
               endTime: timeVal(14),
+              timeBasis: 'utc_legacy' as const,
             })),
           },
         },
@@ -282,14 +287,14 @@ describe('getAvailableSlots', () => {
   });
 
   // ---------------------------------------------------------------------------
-  it('a stored window means the same local hours whatever the location timezone', async () => {
-    // THE MODEL CHANGE, stated as an assertion. This test previously asserted
-    // the opposite: that one stored row produced 05:00 slots under UTC and
-    // 09:00 slots under Asia/Tbilisi, because the reader added the offset. That
-    // is precisely the bug — the write path never added it, so the picker and
-    // assertWithinAvailability() disagreed by exactly the offset.
+  it('a utc_legacy window is read through the location offset', async () => {
+    // The fixture is marked utc_legacy and really holds UTC digits, so the
+    // reader converts: 05:00-14:00 UTC is 09:00-18:00 in Tbilisi and
+    // 05:00-14:00 under UTC. The basis decides, not the column.
     //
-    // 05:00-14:00 stored is 05:00-14:00 local, in either location.
+    // Before the basis existed the two halves disagreed silently — the write
+    // path never applied the offset and the picker did, so they differed by
+    // exactly the offset and neither side reported anything.
     const utcSlots = await withoutRls((tx) =>
       getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'UTC'),
     );
@@ -301,13 +306,14 @@ describe('getAvailableSlots', () => {
     expect(utcSlots).toContain('13:30');
     expect(utcSlots).not.toContain('14:00'); // 14:00+30 > window end
 
-    expect(tbilisiSlots).toContain('05:00');
-    expect(tbilisiSlots).toContain('13:30');
-    expect(tbilisiSlots).not.toContain('14:00');
+    // +4h: the same stored digits mean 09:00-18:00 on a Tbilisi wall clock.
+    expect(tbilisiSlots).toContain('09:00');
+    expect(tbilisiSlots).toContain('17:30');
+    expect(tbilisiSlots).not.toContain('05:00');
+    expect(tbilisiSlots).not.toContain('18:00');
 
-    // Same window, same labels. The offset is applied exactly once now, at
-    // enforcement, against the appointment's own date.
-    expect(tbilisiSlots).toEqual(utcSlots);
+    // Same width, shifted labels — the offset applied exactly once, by basis.
+    expect(tbilisiSlots.length).toBe(utcSlots.length);
   });
 
   it('reads a utc_legacy row through the location offset, and a local row as-is', async () => {

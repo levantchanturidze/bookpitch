@@ -177,6 +177,20 @@ async function main() {
               weekday: WEEKDAY_INDEX[day],
               startTime: start,
               endTime: end,
+              // EXPLICIT, never the column default.
+              //
+              // The digits above are what an operator types into the editor,
+              // i.e. LOCAL wall clock. The Stage A default is 'utc_legacy', so
+              // omitting this would label them legacy and every reader would
+              // add the location offset — 08:30 would be enforced as 12:30 in
+              // a Tbilisi clinic.
+              //
+              // Writing 'local' here is safe precisely because this seed never
+              // runs against production (prisma/_require-local-db-guard.ts, and
+              // docs/release-state.md), so there is no old instance that could
+              // misread a local row as UTC. That hazard is what keeps the
+              // APPLICATION on legacy writes until Stage C.
+              timeBasis: 'local' as const,
             })),
           },
         },

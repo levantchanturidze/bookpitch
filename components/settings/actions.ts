@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache';
 import type { UserRole } from '@prisma/client';
 import { ConflictError, InvalidInputError, ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { withOrg } from '@/lib/db';
+import { localHHMMToUtcHHMM } from '@/lib/tz';
 import {
   type AvailabilityWindow,
   createLocation,
@@ -96,7 +98,26 @@ export async function deleteStaffAction(id: string): Promise<DeleteResult> {
 }
 export async function setAvailabilityAction(id: string, windows: AvailabilityWindow[]) {
   const session = await ctxFor('staff.schedule.manage', 'admin');
-  const result = await setAvailability(session, id, windows);
+  // STAGE B converts local -> UTC before storing, because Stage B still writes
+  // the legacy form (see setAvailability). The editor speaks local wall-clock,
+  // the column holds UTC, and time_basis now records that outright instead of
+  // leaving a reader to infer it.
+  //
+  // Stage C drops this conversion and stores the local digits directly, once no
+  // pre-marker instance can still misread them as UTC.
+  const staffRec = await withOrg(session.organizationId, (tx) =>
+    tx.staff.findUnique({
+      where: { id },
+      select: { location: { select: { timezone: true } } },
+    }),
+  );
+  const tz = staffRec?.location.timezone ?? 'UTC';
+  const utcWindows: AvailabilityWindow[] = windows.map((w) => ({
+    weekday: w.weekday,
+    startTime: localHHMMToUtcHHMM(w.startTime, tz),
+    endTime: localHHMMToUtcHHMM(w.endTime, tz),
+  }));
+  const result = await setAvailability(session, id, utcWindows);
   REVALIDATE_ALL();
   return result;
 }

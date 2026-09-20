@@ -302,18 +302,18 @@ model Membership {
 // =============================================================================
 
 model Staff {
-  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  locationId     String   @map("location_id") @db.Uuid
-  userId         String?  @map("user_id") @db.Uuid
-  name           String
-  roleTitle      String   @map("role_title")
-  specialty      String?
-  email          String?  @db.Citext
-  phone          String?
-  avatarUrl      String?  @map("avatar_url")
-  calendarColor  String?  @map("calendar_color")
-  rating         Decimal? @db.Decimal(3, 2)
+  id                       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId           String    @map("organization_id") @db.Uuid
+  locationId               String    @map("location_id") @db.Uuid
+  userId                   String?   @map("user_id") @db.Uuid
+  name                     String
+  roleTitle                String    @map("role_title")
+  specialty                String?
+  email                    String?   @db.Citext
+  phone                    String?
+  avatarUrl                String?   @map("avatar_url")
+  calendarColor            String?   @map("calendar_color")
+  rating                   Decimal?  @db.Decimal(3, 2)
   /// When availability was last saved through the editor.
   ///
   /// Distinguishes "nobody has ever configured this staff member" from
@@ -322,8 +322,8 @@ model Staff {
   /// clearing a day made it bookable around the clock instead of closed.
   /// NULL keeps the legacy fall-through for rows nobody has touched.
   availabilityConfiguredAt DateTime? @map("availability_configured_at") @db.Timestamptz(6)
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   location     Location            @relation(fields: [locationId], references: [id], onDelete: Cascade)
@@ -336,29 +336,32 @@ model Staff {
   @@map("staff")
 }
 
-/// Working windows, expressed in the LOCATION'S LOCAL calendar.
+/// Working windows. `weekday` is local; the two time columns mean whatever
+/// `timeBasis` says they mean.
 ///
-/// `weekday` and the two times are all local. They used to disagree: the editor
-/// wrote the LOCAL weekday alongside times converted to UTC, while
-/// assertWithinAvailability() read the UTC weekday and UTC time. For Tbilisi
-/// (UTC+4) a 08:00-23:00 window survives that round trip by luck; a window
-/// whose UTC conversion crosses midnight does not, and lands on the wrong day.
+/// The editor used to write the LOCAL weekday alongside times converted to UTC,
+/// while assertWithinAvailability() read the UTC weekday and UTC time. Those
+/// agree only while the conversion does not cross midnight; when it does, the
+/// time wraps and the weekday does not, so the window lands on the wrong day.
 ///
-/// Local storage removes the class rather than correcting instances of it: a
-/// window means the same thing whatever the reader's timezone, and the single
-/// conversion now happens at enforcement time against the APPOINTMENT'S date —
-/// not, as before, against whatever offset "today" happened to have.
+/// Moving to local storage is staged across four releases rather than done in
+/// one migration, because migrate.yml and Vercel deploy from the same push in
+/// parallel — see the header of 20260915000002 for why a one-step rewrite
+/// corrupts data in that overlap.
 model StaffAvailability {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   staffId   String   @map("staff_id") @db.Uuid
   weekday   Int      @db.SmallInt
   startTime DateTime @map("start_time") @db.Time(6)
   endTime   DateTime @map("end_time") @db.Time(6)
-  /// Data-version boundary for the UTC->local conversion. Always 'local' for
-  /// rows this application writes; 'utc_legacy' exists only inside migration
-  /// 20260915000002, which converts and clears it. Its purpose is to make
-  /// double conversion impossible rather than merely unlikely.
-  timeBasis String   @default("local") @map("time_basis")
+  /// Data-version boundary for the UTC->local rollout: 'utc_legacy' or 'local'.
+  ///
+  /// The default is 'utc_legacy' and stays that way until Stage D. An omitted
+  /// basis therefore means what every row written before this column meant, so
+  /// a write from an old build that knows nothing about the column is still
+  /// labelled correctly. Application code writes the marker EXPLICITLY from
+  /// Stage B onwards and never leans on this default for provenance.
+  timeBasis String   @default("utc_legacy") @map("time_basis")
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 

@@ -86,10 +86,15 @@ describe('fetchRescheduleSlotsAction — exclusion is bound to the resolved appo
           roleTitle: 'Provider',
           availabilityConfiguredAt: new Date(),
           availability: {
+            // LOCAL digits, marked explicitly. The fixture means "this provider
+            // works 09:00-17:00 on the clinic wall clock", and the Stage A
+            // default is 'utc_legacy' — omitting the marker would have every
+            // reader add the Tbilisi offset and enforce 13:00-21:00 instead.
             create: [1, 2, 3, 4, 5].map((weekday) => ({
               weekday,
               startTime: new Date('1970-01-01T09:00:00Z'),
               endTime: new Date('1970-01-01T17:00:00Z'),
+              timeBasis: 'local' as const,
             })),
           },
         },

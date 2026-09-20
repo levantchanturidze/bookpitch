@@ -297,7 +297,16 @@ describe('admin CRUD × 4 surfaces', () => {
   // impossible: every row this application writes is already local, so nothing
   // is ever eligible for conversion again.
   // ---------------------------------------------------------------------------
-  it('every row the application writes is marked local, never legacy', async () => {
+  it('marks every row it writes EXPLICITLY, never leaving it to the column default', async () => {
+    // STAGE B writes the legacy UTC form and says so. Local writes are Stage C,
+    // after every pre-marker instance has drained — one of those would read a
+    // local row as UTC, four hours out.
+    //
+    // The assertion that matters is not which value: it is that the writer
+    // states one. Provenance inherited from a column default is provenance a
+    // later migration can change underneath the writer without anything
+    // failing, which is how the first version of this rollout would have
+    // mislabelled an in-flight write.
     await setAvailability(ownerSession, trackedStaffIds[0], [
       { weekday: 1, startTime: '09:00', endTime: '17:00' },
     ]);
@@ -308,7 +317,7 @@ describe('admin CRUD × 4 surfaces', () => {
       }),
     );
     expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((r) => r.timeBasis === 'local')).toBe(true);
+    expect(rows.every((r) => r.timeBasis === 'utc_legacy')).toBe(true);
   });
 
   it('refuses a time_basis the migration does not define', async () => {
