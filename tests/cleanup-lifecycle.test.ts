@@ -1,5 +1,20 @@
-import { describe, expect, it } from 'vitest';
-import { requireExactCleanupId } from '@/lib/cleanup-lifecycle';
+import { describe, expect, it, vi } from 'vitest';
+
+// lib/cleanup-lifecycle imports @/lib/auth, which reaches next-auth, and
+// next-auth's env shim resolves 'next/server' in a way vitest cannot follow
+// unless @/auth is mocked BEFORE the module graph is pulled in. Every other
+// database-backed suite here does the same thing; this file statically
+// imported the module instead, so it failed to load at all in CI while passing
+// nothing — a red suite that never ran an assertion.
+vi.mock('@/auth', () => ({
+  auth: vi.fn(),
+  handlers: {},
+  signIn: vi.fn(),
+  signOut: vi.fn(),
+}));
+vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
+
+const { requireExactCleanupId } = await import('@/lib/cleanup-lifecycle');
 
 // 5.6 — destructive cleanup is identifier-bound. The production UAT prefix is
 // a human label for recognising synthetic rows, never a delete selector.

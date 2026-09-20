@@ -29,12 +29,33 @@ function req(url: string, init?: RequestInit): NextRequest {
   return new Request(url, init) as unknown as NextRequest;
 }
 
+import { localToUtc } from '@/lib/tz';
+
 // A slot in the far future so we don't collide with seeded appointments.
 const YEAR = 2027;
 const HORIZON_MONTH = 3; // April 2027 (JS month index)
+// Locations default to Asia/Tbilisi (prisma/schema.prisma), and the seed does
+// not override it, so this is the calendar the fixtures live in.
+const FIXTURE_TZ = 'Asia/Tbilisi';
 
+/**
+ * A slot expressed in the LOCATION'S LOCAL calendar, returned as a UTC instant.
+ *
+ * This used to build the instant from UTC hours directly. Availability is now
+ * stored and enforced in local wall-clock time, and the seeded locations
+ * default to Asia/Tbilisi (UTC+4), so `iso(12, 15)` meant 19:00 local — outside
+ * every seeded staff member's working hours. Three fixtures in this file were
+ * asking for times the clinic is shut and expecting a booking.
+ *
+ * Expressing the hour the way an operator would read it keeps the fixtures
+ * meaningful: hour 15 is 3pm at the clinic, whatever offset that implies.
+ */
 function iso(day: number, hour: number, minute = 0): string {
-  return new Date(Date.UTC(YEAR, HORIZON_MONTH, day, hour, minute)).toISOString();
+  return localToUtc(
+    `${YEAR}-${String(HORIZON_MONTH + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+    `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+    FIXTURE_TZ,
+  ).toISOString();
 }
 
 describe('/api/appointments — booking, double-booking, cross-tenant', () => {
@@ -293,13 +314,22 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
     createdIds.push(body.appointment.id);
 
     // getAvailableSlots for that staff + date + 30 min must NOT contain 13:00.
+    //
+    // The location timezone is passed explicitly, exactly as
+    // fetchAvailableSlotsAction does in production. This call used to omit it
+    // and take the 'UTC' default, which was harmless only while availability
+    // was stored in UTC: now the booking is 13:00 LOCAL, and reading the day in
+    // UTC would look for it at 09:00 and report 13:00 as free.
     const dateStr = `${YEAR}-04-12`; // April 12 in the test horizon (HORIZON_MONTH=3 → April)
-    const slots = await withoutRls((tx) => getAvailableSlots(tx, clinicStaffId, dateStr, 30));
-    expect(slots).not.toContain('13:00');
+    const slots = await withoutRls((tx) =>
+      getAvailableSlots(tx, clinicStaffId, dateStr, 30, FIXTURE_TZ),
+    );
+    expect(slots, 'the booked local slot must be gone').not.toContain('13:00');
 
-    // Adjacent slots must still be present (end of previous = 12:30, start of next = 13:30).
-    // The default window runs 07:00–21:00, so these exist if not blocked by other tests.
-    // Soft check: after the booking 13:00 is simply gone.
-    expect(Array.isArray(slots)).toBe(true);
+    // The complement: the booking removes ITS slot and not the neighbours.
+    // Without this, a picker that returned [] would also satisfy the assertion
+    // above — which is how "no slots at all" passes for "slot excluded".
+    expect(slots).toContain('12:30');
+    expect(slots).toContain('13:30');
   });
 });
