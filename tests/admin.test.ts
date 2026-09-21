@@ -297,27 +297,87 @@ describe('admin CRUD × 4 surfaces', () => {
   // impossible: every row this application writes is already local, so nothing
   // is ever eligible for conversion again.
   // ---------------------------------------------------------------------------
-  it('marks every row it writes EXPLICITLY, never leaving it to the column default', async () => {
-    // STAGE B writes the legacy UTC form and says so. Local writes are Stage C,
-    // after every pre-marker instance has drained — one of those would read a
-    // local row as UTC, four hours out.
+  it('STAGE C: writes local wall-clock digits, marked EXPLICITLY', async () => {
+    // Two separate properties, and both matter.
     //
-    // The assertion that matters is not which value: it is that the writer
-    // states one. Provenance inherited from a column default is provenance a
-    // later migration can change underneath the writer without anything
-    // failing, which is how the first version of this rollout would have
-    // mislabelled an in-flight write.
+    // WHICH basis: Stage C writes local, which is only safe because every
+    // instance predating `time_basis` has drained. Stage B wrote explicit
+    // legacy for exactly that reason.
+    //
+    // THAT a basis is stated at all: provenance inherited from a column
+    // default is provenance a later migration can change underneath the
+    // writer without anything failing. The default is still 'utc_legacy'
+    // until the Stage D backfill, so a row relying on it here would have its
+    // local digits read as UTC and enforced four hours out.
     await setAvailability(ownerSession, trackedStaffIds[0], [
       { weekday: 1, startTime: '09:00', endTime: '17:00' },
     ]);
     const rows = await withoutRls((tx) =>
       tx.staffAvailability.findMany({
         where: { staffId: trackedStaffIds[0] },
-        select: { timeBasis: true },
+        select: { timeBasis: true, startTime: true, endTime: true },
       }),
     );
     expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((r) => r.timeBasis === 'utc_legacy')).toBe(true);
+    expect(rows.every((r) => r.timeBasis === 'local')).toBe(true);
+    // Value and basis agree: the digits stored are the digits submitted, not
+    // an offset conversion of them.
+    expect(rows[0].startTime.getUTCHours()).toBe(9);
+    expect(rows[0].endTime.getUTCHours()).toBe(17);
+  });
+
+  it('EXTERNAL CONTRACT: 09:00-17:00 means the same thing under either basis', async () => {
+    // The product-facing promise, held independently of storage. A reader must
+    // land on the same local wall clock whether the row was written by a Stage
+    // B instance (legacy digits) or a Stage C one (local digits) — otherwise
+    // the rollout would be visible to users as their hours moving.
+    //
+    // This is what the storage-basis tests above cannot prove on their own,
+    // and it is the assertion that must survive every remaining stage.
+    const staff = trackedStaffIds[0];
+    const loc = await withoutRls((tx) =>
+      tx.staff.findUniqueOrThrow({
+        where: { id: staff },
+        select: { location: { select: { timezone: true } } },
+      }),
+    );
+    const tz = loc.location.timezone ?? 'UTC';
+
+    await setAvailability(ownerSession, staff, [
+      { weekday: 3, startTime: '09:00', endTime: '17:00' },
+    ]);
+    const asLocal = await withoutRls((tx) =>
+      tx.staffAvailability.findFirstOrThrow({
+        where: { staffId: staff, weekday: 3 },
+        select: { startTime: true, endTime: true, timeBasis: true },
+      }),
+    );
+
+    const { availabilityHHMM } = await import('@/lib/availability-basis');
+    expect(availabilityHHMM(asLocal.startTime, asLocal.timeBasis, tz)).toBe('09:00');
+    expect(availabilityHHMM(asLocal.endTime, asLocal.timeBasis, tz)).toBe('17:00');
+
+    // The same window expressed the OLD way — UTC digits plus a legacy marker —
+    // must read out identically.
+    const offsetHours = 4; // Asia/Tbilisi, the seeded location timezone
+    await withoutRls((tx) =>
+      tx.staffAvailability.updateMany({
+        where: { staffId: staff, weekday: 3 },
+        data: {
+          startTime: new Date(`1970-01-01T${String(9 - offsetHours).padStart(2, '0')}:00:00Z`),
+          endTime: new Date(`1970-01-01T${String(17 - offsetHours).padStart(2, '0')}:00:00Z`),
+          timeBasis: 'utc_legacy',
+        },
+      }),
+    );
+    const asLegacy = await withoutRls((tx) =>
+      tx.staffAvailability.findFirstOrThrow({
+        where: { staffId: staff, weekday: 3 },
+        select: { startTime: true, endTime: true, timeBasis: true },
+      }),
+    );
+    expect(availabilityHHMM(asLegacy.startTime, asLegacy.timeBasis, tz)).toBe('09:00');
+    expect(availabilityHHMM(asLegacy.endTime, asLegacy.timeBasis, tz)).toBe('17:00');
   });
 
   it('refuses a time_basis the migration does not define', async () => {

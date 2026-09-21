@@ -295,22 +295,27 @@ export async function setAvailability(
     await tx.staffAvailability.deleteMany({ where: { staffId } });
     if (windows.length > 0) {
       await tx.staffAvailability.createMany({
-        // STAGE B writes the LEGACY UTC form, with the marker stated outright.
+        // STAGE C writes the LOCAL wall clock, with the marker stated outright.
         //
-        // Not local yet, deliberately. A pre-marker instance of the previous
-        // release can still be serving during this deployment, and it ignores
-        // time_basis entirely — a local value would be read by it as UTC, four
-        // hours out. Local writes are Stage C, after those instances drain.
+        // Safe now, and it was not before: every instance that predates
+        // `time_basis` has drained, so there is nothing left that would read a
+        // local value as UTC and enforce it four hours out. Stage B instances
+        // may still be writing explicit `utc_legacy` during this deployment's
+        // own overlap, and that is fine — both releases read both bases.
         //
-        // `timeBasis` is written EXPLICITLY rather than left to the column
-        // default. Provenance that depends on a default is provenance that a
-        // future migration can silently change underneath the writer.
+        // Still EXPLICIT, never the column default. The default stays
+        // 'utc_legacy' until the Stage D backfill, so relying on it here would
+        // label these local digits as legacy and every reader would add the
+        // location offset.
+        //
+        // Value and basis are written in the same row, in one statement, so a
+        // row can never exist with local digits and a legacy marker.
         data: windows.map((w) => ({
           staffId,
           weekday: w.weekday,
           startTime: new Date(`1970-01-01T${w.startTime}:00Z`),
           endTime: new Date(`1970-01-01T${w.endTime}:00Z`),
-          timeBasis: 'utc_legacy' as const,
+          timeBasis: 'local' as const,
         })),
       });
     }
