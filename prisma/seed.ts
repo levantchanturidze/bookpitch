@@ -3,6 +3,7 @@
 // (including `@/lib/db`, which throws on missing URL and would obscure
 // the guard's intent).
 import './_require-local-db-guard';
+import { assertDisposableDatabase } from './_assert-disposable-database';
 
 import { LocationType, UserRole } from '@prisma/client';
 import { hash } from '@node-rs/argon2';
@@ -45,6 +46,19 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Saturday: 6,
 };
 
+/**
+ * Working hours are LOCAL to the staff member's location.
+ *
+ * The digits written here are the digits an operator would type into the
+ * availability editor. That was already true, but only by accident: the editor
+ * used to convert local -> UTC before storing while this seed stored raw, so
+ * the two wrote different meanings into the same column. Availability is stored
+ * local now (see the StaffAvailability doc comment) and this is the model both
+ * paths share.
+ *
+ * The trailing `Z` keeps Prisma reading the same wall-clock digits back out of
+ * a Time column; it does not mean the value is UTC.
+ */
 function parseHours(hours: string): { start: Date; end: Date } {
   const [rawStart, rawEnd] = hours.split(/\s*-\s*/);
   const toTime = (hhmm: string) => new Date(`1970-01-01T${hhmm}:00Z`);
@@ -52,6 +66,18 @@ function parseHours(hours: string): { start: Date; end: Date } {
 }
 
 async function main() {
+  // PROVE THE TARGET BEFORE WRITING OR DELETING ANYTHING.
+  //
+  // `_require-local-db-guard` runs at import time, before .env.local is loaded,
+  // and its own header admits the gap: a bare invocation with nothing set at
+  // process start "proceeds silently" and then uses whatever .env.local
+  // supplies, unexamined. That is the most common way this script is run.
+  //
+  // This asks the live connection what database it is actually on, checks it
+  // against a disposable allow-list, and refuses otherwise. "The seed never
+  // touches production" is now a control rather than a sentence in a comment.
+  await assertDisposableDatabase();
+
   // Reference data first — roles/permissions must exist before we can
   // populate anything that FKs into `roles` (e.g. a SUPER_ADMIN seed row
   // on app_users.platform_role_id, added in a follow-up commit).
@@ -81,6 +107,14 @@ async function main() {
       await tx.service.deleteMany();
       await tx.location.deleteMany();
       await tx.membership.deleteMany();
+      // Session-ish rows that FK to app_users. The seed never creates these —
+      // the test suites do — but `prisma db seed` has to be runnable against a
+      // database that has had tests run on it, which is the only kind of
+      // database it is ever pointed at. Without this, appUser.deleteMany()
+      // fails on impersonation_sessions_actor_fkey and the whole reset aborts.
+      await tx.impersonationSession.deleteMany().catch(() => {});
+      await tx.breakGlassSession.deleteMany().catch(() => {});
+      await tx.platformReauthGrant.deleteMany().catch(() => {});
       await tx.appUser.deleteMany();
       await tx.organization.deleteMany();
     });
@@ -148,11 +182,29 @@ async function main() {
           // future use.
           calendarColor: s.color,
           rating: s.rating,
+          // Seeded staff count as CONFIGURED, so a day with no window is a day
+          // off rather than falling through to "bookable at any hour".
+          availabilityConfiguredAt: new Date(),
           availability: {
             create: s.availability.days.map((day) => ({
               weekday: WEEKDAY_INDEX[day],
               startTime: start,
               endTime: end,
+              // EXPLICIT, never the column default.
+              //
+              // The digits above are what an operator types into the editor,
+              // i.e. LOCAL wall clock. The Stage A default is 'utc_legacy', so
+              // omitting this would label them legacy and every reader would
+              // add the location offset — 08:30 would be enforced as 12:30 in
+              // a Tbilisi clinic.
+              //
+              // Writing 'local' here is safe because this seed cannot run
+              // against production: assertDisposableDatabase() asks the live
+              // connection for current_database() and refuses anything outside
+              // the disposable allow-list. So there is no old instance that
+              // could misread a local row as UTC — which is exactly the hazard
+              // that keeps the APPLICATION on legacy writes until Stage C.
+              timeBasis: 'local' as const,
             })),
           },
         },

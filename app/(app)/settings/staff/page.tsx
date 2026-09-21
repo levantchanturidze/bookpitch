@@ -2,7 +2,7 @@ import { ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { listLocations, listStaff } from '@/lib/admin';
 import StaffPanel, { type LocationRef, type StaffRow } from '@/components/settings/StaffPanel';
-import { utcTimeValueToLocalHHMM } from '@/lib/tz';
+import { availabilityHHMM } from '@/lib/availability-basis';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,8 +38,10 @@ export default async function SettingsStaffPage() {
       // setAvailabilityAction converts them back to UTC before storage.
       availability: s.availability.map((a) => ({
         weekday: a.weekday,
-        startTime: utcTimeValueToLocalHHMM(a.startTime, locTz),
-        endTime: utcTimeValueToLocalHHMM(a.endTime, locTz),
+        // Read by the row's own basis: legacy rows are still UTC until the
+        // normalisation step runs, and both must display local wall-clock time.
+        startTime: availabilityHHMM(a.startTime, a.timeBasis, locTz),
+        endTime: availabilityHHMM(a.endTime, a.timeBasis, locTz),
       })),
     };
   });

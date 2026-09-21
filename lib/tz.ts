@@ -191,3 +191,61 @@ export function formatLocalDateTime(utc: Date, tz: string, locale = 'ka-GE'): st
     return `${toLocalDate(utc, tz)} ${toLocalTimeHHMM(utc, tz)}`;
   }
 }
+
+/** Matches a scheduler month parameter: four-digit year, two-digit month. */
+export const MONTH_PARAM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+/**
+ * 5.4 — the local calendar month, as a HALF-OPEN UTC range plus the anchor the
+ * UI should display.
+ *
+ * The scheduler used to derive one value and use it for both jobs:
+ *
+ *     monthStart = Date.UTC(y, m, 1) - 86400_000   // widened by a day
+ *     ...
+ *     monthAnchorIso={monthStart.toISOString()}    // and displayed
+ *
+ * The widening is legitimate — a local day near UTC midnight must not fall out
+ * of the query — but it is a QUERY boundary, and on 2026-09-15 reusing it as
+ * the DISPLAY anchor rendered "August 2026" above a September calendar. Two
+ * different questions had been given one answer.
+ *
+ * So this returns them separately, and the anchor is a local date STRING rather
+ * than an instant: `YYYY-MM-01` cannot drift across a timezone the way a Date
+ * can, which removes the whole class of bug rather than shifting it by an hour.
+ *
+ * `start`/`end` are the true local month boundaries converted to UTC, so no
+ * widening fudge is needed at all — a Tbilisi September begins at 2026-08-31
+ * 20:00Z and that is exactly what the range says.
+ */
+export function localMonthRange(
+  yearMonth: string,
+  tz: string,
+): { anchorLocalDate: string; start: Date; end: Date } {
+  if (!MONTH_PARAM_RE.test(yearMonth)) {
+    throw new Error(`localMonthRange: "${yearMonth}" is not YYYY-MM`);
+  }
+  const [y, m] = yearMonth.split('-').map(Number);
+  const firstOfThis = `${yearMonth}-01`;
+  // Month m is 1-based here, so Date.UTC(y, m, 1) is already the FIRST of the
+  // next month — no +1 and no manual 12→1 rollover, which is where this kind of
+  // helper usually breaks in December.
+  const firstOfNext = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
+  return {
+    anchorLocalDate: firstOfThis,
+    start: localToUtc(firstOfThis, '00:00', tz),
+    end: localToUtc(firstOfNext, '00:00', tz),
+  };
+}
+
+/**
+ * The local `YYYY-MM` a timezone is currently in.
+ *
+ * Deliberately NOT `new Date().toISOString().slice(0,7)`: for Tbilisi at
+ * 2026-09-30 23:00 local that is still "2026-09" in UTC, but for a negative
+ * offset near month end the UTC month is already the next one, and the
+ * scheduler would open on a month the user is not in.
+ */
+export function currentLocalYearMonth(tz: string, now: Date = new Date()): string {
+  return toLocalDate(now, tz).slice(0, 7);
+}

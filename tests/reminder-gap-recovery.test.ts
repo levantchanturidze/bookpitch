@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 
 // Reminders code reaches @/auth transitively (lib/messaging/reminders imports
 // lib/auth for ForbiddenError), and next-auth's env module cannot resolve
@@ -440,5 +440,99 @@ describe('reminders after a scheduler gap', () => {
     expect((await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0).toBe(
       beforeCount,
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // INCIDENT #90 — the metric must demand only the channels that are LIVE.
+  //
+  // Production ships SMS_PROVIDER=mock, a documented deferral. The UAT
+  // appointment's reminder EMAIL was delivered — SPF, DKIM (d=send.bookpitch.ge)
+  // and DMARC all passed, and the operator received it — and the monitor still
+  // opened #90, because the SQL hard-coded ARRAY['sms','email'] as required and
+  // a deferred channel can never reach 'sent'.
+  //
+  // Both directions are asserted on the SAME seeded row, because that is the
+  // only way to show the channel policy is what moved the number and not the
+  // data: identical appointment, identical single email delivery, opposite
+  // verdicts under the two configurations.
+  // ---------------------------------------------------------------------------
+  describe('required channels follow the live provider configuration', () => {
+    // One fixture staff member, and `no_staff_double_booking` is a real
+    // exclusion constraint — every seed here needs its own non-overlapping
+    // slot, spaced wider than the 30-minute fixture duration.
+    async function seedEmailOnlyDelivery(hoursAgo: number): Promise<string> {
+      const startsAt = new Date(Date.now() - hoursAgo * 3_600_000);
+      const id = await makeAppointment(startsAt, new Date(startsAt.getTime() - 26 * 3_600_000));
+      await withoutRls((tx) =>
+        tx.messageLog.create({
+          data: {
+            organizationId: orgId,
+            appointmentId: id,
+            channel: 'email',
+            toAddress: 'redacted@example.invalid',
+            body: 'the reminder that really was delivered',
+            state: 'sent',
+          },
+        }),
+      );
+      return id;
+    }
+
+    function asProduction(smsProvider: string) {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('EMAIL_PROVIDER', 'resend');
+      vi.stubEnv('SMS_PROVIDER', smsProvider);
+    }
+
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('THE #90 DEFECT: a delivered email with SMS DEFERRED is NOT a missed reminder', async () => {
+      asProduction('mock');
+      const before = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+      await seedEmailOnlyDelivery(6.7);
+      const after = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+      expect(after, 'a deferred channel is not owed, so the email settles it').toBe(before);
+    });
+
+    it('the SAME row IS a missed reminder once SMS is really configured', async () => {
+      // The complement. If this passed too, the metric would have stopped being
+      // able to report anything and the fix would be a false green.
+      asProduction('smsoffice');
+      const before = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+      await seedEmailOnlyDelivery(9.3);
+      const after = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+      expect(after, 'SMS is live and undelivered, so this one really is missed').toBe(before + 1);
+    });
+
+    it('a missing EMAIL is still missed even while SMS is deferred', async () => {
+      // The channel that remains required must still be able to fail.
+      asProduction('mock');
+      const before = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+      const startsAt = new Date(Date.now() - 11.9 * 3_600_000);
+      await makeAppointment(startsAt, new Date(startsAt.getTime() - 26 * 3_600_000));
+      const after = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+      expect(after).toBe(before + 1);
+    });
+
+    it("a 'skipped' row is not a delivery — it explains silence, it does not excuse it", async () => {
+      asProduction('mock');
+      const before = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+      const startsAt = new Date(Date.now() - 14.5 * 3_600_000);
+      const id = await makeAppointment(startsAt, new Date(startsAt.getTime() - 26 * 3_600_000));
+      await withoutRls((tx) =>
+        tx.messageLog.create({
+          data: {
+            organizationId: orgId,
+            appointmentId: id,
+            channel: 'email',
+            toAddress: '',
+            body: 'no email address on file',
+            state: 'skipped',
+          },
+        }),
+      );
+      const after = (await collectOpsMetrics()).cronHeartbeat.unremindedStartedAppointments ?? 0;
+      expect(after, 'the customer was still not reminded').toBe(before + 1);
+    });
   });
 });

@@ -53,8 +53,14 @@ describe('getAvailableSlots', () => {
   /** Staff with a 09:00–18:00 UTC window used for boundary tests. */
   let staffWindowed: string;
   /**
-   * Staff with 05:00–14:00 UTC windows = 09:00–18:00 Asia/Tbilisi (UTC+4).
-   * Used to verify timezone-aware slot computation.
+   * Staff whose windows are stored as 05:00–14:00 LOCAL.
+   *
+   * These digits used to be read as UTC and shifted by the location offset on
+   * every read. Availability is stored in the location's local wall clock now,
+   * so the digits ARE the local window and no offset is applied to them. What
+   * the timezone still decides is which local DAY a date maps to and how a
+   * booked appointment's UTC instant lands in local minutes — which is what the
+   * timezone test below now measures instead.
    */
   let staffTbilisi: string;
   let customerId: string;
@@ -90,6 +96,7 @@ describe('getAvailableSlots', () => {
               weekday: wd,
               startTime: timeVal(9),
               endTime: timeVal(18),
+              timeBasis: 'utc_legacy' as const,
             })),
           },
         },
@@ -101,11 +108,15 @@ describe('getAvailableSlots', () => {
           name: 'Tbilisi Staff',
           roleTitle: 'Consultant',
           // 05:00–14:00 UTC = 09:00–18:00 Asia/Tbilisi. All weekdays.
+          // Marked explicitly: these digits really are UTC, and the Stage A
+          // default happens to agree — but a fixture that relies on a default
+          // stops meaning anything the moment Stage D changes it.
           availability: {
             create: [0, 1, 2, 3, 4, 5, 6].map((wd) => ({
               weekday: wd,
               startTime: timeVal(5),
               endTime: timeVal(14),
+              timeBasis: 'utc_legacy' as const,
             })),
           },
         },
@@ -276,10 +287,14 @@ describe('getAvailableSlots', () => {
   });
 
   // ---------------------------------------------------------------------------
-  it('timezone: same staff returns local HH:MM; Tbilisi shifts by +4h vs UTC', async () => {
-    // staffTbilisi has windows stored as 05:00–14:00 UTC = 09:00–18:00 Tbilisi.
-    // With timezone='UTC': slots are in UTC HH:MM → 05:00 … 13:30.
-    // With timezone='Asia/Tbilisi': slots are in local HH:MM → 09:00 … 17:30.
+  it('a utc_legacy window is read through the location offset', async () => {
+    // The fixture is marked utc_legacy and really holds UTC digits, so the
+    // reader converts: 05:00-14:00 UTC is 09:00-18:00 in Tbilisi and
+    // 05:00-14:00 under UTC. The basis decides, not the column.
+    //
+    // Before the basis existed the two halves disagreed silently — the write
+    // path never applied the offset and the picker did, so they differed by
+    // exactly the offset and neither side reported anything.
     const utcSlots = await withoutRls((tx) =>
       getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'UTC'),
     );
@@ -287,22 +302,137 @@ describe('getAvailableSlots', () => {
       getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'Asia/Tbilisi'),
     );
 
-    // UTC view: first slot 05:00, last 13:30 (window 05:00–14:00 UTC; 14:00+30 > 14:00)
     expect(utcSlots).toContain('05:00');
     expect(utcSlots).toContain('13:30');
-    expect(utcSlots).not.toContain('14:00'); // 14:00+30=14:30 > window end
+    expect(utcSlots).not.toContain('14:00'); // 14:00+30 > window end
 
-    // Tbilisi view: window is 09:00–18:00 local; first slot 09:00, last 17:30
+    // +4h: the same stored digits mean 09:00-18:00 on a Tbilisi wall clock.
     expect(tbilisiSlots).toContain('09:00');
     expect(tbilisiSlots).toContain('17:30');
-    expect(tbilisiSlots).not.toContain('05:00'); // 05:00 local = 01:00 UTC, outside window
-    expect(tbilisiSlots).not.toContain('18:00'); // 18:00+30=18:30 > local window end
+    expect(tbilisiSlots).not.toContain('05:00');
+    expect(tbilisiSlots).not.toContain('18:00');
 
-    // Same number of slots — same window width, just labelled differently.
+    // Same width, shifted labels — the offset applied exactly once, by basis.
     expect(tbilisiSlots.length).toBe(utcSlots.length);
-    // First slot in Tbilisi is exactly 4 hours ahead of first UTC slot.
-    expect(utcSlots[0]).toBe('05:00');
-    expect(tbilisiSlots[0]).toBe('09:00');
+  });
+
+  it('reads a utc_legacy row through the location offset, and a local row as-is', async () => {
+    // The compatibility contract that lets migrate.yml and Vercel deploy in
+    // parallel. Migration 20260915000002 changes no VALUES — it only labels the
+    // rows that already existed — so the previous release keeps reading exactly
+    // the bytes it expects while the new one reads both bases correctly.
+    //
+    // Same digits, two bases, two meanings. If this ever collapses to one
+    // answer, the overlap window becomes a four-hour error.
+    const staff = await withoutRls((tx) =>
+      tx.staff.create({
+        data: {
+          organizationId: orgId,
+          locationId,
+          name: 'Dual basis',
+          roleTitle: 'Provider',
+          availabilityConfiguredAt: new Date(),
+        },
+        select: { id: true },
+      }),
+    );
+
+    const weekday = new Date(`${dateStr(9)}T12:00:00Z`).getUTCDay();
+    await withoutRls((tx) =>
+      tx.staffAvailability.create({
+        data: {
+          staffId: staff.id,
+          weekday,
+          startTime: new Date('1970-01-01T05:00:00Z'),
+          endTime: new Date('1970-01-01T13:00:00Z'),
+          timeBasis: 'utc_legacy',
+        },
+      }),
+    );
+
+    // 05:00-13:00 UTC is 09:00-17:00 in Tbilisi.
+    const legacy = await withoutRls((tx) =>
+      getAvailableSlots(tx, staff.id, dateStr(9), 30, 'Asia/Tbilisi'),
+    );
+    expect(legacy).toContain('09:00');
+    expect(legacy).toContain('16:30');
+    expect(legacy).not.toContain('05:00');
+
+    // The same digits written as `local` mean 05:00-13:00 on the wall.
+    await withoutRls((tx) =>
+      tx.staffAvailability.updateMany({
+        where: { staffId: staff.id },
+        data: { timeBasis: 'local' },
+      }),
+    );
+    const local = await withoutRls((tx) =>
+      getAvailableSlots(tx, staff.id, dateStr(9), 30, 'Asia/Tbilisi'),
+    );
+    expect(local).toContain('05:00');
+    expect(local).toContain('12:30');
+    expect(local).not.toContain('16:30');
+
+    await withoutRls(async (tx) => {
+      await tx.staffAvailability.deleteMany({ where: { staffId: staff.id } });
+      await tx.staff.delete({ where: { id: staff.id } });
+    });
+  });
+
+  it('EXCLUDES the appointment being rescheduled from its own occupancy', async () => {
+    // Without this the slot a booking already occupies is reported as taken —
+    // by itself — so the one time a user is most likely to keep is the one time
+    // the reschedule picker hides.
+    const appt = await withoutRls((tx) =>
+      tx.appointment.create({
+        data: {
+          organizationId: orgId,
+          locationId,
+          customerId,
+          staffId: staffTbilisi,
+          serviceName: 'Self exclusion',
+          price: 0,
+          startsAt: ts(9, 6),
+          endsAt: ts(9, 6, 30),
+          status: 'confirmed',
+        },
+        select: { id: true },
+      }),
+    );
+    createdAppointments.push(appt.id);
+
+    const without = await withoutRls((tx) =>
+      getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'UTC'),
+    );
+    expect(without, 'its own slot is blocked by itself').not.toContain('06:00');
+
+    const excluding = await withoutRls((tx) =>
+      getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'UTC', appt.id),
+    );
+    expect(excluding, 'excluded, so the slot is offered again').toContain('06:00');
+
+    // The complement: excluding one appointment must not unblock a DIFFERENT
+    // booking's slot, or reschedule would happily double-book.
+    const other = await withoutRls((tx) =>
+      tx.appointment.create({
+        data: {
+          organizationId: orgId,
+          locationId,
+          customerId,
+          staffId: staffTbilisi,
+          serviceName: 'Someone else',
+          price: 0,
+          startsAt: ts(9, 7),
+          endsAt: ts(9, 7, 30),
+          status: 'confirmed',
+        },
+        select: { id: true },
+      }),
+    );
+    createdAppointments.push(other.id);
+    const stillBlocked = await withoutRls((tx) =>
+      getAvailableSlots(tx, staffTbilisi, dateStr(9), 30, 'UTC', appt.id),
+    );
+    expect(stillBlocked).not.toContain('07:00');
   });
 });
 

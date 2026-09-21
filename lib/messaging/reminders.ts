@@ -4,6 +4,7 @@ import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
 import { getEmailProvider, getSmsProvider } from './index';
+import { enabledReminderChannels } from './channel-policy';
 import { RateLimit } from '@/lib/rate-limit';
 import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
@@ -81,8 +82,25 @@ export type SendOutcome =
  */
 export const REMINDER_CLAIM_TTL_MINUTES = 15;
 
-/** Channels a reminder is attempted on. Both are required. */
-export const CHANNELS: readonly MessageChannel[] = ['sms', 'email'] as const;
+/**
+ * Channels a reminder is attempted on — whichever are LIVE, resolved per call.
+ *
+ * This was `['sms','email'] as const`, i.e. "both, always". Production ships
+ * SMS_PROVIDER=mock as a documented deferral, so every tick dialled a channel
+ * that cannot deliver: with a phone number `getSmsProvider()` throws, and
+ * without one the appointment got a `failed` row for a channel nobody expected
+ * to work. Incident #90 is what that cost.
+ *
+ * A function rather than a constant because the disposition is configuration,
+ * and a module-level constant would freeze whatever the environment looked
+ * like at import time — which in tests is whatever ran first.
+ *
+ * @see ./channel-policy.ts — the single authority; the missed-reminder metric
+ *      in lib/ops-metrics.ts asks the same module the same question.
+ */
+export function activeChannels(): MessageChannel[] {
+  return enabledReminderChannels();
+}
 
 /** Per-tick channel accounting. Every field is a count; no PII, no raw errors. */
 export type TickTally = {
@@ -209,21 +227,36 @@ async function prepare(
   const toAddress = channel === 'sms' ? appt.customer.phone : appt.customer.email;
 
   if (!toAddress) {
-    // Record the skip so the operator sees WHY nothing went out. `failed` is
-    // not in the dedup state set, so a later fix to the contact details lets
-    // the reminder go out.
-    await withoutRls((tx) =>
-      tx.messageLog.create({
+    // Record WHY nothing went out — but as a skip, not as a failure.
+    //
+    // This used to write `state: 'failed'`, which was wrong twice over.
+    // It put "the gateway rejected us" and "this customer has no phone number"
+    // in one bucket, so the operator could not tell an outage from a blank
+    // field; and because `failed` is deliberately outside the dedup set, every
+    // subsequent tick wrote another identical row for the same appointment,
+    // without bound, for as long as the appointment stayed in the lead window.
+    //
+    // `skipped` is deduped HERE rather than in alreadyReminded(): one row per
+    // (appointment, channel) is enough to explain the silence, and keeping it
+    // out of alreadyReminded() is what still lets a real send happen the moment
+    // somebody fills the contact field in.
+    await withoutRls(async (tx) => {
+      const existing = await tx.messageLog.findFirst({
+        where: { appointmentId, channel, state: 'skipped' },
+        select: { id: true },
+      });
+      if (existing) return;
+      await tx.messageLog.create({
         data: {
           organizationId: appt.organizationId,
           appointmentId,
           channel,
           toAddress: '',
           body,
-          state: 'failed',
+          state: 'skipped',
         },
-      }),
-    );
+      });
+    });
     return { report: { channel, outcome: 'skipped_missing_contact' } };
   }
 
@@ -438,10 +471,14 @@ export async function runReminderTick(organizationId: string): Promise<TickRepor
   const truncated = appts.length > MAX_APPOINTMENTS_PER_TICK;
   const batch = truncated ? appts.slice(0, MAX_APPOINTMENTS_PER_TICK) : appts;
 
+  // Resolved ONCE per tick: every appointment in this batch must be measured
+  // against the same channel set, or the tally describes no single policy.
+  const channels = activeChannels();
+
   const attempts: TickReport['attempts'] = [];
   for (const a of batch) {
     const reports: ChannelReport[] = [];
-    for (const channel of CHANNELS) reports.push(await sendForAppointment(a.id, channel));
+    for (const channel of channels) reports.push(await sendForAppointment(a.id, channel));
     attempts.push({ appointmentId: a.id, reports });
   }
 
@@ -461,7 +498,7 @@ export async function runReminderTick(organizationId: string): Promise<TickRepor
   const tally = {
     appointmentsExpected: appts.length,
     appointmentsProcessed: batch.length,
-    channelsExpected: batch.length * CHANNELS.length,
+    channelsExpected: batch.length * channels.length,
     sent: flat.filter((r) => r.outcome === 'sent').length,
     duplicates: flat.filter((r) => r.outcome === 'skipped_duplicate').length,
     missingContact: flat.filter((r) => r.outcome === 'skipped_missing_contact').length,
@@ -495,10 +532,13 @@ export async function sendNowForSession(
   );
   if (!appt) throw new InvalidInputError('appointment not found');
 
-  const reports = [
-    await sendForAppointment(appointmentId, 'sms'),
-    await sendForAppointment(appointmentId, 'email'),
-  ];
+  // The SAME policy the cron uses. "Send now" used to hard-code both channels,
+  // so the button could manufacture a failed SMS row that the scheduled tick
+  // would never have created — two code paths, two answers, one incident (#90).
+  const reports: ChannelReport[] = [];
+  for (const channel of activeChannels()) {
+    reports.push(await sendForAppointment(appointmentId, channel));
+  }
 
   // A user-triggered send deserves a proper audit row with the actor.
   await withOrg(session.organizationId, async (tx) => {

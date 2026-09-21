@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition, useId } from 'react';
+import Link from 'next/link';
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -56,7 +57,15 @@ type Props = {
   services: ScheduleService[];
   customers: ScheduleCustomer[];
   appointments: AppointmentDto[];
-  monthAnchorIso: string; // YYYY-MM-01 of the month currently on screen
+  /**
+   * The month on screen, as a local `YYYY-MM-01` date string.
+   *
+   * Was `monthAnchorIso`, an instant — and the page passed the WIDENED query
+   * lower boundary (first of month minus one day), so on 2026-09-15 the heading
+   * read "August 2026" over a September grid. A local date string cannot drift
+   * across a timezone the way a Date can.
+   */
+  monthAnchor: string;
 };
 
 const STATUS_BADGES: Record<AppointmentStatus, string> = {
@@ -74,14 +83,18 @@ function localTodayStr(tz: string): string {
 // Main view
 // -----------------------------------------------------------------------------
 export default function SchedulerView(props: Props) {
-  const { location, staff, services, customers, appointments, monthAnchorIso } = props;
+  const { location, staff, services, customers, appointments, monthAnchor } = props;
   const isClinic = location.type === 'clinic';
   const accent = isClinic ? 'teal' : 'pink';
   const tz = location.timezone;
   const today = localTodayStr(tz);
 
   const [selectedDate, setSelectedDate] = useState<string>(today);
-  const [anchor, setAnchor] = useState<Date>(new Date(monthAnchorIso));
+  // Derived from the prop, NOT component state. The month is route state now:
+  // previous/next are links, the server re-renders with that month's rows, and
+  // this follows. As `useState` it was seeded once, so navigating changed the
+  // grid while the appointments stayed on the first month that was fetched.
+  const anchor = useMemo(() => new Date(`${monthAnchor}T00:00:00Z`), [monthAnchor]);
   const [filterStaff, setFilterStaff] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [bookOpen, setBookOpen] = useState(false);
@@ -180,7 +193,7 @@ export default function SchedulerView(props: Props) {
             </div>
           </div>
 
-          <MonthNav anchor={anchor} onChange={setAnchor} />
+          <MonthNav monthAnchor={monthAnchor} />
         </div>
 
         <MonthGrid
@@ -388,34 +401,56 @@ export default function SchedulerView(props: Props) {
 // -----------------------------------------------------------------------------
 // Month navigator + calendar grid
 // -----------------------------------------------------------------------------
-function MonthNav({ anchor, onChange }: { anchor: Date; onChange: (d: Date) => void }) {
+function shiftMonth(monthAnchor: string, delta: number): string {
+  const [y, m] = monthAnchor.split('-').map(Number);
+  // m is 1-based, so Date.UTC(y, m - 1 + delta, 1) handles the December and
+  // January rollovers without any manual wrapping.
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return d.toISOString().slice(0, 7);
+}
+
+/**
+ * Month navigation as LINKS, not click handlers.
+ *
+ * These were buttons calling setAnchor(): the heading and the grid moved, and
+ * the appointments did not, because nothing refetched. Making them `<Link>`s to
+ * `?month=YYYY-MM` puts the month in the URL, so the server component reruns
+ * its query for that month, the view is shareable and bookmarkable, and the
+ * browser's back button works.
+ */
+function MonthNav({ monthAnchor }: { monthAnchor: string }) {
+  const label = new Intl.DateTimeFormat('en-US', {
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(`${monthAnchor}T00:00:00Z`));
+
   return (
     <div className="flex items-center gap-1 rounded-lg border border-slate-100 bg-slate-50 p-1">
-      <button
-        onClick={() =>
-          onChange(new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - 1, 1)))
-        }
+      <Link
+        href={`/scheduler?month=${shiftMonth(monthAnchor, -1)}`}
+        scroll={false}
         className="rounded-md p-1.5 text-slate-600 transition hover:bg-white"
+        aria-label="Previous month"
         title="Previous month"
       >
         <ChevronLeft className="h-4 w-4" />
-      </button>
-      <span className="min-w-[100px] px-3 py-1 text-center text-xs font-semibold text-slate-700">
-        {new Intl.DateTimeFormat('en-US', {
-          month: 'long',
-          year: 'numeric',
-          timeZone: 'UTC',
-        }).format(anchor)}
+      </Link>
+      <span
+        aria-live="polite"
+        className="min-w-[100px] px-3 py-1 text-center text-xs font-semibold text-slate-700"
+      >
+        {label}
       </span>
-      <button
-        onClick={() =>
-          onChange(new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 1, 1)))
-        }
+      <Link
+        href={`/scheduler?month=${shiftMonth(monthAnchor, 1)}`}
+        scroll={false}
         className="rounded-md p-1.5 text-slate-600 transition hover:bg-white"
+        aria-label="Next month"
         title="Next month"
       >
         <ChevronRight className="h-4 w-4" />
-      </button>
+      </Link>
     </div>
   );
 }

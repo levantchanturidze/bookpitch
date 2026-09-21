@@ -183,6 +183,159 @@ describe('admin CRUD × 4 surfaces', () => {
     expect(s2.availability[0].weekday).toBe(5);
   });
 
+  // ---------------------------------------------------------------------------
+  // 5.3 — validation that was written down and never executed.
+  //
+  // setAvailability() built a `byDay` map specifically to detect overlaps, then
+  // returned without ever comparing two windows. The comment above it said "no
+  // overlaps per weekday" for as long as the function has existed.
+  // ---------------------------------------------------------------------------
+  it('REJECTS overlapping windows on the same weekday', async () => {
+    await expect(
+      setAvailability(ownerSession, trackedStaffIds[0], [
+        { weekday: 1, startTime: '09:00', endTime: '17:00' },
+        { weekday: 1, startTime: '13:00', endTime: '14:00' },
+      ]),
+    ).rejects.toMatchObject({ message: expect.stringContaining('overlaps') });
+  });
+
+  it('allows the same clock times on DIFFERENT weekdays', async () => {
+    // The complement: an overlap check that also rejects this would make a
+    // normal Mon-Fri schedule unsaveable.
+    const r = await setAvailability(ownerSession, trackedStaffIds[0], [
+      { weekday: 1, startTime: '09:00', endTime: '17:00' },
+      { weekday: 2, startTime: '09:00', endTime: '17:00' },
+    ]);
+    expect(r.persisted).toBe(2);
+  });
+
+  it('allows windows that touch but do not overlap', async () => {
+    const r = await setAvailability(ownerSession, trackedStaffIds[0], [
+      { weekday: 1, startTime: '09:00', endTime: '12:00' },
+      { weekday: 1, startTime: '12:00', endTime: '17:00' },
+    ]);
+    expect(r.persisted).toBe(2);
+  });
+
+  it('REJECTS clock values that match the shape but are not times', async () => {
+    // `/^\d{2}:\d{2}$/` accepted every one of these. `new Date(...99:99...)`
+    // is an Invalid Date, so the failure surfaced from Prisma, or not at all.
+    for (const bad of ['99:99', '25:00', '12:60', '1:00', '0900']) {
+      await expect(
+        setAvailability(ownerSession, trackedStaffIds[0], [
+          { weekday: 1, startTime: bad, endTime: '23:00' },
+        ]),
+        bad,
+      ).rejects.toMatchObject({ name: 'InvalidInputError' });
+    }
+  });
+
+  it('REJECTS a window that ends at or before it starts', async () => {
+    await expect(
+      setAvailability(ownerSession, trackedStaffIds[0], [
+        { weekday: 1, startTime: '17:00', endTime: '09:00' },
+      ]),
+    ).rejects.toMatchObject({ name: 'InvalidInputError' });
+    await expect(
+      setAvailability(ownerSession, trackedStaffIds[0], [
+        { weekday: 1, startTime: '09:00', endTime: '09:00' },
+      ]),
+    ).rejects.toMatchObject({ name: 'InvalidInputError' });
+  });
+
+  it('REPORTS how many windows were persisted, including zero', async () => {
+    // The editor closed on a resolved promise and showed nothing, so two saves
+    // of an empty array were indistinguishable from two successful saves —
+    // which is exactly what the availability incident looked like from the UI.
+    const some = await setAvailability(ownerSession, trackedStaffIds[0], [
+      { weekday: 4, startTime: '08:00', endTime: '23:00' },
+    ]);
+    expect(some.persisted).toBe(1);
+
+    const none = await setAvailability(ownerSession, trackedStaffIds[0], []);
+    expect(none.persisted).toBe(0);
+  });
+
+  it('marks the staff member CONFIGURED even when saving an empty schedule', async () => {
+    // This is what makes "every day off" enforceable. Without it, clearing the
+    // schedule returns the staff member to the legacy fall-through and every
+    // hour becomes bookable again.
+    await setAvailability(ownerSession, trackedStaffIds[0], []);
+    const row = await withoutRls((tx) =>
+      tx.staff.findUnique({
+        where: { id: trackedStaffIds[0] },
+        select: { availabilityConfiguredAt: true },
+      }),
+    );
+    expect(row?.availabilityConfiguredAt).toBeInstanceOf(Date);
+  });
+
+  it('stores the LOCAL wall-clock digits that were submitted', async () => {
+    // 08:00-23:00 Asia/Tbilisi must read back as 08:00-23:00. It used to be
+    // converted to UTC on write (04:00-19:00) and back on read, so the round
+    // trip only survived because both halves were wrong in the same direction —
+    // and a window whose UTC form crossed midnight was filed on the wrong day.
+    await setAvailability(ownerSession, trackedStaffIds[0], [
+      { weekday: 2, startTime: '08:00', endTime: '23:00' },
+    ]);
+    const [s] = await listStaff(ownerSession);
+    const w = s.availability.find((x) => x.weekday === 2);
+    // listStaff returns the raw Time column; the wall-clock digits are what
+    // matter, and they must be the ones submitted rather than offset by 4h.
+    const hhmm = (d: Date) =>
+      `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+    expect(hhmm(w!.startTime as unknown as Date)).toBe('08:00');
+    expect(hhmm(w!.endTime as unknown as Date)).toBe('23:00');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Migration 20260915000002 — the data-version boundary, asserted in CI.
+  //
+  // The conversion itself was proven against a production-shaped fixture
+  // (five Asia/Tbilisi rows, 05:00-13:00 -> 09:00-17:00) before deployment.
+  // What must not drift afterwards is the INVARIANT that makes re-conversion
+  // impossible: every row this application writes is already local, so nothing
+  // is ever eligible for conversion again.
+  // ---------------------------------------------------------------------------
+  it('marks every row it writes EXPLICITLY, never leaving it to the column default', async () => {
+    // STAGE B writes the legacy UTC form and says so. Local writes are Stage C,
+    // after every pre-marker instance has drained — one of those would read a
+    // local row as UTC, four hours out.
+    //
+    // The assertion that matters is not which value: it is that the writer
+    // states one. Provenance inherited from a column default is provenance a
+    // later migration can change underneath the writer without anything
+    // failing, which is how the first version of this rollout would have
+    // mislabelled an in-flight write.
+    await setAvailability(ownerSession, trackedStaffIds[0], [
+      { weekday: 1, startTime: '09:00', endTime: '17:00' },
+    ]);
+    const rows = await withoutRls((tx) =>
+      tx.staffAvailability.findMany({
+        where: { staffId: trackedStaffIds[0] },
+        select: { timeBasis: true },
+      }),
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.timeBasis === 'utc_legacy')).toBe(true);
+  });
+
+  it('refuses a time_basis the migration does not define', async () => {
+    // The CHECK constraint is what stops a future writer inventing a third
+    // basis and quietly making the boundary meaningless.
+    await setAvailability(ownerSession, trackedStaffIds[0], [
+      { weekday: 2, startTime: '09:00', endTime: '17:00' },
+    ]);
+    await expect(
+      withoutRls((tx) =>
+        tx.$executeRawUnsafe(
+          `UPDATE staff_availability SET time_basis = 'utc_guess' WHERE staff_id = $1::uuid`,
+          trackedStaffIds[0],
+        ),
+      ),
+    ).rejects.toThrow();
+  });
+
   it('deleteLocation refuses when staff exist (ConflictError 409)', async () => {
     await expect(deleteLocation(ownerSession, trackedLocationIds[0])).rejects.toMatchObject({
       name: 'ConflictError',

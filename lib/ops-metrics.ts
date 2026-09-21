@@ -4,6 +4,7 @@
 import { unsafePrismaAdmin } from '@/lib/db';
 import { auditDigestDeliveryMode, isAuditDigestDeliveryEnabled } from '@/lib/audit-digest';
 import { OWED_MIN_LEAD_MINUTES } from '@/lib/messaging/reminder-eligibility';
+import { requiredReminderChannels } from '@/lib/messaging/channel-policy';
 import {
   HEARTBEAT_JOBS,
   HEARTBEAT_MAX_AGE_MINUTES,
@@ -341,6 +342,17 @@ export type CronHeartbeatMetrics = {
    * conclusions can all be green while this is non-zero.
    */
   unremindedStartedAppointments: number | null;
+
+  /**
+   * How many appointments in the same window were OWED a reminder at all.
+   *
+   * The denominator #90 did not have. Without it `unreminded === 0` means two
+   * incompatible things — "every owed reminder landed" and "nothing was owed,
+   * so nothing was measured" — and the monitor cannot tell them apart. #90
+   * closed itself on the second: its one bad appointment aged out of the
+   * 48-hour window, the count fell 1 -> 0, and that read as recovery.
+   */
+  eligibleStartedAppointments: number | null;
 };
 
 export type OpsMetrics = {
@@ -477,120 +489,24 @@ export const PROVIDER_ENV_VALIDATORS: Readonly<Record<string, (value: string) =>
 };
 
 /**
- * The full outbound-provider contract: which adapters exist, what each one
- * needs, and whether the product is allowed to launch without it.
- *
- * Three gaps this closes, all of which let production look configured while a
- * resolver would fail closed at the first real send:
- *
- *   1. PAYMENT_GATEWAY and SMS_PROVIDER were in NO required-variable set, so
- *      unsetting either was invisible. `missingSignupEnv/Email/Security` all
- *      stayed 0 and the monitor reported the configuration complete, while
- *      getGateway() and getSmsProvider() throw in production on an unset
- *      variable ("refusing to default to the mock provider").
- *   2. Nothing checked the credentials the SELECTED adapter actually reads.
- *      EMAIL_PROVIDER=postmark passed every check with POSTMARK_API_TOKEN
- *      unset; the first send would throw.
- *   3. `mock` was treated as an acceptable pre-launch state for any provider,
- *      inferred from the value alone. Whether a feature may ship deferred is a
- *      product decision, not something to read off an environment variable.
- *      `deferrable` records that decision here and is the only thing that
- *      permits a PAUSED status; docs/deferred-features.md § Outbound providers
- *      is the authoritative statement it mirrors.
+ * The outbound-provider contract now lives in `lib/provider-contract.ts`, which
+ * imports nothing — see the header there for why. Re-exported here so every
+ * existing importer of `@/lib/ops-metrics` keeps working unchanged.
  */
-export const PROVIDER_CONTRACT: Readonly<
-  Record<
-    string,
-    {
-      /** Adapter name → the variables that adapter reads. */
-      readonly adapters: Readonly<Record<string, readonly string[]>>;
-      /**
-       * Whether shipping on the `mock` adapter is an accepted deferral.
-       * False means `mock` is a FAULT, not a pause.
-       */
-      readonly deferrable: boolean;
-      /** Where the deferral decision is recorded, for the operator. */
-      readonly decision: string;
-    }
-  >
-> = {
-  EMAIL_PROVIDER: {
-    adapters: {
-      resend: ['RESEND_API_KEY', 'RESEND_FROM'],
-      postmark: ['POSTMARK_API_TOKEN', 'POSTMARK_FROM'],
-    },
-    // Email is not deferrable: signup verification, password reset and the
-    // audit digest all go through it. A mocked email provider in production
-    // means nobody can complete signup.
-    deferrable: false,
-    decision: 'docs/deferred-features.md § Outbound providers',
-  },
-  SMS_PROVIDER: {
-    adapters: { smsoffice: ['SMSOFFICE_API_KEY', 'SMSOFFICE_SENDER'] },
-    deferrable: true,
-    decision: 'docs/deferred-features.md § Outbound providers',
-  },
-  PAYMENT_GATEWAY: {
-    adapters: {
-      bog: ['BOG_CLIENT_ID', 'BOG_CLIENT_SECRET', 'BOG_WEBHOOK_PUBLIC_KEY'],
-      bog_ipay: ['BOG_CLIENT_ID', 'BOG_CLIENT_SECRET', 'BOG_WEBHOOK_PUBLIC_KEY'],
-      tbc: ['TBC_API_KEY', 'TBC_CLIENT_ID', 'TBC_CLIENT_SECRET', 'TBC_WEBHOOK_SECRET'],
-      tbc_ecommerce: ['TBC_API_KEY', 'TBC_CLIENT_ID', 'TBC_CLIENT_SECRET', 'TBC_WEBHOOK_SECRET'],
-    },
-    deferrable: true,
-    decision: 'docs/deferred-features.md § Outbound providers',
-  },
-};
-
-/** How a provider variable is set, which decides how it must be reported. */
-export type ProviderState =
-  /** Unset or empty. The resolver throws in production. */
-  | 'missing'
-  /** Literally `mock`. A decision if deferrable, a fault otherwise. */
-  | 'mock'
-  /** Names an adapter the resolver implements. */
-  | 'real'
-  /** Set to something no resolver knows. A typo; throws at first send. */
-  | 'unrecognised';
-
-export function providerState(
-  name: string,
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): ProviderState {
-  const raw = (env[name] ?? '').trim().toLowerCase();
-  if (!raw) return 'missing';
-  if (raw === 'mock') return 'mock';
-  const contract = PROVIDER_CONTRACT[name];
-  if (contract && Object.prototype.hasOwnProperty.call(contract.adapters, raw)) return 'real';
-  return 'unrecognised';
-}
-
-/**
- * The variables the SELECTED adapter will actually read.
- *
- * Empty for every state but `real`: there is no point demanding Postmark
- * credentials from a deployment that has chosen Resend, and a provider that is
- * missing or mocked is reported by its own state rather than by a pile of
- * credential variables nothing would read.
- */
-export function requiredProviderCredentials(
-  name: string,
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): readonly string[] {
-  if (providerState(name, env) !== 'real') return [];
-  const adapter = (env[name] ?? '').trim().toLowerCase();
-  return PROVIDER_CONTRACT[name]?.adapters[adapter] ?? [];
-}
-
-/** Every provider variable, plus the credentials whichever adapter is selected needs. */
-export function providerRequiredEnv(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): string[] {
-  return Object.keys(PROVIDER_CONTRACT).flatMap((name) => [
-    name,
-    ...requiredProviderCredentials(name, env),
-  ]);
-}
+export {
+  PROVIDER_CONTRACT,
+  providerState,
+  requiredProviderCredentials,
+  providerRequiredEnv,
+} from '@/lib/provider-contract';
+export type { ProviderState } from '@/lib/provider-contract';
+// `export … from` re-exports without binding the names locally, and the
+// collectors below call them.
+import {
+  PROVIDER_CONTRACT,
+  providerState,
+  requiredProviderCredentials,
+} from '@/lib/provider-contract';
 
 /**
  * Both tables together.
@@ -715,6 +631,28 @@ export function isUndefinedTableError(err: unknown): boolean {
 }
 
 export async function collectOpsMetrics(): Promise<OpsMetrics> {
+  // Which channels may the missed-reminder metric demand? Resolved BEFORE the
+  // queries, from the same module lib/messaging/reminders.ts dials (#90).
+  //
+  // This THROWS on missing, unrecognised, or improperly-mocked provider
+  // configuration, and that is deliberate: a throw here fails /api/health/ops,
+  // which the monitor reports as a red `ops-metrics` check. The alternative —
+  // returning null for the metric — would make the `reminders-missed` check
+  // disappear from the report entirely rather than fail, which is the exact
+  // monitor-blindness shape closed by incident #26. An absent check must never
+  // be how a configuration fault presents.
+  const requiredChannels = requiredReminderChannels();
+  if (requiredChannels.length === 0) {
+    // Unreachable while EMAIL_PROVIDER is non-deferrable — the policy throws
+    // first. Asserted anyway: an empty array would make the EXISTS below match
+    // nothing, so the metric would read a permanent, cheerful zero and could
+    // never report a missed reminder again.
+    throw new Error(
+      'reminder channel policy resolved to no required channels — refusing to ' +
+        'report a missed-reminder count that cannot ever be non-zero',
+    );
+  }
+
   // One statement per concern, all using the DB clock. Node's clock is not
   // authoritative for anything time-based in this project (see CLAUDE.md and
   // the reauth-expiry memory): a skewed runner must not be able to invent a
@@ -990,8 +928,31 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
     // Reminders that can never be sent: the appointment has already started and
     // no message_log row was ever created for it. Bounded to the recent past so
     // the count is about the current failure, not all history.
-    unsafePrismaAdmin.$queryRaw<Array<{ unreminded: bigint }>>`
-        SELECT count(*) AS unreminded
+    unsafePrismaAdmin.$queryRaw<Array<{ unreminded: bigint; eligible: bigint }>>`
+        SELECT
+          -- The NUMERATOR: owed a reminder, and some required channel never
+          -- delivered one.
+          count(*) FILTER (
+            WHERE EXISTS (
+              SELECT 1 FROM unnest(${requiredChannels}::text[]::message_channel[]) AS ch(channel)
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM message_log m
+                  WHERE m.appointment_id = a.id
+                    AND m.channel = ch.channel
+                    AND m.state IN ('sent', 'delivered')
+               )
+            )
+          ) AS unreminded,
+          -- The DENOMINATOR, and the whole point of incident #90's second
+          -- defect: how many appointments were OWED a reminder at all.
+          --
+          -- Without it the check reports a missed-count of 0 for two completely
+          -- different situations — "every owed reminder was delivered" and
+          -- "nothing was owed, so nothing was measured". #90 closed itself on
+          -- the second one: its single bad appointment aged out of the 48-hour
+          -- window, the count fell 1 -> 0, and the monitor read that as
+          -- recovery. Nothing had recovered; the evidence had simply expired.
+          count(*) AS eligible
           FROM appointments a
           JOIN organizations o ON o.id = a.organization_id
          WHERE a.starts_at < NOW()
@@ -1035,18 +996,12 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
            -- row deduped every later attempt), and was invisible to this
            -- metric — silent from all three directions at once.
            --
-           -- Per channel, not per appointment: one successful email must not
-           -- hide a failed SMS. An appointment is counted as missed when ANY
-           -- required channel has no delivery.
-           AND EXISTS (
-             SELECT 1 FROM unnest(ARRAY['sms', 'email']::message_channel[]) AS ch(channel)
-              WHERE NOT EXISTS (
-                SELECT 1 FROM message_log m
-                 WHERE m.appointment_id = a.id
-                   AND m.channel = ch.channel
-                   AND m.state IN ('sent', 'delivered')
-              )
-           )
+           -- The per-channel delivery test — one delivered email must not hide
+           -- an undelivered SMS — moved up into the FILTER on the numerator, so
+           -- this WHERE clause now defines exactly one thing: the population
+           -- that was OWED a reminder. Both counts come from that single
+           -- population, which is what makes "0 of 0" distinguishable from
+           -- "0 of 7".
       `,
   ]);
 
@@ -1154,6 +1109,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           }),
         ),
         unremindedStartedAppointments: num(unremindedRows?.[0]?.unreminded),
+        eligibleStartedAppointments: num(unremindedRows?.[0]?.eligible),
       };
     })(),
     config: collectConfigMetrics(),

@@ -726,14 +726,50 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
     heartbeat.unremindedStartedAppointments !== null
   ) {
     const missed = heartbeat.unremindedStartedAppointments;
+    // The DENOMINATOR. Deployments that predate it report `undefined`, and are
+    // treated as "cannot tell" rather than as zero — an absent denominator is
+    // exactly the condition this check now refuses to read as health.
+    const eligible = heartbeat.eligibleStartedAppointments;
+    const measured = typeof eligible === 'number' ? eligible : null;
+
+    // INCIDENT #90, SECOND DEFECT: zero is not the same as zero-of-zero.
+    //
+    // `missed === 0` used to mean PASS unconditionally. It has two completely
+    // different causes — "every owed reminder was delivered" and "nothing was
+    // owed in the window, so nothing was measured" — and #90 closed itself on
+    // the second. Its one bad appointment aged out of the rolling 48 hours, the
+    // count fell 1 -> 0, and the monitor called that recovery. Nothing had
+    // recovered: the defect was still in production and the evidence had simply
+    // expired.
+    //
+    // So an empty window is NOT a pass. It is reported truthfully and, more
+    // importantly, marked `canClose: false` — competent to raise an alarm,
+    // never to declare one over. Closing an incident now requires at least one
+    // appointment that was actually owed a reminder and actually got it.
+    const emptyWindow = measured === 0;
+    const unmeasurable = measured === null;
+
     results.push({
       id: 'reminders-missed',
       title: 'Appointments started without a reminder ever being sent',
-      ok: missed === 0,
-      detail:
-        `${missed} appointment(s) in the last 48h started with no reminder logged, ` +
-        'despite having been booked early enough for the lead window to cover them. ' +
-        'This cannot be retried — the appointment has already begun.',
+      ok: missed === 0 && !emptyWindow && !unmeasurable,
+      // A green reading here only closes an incident when it rests on a real
+      // sample. With no sample there is nothing to be green about.
+      canClose: !emptyWindow && !unmeasurable,
+      detail: unmeasurable
+        ? 'this deployment does not report how many appointments were OWED a reminder, ' +
+          'so a zero missed-count cannot be distinguished from an empty window. ' +
+          'Redeploy to enable the denominator.'
+        : emptyWindow
+          ? 'NOT VERIFIED — 0 appointments in the last 48h were owed a reminder, so ' +
+            'nothing was measured. This is not evidence of health, and it is exactly ' +
+            'how incident #90 closed itself: its failing sample aged out of the window ' +
+            'and the count fell to zero. A fresh appointment must pass through the ' +
+            'reminder path before this check can clear an incident.'
+          : `${missed} of ${measured} appointment(s) owed a reminder in the last 48h ` +
+            'started with no reminder logged, despite having been booked early enough ' +
+            'for the lead window to cover them. This cannot be retried — the ' +
+            'appointment has already begun.',
     });
   }
 
