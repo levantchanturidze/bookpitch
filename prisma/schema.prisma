@@ -356,12 +356,16 @@ model StaffAvailability {
   endTime   DateTime @map("end_time") @db.Time(6)
   /// Data-version boundary for the UTC->local rollout: 'utc_legacy' or 'local'.
   ///
-  /// The default is 'utc_legacy' and stays that way until Stage D. An omitted
-  /// basis therefore means what every row written before this column meant, so
-  /// a write from an old build that knows nothing about the column is still
-  /// labelled correctly. Application code writes the marker EXPLICITLY from
-  /// Stage B onwards and never leans on this default for provenance.
-  timeBasis String   @default("utc_legacy") @map("time_basis")
+  /// The default was 'utc_legacy' from Stage A until the Stage D backfill, so
+  /// that a write from a build knowing nothing about this column was still
+  /// labelled correctly. Stage D converted the remaining legacy rows and only
+  /// then moved the default to 'local'.
+  ///
+  /// Application code writes the marker EXPLICITLY regardless, and dual-read
+  /// support stays in place: a default is something a later migration can
+  /// change underneath a writer, which is exactly the hazard this column was
+  /// introduced to remove.
+  timeBasis String   @default("local") @map("time_basis")
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 
