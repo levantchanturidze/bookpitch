@@ -423,6 +423,132 @@ artifacts entirely, would restore the second layer — and both change the
 restore-drill and backup-freshness guarantees, so neither belongs in a release
 freeze.
 
+## Availability UTC→local: a four-release staged rollout, 2026-09-20/21
+
+The availability model moved from UTC storage to the location's local wall
+clock. It took four separate releases because `migrate.yml` applies migrations
+on push to `main` while Vercel deploys from the same push **in parallel** — its
+own header says the deployed code "may briefly run against the pre-migration
+schema". The corollary is the dangerous half: the **previous** release keeps
+serving for a minute or two against the **post-migration** database.
+
+| Stage | `main` SHA | Deployment | Migrate run | Push CI |
+|---|---|---|---|---|
+| A — add the marker, change no values | `131ddbbaefa639d99b0fb43a069cd9594ee2046d` | `6556663164` | `35531767425` | `35531767427` |
+| B — read both bases, write legacy explicitly | `e10ad317b8754d34576fbe8e5a51b55f5109b181` | `6565575139` | (none — no migration) | `35584145678` |
+| C — write local explicitly | `ccd8ceef82789f4b6c95705bbc0c3dedbe5ab325` | `6565925516` | (none — no migration) | `35586133470` |
+| D — guarded backfill, then the default | `6c87c101a5020f6b46c806df4a4b7e7afbcc1c32` | `6572137847` | `35620272232` | `35620272224` |
+
+Every push CI row is `event=push`, `run_attempt=1`, `conclusion=success`, on the
+exact merge SHA. PRs #92, #91, #93, #94.
+
+### Why one release would have corrupted data
+
+Two ways, both silent, both discovered by asking what the OLD build does during
+the overlap rather than what the new one does:
+
+1. **The old build writes without the column.** With the default already
+   `local`, its UTC-form value is labelled local *at birth* — and then protected
+   from correction by the very marker meant to prevent double conversion. So the
+   default stayed `utc_legacy` from Stage A until Stage D.
+2. **The new build writes local while a pre-marker instance lives.** That
+   instance ignores `time_basis` and reads the value as UTC, four hours out. So
+   local writes waited for Stage C, after Stage A/B instances drained.
+
+An earlier design had defect 1 and was replaced before it ever deployed.
+
+### The overlap risk that was real and did not fire
+
+`listStaff()` uses `include` without `select`, so Prisma emits
+`SELECT … time_basis`, and Stage A shipped a schema declaring that column. Had
+Vercel promoted before the migration finished, `/settings/staff` would have
+thrown `column does not exist`.
+
+Measured: migration completed `19:17:25Z`, deployment succeeded `19:17:36Z` —
+**eleven seconds**. Zero incidents, a green `20:38Z` monitor, clean crons since.
+That is ordering luck, not a designed guarantee, and it is recorded as luck.
+
+### Prisma does not wrap migrations in a transaction
+
+Asserted otherwise in an earlier session report. It is false. Proven on the
+installed version, **7.9.1**, with the real production command:
+
+```
+migration.sql:  CREATE TABLE tx_probe_marker; INSERT; SELECT 1/0;
+after failure:  tx_probe_marker EXISTS, with its row
+ledger row:     finished_at=NULL, rolled_back_at=NULL   (P3018)
+```
+
+The earlier "proof" used `psql --single-transaction`, which supplies a
+transaction the real command never does — the harness was demonstrating a
+property of itself. Stage D therefore carries its own `BEGIN`/`COMMIT`,
+following the convention `20260723000008_audit_partition` already set here, with
+`lock_timeout 5s`, `statement_timeout 60s`, `SHARE ROW EXCLUSIVE` on
+`staff_availability` and `SHARE` on `staff` and `locations` — the latter because
+`locations.timezone` is the *input* to every conversion.
+
+Rollback proven under the real command, failure injected after the `UPDATE` and
+before the cutover: values unchanged on all five rows, default still
+`utc_legacy`, ledger `finished=NULL rolled_back=NULL` — not falsely marked
+successful.
+
+### The production backfill
+
+`scripts/availability-backfill-preflight.sql` runs before anything applies, so
+the run log holds the live inventory the conversion was decided against.
+
+```
+BEFORE (run 35620272232)   5 rows · 1 staff · Asia/Tbilisi · 05:00-13:00 · utc_legacy
+preflight verdict          to_convert=5  already_local=0  unknown_timezone=0  would_invert=0
+AFTER  (run 35620456977)   5 rows · Asia/Tbilisi · 09:00-17:00 · local · 0 legacy
+second deploy              "No pending migrations to apply"
+invariants                 71 migrations, 0 unfinished, 0 rolled back, no drift, ALL CHECKS PASSED
+```
+
+Backup `35619672456` completed `15:34:22Z` before the mutation, artifact
+`10647584306`, and its decrypt-verification job passed: *"artifact is encrypted,
+intact, and its table of contents is readable."*
+
+Legacy rows hold a **local weekday beside a UTC time** — that inconsistency *is*
+the original defect — so the backfill converts the time and leaves `weekday`
+alone. The obvious "handle weekday rollover" fix would move every window by a
+day. A window straddling local midnight inverts instead, and is refused rather
+than guessed at.
+
+### Incident #90 closed itself on zero evidence
+
+`1 appointment(s)` → `0 appointment(s)` on 2026-09-17 was not recovery: the
+failing sample aged out of the rolling 48-hour window. `missed === 0` conflated
+"every owed reminder was delivered" with "nothing was owed, so nothing was
+measured".
+
+`collectOpsMetrics()` now reports the denominator `eligibleStartedAppointments`
+from the same pass. The check fails on an empty window, reports `N of M`,
+refuses to conclude without a denominator, and carries `canClose: false`
+whenever the window is empty — competent to raise an alarm, never to declare one
+over. Closure remains *possible*: one owed-and-delivered appointment suffices,
+which is pinned by test so the incident cannot become permanently unclosable.
+
+Live and observably working — monitor `35608187312` and every run since:
+
+```
+FAIL  reminders-missed  NOT VERIFIED — 0 appointments in the last 48h were owed
+                        a reminder, so nothing was measured.
+```
+
+#90 is **open**, with its original false-closure evidence preserved.
+
+### Process failure, recorded rather than tidied away
+
+Stage B was merged while the `PR body` check was **failing** (run
+`35584091148`). That guard had caught a genuine closing-keyword hazard in the PR
+body itself — a heading reading `…second defect fixed` immediately before
+`#90's closure…`, which GitHub parses as `fixed #90`. Branch protection is
+absent, so nothing stopped the merge but the operator's own rule, and it was not
+enforced. #90 survived only because the merge commit carried the title and not
+the body. Stages C and D were merged through an explicit
+`states == SUCCESS or refuse` gate.
+
 ## SOAK CERTIFIED — 2026-09-09T09:51:25Z
 
 The first 24-hour production soak this project has ever run **passed**, on its
@@ -765,6 +891,61 @@ The alternative would be to claim verification of a commit nothing has verified,
 which is exactly the class of thing this ledger exists to prevent.
 
 ---
+
+## Checkpoint — 2026-09-22, what is done and what the next actor must do
+
+**Release candidate:** `6c87c101a5020f6b46c806df4a4b7e7afbcc1c32`, deployment
+`6572137847`, both canonical hosts serving it, all four availability stages
+applied, 71 migrations, invariants green.
+
+### Done and verified
+
+| Area | State |
+|---|---|
+| 5.1 reminder channel policy | merged, deployed, live |
+| 5.2 scheduler RBAC | merged, deployed |
+| 5.3 availability local model | merged, deployed, production backfill complete |
+| 5.4 calendar month anchor | merged, deployed |
+| 5.5 reschedule workflow | merged, deployed, authz boundary tested |
+| 5.6 cleanup lifecycle | merged, exact-id bound |
+| 5.7 documentation | this record |
+| #90 zero-sample defect | fixed, live, observably refusing |
+
+### NOT done, and blocked on one human action
+
+Production UAT has not run on this release, so **no soak may start**. The
+critical path is:
+
+```
+production UAT  ->  fresh no-phone #90 sentinel
+                ->  natural event=schedule run_attempt=1 reminder cycle
+                ->  #90 closes by canonical automation
+                ->  exact-id synthetic cleanup
+                ->  brand-new 24h soak pinned to the final SHA
+```
+
+The first step cannot proceed from an agent session. Both routes are shut:
+
+* **Signup** needs the verification email in the designated mailbox. The Gmail
+  MCP server is installed but unauthenticated, and its OAuth flow must be
+  completed by the account holder in a browser.
+* **Sign-in** to an existing account needs a password, which an agent must not
+  handle, and no authenticated browser session exists.
+
+**The single minimum human action:** complete the Gmail OAuth authorization for
+the designated mailbox (or hand over an already-authenticated browser session on
+`bookpitch.ge`). Everything after that — UAT, sentinel, natural recovery,
+cleanup, soak — is automatable and authorized.
+
+### Do not
+
+* Do not start a soak before #90 recovers on fresh post-Stage-D evidence; the
+  controller's `no-incident-in-window` gate would fail anyway.
+* Do not treat soak #88 as certifying this release. It certifies `9c65845`.
+* Do not treat #90's 2026-09-17 closure as recovery. It aged out.
+* Do not use Stage B as a rollback target now that Stage D has landed. Stage C
+  (`ccd8cee`) is the safe application rollback; dual-read support stays in the
+  application through the soak.
 
 ## Resumption
 
