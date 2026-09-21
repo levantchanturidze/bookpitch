@@ -257,8 +257,29 @@ describe('the monitor surfaces a reminder that can never be sent', () => {
   it('passes at zero missed, WHEN something was actually measured', () => {
     const r = check({ unremindedStartedAppointments: 0, eligibleStartedAppointments: 7 });
     expect(r!.ok).toBe(true);
-    // Green on a real sample may close an incident.
-    expect(r!.canClose).not.toBe(false);
+    // RECOVERY MUST REMAIN POSSIBLE. A `canClose: false` welded permanently to
+    // this check would make #90 unclosable by any evidence, which is the
+    // opposite failure to the one being fixed — an incident that can never
+    // recover is as useless as one that recovers on nothing. The flag is
+    // conditional on the window actually holding a sample.
+    expect(r!.canClose).toBe(true);
+  });
+
+  it('a single owed-and-delivered appointment is enough to permit closure', () => {
+    // The minimum viable recovery evidence, which is what the post-Stage-D
+    // sentinel will produce: one appointment owed a reminder, and it arrived.
+    const r = check({ unremindedStartedAppointments: 0, eligibleStartedAppointments: 1 });
+    expect(r!.ok).toBe(true);
+    expect(r!.canClose).toBe(true);
+    expect(r!.detail).toMatch(/0 of 1/);
+  });
+
+  it('a sample that exists but MISSED keeps the incident open', () => {
+    const r = check({ unremindedStartedAppointments: 1, eligibleStartedAppointments: 1 });
+    expect(r!.ok).toBe(false);
+    // Failing checks never close anything regardless of the flag; asserted so
+    // a future refactor cannot make a red check closable.
+    expect(r!.ok && r!.canClose).toBeFalsy();
   });
 
   // ---------------------------------------------------------------------------

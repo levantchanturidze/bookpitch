@@ -21,15 +21,39 @@
 -- anything applies, so the case is visible in the run log rather than
 -- discovered here.
 --
--- CONCURRENCY. The table is locked in SHARE ROW EXCLUSIVE mode for the duration.
--- Readers are unaffected; concurrent writers wait. Prisma runs each migration
--- in one transaction, so every guard below either passes or rolls the whole
--- thing back — there is no partially converted state to recover from, and a
--- retry after an abort starts from exactly where it started before.
+-- ATOMICITY IS THIS FILE'S JOB, NOT PRISMA'S.
+--
+-- `prisma migrate deploy` does NOT wrap migration.sql in a transaction. Proven
+-- on 7.9.1 against a disposable database: a file that created a table, inserted
+-- a row and then divided by zero left the table AND the row behind, with the
+-- ledger row finished_at=NULL, rolled_back_at=NULL (P3018).
+--
+-- An earlier revision of this file assumed the opposite. The assumption held in
+-- testing only because the harness ran `psql --single-transaction`, which
+-- supplied a transaction the real command never does — the harness was proving
+-- a property of itself. Without an explicit BEGIN the UPDATE below would
+-- autocommit and a failing postcondition could not undo it, leaving production
+-- half-converted with the default still legacy.
+--
+-- So the whole critical section is one explicit transaction, following the
+-- convention 20260723000008_audit_partition already set in this repository.
+--
+-- CONCURRENCY. Inside that transaction:
+--   * lock_timeout bounds the wait for the lock — failing to acquire it aborts
+--     rather than blocking production writes indefinitely;
+--   * statement_timeout bounds the conversion itself;
+--   * staff_availability is locked SHARE ROW EXCLUSIVE (writers wait, readers
+--     continue);
+--   * staff and locations are locked SHARE, because `locations.timezone` is the
+--     input to every conversion — a timezone edited mid-migration would convert
+--     some rows with one offset and some with another.
+-- Every assertion and the mutation therefore share one locked snapshot.
 --
 -- IDEMPOTENT. A second execution finds no 'utc_legacy' rows: the UPDATE matches
 -- nothing, every guard passes trivially, and SET DEFAULT is already what it is
--- being set to.
+-- being set to. `prisma migrate deploy` will not re-run an applied migration at
+-- all; this property matters for the failure case, where the ledger row is left
+-- unfinished and the migration is re-attempted after resolution.
 --
 -- ROLLBACK (only meaningful before the application stops reading both bases):
 --   ALTER TABLE "staff_availability" ALTER COLUMN "time_basis" SET DEFAULT 'utc_legacy';
@@ -45,7 +69,20 @@
 -- rolling FORWARD; dual-read support stays in the application through the soak
 -- precisely so that rolling back is never the only option.
 
+BEGIN;
+
+-- Fail fast instead of queueing behind a long transaction. 5s is far longer
+-- than any availability write, and an abort here is a retry, not an incident.
+SET LOCAL lock_timeout = '5s';
+-- The conversion touches a handful of rows; a minute is generous. Bounding it
+-- means a pathological plan cannot hold these locks indefinitely.
+SET LOCAL statement_timeout = '60s';
+
 LOCK TABLE "staff_availability" IN SHARE ROW EXCLUSIVE MODE;
+-- The timezone source. Read-only here, but it must not change underneath the
+-- conversion, so writers are excluded for the duration.
+LOCK TABLE "staff" IN SHARE MODE;
+LOCK TABLE "locations" IN SHARE MODE;
 
 -- ---------------------------------------------------------------------------
 -- ABORT BEFORE MUTATING on anything the conversion cannot express honestly.
@@ -176,3 +213,5 @@ END $$;
 -- as local while its bytes were UTC — the hazard the whole rollout is shaped
 -- around.
 ALTER TABLE "staff_availability" ALTER COLUMN "time_basis" SET DEFAULT 'local';
+
+COMMIT;
