@@ -93,6 +93,7 @@ describe('collectOpsMetrics against a real database', () => {
     // attempted every 15 minutes and fails every time.
     expect(Object.keys(metrics.cronHeartbeat).sort()).toEqual([
       'auditDigestMinutesAgo',
+      'eligibleStartedAppointments',
       'housekeepingMinutesAgo',
       'jobs',
       'jobsNotSucceeding',

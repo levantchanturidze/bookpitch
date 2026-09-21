@@ -98,6 +98,41 @@ describe('staff_availability.time_basis — Stage A migration contract', () => {
     expect(rows[0].timeBasis).toBe('utc_legacy');
   });
 
+  it('leaves an existing row legacy when an old build UPDATEs it in place', async () => {
+    // The third old-build write shape, and the one insert/delete-recreate
+    // coverage misses. A pre-marker build issues UPDATE ... SET start_time =
+    // without naming time_basis at all; the column keeps whatever it had, which
+    // for a pre-existing row is 'utc_legacy'. If an UPDATE could silently
+    // promote a row to 'local' while its bytes stayed UTC, every reader would
+    // stop applying the offset and the window would move by four hours with
+    // nothing failing.
+    const staff = await seedStaff('old-build-update');
+    await withoutRls((tx) =>
+      tx.$executeRawUnsafe(
+        `INSERT INTO staff_availability (staff_id, weekday, start_time, end_time)
+         VALUES ($1::uuid, 5, TIME '05:00', TIME '13:00')`,
+        staff,
+      ),
+    );
+    await withoutRls((tx) =>
+      tx.$executeRawUnsafe(
+        `UPDATE staff_availability SET start_time = TIME '06:00', end_time = TIME '14:00'
+          WHERE staff_id = $1::uuid`,
+        staff,
+      ),
+    );
+    const rows = await withoutRls((tx) =>
+      tx.staffAvailability.findMany({
+        where: { staffId: staff },
+        select: { timeBasis: true, startTime: true },
+      }),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].timeBasis).toBe('utc_legacy');
+    // The value really did change; the basis really did not.
+    expect(rows[0].startTime.getUTCHours()).toBe(6);
+  });
+
   it('labels a DELETE-then-INSERT rewrite as legacy too', async () => {
     // setAvailability() replaces the whole schedule rather than updating rows,
     // so this is the shape an old build's save actually takes. A default of

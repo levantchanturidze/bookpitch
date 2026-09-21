@@ -233,21 +233,71 @@ describe('the monitor cannot report a failing job as healthy', () => {
 // -----------------------------------------------------------------------------
 describe('the monitor surfaces a reminder that can never be sent', () => {
   const check = (cronHeartbeat: Record<string, number | null>) =>
-    evaluateOpsMetrics({ config: {}, cronHeartbeat }).find(
-      (r: { id: string }) => r.id === 'reminders-missed',
-    );
+    (
+      evaluateOpsMetrics({ config: {}, cronHeartbeat }) as Array<{
+        id: string;
+        ok: boolean;
+        detail: string;
+        // Present on checks competent to raise an alarm but not to declare it
+        // over — see the reminders-missed empty-window rule.
+        canClose?: boolean;
+      }>
+    ).find((r: { id: string }) => r.id === 'reminders-missed');
 
   it('fails when an appointment started unreminded', () => {
     // Every other signal can be green here: fresh heartbeat, successful cron
     // run, green workflow — and a customer was not reminded. This is counted
     // from the appointments themselves rather than inferred from job health.
-    const r = check({ unremindedStartedAppointments: 3 });
+    const r = check({ unremindedStartedAppointments: 3, eligibleStartedAppointments: 9 });
     expect(r!.ok).toBe(false);
     expect(r!.detail).toMatch(/cannot be retried/);
+    expect(r!.detail).toMatch(/3 of 9/);
   });
 
-  it('passes at zero', () => {
-    expect(check({ unremindedStartedAppointments: 0 })!.ok).toBe(true);
+  it('passes at zero missed, WHEN something was actually measured', () => {
+    const r = check({ unremindedStartedAppointments: 0, eligibleStartedAppointments: 7 });
+    expect(r!.ok).toBe(true);
+    // Green on a real sample may close an incident.
+    expect(r!.canClose).not.toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // INCIDENT #90, second defect: zero missed is not the same as zero of zero.
+  //
+  // #90 closed itself on 2026-09-17 with the comment "0 appointment(s) in the
+  // last 48h". Nothing had recovered — its single failing appointment had aged
+  // out of the rolling window, the count fell 1 -> 0, and the monitor read the
+  // absence of evidence as evidence of health. The defect was still live in
+  // production, and still is until the reminder-policy release ships.
+  // ---------------------------------------------------------------------------
+  it('does NOT pass when the window held nothing to measure', () => {
+    const r = check({ unremindedStartedAppointments: 0, eligibleStartedAppointments: 0 });
+    expect(r!.ok, 'an empty window is not health').toBe(false);
+    expect(r!.detail).toMatch(/NOT VERIFIED/);
+  });
+
+  it('can NEVER close an incident on an empty window', () => {
+    // The property that actually stops the false closure. Even if some future
+    // change made an empty window read green again, `canClose: false` keeps it
+    // from declaring an incident over.
+    const r = check({ unremindedStartedAppointments: 0, eligibleStartedAppointments: 0 });
+    expect(r!.canClose).toBe(false);
+  });
+
+  it('refuses to conclude when the deployment reports no denominator', () => {
+    // A build predating the denominator cannot tell 0-of-0 from 0-of-7, so it
+    // says so rather than guessing in the optimistic direction.
+    const r = check({ unremindedStartedAppointments: 0 });
+    expect(r!.ok).toBe(false);
+    expect(r!.canClose).toBe(false);
+    expect(r!.detail).toMatch(/denominator/i);
+  });
+
+  it('still fails on a genuine miss even when most reminders landed', () => {
+    // The complement of the empty-window rule: adding a denominator must not
+    // dilute a real failure into an acceptable ratio.
+    const r = check({ unremindedStartedAppointments: 1, eligibleStartedAppointments: 50 });
+    expect(r!.ok).toBe(false);
   });
 
   it('is omitted rather than green on a deployment predating the metric', () => {

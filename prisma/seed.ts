@@ -3,6 +3,7 @@
 // (including `@/lib/db`, which throws on missing URL and would obscure
 // the guard's intent).
 import './_require-local-db-guard';
+import { assertDisposableDatabase } from './_assert-disposable-database';
 
 import { LocationType, UserRole } from '@prisma/client';
 import { hash } from '@node-rs/argon2';
@@ -65,6 +66,18 @@ function parseHours(hours: string): { start: Date; end: Date } {
 }
 
 async function main() {
+  // PROVE THE TARGET BEFORE WRITING OR DELETING ANYTHING.
+  //
+  // `_require-local-db-guard` runs at import time, before .env.local is loaded,
+  // and its own header admits the gap: a bare invocation with nothing set at
+  // process start "proceeds silently" and then uses whatever .env.local
+  // supplies, unexamined. That is the most common way this script is run.
+  //
+  // This asks the live connection what database it is actually on, checks it
+  // against a disposable allow-list, and refuses otherwise. "The seed never
+  // touches production" is now a control rather than a sentence in a comment.
+  await assertDisposableDatabase();
+
   // Reference data first — roles/permissions must exist before we can
   // populate anything that FKs into `roles` (e.g. a SUPER_ADMIN seed row
   // on app_users.platform_role_id, added in a follow-up commit).
@@ -185,11 +198,12 @@ async function main() {
               // add the location offset — 08:30 would be enforced as 12:30 in
               // a Tbilisi clinic.
               //
-              // Writing 'local' here is safe precisely because this seed never
-              // runs against production (prisma/_require-local-db-guard.ts, and
-              // docs/release-state.md), so there is no old instance that could
-              // misread a local row as UTC. That hazard is what keeps the
-              // APPLICATION on legacy writes until Stage C.
+              // Writing 'local' here is safe because this seed cannot run
+              // against production: assertDisposableDatabase() asks the live
+              // connection for current_database() and refuses anything outside
+              // the disposable allow-list. So there is no old instance that
+              // could misread a local row as UTC — which is exactly the hazard
+              // that keeps the APPLICATION on legacy writes until Stage C.
               timeBasis: 'local' as const,
             })),
           },

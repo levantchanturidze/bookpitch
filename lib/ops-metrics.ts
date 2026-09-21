@@ -342,6 +342,17 @@ export type CronHeartbeatMetrics = {
    * conclusions can all be green while this is non-zero.
    */
   unremindedStartedAppointments: number | null;
+
+  /**
+   * How many appointments in the same window were OWED a reminder at all.
+   *
+   * The denominator #90 did not have. Without it `unreminded === 0` means two
+   * incompatible things — "every owed reminder landed" and "nothing was owed,
+   * so nothing was measured" — and the monitor cannot tell them apart. #90
+   * closed itself on the second: its one bad appointment aged out of the
+   * 48-hour window, the count fell 1 -> 0, and that read as recovery.
+   */
+  eligibleStartedAppointments: number | null;
 };
 
 export type OpsMetrics = {
@@ -917,8 +928,31 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
     // Reminders that can never be sent: the appointment has already started and
     // no message_log row was ever created for it. Bounded to the recent past so
     // the count is about the current failure, not all history.
-    unsafePrismaAdmin.$queryRaw<Array<{ unreminded: bigint }>>`
-        SELECT count(*) AS unreminded
+    unsafePrismaAdmin.$queryRaw<Array<{ unreminded: bigint; eligible: bigint }>>`
+        SELECT
+          -- The NUMERATOR: owed a reminder, and some required channel never
+          -- delivered one.
+          count(*) FILTER (
+            WHERE EXISTS (
+              SELECT 1 FROM unnest(${requiredChannels}::text[]::message_channel[]) AS ch(channel)
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM message_log m
+                  WHERE m.appointment_id = a.id
+                    AND m.channel = ch.channel
+                    AND m.state IN ('sent', 'delivered')
+               )
+            )
+          ) AS unreminded,
+          -- The DENOMINATOR, and the whole point of incident #90's second
+          -- defect: how many appointments were OWED a reminder at all.
+          --
+          -- Without it the check reports a missed-count of 0 for two completely
+          -- different situations — "every owed reminder was delivered" and
+          -- "nothing was owed, so nothing was measured". #90 closed itself on
+          -- the second one: its single bad appointment aged out of the 48-hour
+          -- window, the count fell 1 -> 0, and the monitor read that as
+          -- recovery. Nothing had recovered; the evidence had simply expired.
+          count(*) AS eligible
           FROM appointments a
           JOIN organizations o ON o.id = a.organization_id
          WHERE a.starts_at < NOW()
@@ -962,35 +996,12 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
            -- row deduped every later attempt), and was invisible to this
            -- metric — silent from all three directions at once.
            --
-           -- Per channel, not per appointment: one successful email must not
-           -- hide a failed SMS. An appointment is counted as missed when ANY
-           -- required channel has no delivery.
-           -- Per channel, not per appointment: one successful email must not
-           -- hide a failed SMS. But only the channels that are actually LIVE
-           -- can be owed.
-           --
-           -- This clause used to read ARRAY['sms','email'], hard-coded. That is
-           -- incident #90: production ships SMS_PROVIDER=mock as a documented
-           -- deferral, no SMS can ever reach 'sent', and so EVERY appointment
-           -- was permanently counted as missed — including the UAT appointment
-           -- whose reminder email was demonstrably delivered with SPF, DKIM and
-           -- DMARC all passing. The metric demanded a channel the deployment
-           -- had been configured not to use.
-           --
-           -- lib/messaging/reminders.ts dials exactly this set. One authority,
-           -- asked by both, is the whole point.
-           AND EXISTS (
-             SELECT 1 FROM unnest(${requiredChannels}::text[]::message_channel[]) AS ch(channel)
-              WHERE NOT EXISTS (
-                SELECT 1 FROM message_log m
-                 WHERE m.appointment_id = a.id
-                   AND m.channel = ch.channel
-                   -- 'skipped' is NOT a delivery. A customer with no phone on a
-                   -- live SMS channel is still unreminded on it; the row exists
-                   -- to explain the silence, not to excuse it.
-                   AND m.state IN ('sent', 'delivered')
-              )
-           )
+           -- The per-channel delivery test — one delivered email must not hide
+           -- an undelivered SMS — moved up into the FILTER on the numerator, so
+           -- this WHERE clause now defines exactly one thing: the population
+           -- that was OWED a reminder. Both counts come from that single
+           -- population, which is what makes "0 of 0" distinguishable from
+           -- "0 of 7".
       `,
   ]);
 
@@ -1098,6 +1109,7 @@ export async function collectOpsMetrics(): Promise<OpsMetrics> {
           }),
         ),
         unremindedStartedAppointments: num(unremindedRows?.[0]?.unreminded),
+        eligibleStartedAppointments: num(unremindedRows?.[0]?.eligible),
       };
     })(),
     config: collectConfigMetrics(),
