@@ -161,9 +161,23 @@ export async function assertDisposableDatabase(
         `"${first.database}". Refusing — something is redirecting this connection.`,
     );
   }
-  if (row.addr && !['127.0.0.1', '::1', 'localhost'].includes(row.addr)) {
+  // The server address must not be PUBLICLY ROUTABLE.
+  //
+  // Not "must be loopback" — that refused CI, where Postgres runs as a service
+  // container reached through a Docker bridge: the client connects to
+  // localhost and the server answers from 172.18.0.2. That database is as
+  // disposable as it gets (created and destroyed per job), so a loopback-only
+  // rule rejects the safest target in the system.
+  //
+  // What this check is actually for is narrower: catching a connection that
+  // was REDIRECTED somewhere the URL never named — a pooler, a tunnel, a DSN
+  // rewritten by a service. Those land on public addresses. A private or
+  // loopback address cannot be a managed provider, so the honest rule is to
+  // refuse public ones and accept the rest.
+  if (row.addr && isPubliclyRoutable(row.addr)) {
     throw new UnsafeDatabaseTarget(
-      `the live connection reports server address "${row.addr}", which is not loopback.`,
+      `the live connection reports the publicly routable server address "${row.addr}". ` +
+        'Something redirected this connection away from the local target.',
     );
   }
 
@@ -174,4 +188,36 @@ export async function assertDisposableDatabase(
     `[disposable-db guard] verified target: host=${identity.host} db=${identity.database} role=${identity.role}`,
   );
   return identity;
+}
+
+/**
+ * Is this a globally routable address?
+ *
+ * Loopback, RFC1918 private space, link-local and IPv6 ULA are all "somewhere
+ * on this machine or this container network" — which is what a disposable
+ * database looks like, whether it runs on the host or in a CI service
+ * container. Everything else is somewhere else, and a destructive script has
+ * no business there.
+ *
+ * Unparseable input returns false: the caller has already proven the URL host
+ * and current_database(); refusing on an address string this cannot classify
+ * would fail the build on a Postgres that simply reports something unusual.
+ */
+export function isPubliclyRoutable(addr: string): boolean {
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr.trim());
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 127) return false; // loopback
+    if (a === 10) return false; // RFC1918
+    if (a === 172 && b >= 16 && b <= 31) return false; // RFC1918 — CI containers
+    if (a === 192 && b === 168) return false; // RFC1918
+    if (a === 169 && b === 254) return false; // link-local
+    return true;
+  }
+  const v6 = addr.trim().toLowerCase();
+  if (v6 === '::1' || v6 === 'localhost') return false;
+  if (/^f[cd][0-9a-f]{2}:/.test(v6)) return false; // ULA fc00::/7
+  if (/^fe80:/.test(v6)) return false; // link-local
+  if (v6.includes(':')) return true; // some other global v6
+  return false; // unclassifiable — the URL and current_database() already agreed
 }

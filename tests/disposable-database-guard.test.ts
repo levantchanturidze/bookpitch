@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('@/auth', () => ({ auth: vi.fn(), handlers: {}, signIn: vi.fn(), signOut: vi.fn() }));
 
-const { assertDisposableDatabase } = await import('@/prisma/_assert-disposable-database');
+const { assertDisposableDatabase, isPubliclyRoutable } =
+  await import('@/prisma/_assert-disposable-database');
 
 // -----------------------------------------------------------------------------
 // The destructive-script guard, watched refusing.
@@ -112,5 +113,52 @@ describe('assertDisposableDatabase — refuses anything not provably throwaway',
     }
     expect(message).toMatch(/production marker/i);
     expect(message).not.toContain(secret);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The server-address rule, which CI caught being wrong.
+//
+// It started as "must be loopback" and refused the CI database — Postgres runs
+// there as a service container, so the client connects to localhost and the
+// server answers from a Docker bridge address like 172.18.0.2. That is the
+// most disposable database in the system, and a loopback-only rule rejected it
+// while accepting nothing safer.
+//
+// What the check is actually for is narrower: a connection REDIRECTED somewhere
+// the URL never named — a pooler, a tunnel, a rewritten DSN. Those land on
+// public addresses.
+// ---------------------------------------------------------------------------
+describe('isPubliclyRoutable — what counts as "somewhere else"', () => {
+  it('accepts container and private networks, which is where disposable databases live', () => {
+    for (const addr of [
+      '127.0.0.1', // host loopback
+      '172.18.0.2', // the CI service container this rule originally refused
+      '172.31.255.254', // top of the RFC1918 172.16/12 block
+      '10.1.2.3',
+      '192.168.1.10',
+      '169.254.1.1', // link-local
+      '::1',
+      'fd00::1', // IPv6 ULA
+      'fe80::1', // IPv6 link-local
+    ]) {
+      expect(isPubliclyRoutable(addr), addr).toBe(false);
+    }
+  });
+
+  it('refuses publicly routable addresses', () => {
+    for (const addr of ['8.8.8.8', '52.1.2.3', '172.32.0.1', '172.15.0.1', '2606:4700::1111']) {
+      expect(isPubliclyRoutable(addr), addr).toBe(true);
+    }
+  });
+
+  it('gets the RFC1918 172.16/12 boundaries exactly right', () => {
+    // The classic off-by-one in this range: 172.16-172.31 is private, 172.15
+    // and 172.32 are not. Getting it wrong either refuses CI or admits a
+    // public host.
+    expect(isPubliclyRoutable('172.16.0.1')).toBe(false);
+    expect(isPubliclyRoutable('172.31.0.1')).toBe(false);
+    expect(isPubliclyRoutable('172.15.255.255')).toBe(true);
+    expect(isPubliclyRoutable('172.32.0.0')).toBe(true);
   });
 });
