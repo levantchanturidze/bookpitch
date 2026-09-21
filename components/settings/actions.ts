@@ -4,8 +4,6 @@ import { revalidatePath } from 'next/cache';
 import type { UserRole } from '@prisma/client';
 import { ConflictError, InvalidInputError, ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
-import { withOrg } from '@/lib/db';
-import { localHHMMToUtcHHMM } from '@/lib/tz';
 import {
   type AvailabilityWindow,
   createLocation,
@@ -98,26 +96,17 @@ export async function deleteStaffAction(id: string): Promise<DeleteResult> {
 }
 export async function setAvailabilityAction(id: string, windows: AvailabilityWindow[]) {
   const session = await ctxFor('staff.schedule.manage', 'admin');
-  // STAGE B converts local -> UTC before storing, because Stage B still writes
-  // the legacy form (see setAvailability). The editor speaks local wall-clock,
-  // the column holds UTC, and time_basis now records that outright instead of
-  // leaving a reader to infer it.
+  // STAGE C stores the editor's digits unchanged.
   //
-  // Stage C drops this conversion and stores the local digits directly, once no
-  // pre-marker instance can still misread them as UTC.
-  const staffRec = await withOrg(session.organizationId, (tx) =>
-    tx.staff.findUnique({
-      where: { id },
-      select: { location: { select: { timezone: true } } },
-    }),
-  );
-  const tz = staffRec?.location.timezone ?? 'UTC';
-  const utcWindows: AvailabilityWindow[] = windows.map((w) => ({
-    weekday: w.weekday,
-    startTime: localHHMMToUtcHHMM(w.startTime, tz),
-    endTime: localHHMMToUtcHHMM(w.endTime, tz),
-  }));
-  const result = await setAvailability(session, id, utcWindows);
+  // The local -> UTC conversion is gone. It was the original defect: it shifted
+  // the TIME modularly across midnight while leaving `weekday` as the LOCAL
+  // day, so a window whose UTC form crossed midnight was filed against the
+  // wrong day — and it used TODAY's offset rather than the offset on the date
+  // actually being booked.
+  //
+  // The offset is now applied exactly once, at enforcement, against the
+  // appointment's own date. What the operator types is what is stored.
+  const result = await setAvailability(session, id, windows);
   REVALIDATE_ALL();
   return result;
 }
