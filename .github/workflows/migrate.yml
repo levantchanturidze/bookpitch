@@ -73,6 +73,15 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: npx prisma migrate status
 
+      # STAGE D: read-only inventory of what a backfill would touch, printed
+      # BEFORE anything applies, so the run log carries the live state the
+      # conversion was decided against rather than a historical lead. Changes
+      # nothing; safe on every run, including those with no pending migration.
+      - name: Availability backfill preflight (read-only)
+        env:
+          PGURL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
+        run: psql "$PGURL" -v ON_ERROR_STOP=1 -f scripts/availability-backfill-preflight.sql
+
       - name: Apply migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, afterAll } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 vi.mock('@/auth', () => ({ auth: vi.fn(), handlers: {}, signIn: vi.fn(), signOut: vi.fn() }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
@@ -6,7 +8,7 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 const { unsafePrismaAdmin, withoutRls } = await import('@/lib/db');
 
 // -----------------------------------------------------------------------------
-// STAGE A contract — the properties that make the migration/deploy overlap safe.
+// The time_basis contract, AFTER the Stage D cutover.
 //
 // .github/workflows/migrate.yml applies migrations on push to main while Vercel
 // deploys from the same push IN PARALLEL, so the PREVIOUS release serves for a
@@ -14,23 +16,33 @@ const { unsafePrismaAdmin, withoutRls } = await import('@/lib/db');
 // because of that overlap, and each assertion maps to a way it could corrupt
 // data silently:
 //
-//   default is 'utc_legacy'   an old build writes availability without knowing
-//                             the column exists. If the default said 'local',
-//                             its UTC-form value would be labelled local at
-//                             birth and then protected from correction by the
-//                             very marker meant to prevent double conversion.
+// From Stage A until the Stage D backfill the default was 'utc_legacy', because
+// a build that knew nothing about the column would otherwise have had its
+// UTC-form writes labelled local at birth — and then protected from correction
+// by the very marker meant to prevent double conversion. That was the right
+// contract for those three releases and it is deliberately no longer asserted:
+// Stage D converted every remaining legacy row and only then moved the default.
 //
-//   CHECK constraint          a third basis would make the boundary meaningless
-//                             without anything failing.
+// What must NEVER regress, and is asserted below:
 //
-// The value-preservation half is proven against a production-shaped fixture on
-// a throwaway database before deployment; it cannot be asserted here because
-// this suite runs after the migration has already been applied.
+//   explicit writes     application code states the basis on every write. A
+//                       default is something a later migration can change
+//                       underneath a writer — which is the hazard this column
+//                       was introduced to remove, so leaning on it would put
+//                       the hazard back.
+//   CHECK constraint    a third basis would make the boundary meaningless
+//                       without anything failing.
+//   NOT NULL            provenance can never be absent.
+//
+// The value-preservation and abort-path halves are proven against
+// production-shaped fixtures on throwaway databases before deployment; they
+// cannot be asserted here, because this suite runs after the migrations have
+// already applied.
 // -----------------------------------------------------------------------------
 
 const TRACKED: string[] = [];
 
-describe('staff_availability.time_basis — Stage A migration contract', () => {
+describe('staff_availability.time_basis — post-cutover contract', () => {
   afterAll(async () => {
     if (TRACKED.length) {
       await withoutRls(async (tx) => {
@@ -40,14 +52,23 @@ describe('staff_availability.time_basis — Stage A migration contract', () => {
     }
   });
 
-  it("defaults to 'utc_legacy', so an old build's write is labelled correctly", async () => {
+  it("defaults to 'local' now that every row is local and every writer explicit", async () => {
     const [row] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ column_default: string | null }>>(
       `SELECT column_default FROM information_schema.columns
         WHERE table_name = 'staff_availability' AND column_name = 'time_basis'`,
     );
-    // The single most important line in the rollout. Flipping this to 'local'
-    // before Stage D is what mislabels an in-flight write from the old build.
-    expect(row?.column_default ?? '').toContain('utc_legacy');
+    // This was 'utc_legacy' for three releases, and moving it early would have
+    // mislabelled an in-flight write from a build that did not know the column
+    // existed. Stage D moved it only after converting every legacy row, with
+    // the table locked and the conversion verified.
+    expect(row?.column_default ?? '').toContain('local');
+  });
+
+  it('holds no legacy rows — the backfill is complete', async () => {
+    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT count(*) AS n FROM staff_availability WHERE time_basis <> 'local'`,
+    );
+    expect(Number(row?.n ?? 0)).toBe(0);
   });
 
   it('is NOT NULL, so provenance can never be absent', async () => {
@@ -58,15 +79,34 @@ describe('staff_availability.time_basis — Stage A migration contract', () => {
     expect(row?.is_nullable).toBe('NO');
   });
 
-  it('refuses a basis the rollout does not define', async () => {
-    const staff = await seedStaff('basis-check');
+  it('never leaves the basis to the default — setAvailability states it', async () => {
+    // THE DURABLE PROPERTY, and the one the whole rollout turns on. Stage B
+    // wrote explicit 'utc_legacy'; Stage C writes explicit 'local'. Neither
+    // read provenance from the column default, which is why moving that
+    // default in Stage D could not change the meaning of a single row.
+    //
+    // Asserted by reading the source rather than the data, because a row
+    // written today would look identical whether the basis came from the
+    // writer or from the default — and it is the writer that must state it.
+    const src = readFileSync(join(process.cwd(), 'lib/admin.ts'), 'utf8');
+    const start = src.indexOf('staffAvailability.createMany');
+    expect(start, 'setAvailability still writes through createMany').toBeGreaterThan(-1);
+    // Bounded to the createMany call so this cannot be satisfied by the word
+    // appearing anywhere else in the file.
+    const call = src.slice(start, src.indexOf('});', start));
+    expect(call).toMatch(/timeBasis:\s*'local'/);
+  });
+
+  it('refuses a basis the rollout does not define, even after the cutover', async () => {
+    const staff = await seedStaff('post-cutover-check');
     await withoutRls((tx) =>
       tx.staffAvailability.create({
         data: {
           staffId: staff,
           weekday: 1,
-          startTime: new Date('1970-01-01T05:00:00Z'),
-          endTime: new Date('1970-01-01T13:00:00Z'),
+          startTime: new Date('1970-01-01T09:00:00Z'),
+          endTime: new Date('1970-01-01T17:00:00Z'),
+          timeBasis: 'local',
         },
       }),
     );
@@ -78,86 +118,6 @@ describe('staff_availability.time_basis — Stage A migration contract', () => {
         ),
       ),
     ).rejects.toThrow();
-  });
-
-  it('labels a row written WITHOUT the column as legacy — the old-build path', async () => {
-    // Exactly what the pre-marker build does: it does not know the column
-    // exists, so it never supplies it.
-    const staff = await seedStaff('old-build-insert');
-    await withoutRls((tx) =>
-      tx.$executeRawUnsafe(
-        `INSERT INTO staff_availability (staff_id, weekday, start_time, end_time)
-         VALUES ($1::uuid, 2, TIME '05:00', TIME '13:00')`,
-        staff,
-      ),
-    );
-    const rows = await withoutRls((tx) =>
-      tx.staffAvailability.findMany({ where: { staffId: staff }, select: { timeBasis: true } }),
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].timeBasis).toBe('utc_legacy');
-  });
-
-  it('leaves an existing row legacy when an old build UPDATEs it in place', async () => {
-    // The third old-build write shape, and the one insert/delete-recreate
-    // coverage misses. A pre-marker build issues UPDATE ... SET start_time =
-    // without naming time_basis at all; the column keeps whatever it had, which
-    // for a pre-existing row is 'utc_legacy'. If an UPDATE could silently
-    // promote a row to 'local' while its bytes stayed UTC, every reader would
-    // stop applying the offset and the window would move by four hours with
-    // nothing failing.
-    const staff = await seedStaff('old-build-update');
-    await withoutRls((tx) =>
-      tx.$executeRawUnsafe(
-        `INSERT INTO staff_availability (staff_id, weekday, start_time, end_time)
-         VALUES ($1::uuid, 5, TIME '05:00', TIME '13:00')`,
-        staff,
-      ),
-    );
-    await withoutRls((tx) =>
-      tx.$executeRawUnsafe(
-        `UPDATE staff_availability SET start_time = TIME '06:00', end_time = TIME '14:00'
-          WHERE staff_id = $1::uuid`,
-        staff,
-      ),
-    );
-    const rows = await withoutRls((tx) =>
-      tx.staffAvailability.findMany({
-        where: { staffId: staff },
-        select: { timeBasis: true, startTime: true },
-      }),
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].timeBasis).toBe('utc_legacy');
-    // The value really did change; the basis really did not.
-    expect(rows[0].startTime.getUTCHours()).toBe(6);
-  });
-
-  it('labels a DELETE-then-INSERT rewrite as legacy too', async () => {
-    // setAvailability() replaces the whole schedule rather than updating rows,
-    // so this is the shape an old build's save actually takes. A default of
-    // 'local' would mislabel every window of it.
-    const staff = await seedStaff('old-build-replace');
-    await withoutRls((tx) =>
-      tx.$executeRawUnsafe(
-        `INSERT INTO staff_availability (staff_id, weekday, start_time, end_time)
-         VALUES ($1::uuid, 3, TIME '05:00', TIME '13:00')`,
-        staff,
-      ),
-    );
-    await withoutRls(async (tx) => {
-      await tx.$executeRawUnsafe(`DELETE FROM staff_availability WHERE staff_id = $1::uuid`, staff);
-      await tx.$executeRawUnsafe(
-        `INSERT INTO staff_availability (staff_id, weekday, start_time, end_time)
-         VALUES ($1::uuid, 4, TIME '06:00', TIME '14:00')`,
-        staff,
-      );
-    });
-    const rows = await withoutRls((tx) =>
-      tx.staffAvailability.findMany({ where: { staffId: staff }, select: { timeBasis: true } }),
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].timeBasis).toBe('utc_legacy');
   });
 });
 
