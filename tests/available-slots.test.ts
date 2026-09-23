@@ -319,6 +319,151 @@ describe('getAvailableSlots', () => {
     expect(tbilisiSlots).toEqual(utcSlots);
   });
 
+  it('THE REAL READ PATH converts a legacy row — getAvailableSlots, not a helper', async () => {
+    // Dual-read must stay proven against the code that actually runs, and the
+    // production database now REFUSES to store a legacy row (20260923000001).
+    // Loosening that constraint to make a fixture insertable would be exactly
+    // backwards — the constraint is the point.
+    //
+    // So the legacy row exists only inside a transaction that is rolled back:
+    // the CHECK is dropped, the row inserted, getAvailableSlots() called on the
+    // SAME tx, and then the whole thing thrown away. The production constraint
+    // is untouched; nothing outside this transaction ever sees either.
+    //
+    // This is what a helper-level test cannot prove: that the reader reaches
+    // the row, selects time_basis, and applies the conversion end to end.
+    const staff = await withoutRls((tx) =>
+      tx.staff.create({
+        data: {
+          organizationId: orgId,
+          locationId,
+          name: 'Legacy read path',
+          roleTitle: 'Provider',
+          availabilityConfiguredAt: new Date(),
+        },
+        select: { id: true },
+      }),
+    );
+
+    const weekday = new Date(`${dateStr(9)}T12:00:00Z`).getUTCDay();
+    const ROLLBACK = 'intentional rollback — the legacy row must not survive';
+
+    let legacySlots: string[] = [];
+    await expect(
+      withoutRls(async (tx) => {
+        // Inside this transaction only.
+        await tx.$executeRawUnsafe(
+          `ALTER TABLE staff_availability DROP CONSTRAINT staff_availability_time_basis_check`,
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO staff_availability (staff_id, weekday, start_time, end_time, time_basis)
+             VALUES ($1::uuid, $2::smallint, TIME '05:00', TIME '13:00', 'utc_legacy')`,
+          staff.id,
+          weekday,
+        );
+
+        // THE PRODUCTION READER, on the same transaction.
+        legacySlots = await getAvailableSlots(tx, staff.id, dateStr(9), 30, 'Asia/Tbilisi');
+
+        throw new Error(ROLLBACK);
+      }),
+    ).rejects.toThrow(ROLLBACK);
+
+    // 05:00-13:00 UTC is 09:00-17:00 in Tbilisi, so the reader must offer
+    // 09:00 and not 05:00. A reader that ignored time_basis would do the
+    // opposite, and that difference is the whole compatibility contract.
+    expect(legacySlots).toContain('09:00');
+    expect(legacySlots).toContain('16:30');
+    expect(legacySlots).not.toContain('05:00');
+
+    // The rollback really happened: no row, and the constraint is back.
+    const survivors = await withoutRls((tx) =>
+      tx.staffAvailability.count({ where: { staffId: staff.id } }),
+    );
+    expect(survivors, 'the legacy row must not have survived the rollback').toBe(0);
+    await expect(
+      withoutRls((tx) =>
+        tx.$executeRawUnsafe(
+          `INSERT INTO staff_availability (staff_id, weekday, start_time, end_time, time_basis)
+             VALUES ($1::uuid, 1, TIME '05:00', TIME '13:00', 'utc_legacy')`,
+          staff.id,
+        ),
+      ),
+      'the production constraint must still refuse a legacy write',
+    ).rejects.toThrow();
+
+    await withoutRls((tx) => tx.staff.delete({ where: { id: staff.id } }));
+  });
+
+  it('THE REAL WRITE-TIME ENFORCER also honours a legacy row', async () => {
+    // assertWithinAvailability() is the other production reader — the one that
+    // decides whether a booking is allowed. Picker and enforcer must agree on
+    // both bases, or they disagree by exactly the location offset, which is the
+    // original defect this whole rollout exists to remove.
+    const { assertWithinAvailability } = await import('@/lib/appointments');
+
+    const staff = await withoutRls((tx) =>
+      tx.staff.create({
+        data: {
+          organizationId: orgId,
+          locationId,
+          name: 'Legacy enforcer path',
+          roleTitle: 'Provider',
+          availabilityConfiguredAt: new Date(),
+        },
+        select: { id: true },
+      }),
+    );
+    const weekday = new Date(`${dateStr(9)}T12:00:00Z`).getUTCDay();
+    const ROLLBACK = 'intentional rollback';
+
+    // 10:00 local Tbilisi = 06:00Z. Inside a legacy 05:00-13:00Z window, which
+    // means 09:00-17:00 local.
+    const inside = new Date(`${dateStr(9)}T06:00:00Z`);
+    // 08:00 local = 04:00Z, before the window opens.
+    const before = new Date(`${dateStr(9)}T04:00:00Z`);
+
+    let insideOk = false;
+    let beforeRejected = false;
+    await expect(
+      withoutRls(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `ALTER TABLE staff_availability DROP CONSTRAINT staff_availability_time_basis_check`,
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO staff_availability (staff_id, weekday, start_time, end_time, time_basis)
+             VALUES ($1::uuid, $2::smallint, TIME '05:00', TIME '13:00', 'utc_legacy')`,
+          staff.id,
+          weekday,
+        );
+
+        await assertWithinAvailability(
+          tx,
+          staff.id,
+          inside,
+          new Date(inside.getTime() + 30 * 60_000),
+        );
+        insideOk = true;
+
+        await assertWithinAvailability(
+          tx,
+          staff.id,
+          before,
+          new Date(before.getTime() + 30 * 60_000),
+        ).catch(() => {
+          beforeRejected = true;
+        });
+
+        throw new Error(ROLLBACK);
+      }),
+    ).rejects.toThrow(ROLLBACK);
+
+    expect(insideOk, '10:00 local is inside a legacy 09:00-17:00 window').toBe(true);
+    expect(beforeRejected, '08:00 local is outside it').toBe(true);
+
+    await withoutRls((tx) => tx.staff.delete({ where: { id: staff.id } }));
+  });
+
   it('the READER still converts a legacy row, and takes a local row as stored', async () => {
     // Dual-read must survive certification: rows written before
     // 20260923000001, and anything restored from an older backup, still hold
