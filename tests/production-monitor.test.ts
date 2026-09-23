@@ -47,6 +47,11 @@ function probe(overrides: Record<string, unknown> = {}) {
   return { index: 1, ok: true, status: 200, location: null, reason: undefined, ...overrides };
 }
 
+// Every test below is about recovery SEMANTICS, so it runs as a natural
+// scheduled first attempt. The trigger gate itself — that a manual dispatch or
+// a rerun may NOT declare recovery — has its own tests at the end of this file.
+const NATURAL = { naturalRun: true } as const;
+
 describe('health endpoint body is matched exactly', () => {
   it('accepts exactly {"ok":true}', () => {
     expect(evaluateHealthBody('{"ok":true}').ok).toBe(true);
@@ -410,7 +415,7 @@ describe('operational metrics judgement', () => {
 // checks. It says so at its call site, and these tests say the same thing, so
 // what is under test is the path that actually runs. A caller that omits this
 // retires nothing — see tests/sentry-incident-scope.test.ts.
-const ALL = { ownedCheckIds: 'all' } as const;
+const ALL = { ownedCheckIds: 'all', naturalRun: true } as const;
 describe('incident deduplication', () => {
   const failing = {
     id: 'health-endpoint',
@@ -426,7 +431,7 @@ describe('incident deduplication', () => {
   };
 
   it('opens a new issue the first time a check fails', () => {
-    const { toOpen, toComment, toClose } = reconcileIncidents([failing], []);
+    const { toOpen, toComment, toClose } = reconcileIncidents([failing], [], [], NATURAL);
     expect(toOpen).toHaveLength(1);
     expect(toComment).toHaveLength(0);
     expect(toClose).toHaveLength(0);
@@ -434,7 +439,7 @@ describe('incident deduplication', () => {
 
   it('comments instead of opening a duplicate when an issue already exists', () => {
     const existing = [{ number: 7, body: `${incidentMarker('health-endpoint')}\nfirst detected` }];
-    const { toOpen, toComment } = reconcileIncidents([failing], existing);
+    const { toOpen, toComment } = reconcileIncidents([failing], existing, [], NATURAL);
     expect(toOpen).toHaveLength(0);
     expect(toComment).toHaveLength(1);
     expect(toComment[0].issue.number).toBe(7);
@@ -442,7 +447,7 @@ describe('incident deduplication', () => {
 
   it('closes the issue when the check recovers', () => {
     const existing = [{ number: 7, body: `${incidentMarker('health-endpoint')}\nfirst detected` }];
-    const { toOpen, toComment, toClose } = reconcileIncidents([passing], existing);
+    const { toOpen, toComment, toClose } = reconcileIncidents([passing], existing, [], NATURAL);
     expect(toOpen).toHaveLength(0);
     expect(toComment).toHaveLength(0);
     expect(toClose).toHaveLength(1);
@@ -450,7 +455,7 @@ describe('incident deduplication', () => {
   });
 
   it('does nothing when a passing check has no open issue', () => {
-    const { toOpen, toComment, toClose } = reconcileIncidents([passing], []);
+    const { toOpen, toComment, toClose } = reconcileIncidents([passing], [], [], NATURAL);
     expect([toOpen, toComment, toClose].every((l) => l.length === 0)).toBe(true);
   });
 
@@ -458,7 +463,7 @@ describe('incident deduplication', () => {
     const existing = [
       { number: 9, title: 'something a human renamed', body: incidentMarker('health-endpoint') },
     ];
-    const { toOpen, toComment } = reconcileIncidents([failing], existing);
+    const { toOpen, toComment } = reconcileIncidents([failing], existing, [], NATURAL);
     expect(toOpen).toHaveLength(0);
     expect(toComment[0].issue.number).toBe(9);
   });
@@ -470,7 +475,7 @@ describe('incident deduplication', () => {
       { id: 'tls', title: 'TLS', ok: true, detail: 'recovered' },
       { id: 'backup-freshness', title: 'Backup', ok: false, detail: 'stale' },
     ];
-    const { toOpen, toClose } = reconcileIncidents(results, existing);
+    const { toOpen, toClose } = reconcileIncidents(results, existing, [], NATURAL);
     expect(toOpen.map((o) => o.result.id).sort()).toEqual(['backup-freshness', 'health-endpoint']);
     expect(toClose.map((c) => c.result.id)).toEqual(['tls']);
   });
@@ -496,27 +501,27 @@ describe('incident deduplication', () => {
 
   it('marks a genuine recovery as a recovery, not an orphan', () => {
     const existing = [{ number: 12, body: incidentMarker('health-endpoint') }];
-    const { toClose } = reconcileIncidents([passing], existing);
+    const { toClose } = reconcileIncidents([passing], existing, [], NATURAL);
     expect(toClose).toHaveLength(1);
     expect(toClose[0].orphaned).toBeUndefined();
   });
 
   it('does not close an orphan and a recovery twice for the same issue', () => {
     const existing = [{ number: 13, body: incidentMarker('health-endpoint') }];
-    const { toClose } = reconcileIncidents([passing], existing);
+    const { toClose } = reconcileIncidents([passing], existing, [], NATURAL);
     expect(toClose.map((c) => c.issue.number)).toEqual([13]);
   });
 
   it('leaves a still-failing check open rather than treating it as an orphan', () => {
     const existing = [{ number: 14, body: incidentMarker('health-endpoint') }];
-    const { toComment, toClose } = reconcileIncidents([failing], existing);
+    const { toComment, toClose } = reconcileIncidents([failing], existing, [], NATURAL);
     expect(toComment).toHaveLength(1);
     expect(toClose).toHaveLength(0);
   });
 
   it('ignores unrelated open issues that carry no incident marker', () => {
     const existing = [{ number: 4, body: 'a human-written bug report' }];
-    const { toOpen, toComment, toClose } = reconcileIncidents([failing], existing);
+    const { toOpen, toComment, toClose } = reconcileIncidents([failing], existing, [], NATURAL);
     expect(toOpen).toHaveLength(1);
     expect(toComment).toHaveLength(0);
     expect(toClose).toHaveLength(0);
@@ -562,7 +567,7 @@ describe('an unobservable check is not a resolved one', () => {
       ok: true,
       detail: 'security env vars set but malformed: 0',
     };
-    const { toClose } = reconcileIncidents([opsUp, configOk], configIncident);
+    const { toClose } = reconcileIncidents([opsUp, configOk], configIncident, [], NATURAL);
     expect(toClose).toHaveLength(1);
     expect(toClose[0].orphaned).toBeUndefined();
   });
@@ -779,14 +784,14 @@ describe('audit digest paused state', () => {
     // never opens an incident no matter how many times the monitor runs.
     const r = paused();
     expect(r.ok).toBe(true);
-    const { toOpen } = reconcileIncidents([r], []);
+    const { toOpen } = reconcileIncidents([r], [], [], NATURAL);
     expect(toOpen).toHaveLength(0);
   });
 
   it('closes an existing incident as paused, not as recovered', () => {
     const r = paused();
     const issue = { number: 23, body: incidentMarker('audit-digest-stalled') };
-    const { toClose, toOpen } = reconcileIncidents([r], [issue]);
+    const { toClose, toOpen } = reconcileIncidents([r], [issue], [], NATURAL);
     expect(toOpen).toHaveLength(0);
     expect(toClose).toHaveLength(1);
     expect(toClose[0].result.paused).toBe(true);
@@ -1203,7 +1208,7 @@ describe('manual dispatches cannot stand in for scheduled evidence', () => {
     const openIssues = [
       { number: 99, title: '[ops] manual', body: incidentMarker('cron-manual-verification') },
     ];
-    const { toOpen, toComment, toClose } = reconcileIncidents([info], openIssues);
+    const { toOpen, toComment, toClose } = reconcileIncidents([info], openIssues, [], NATURAL);
     expect(toOpen).toEqual([]);
     expect(toComment).toEqual([]);
     expect(toClose.map((c: { issue: { number: number } }) => c.issue.number)).not.toContain(99);
@@ -1493,7 +1498,7 @@ describe('cron delivery lag and cron outage are different claims', () => {
     const lag = byId([run({ completedAt: at(2) })], 'cron-delivery-lag');
     expect(lag!.informational).toBe(true);
     // Belt and braces: prove it through the reconciler, not just the flag.
-    const plan = reconcileIncidents([lag!], []);
+    const plan = reconcileIncidents([lag!], [], [], NATURAL);
     expect(plan.toOpen).toEqual([]);
   });
 
@@ -1751,7 +1756,7 @@ describe('the observability check can open an incident but never close one', () 
   it('still fails, and still opens an incident, when a DSN is missing', () => {
     const r = check(2);
     expect(r.ok).toBe(false);
-    expect(reconcileIncidents([r], []).toOpen.map((o) => o.result.id)).toEqual([
+    expect(reconcileIncidents([r], [], [], NATURAL).toOpen.map((o) => o.result.id)).toEqual([
       'production-observability-unconfigured',
     ]);
   });
@@ -1762,7 +1767,7 @@ describe('the observability check can open an incident but never close one', () 
     const open = [
       { number: 44, body: incidentMarker('production-observability-unconfigured'), title: 'x' },
     ];
-    const plan = reconcileIncidents([r], open);
+    const plan = reconcileIncidents([r], open, [], NATURAL);
     expect(plan.toClose, 'a config check cannot certify that errors reach a human').toEqual([]);
   });
 
@@ -1774,7 +1779,9 @@ describe('the observability check can open an incident but never close one', () 
     // The `canClose` flag must be narrow, not a general weakening of recovery.
     const ok = { id: 'outbox-dead-letters', title: 't', ok: true, detail: 'd' };
     const open = [{ number: 9, body: incidentMarker('outbox-dead-letters'), title: 'x' }];
-    expect(reconcileIncidents([ok], open).toClose.map((c) => c.issue.number)).toEqual([9]);
+    expect(reconcileIncidents([ok], open, [], NATURAL).toClose.map((c) => c.issue.number)).toEqual([
+      9,
+    ]);
   });
 
   it('a check that cannot close is still not able to open twice', () => {
@@ -1782,7 +1789,7 @@ describe('the observability check can open an incident but never close one', () 
     const open = [
       { number: 44, body: incidentMarker('production-observability-unconfigured'), title: 'x' },
     ];
-    const plan = reconcileIncidents([r], open);
+    const plan = reconcileIncidents([r], open, [], NATURAL);
     expect(plan.toOpen).toEqual([]);
     expect(plan.toComment.map((c) => c.issue.number)).toEqual([44]);
   });
@@ -1826,7 +1833,7 @@ describe('a wrongly closed incident is reopened, not duplicated', () => {
   });
 
   it('THE DEFECT: a closed issue with the marker is reopened, not re-created', () => {
-    const plan = reconcileIncidents([failing], [], [closed(44)]);
+    const plan = reconcileIncidents([failing], [], [closed(44)], NATURAL);
     expect(
       plan.toReopen.map((r) => r.issue.number),
       'the history lives on #44',
@@ -1835,14 +1842,14 @@ describe('a wrongly closed incident is reopened, not duplicated', () => {
   });
 
   it('with no closed issue either, it opens a fresh one', () => {
-    const plan = reconcileIncidents([failing], [], []);
+    const plan = reconcileIncidents([failing], [], [], NATURAL);
     expect(plan.toOpen.map((o) => o.result.id)).toEqual(['production-observability-unconfigured']);
     expect(plan.toReopen).toEqual([]);
   });
 
   it('an OPEN issue is commented on, never reopened', () => {
     const open = [{ ...closed(44), state: 'open' }];
-    const plan = reconcileIncidents([failing], open, [closed(44)]);
+    const plan = reconcileIncidents([failing], open, [closed(44)], NATURAL);
     expect(plan.toComment.map((c) => c.issue.number)).toEqual([44]);
     expect(plan.toReopen).toEqual([]);
     expect(plan.toOpen).toEqual([]);
@@ -1852,7 +1859,7 @@ describe('a wrongly closed incident is reopened, not duplicated', () => {
     // The complement, and the one that matters: reopening must be driven by the
     // check still failing, not by the issue merely being closed.
     const ok = { ...failing, ok: true };
-    expect(reconcileIncidents([ok], [], [closed(44)]).toReopen).toEqual([]);
+    expect(reconcileIncidents([ok], [], [closed(44)], NATURAL).toReopen).toEqual([]);
   });
 
   it('the OLDEST closed issue is chosen when several carry the marker', () => {
@@ -1860,14 +1867,14 @@ describe('a wrongly closed incident is reopened, not duplicated', () => {
     // issue for a marker is the oldest, because that is where the history is —
     // choosing the newest is what left #44 stranded while #67 accumulated
     // comments.
-    const plan = reconcileIncidents([failing], [], [closed(12), closed(44)]);
+    const plan = reconcileIncidents([failing], [], [closed(12), closed(44)], NATURAL);
     expect(plan.toReopen.map((r) => r.issue.number)).toEqual([12]);
     expect(plan.toCloseDuplicate.map((d) => d.issue.number)).toEqual([]);
   });
 
   it('informational results never reopen anything', () => {
     const info = { ...failing, informational: true };
-    expect(reconcileIncidents([info], [], [closed(44)]).toReopen).toEqual([]);
+    expect(reconcileIncidents([info], [], [closed(44)], NATURAL).toReopen).toEqual([]);
   });
 });
 
@@ -1898,7 +1905,7 @@ describe('the canonical incident is the oldest, and duplicates are folded into i
   });
 
   it('THE LIVE CASE: canonical closed, duplicate open — reopen 44, close 67', () => {
-    const plan = reconcileIncidents([failing], [issue(67, 'open')], [issue(44, 'closed')]);
+    const plan = reconcileIncidents([failing], [issue(67, 'open')], [issue(44, 'closed')], NATURAL);
     expect(
       plan.toReopen.map((r) => r.issue.number),
       'the history lives on #44',
@@ -1908,7 +1915,7 @@ describe('the canonical incident is the oldest, and duplicates are folded into i
   });
 
   it('exactly one issue is left open for the marker', () => {
-    const plan = reconcileIncidents([failing], [issue(67, 'open')], [issue(44, 'closed')]);
+    const plan = reconcileIncidents([failing], [issue(67, 'open')], [issue(44, 'closed')], NATURAL);
     const openAfter = new Set([67]);
     for (const r of plan.toReopen) openAfter.add(r.issue.number);
     for (const d of plan.toCloseDuplicate) openAfter.delete(d.issue.number);
@@ -1926,30 +1933,47 @@ describe('the canonical incident is the oldest, and duplicates are folded into i
   });
 
   it('several closed duplicates: reopen the oldest only', () => {
-    const plan = reconcileIncidents([failing], [], [issue(67, 'closed'), issue(44, 'closed')]);
+    const plan = reconcileIncidents(
+      [failing],
+      [],
+      [issue(67, 'closed'), issue(44, 'closed')],
+      NATURAL,
+    );
     expect(plan.toReopen.map((r) => r.issue.number)).toEqual([44]);
   });
 
   it('a recovered check closes every issue for the marker, canonical included', () => {
     // Evidence-based recovery must not leave a duplicate open behind it.
     const recovered = { ...failing, ok: true };
-    const plan = reconcileIncidents([recovered], [issue(44, 'open'), issue(67, 'open')], []);
+    const plan = reconcileIncidents(
+      [recovered],
+      [issue(44, 'open'), issue(67, 'open')],
+      [],
+      NATURAL,
+    );
     expect(plan.toClose.map((c) => c.issue.number).sort()).toEqual([44, 67]);
   });
 
   it('a canClose:false check still closes nothing', () => {
     const recovered = { ...failing, ok: true, canClose: false };
-    const plan = reconcileIncidents([recovered], [issue(44, 'open')], []);
+    const plan = reconcileIncidents([recovered], [issue(44, 'open')], [], NATURAL);
     expect(plan.toClose).toEqual([]);
   });
 
   it('no issues at all still opens one', () => {
-    expect(reconcileIncidents([failing], [], []).toOpen.map((o) => o.result.id)).toEqual([MARKER]);
+    expect(reconcileIncidents([failing], [], [], NATURAL).toOpen.map((o) => o.result.id)).toEqual([
+      MARKER,
+    ]);
   });
 
   it('unrelated markers are untouched', () => {
     const other = { number: 9, state: 'open', title: 'x', body: incidentMarker('outbox-backlog') };
-    const plan = reconcileIncidents([failing], [issue(67, 'open'), other], [issue(44, 'closed')]);
+    const plan = reconcileIncidents(
+      [failing],
+      [issue(67, 'open'), other],
+      [issue(44, 'closed')],
+      NATURAL,
+    );
     expect(plan.toCloseDuplicate.map((d) => d.issue.number)).toEqual([67]);
   });
 });
@@ -2124,5 +2148,56 @@ describe('a cron check whose evaluator could not run is not a removed one', () =
     );
     emitted.delete('cron-staleness'); // the probe itself, deliberately excluded
     expect([...emitted].sort()).toEqual([...CRON_DERIVED_CHECK_IDS].sort());
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Recovery may only be declared by a natural scheduled first attempt.
+//
+// Closing an incident claims "production is healthy again". A manually
+// dispatched run cannot support that claim: an operator chose the moment, which
+// is exactly the selection bias an incident exists to defeat.
+//
+// This repository has already paid for the identical defect once. On
+// 2026-09-01 five manual dispatches pushed six genuinely failed scheduled runs
+// out of the ten-run window, `cron-failures` fell from 6/10 to 1/10, and
+// incident #38 was closed as "recovered" while nothing had recovered. That fix
+// was applied to the cron METRICS and not to the closing path, so strictness
+// still depended on nobody dispatching the monitor while an incident was open.
+// -----------------------------------------------------------------------------
+describe('incident recovery requires a natural run', () => {
+  const marker = (id: string) => `<!-- bookpitch-ops-incident:${id} -->`;
+  const recovered = { id: 'tls', title: 'TLS', ok: true, detail: 'recovered' };
+  const open = [{ number: 9, body: marker('tls') }];
+
+  it('closes on a scheduled first attempt', () => {
+    const { toClose } = reconcileIncidents([recovered], open, [], { naturalRun: true });
+    expect(toClose.map((c) => c.result.id)).toEqual(['tls']);
+  });
+
+  it('does NOT close on a manual dispatch', () => {
+    const { toClose } = reconcileIncidents([recovered], open, [], { naturalRun: false });
+    expect(toClose).toHaveLength(0);
+  });
+
+  it('does NOT close when the option is absent — fail closed, not open', () => {
+    // A caller that forgets to say how it was triggered must not get a
+    // recovery for free. Defaulting to "natural" would put the defect back.
+    const { toClose } = reconcileIncidents([recovered], open, []);
+    expect(toClose).toHaveLength(0);
+  });
+
+  it('still OPENS an incident from a manual run', () => {
+    // Surfacing a problem early from a diagnostic run is useful, and nothing
+    // about it claims health. Only closure is restricted.
+    const failing = { id: 'tls', title: 'TLS', ok: false, detail: 'expired' };
+    const { toOpen } = reconcileIncidents([failing], [], [], { naturalRun: false });
+    expect(toOpen.map((o) => o.result.id)).toEqual(['tls']);
+  });
+
+  it('still COMMENTS on a manual run, so the diagnostic is not lost', () => {
+    const failing = { id: 'tls', title: 'TLS', ok: false, detail: 'expired' };
+    const { toComment } = reconcileIncidents([failing], open, [], { naturalRun: false });
+    expect(toComment).toHaveLength(1);
   });
 });

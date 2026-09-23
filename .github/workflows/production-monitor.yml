@@ -63,6 +63,11 @@ jobs:
           MONITOR_PRODUCTION_URL: https://bookpitch.ge
           MONITOR_SIMULATE_FAILURE: ${{ inputs.simulate_failure }}
           MONITOR_ALERTS: ${{ inputs.alerts }}
+          # Recovery may only be declared by a natural scheduled first attempt.
+          # A rerun keeps its original `schedule` event, so the attempt number
+          # travels with it.
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         # No `continue-on-error`, no `|| true`. A red monitor must be a red run:
         # that is the whole point of the workflow.
         run: node scripts/production-monitor.mjs

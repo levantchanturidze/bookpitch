@@ -1196,6 +1196,26 @@ export function reconcileIncidents(results, openIssues, closedIssues = [], optio
       // declare it over — one whose green state is weaker than the claim the
       // incident makes.
       if (result.canClose === false) continue;
+
+      // RECOVERY MUST COME FROM A NATURAL RUN.
+      //
+      // Closing an incident claims "production is healthy again", and a
+      // manually dispatched run cannot support that claim: an operator chose
+      // the moment, which is precisely the selection bias an incident exists to
+      // defeat. This repository has already paid for the same defect once —
+      // five manual dispatches in 2026-09-01 pushed six genuinely failed
+      // scheduled runs out of the ten-run window, `cron-failures` went from
+      // 6/10 to 1/10, and incident #38 was closed as "recovered" while nothing
+      // had recovered.
+      //
+      // That fix was applied to the cron METRICS and not to the closing path,
+      // so the strictness still depended on an operator not dispatching the
+      // monitor while an incident was open. It no longer does.
+      //
+      // OPENING is deliberately unrestricted: surfacing a problem early from a
+      // diagnostic run is useful, and nothing about it is a claim of health.
+      if (!options.naturalRun) continue;
+
       for (const issue of all.filter(isOpen)) toClose.push({ result, issue });
     }
   }
@@ -1784,10 +1804,19 @@ async function syncIncidents(repo, token, results, now) {
     results,
     openIssues ?? [],
     closedIssues ?? [],
-    // The monitor, and only the monitor, reports the complete set of checks, so
-    // it is the only caller that may conclude an unreported check has been
-    // removed. Every other caller reports a subset and retires nothing.
-    { ownedCheckIds: 'all' },
+    {
+      // The monitor, and only the monitor, reports the complete set of checks,
+      // so it is the only caller that may conclude an unreported check has been
+      // removed. Every other caller reports a subset and retires nothing.
+      ownedCheckIds: 'all',
+      // Recovery may only be declared by a scheduled run. A rerun keeps its
+      // original `schedule` event, so the attempt number is checked too —
+      // re-running a red run until it happens to pass is the other way to
+      // manufacture a recovery.
+      naturalRun:
+        process.env.GITHUB_EVENT_NAME === 'schedule' &&
+        (process.env.GITHUB_RUN_ATTEMPT ?? '1') === '1',
+    },
   );
 
   for (const { result, issue } of toReopen) {

@@ -57,6 +57,22 @@ export function planSentryReconciliation(outcome, openIssues = [], closedIssues 
   };
   const plan = reconcileIncidents([result], openIssues, closedIssues, {
     ownedCheckIds: [...OWNED_CHECK_IDS],
+    // EXEMPT FROM THE NATURAL-RUN GATE, and the distinction is the point.
+    //
+    // The monitor may only declare recovery from a scheduled run, because a
+    // manual run OBSERVES a moment an operator chose — the selection bias an
+    // incident exists to defeat.
+    //
+    // This is not an observation. verify-sentry.mjs CAUSES an event in both
+    // runtimes on the deployed release and reads it back through Sentry's API,
+    // matched on release, environment, nonce and runtime. That is constructive
+    // proof, and it is no weaker for having been triggered deliberately —
+    // `release-verify-and-soak.yml` is workflow_dispatch by design precisely
+    // because somebody has to decide to prove it.
+    //
+    // `canClose: true` above is already gated on a complete pass; this only
+    // says the trigger does not additionally disqualify it.
+    naturalRun: true,
   });
   return { verified, result, plan };
 }
