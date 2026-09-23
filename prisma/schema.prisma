@@ -365,7 +365,12 @@ model StaffAvailability {
   /// support stays in place: a default is something a later migration can
   /// change underneath a writer, which is exactly the hazard this column was
   /// introduced to remove.
-  timeBasis String   @default("local") @map("time_basis")
+  /// NO DEFAULT, deliberately. An omitted basis is an error at the database and
+  /// a missing required field in the generated client, so a writer that forgets
+  /// to say what its digits mean fails to compile rather than silently
+  /// inheriting an answer. Provenance is stated, never inherited — see
+  /// 20260923000001.
+  timeBasis String   @map("time_basis")
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 

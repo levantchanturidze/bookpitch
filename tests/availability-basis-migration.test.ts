@@ -23,6 +23,12 @@ const { unsafePrismaAdmin, withoutRls } = await import('@/lib/db');
 // contract for those three releases and it is deliberately no longer asserted:
 // Stage D converted every remaining legacy row and only then moved the default.
 //
+// The default moved twice: 'utc_legacy' from Stage A (so a build that knew
+// nothing about the column still labelled its writes correctly), then 'local'
+// at the Stage D cutover, then REMOVED entirely by 20260923000001 — because a
+// default is the last place provenance could still be inherited rather than
+// stated.
+//
 // What must NEVER regress, and is asserted below:
 //
 //   explicit writes     application code states the basis on every write. A
@@ -50,18 +56,6 @@ describe('staff_availability.time_basis — post-cutover contract', () => {
         await tx.staff.deleteMany({ where: { id: { in: TRACKED } } });
       });
     }
-  });
-
-  it("defaults to 'local' now that every row is local and every writer explicit", async () => {
-    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ column_default: string | null }>>(
-      `SELECT column_default FROM information_schema.columns
-        WHERE table_name = 'staff_availability' AND column_name = 'time_basis'`,
-    );
-    // This was 'utc_legacy' for three releases, and moving it early would have
-    // mislabelled an in-flight write from a build that did not know the column
-    // existed. Stage D moved it only after converting every legacy row, with
-    // the table locked and the conversion verified.
-    expect(row?.column_default ?? '').toContain('local');
   });
 
   it('holds no legacy rows — the backfill is complete', async () => {
@@ -95,6 +89,39 @@ describe('staff_availability.time_basis — post-cutover contract', () => {
     // appearing anywhere else in the file.
     const call = src.slice(start, src.indexOf('});', start));
     expect(call).toMatch(/timeBasis:\s*'local'/);
+  });
+
+  it('has NO default, so an omitted basis is an error rather than a guess', async () => {
+    // The last place the database still let provenance be inherited. With the
+    // default gone, a writer that forgets to say what its digits mean fails —
+    // and because @default is also gone from schema.prisma, it fails at
+    // COMPILE time, which is the earliest place to catch it. Removing it found
+    // two real fixtures that had been relying on the guess.
+    const [row] = await unsafePrismaAdmin.$queryRawUnsafe<
+      Array<{ column_default: string | null; is_nullable: string }>
+    >(
+      `SELECT column_default, is_nullable FROM information_schema.columns
+        WHERE table_name = 'staff_availability' AND column_name = 'time_basis'`,
+    );
+    expect(row?.column_default).toBeNull();
+    expect(row?.is_nullable).toBe('NO');
+  });
+
+  it('REFUSES a legacy write now that every row is local', async () => {
+    // A stale writer must not be able to recreate a legacy row. Today every
+    // reader handles one correctly, but the column exists to be removed
+    // eventually, and a legacy row surviving into that moment would be read as
+    // local and enforced four hours out.
+    const staff = await seedStaff('legacy-write-refused');
+    await expect(
+      withoutRls((tx) =>
+        tx.$executeRawUnsafe(
+          `INSERT INTO staff_availability (staff_id, weekday, start_time, end_time, time_basis)
+           VALUES ($1::uuid, 6, TIME '05:00', TIME '13:00', 'utc_legacy')`,
+          staff,
+        ),
+      ),
+    ).rejects.toThrow();
   });
 
   it('refuses a basis the rollout does not define, even after the cutover', async () => {

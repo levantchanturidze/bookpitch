@@ -72,7 +72,16 @@ describe('analytics.computeMetrics + dailyRoster', () => {
           name: 'Alpha Staff',
           roleTitle: 'Fixture Practitioner A',
           availability: {
-            create: [{ weekday: REF_WEEKDAY, startTime: time(9), endTime: time(13) }],
+            // Local wall clock, stated rather than inherited: the column has no
+            // default since 20260923000001, so omitting this is a type error.
+            create: [
+              {
+                weekday: REF_WEEKDAY,
+                startTime: time(9),
+                endTime: time(13),
+                timeBasis: 'local' as const,
+              },
+            ],
           },
         },
       });
@@ -83,7 +92,14 @@ describe('analytics.computeMetrics + dailyRoster', () => {
           name: 'Beta Staff',
           roleTitle: 'Fixture Practitioner B',
           availability: {
-            create: [{ weekday: REF_WEEKDAY, startTime: time(9), endTime: time(11) }],
+            create: [
+              {
+                weekday: REF_WEEKDAY,
+                startTime: time(9),
+                endTime: time(11),
+                timeBasis: 'local' as const,
+              },
+            ],
           },
         },
       });
