@@ -359,25 +359,18 @@ describe('admin CRUD × 4 surfaces', () => {
 
     // The same window expressed the OLD way — UTC digits plus a legacy marker —
     // must read out identically.
+    //
+    // Asserted through the READER rather than by writing such a row, because
+    // 20260923000001 forbids writing one: the CHECK permits only 'local' now,
+    // so a stale writer cannot recreate legacy data. Dual-READ support is
+    // unaffected and still required — rows written before that migration, and
+    // anything restored from an older backup, are still read correctly — which
+    // is exactly what this asserts.
     const offsetHours = 4; // Asia/Tbilisi, the seeded location timezone
-    await withoutRls((tx) =>
-      tx.staffAvailability.updateMany({
-        where: { staffId: staff, weekday: 3 },
-        data: {
-          startTime: new Date(`1970-01-01T${String(9 - offsetHours).padStart(2, '0')}:00:00Z`),
-          endTime: new Date(`1970-01-01T${String(17 - offsetHours).padStart(2, '0')}:00:00Z`),
-          timeBasis: 'utc_legacy',
-        },
-      }),
-    );
-    const asLegacy = await withoutRls((tx) =>
-      tx.staffAvailability.findFirstOrThrow({
-        where: { staffId: staff, weekday: 3 },
-        select: { startTime: true, endTime: true, timeBasis: true },
-      }),
-    );
-    expect(availabilityHHMM(asLegacy.startTime, asLegacy.timeBasis, tz)).toBe('09:00');
-    expect(availabilityHHMM(asLegacy.endTime, asLegacy.timeBasis, tz)).toBe('17:00');
+    const legacyStart = new Date(`1970-01-01T${String(9 - offsetHours).padStart(2, '0')}:00:00Z`);
+    const legacyEnd = new Date(`1970-01-01T${String(17 - offsetHours).padStart(2, '0')}:00:00Z`);
+    expect(availabilityHHMM(legacyStart, 'utc_legacy', tz)).toBe('09:00');
+    expect(availabilityHHMM(legacyEnd, 'utc_legacy', tz)).toBe('17:00');
   });
 
   it('refuses a time_basis the migration does not define', async () => {

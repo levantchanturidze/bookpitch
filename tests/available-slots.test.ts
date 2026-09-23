@@ -96,7 +96,7 @@ describe('getAvailableSlots', () => {
               weekday: wd,
               startTime: timeVal(9),
               endTime: timeVal(18),
-              timeBasis: 'utc_legacy' as const,
+              timeBasis: 'local' as const,
             })),
           },
         },
@@ -107,16 +107,21 @@ describe('getAvailableSlots', () => {
           locationId: loc.id,
           name: 'Tbilisi Staff',
           roleTitle: 'Consultant',
-          // 05:00–14:00 UTC = 09:00–18:00 Asia/Tbilisi. All weekdays.
-          // Marked explicitly: these digits really are UTC, and the Stage A
-          // default happens to agree — but a fixture that relies on a default
-          // stops meaning anything the moment Stage D changes it.
+          // 05:00–14:00 LOCAL, on every weekday.
+          //
+          // These digits used to be written as `utc_legacy` here, to exercise
+          // the reader's conversion path. 20260923000001 forbids writing a
+          // legacy row at all — the CHECK permits only 'local' — so the
+          // conversion path is now asserted directly against
+          // availabilityRangeMinutes/availabilityHHMM, which is where it lives.
+          // A fixture cannot prove a reader by writing data the product will
+          // never contain again.
           availability: {
             create: [0, 1, 2, 3, 4, 5, 6].map((wd) => ({
               weekday: wd,
               startTime: timeVal(5),
               endTime: timeVal(14),
-              timeBasis: 'utc_legacy' as const,
+              timeBasis: 'local' as const,
             })),
           },
         },
@@ -287,12 +292,11 @@ describe('getAvailableSlots', () => {
   });
 
   // ---------------------------------------------------------------------------
-  it('a utc_legacy window is read through the location offset', async () => {
-    // The fixture is marked utc_legacy and really holds UTC digits, so the
-    // reader converts: 05:00-14:00 UTC is 09:00-18:00 in Tbilisi and
-    // 05:00-14:00 under UTC. The basis decides, not the column.
+  it('a stored local window means the same hours in either location', async () => {
+    // The fixture is local now (legacy rows can no longer be written), so the
+    // stored digits ARE the local hours in either location — no offset applied.
     //
-    // Before the basis existed the two halves disagreed silently — the write
+    // Before the basis existed the two halves disagreed silently: the write
     // path never applied the offset and the picker did, so they differed by
     // exactly the offset and neither side reported anything.
     const utcSlots = await withoutRls((tx) =>
@@ -307,75 +311,48 @@ describe('getAvailableSlots', () => {
     expect(utcSlots).not.toContain('14:00'); // 14:00+30 > window end
 
     // +4h: the same stored digits mean 09:00-18:00 on a Tbilisi wall clock.
-    expect(tbilisiSlots).toContain('09:00');
-    expect(tbilisiSlots).toContain('17:30');
-    expect(tbilisiSlots).not.toContain('05:00');
-    expect(tbilisiSlots).not.toContain('18:00');
+    expect(tbilisiSlots).toContain('05:00');
+    expect(tbilisiSlots).toContain('13:30');
+    expect(tbilisiSlots).not.toContain('14:00');
 
-    // Same width, shifted labels — the offset applied exactly once, by basis.
-    expect(tbilisiSlots.length).toBe(utcSlots.length);
+    // Identical: a local window means the same wall clock everywhere.
+    expect(tbilisiSlots).toEqual(utcSlots);
   });
 
-  it('reads a utc_legacy row through the location offset, and a local row as-is', async () => {
-    // The compatibility contract that lets migrate.yml and Vercel deploy in
-    // parallel. Migration 20260915000002 changes no VALUES — it only labels the
-    // rows that already existed — so the previous release keeps reading exactly
-    // the bytes it expects while the new one reads both bases correctly.
-    //
-    // Same digits, two bases, two meanings. If this ever collapses to one
-    // answer, the overlap window becomes a four-hour error.
-    const staff = await withoutRls((tx) =>
-      tx.staff.create({
-        data: {
-          organizationId: orgId,
-          locationId,
-          name: 'Dual basis',
-          roleTitle: 'Provider',
-          availabilityConfiguredAt: new Date(),
-        },
-        select: { id: true },
-      }),
-    );
+  it('the READER still converts a legacy row, and takes a local row as stored', async () => {
+    // Dual-read must survive certification: rows written before
+    // 20260923000001, and anything restored from an older backup, still hold
+    // UTC digits with a legacy marker and must read out as the right local
+    // hours. The database now refuses to WRITE such a row, so this is asserted
+    // against the reader directly rather than by creating one — which is the
+    // honest place for it, since the reader is what would regress.
+    const { availabilityRangeMinutes } = await import('@/lib/availability-basis');
 
-    const weekday = new Date(`${dateStr(9)}T12:00:00Z`).getUTCDay();
-    await withoutRls((tx) =>
-      tx.staffAvailability.create({
-        data: {
-          staffId: staff.id,
-          weekday,
-          startTime: new Date('1970-01-01T05:00:00Z'),
-          endTime: new Date('1970-01-01T13:00:00Z'),
-          timeBasis: 'utc_legacy',
-        },
-      }),
+    const legacy = availabilityRangeMinutes(
+      {
+        startTime: new Date('1970-01-01T05:00:00Z'),
+        endTime: new Date('1970-01-01T13:00:00Z'),
+        timeBasis: 'utc_legacy',
+      },
+      'Asia/Tbilisi',
     );
+    expect(legacy.startMin).toBe(9 * 60); // 05:00Z -> 09:00 local
+    expect(legacy.endMin).toBe(17 * 60); // 13:00Z -> 17:00 local
 
-    // 05:00-13:00 UTC is 09:00-17:00 in Tbilisi.
-    const legacy = await withoutRls((tx) =>
-      getAvailableSlots(tx, staff.id, dateStr(9), 30, 'Asia/Tbilisi'),
+    const local = availabilityRangeMinutes(
+      {
+        startTime: new Date('1970-01-01T05:00:00Z'),
+        endTime: new Date('1970-01-01T13:00:00Z'),
+        timeBasis: 'local',
+      },
+      'Asia/Tbilisi',
     );
-    expect(legacy).toContain('09:00');
-    expect(legacy).toContain('16:30');
-    expect(legacy).not.toContain('05:00');
+    expect(local.startMin).toBe(5 * 60); // same digits, taken as written
+    expect(local.endMin).toBe(13 * 60);
 
-    // The same digits written as `local` mean 05:00-13:00 on the wall.
-    await withoutRls((tx) =>
-      tx.staffAvailability.updateMany({
-        where: { staffId: staff.id },
-        data: { timeBasis: 'local' },
-      }),
-    );
-    const local = await withoutRls((tx) =>
-      getAvailableSlots(tx, staff.id, dateStr(9), 30, 'Asia/Tbilisi'),
-    );
-    expect(local).toContain('05:00');
-    expect(local).toContain('12:30');
-    expect(local).not.toContain('16:30');
-
-    await withoutRls(async (tx) => {
-      await tx.staffAvailability.deleteMany({ where: { staffId: staff.id } });
-      await tx.staff.delete({ where: { id: staff.id } });
-    });
+    // The two must NOT agree. If they ever collapse to one answer, the
+    // migration/deploy overlap becomes a four-hour error.
+    expect(legacy.startMin).not.toBe(local.startMin);
   });
 
   it('EXCLUDES the appointment being rescheduled from its own occupancy', async () => {
