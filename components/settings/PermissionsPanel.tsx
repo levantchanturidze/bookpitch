@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { Check, Info } from 'lucide-react';
 import StatusMessage from '@/components/ui/StatusMessage';
+import { resultFromResponse } from '@/lib/action-result';
 
 type Toggles = {
   providerFinancialReports: boolean;
@@ -53,17 +54,19 @@ export default function PermissionsPanel({ initial }: { initial: Toggles }) {
     setError(null);
     setSaved(false);
     startTransition(async () => {
-      try {
-        const res = await fetch('/api/admin/toggles', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(state),
-        });
-        if (!res.ok) throw new Error(await res.text());
-        setSaved(true);
-      } catch (err) {
-        setError((err as Error).message);
+      // U-01 sibling: this used to render the RAW response body, so a 500
+      // put the internal token `{"error":"internal_error"}` on screen.
+      const res = await fetch('/api/admin/toggles', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state),
+      });
+      const result = await resultFromResponse(res);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      setSaved(true);
     });
   };
 

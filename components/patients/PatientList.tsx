@@ -184,47 +184,47 @@ export default function PatientList({
   const handleCreate = (values: FormState) => {
     setError(null);
     startTransition(async () => {
-      try {
-        const created = await createCustomerAction({
-          name: values.name,
-          email: values.email || null,
-          phone: values.phone || null,
-          dob: values.dob || null,
-          gender: values.gender || null,
-          allergies: values.allergies || null,
-          clinicalNotes: values.clinicalNotes || null,
-          consent: values.consent,
-        });
-        setFormOpen(false);
-        await loadPage({ q: search, cursor: null, append: false });
-        setSelectedId(created.id);
-        await loadDetail(created.id);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = await createCustomerAction({
+        name: values.name,
+        email: values.email || null,
+        phone: values.phone || null,
+        dob: values.dob || null,
+        gender: values.gender || null,
+        allergies: values.allergies || null,
+        clinicalNotes: values.clinicalNotes || null,
+        consent: values.consent,
+      });
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      setFormOpen(false);
+      await loadPage({ q: search, cursor: null, append: false });
+      setSelectedId(result.data.id);
+      await loadDetail(result.data.id);
     });
   };
 
   const handleUpdate = (id: string, values: FormState) => {
     setError(null);
     startTransition(async () => {
-      try {
-        await updateCustomerAction(id, {
-          name: values.name,
-          email: values.email || null,
-          phone: values.phone || null,
-          dob: values.dob || null,
-          gender: values.gender || null,
-          allergies: values.allergies || null,
-          clinicalNotes: values.clinicalNotes || null,
-          consent: values.consent || undefined,
-        });
-        setFormOpen(false);
-        await loadPage({ q: search, cursor: null, append: false });
-        await loadDetail(id);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = await updateCustomerAction(id, {
+        name: values.name,
+        email: values.email || null,
+        phone: values.phone || null,
+        dob: values.dob || null,
+        gender: values.gender || null,
+        allergies: values.allergies || null,
+        clinicalNotes: values.clinicalNotes || null,
+        consent: values.consent || undefined,
+      });
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      setFormOpen(false);
+      await loadPage({ q: search, cursor: null, append: false });
+      await loadDetail(id);
     });
   };
 
@@ -233,8 +233,12 @@ export default function PatientList({
     startTransition(async () => {
       const res = await deleteCustomerAction(id);
       if (!res.ok) {
+        setError(res.message);
+        return;
+      }
+      if (!res.data.deleted) {
         setError(
-          res.reason === 'has_appointments'
+          res.data.reason === 'has_appointments'
             ? 'Cannot delete: this profile has appointment history.'
             : 'Profile not found.',
         );
@@ -249,14 +253,14 @@ export default function PatientList({
   const handleAddHistory = (customerId: string, label: string) => {
     setError(null);
     startTransition(async () => {
-      try {
-        await addTreatmentHistoryAction(customerId, label);
-        // The panel owns history now, so re-read it rather than waiting for a
-        // route revalidation that no longer carries it.
-        await loadDetail(customerId);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = await addTreatmentHistoryAction(customerId, label);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      // The panel owns history now, so re-read it rather than waiting for a
+      // route revalidation that no longer carries it.
+      await loadDetail(customerId);
     });
   };
 
@@ -652,32 +656,38 @@ function GdprPanel({ customerId, customerName }: { customerId: string; customerN
   const handleExport = () => {
     setError(null);
     startTransition(async () => {
-      try {
-        const data = await exportCustomerAction(customerId);
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `customer-${customerId}-export.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = await exportCustomerAction(customerId);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      // Serialise result.data, NOT the result. Writing the envelope would put
+      // {"ok":true,"data":…} into the subject's GDPR export file — a silent
+      // format regression that typechecks cleanly because JSON.stringify
+      // accepts anything.
+      const blob = new Blob([JSON.stringify(result.data, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `customer-${customerId}-export.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
     });
   };
 
   const handleAnonymize = () => {
     setError(null);
     startTransition(async () => {
-      try {
-        await anonymizeCustomerAction(customerId);
-        setConfirming(false);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = await anonymizeCustomerAction(customerId);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      setConfirming(false);
     });
   };
 

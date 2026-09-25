@@ -84,7 +84,7 @@ export async function createLocation(session: ActiveSession, body: unknown) {
           ...(input.publicSlug !== undefined ? { publicSlug: input.publicSlug } : {}),
         },
       });
-      await writeAudit(tx, session, 'create', 'staff', null, { location: row.id, name: row.name });
+      await writeAudit(tx, session, 'create', 'location', row.id, { name: row.name });
       return row;
     } catch (e) {
       mapPrismaError(e);
@@ -106,7 +106,7 @@ export async function updateLocation(session: ActiveSession, id: string, body: u
           ...(input.publicSlug !== undefined ? { publicSlug: input.publicSlug } : {}),
         },
       });
-      await writeAudit(tx, session, 'update', 'staff', null, { location: id });
+      await writeAudit(tx, session, 'update', 'location', id);
       return row;
     } catch (e) {
       mapPrismaError(e);
@@ -133,7 +133,7 @@ export async function deleteLocation(session: ActiveSession, id: string) {
       );
     }
     await tx.location.delete({ where: { id } });
-    await writeAudit(tx, session, 'delete', 'staff', null, { location: id });
+    await writeAudit(tx, session, 'delete', 'location', id);
   });
 }
 
@@ -401,7 +401,7 @@ export async function createService(session: ActiveSession, body: unknown) {
         isActive: input.isActive ?? true,
       },
     });
-    await writeAudit(tx, session, 'create', 'staff', null, { service: row.id, name: row.name });
+    await writeAudit(tx, session, 'create', 'service', row.id, { name: row.name });
     return row;
   });
 }
@@ -420,7 +420,7 @@ export async function updateService(session: ActiveSession, id: string, body: un
         isActive: input.isActive ?? true,
       },
     });
-    await writeAudit(tx, session, 'update', 'staff', null, { service: id });
+    await writeAudit(tx, session, 'update', 'service', id);
     return row;
   });
 }
@@ -430,7 +430,7 @@ export async function deleteService(session: ActiveSession, id: string) {
     // Services are ON DELETE SET NULL on appointments — safe to delete
     // (appointment.serviceName is snapshotted).
     await tx.service.delete({ where: { id } });
-    await writeAudit(tx, session, 'delete', 'staff', null, { service: id });
+    await writeAudit(tx, session, 'delete', 'service', id);
   });
 }
 
@@ -535,7 +535,11 @@ export async function updateMemberRole(
       where: { id: membershipId },
       data: { role, roleId: roleRow.id },
     });
-    await writeAudit(tx, session, 'update', 'staff', existing.userId, { member: true, role });
+    await writeAudit(tx, session, 'update', 'membership', membershipId, {
+      targetUserId: existing.userId,
+      role,
+      previousRole: existing.roleRef?.key ?? null,
+    });
 
     // Phase 6 guardrail 4 (spec §9 rule 10): sessions invalidate on role
     // change. Bump the TARGET user's sessionVersion — their live JWT
@@ -580,7 +584,10 @@ export async function removeMember(session: ActiveSession, membershipId: string)
     await assertNotLastOwner(tx, session.organizationId, membershipId);
 
     await tx.membership.delete({ where: { id: membershipId } });
-    await writeAudit(tx, session, 'delete', 'staff', existing.userId, { member: true });
+    await writeAudit(tx, session, 'delete', 'membership', membershipId, {
+      targetUserId: existing.userId,
+      previousRole: existing.roleRef?.key ?? null,
+    });
 
     // Phase 6 (spec §9 rule 10): bump session so the removed user's
     // live JWT is rejected on the next request.

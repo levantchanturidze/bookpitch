@@ -49,6 +49,17 @@ export default async function SchedulerPage({
   const ownFilter = ownUserId ? { staff: { userId: ownUserId } } : {};
   const locationInScope = !scoped || scoped.includes(active.id);
 
+  // U-02: the booking modal hard-coded "$". The organisation's own currency
+  // column is authoritative — GEL for this deployment — so it is read here and
+  // formatted with lib/i18n formatCurrency() rather than concatenated.
+  const orgCurrency = await withOrg(session.organizationId, async (tx) => {
+    const org = await tx.organization.findUniqueOrThrow({
+      where: { id: session.organizationId },
+      select: { currency: true },
+    });
+    return org.currency;
+  });
+
   const { staff, services, customers, appointments } = await withOrg(
     session.organizationId,
     async (tx) => {
@@ -135,6 +146,7 @@ export default async function SchedulerPage({
         services={services}
         customers={customers}
         appointments={appointments}
+        currency={orgCurrency}
         monthAnchor={anchorLocalDate}
       />
       {canReschedule && <ReschedulePanel appointments={appointments} staff={staff} timezone={tz} />}

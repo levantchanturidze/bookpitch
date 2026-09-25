@@ -28,14 +28,13 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
   ) => {
     setError(null);
     startTransition(async () => {
-      try {
-        if (id) await updateLocationAction(id, input);
-        else await createLocationAction(input);
-        setAdding(false);
-        setEditing(null);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = id ? await updateLocationAction(id, input) : await createLocationAction(input);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      setAdding(false);
+      setEditing(null);
     });
   };
 
@@ -43,7 +42,7 @@ export default function LocationsPanel({ locations }: { locations: LocationRow[]
     setError(null);
     startTransition(async () => {
       const result = await deleteLocationAction(id);
-      if (!result.ok) setError(result.error);
+      if (!result.ok) setError(result.message);
     });
   };
 

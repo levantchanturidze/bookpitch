@@ -1,5 +1,8 @@
 'use server';
 
+import { type ActionResult } from '@/lib/action-result';
+import { safeAction } from '@/lib/safe-action';
+
 import { revalidatePath } from 'next/cache';
 import { ctxToSession, InvalidInputError, SlotTakenError } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
@@ -273,13 +276,18 @@ export async function fetchAvailableSlotsAction(
 export async function draftAppointmentAction(
   locationId: string,
   prompt: string,
-): Promise<DraftAppointmentResult> {
-  const ctx = await requireAuthContext();
-  requirePermission(
-    ctx,
-    'client.read:contact',
-    { organizationId: ctx.activeOrganizationId! },
-    'assistant',
-  );
-  return draftAppointment(ctxToSession(ctx), locationId, prompt);
+): Promise<ActionResult<DraftAppointmentResult>> {
+  return safeAction('scheduler.draftAppointment', async () => {
+    const ctx = await requireAuthContext();
+    requirePermission(
+      ctx,
+      'client.read:contact',
+      { organizationId: ctx.activeOrganizationId! },
+      'assistant',
+    );
+    // The assistant quota refusal (AssistantQuotaExceededError) extends
+    // InvalidInputError, so it keeps its own message rather than collapsing
+    // into the generic one.
+    return draftAppointment(ctxToSession(ctx), locationId, prompt);
+  });
 }

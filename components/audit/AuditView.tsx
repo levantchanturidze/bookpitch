@@ -4,9 +4,14 @@ import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Download, ShieldCheck } from 'lucide-react';
 import type { AuditRow } from '@/lib/audit-query';
+import { AUDIT_ENTITIES } from '@/lib/audit';
 
 const ACTIONS = ['', 'list', 'read', 'create', 'update', 'delete', 'history_add'];
-const ENTITIES = ['', 'customer', 'appointment', 'payment', 'staff'];
+// Derived from the single source of truth rather than restated. U-03 was
+// partly invisible because this list and AuditEntity drifted apart: a value
+// the writer could emit had no filter option, so those rows could not be
+// found at all. Deriving it means a new entity can never be unfilterable.
+const ENTITIES = ['', ...AUDIT_ENTITIES];
 
 type Props = {
   rows: AuditRow[];
