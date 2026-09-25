@@ -26,6 +26,7 @@ import { localToUtc, toLocalDate } from '@/lib/tz';
 import AssistantModal from './AssistantModal';
 import ModalShell from '@/components/ui/ModalShell';
 import StatusMessage from '@/components/ui/StatusMessage';
+import { formatCurrency } from '@/lib/i18n';
 
 // -----------------------------------------------------------------------------
 // Types passed by the server component.
@@ -57,6 +58,8 @@ type Props = {
   services: ScheduleService[];
   customers: ScheduleCustomer[];
   appointments: AppointmentDto[];
+  /** ISO-4217 code from `organizations.currency` — never assumed. */
+  currency: string;
   /**
    * The month on screen, as a local `YYYY-MM-01` date string.
    *
@@ -83,7 +86,7 @@ function localTodayStr(tz: string): string {
 // Main view
 // -----------------------------------------------------------------------------
 export default function SchedulerView(props: Props) {
-  const { location, staff, services, customers, appointments, monthAnchor } = props;
+  const { location, staff, services, customers, appointments, currency, monthAnchor } = props;
   const isClinic = location.type === 'clinic';
   const accent = isClinic ? 'teal' : 'pink';
   const tz = location.timezone;
@@ -322,6 +325,7 @@ export default function SchedulerView(props: Props) {
             services={services}
             staff={staff}
             customers={customers}
+            currency={currency}
             isClinic={isClinic}
             accent={accent}
             isPending={isPending}
@@ -736,6 +740,7 @@ function BookingModal({
   services,
   staff,
   customers,
+  currency,
   isClinic,
   accent,
   isPending,
@@ -748,6 +753,7 @@ function BookingModal({
   services: ScheduleService[];
   staff: ScheduleStaff[];
   customers: ScheduleCustomer[];
+  currency: string;
   isClinic: boolean;
   accent: 'teal' | 'pink';
   isPending: boolean;
@@ -881,7 +887,7 @@ function BookingModal({
               <option value="">-- Choose --</option>
               {services.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name} (${s.price} · {s.durationMinutes} min)
+                  {s.name} ({formatCurrency(s.price, currency)} · {s.durationMinutes} min)
                 </option>
               ))}
             </select>
@@ -932,7 +938,7 @@ function BookingModal({
               <span className="font-mono text-slate-700">
                 {formatEndTime(values.time, activeService.durationMinutes)}
               </span>{' '}
-              · price snapshot ${activeService.price}
+              · price snapshot {formatCurrency(activeService.price, currency)}
             </p>
           )}
           <Field label="Notes">

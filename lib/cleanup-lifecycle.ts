@@ -34,8 +34,7 @@ export async function cleanupServiceById(session: ActiveSession, serviceId: stri
     if (service._count.appointments > 0) {
       if (service.isActive) {
         await tx.service.update({ where: { id }, data: { isActive: false } });
-        await writeAudit(tx, session, 'update', 'staff', null, {
-          service: id,
+        await writeAudit(tx, session, 'update', 'service', id, {
           lifecycle: 'deactivated',
           reason: 'appointment_history',
         });
@@ -44,8 +43,7 @@ export async function cleanupServiceById(session: ActiveSession, serviceId: stri
     }
 
     await tx.service.delete({ where: { id } });
-    await writeAudit(tx, session, 'delete', 'staff', null, {
-      service: id,
+    await writeAudit(tx, session, 'delete', 'service', id, {
       lifecycle: 'deleted_unreferenced',
     });
     return { disposition: 'deleted' as const };

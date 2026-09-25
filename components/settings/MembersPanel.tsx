@@ -34,35 +34,31 @@ export default function MembersPanel({
   const invite = (input: { email: string; role: UserRole }) => {
     setError(null);
     startTransition(async () => {
-      try {
-        const result = await inviteMemberAction(input);
-        setInviteUrl({ email: input.email, url: result.url });
-        setAdding(false);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = await inviteMemberAction(input);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      setInviteUrl({ email: input.email, url: result.data.url });
+      setAdding(false);
     });
   };
 
   const changeRole = (membershipId: string, role: UserRole) => {
     setError(null);
     startTransition(async () => {
-      try {
-        await updateMemberRoleAction(membershipId, role);
-      } catch (err) {
-        setError((err as Error).message);
-      }
+      // A rank/lattice refusal here is a privilege-escalation denial. U-01
+      // made it indistinguishable from a crash; it now arrives as a sentence.
+      const result = await updateMemberRoleAction(membershipId, role);
+      if (!result.ok) setError(result.message);
     });
   };
 
   const remove = (membershipId: string, email: string) => {
     setError(null);
     startTransition(async () => {
-      try {
-        await removeMemberAction(membershipId);
-      } catch (err) {
-        setError((err as Error).message);
-      }
+      const result = await removeMemberAction(membershipId);
+      if (!result.ok) setError(result.message);
     });
     void email;
   };

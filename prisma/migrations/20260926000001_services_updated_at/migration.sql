@@ -1,0 +1,41 @@
+-- U-04 — every UPDATE on `services` fails in every environment.
+--
+-- Found on 2026-09-26 while writing the U-03 audit-taxonomy regression test:
+-- the first test to ever call updateService() got SQLSTATE 42703,
+--
+--     record "new" has no field "updated_at"
+--
+-- `services` carries BEFORE UPDATE trigger `trg_services_updated`, which runs
+-- the shared `set_updated_at()` function, and that function assigns
+-- `NEW.updated_at`. The column was never added to `services`. Every sibling
+-- table wired to the same trigger — appointments, branches, customers,
+-- locations, organizations, staff — does have the column; `services` is the
+-- only one that does not, which is what made it a copy-paste omission rather
+-- than a design choice.
+--
+-- Consequence in production: editing a service returns a 500. Creating and
+-- deleting work, so the surface looks healthy until someone renames or
+-- reprices one. No automated test covered updateService, and the production
+-- UAT had only ever created a service.
+--
+-- Fix: give the table the column its trigger has always assumed, matching the
+-- sibling definition exactly (`timestamptz(6) NOT NULL DEFAULT now()`).
+--
+-- Production safety
+--   • ADD COLUMN with a volatile default rewrites the table. `services` holds
+--     6 rows in production, so the rewrite and its ACCESS EXCLUSIVE lock are
+--     momentary.
+--   • Backfilling existing rows with now() is honest: the true last-modified
+--     time is unknowable because no UPDATE has ever succeeded. Rows are
+--     therefore stamped at migration time, not back-dated to created_at, which
+--     would invent a modification that did not happen.
+--   • IF NOT EXISTS makes it idempotent and safe to re-run.
+--
+-- Rollback (forward-only preferred; this is the tested reverse):
+--   ALTER TABLE services DROP COLUMN IF EXISTS updated_at;
+--   -- and note that dropping it restores the 42703 failure, so the trigger
+--   -- must be dropped in the same transaction if the rollback is ever used:
+--   DROP TRIGGER IF EXISTS trg_services_updated ON services;
+
+ALTER TABLE services
+  ADD COLUMN IF NOT EXISTS updated_at timestamptz(6) NOT NULL DEFAULT now();

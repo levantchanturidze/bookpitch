@@ -63,13 +63,13 @@ export default function AssistantModal({
     setDraft(null);
     setClarify(null);
     startTransition(async () => {
-      try {
-        const result = await draftAppointmentAction(locationId, text);
-        if (result.status === 'clarify') setClarify(result.question);
-        else setDraft(result.draft);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = await draftAppointmentAction(locationId, text);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      if (result.data.status === 'clarify') setClarify(result.data.question);
+      else setDraft(result.data.draft);
     });
   };
 

@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { ReauthPurpose } from '@/lib/platform/reauth-purpose';
+import { resultFromResponse } from '@/lib/action-result';
 
 type Org = {
   id: string;
@@ -97,10 +98,15 @@ export default function OrgDetail({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reason }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        const result = await resultFromResponse(res);
+        if (!result.ok) {
+          setError(result.message);
+          return;
+        }
         router.refresh();
-      } catch (err) {
-        setError((err as Error).message);
+      } catch {
+        // HTTP failures are handled above; this is a network-level fault.
+        setError('Could not reach the server. Please try again.');
       }
     });
   };
@@ -109,10 +115,15 @@ export default function OrgDetail({
     startTransition(async () => {
       try {
         const res = await fetch(`/api/platform/orgs/${org.id}/reactivate`, { method: 'POST' });
-        if (!res.ok) throw new Error(await res.text());
+        const result = await resultFromResponse(res);
+        if (!result.ok) {
+          setError(result.message);
+          return;
+        }
         router.refresh();
-      } catch (err) {
-        setError((err as Error).message);
+      } catch {
+        // HTTP failures are handled above; this is a network-level fault.
+        setError('Could not reach the server. Please try again.');
       }
     });
   };
@@ -129,10 +140,15 @@ export default function OrgDetail({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reason }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        const result = await resultFromResponse(res);
+        if (!result.ok) {
+          setError(result.message);
+          return;
+        }
         router.refresh();
-      } catch (err) {
-        setError((err as Error).message);
+      } catch {
+        // HTTP failures are handled above; this is a network-level fault.
+        setError('Could not reach the server. Please try again.');
       }
     });
   };
@@ -147,10 +163,15 @@ export default function OrgDetail({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        const result = await resultFromResponse(res);
+        if (!result.ok) {
+          setError(result.message);
+          return;
+        }
         alert(`Reset link sent to ${email} (silent success if not a member).`);
-      } catch (err) {
-        setError((err as Error).message);
+      } catch {
+        // HTTP failures are handled above; this is a network-level fault.
+        setError('Could not reach the server. Please try again.');
       }
     });
   };
@@ -178,13 +199,18 @@ export default function OrgDetail({
             ticketId,
           }),
         });
-        if (!res.ok) throw new Error(await res.text());
+        const result = await resultFromResponse(res);
+        if (!result.ok) {
+          setError(result.message);
+          return;
+        }
         alert(
           'Impersonation started. You may now navigate into the org — the target will see a banner.',
         );
         router.refresh();
-      } catch (err) {
-        setError((err as Error).message);
+      } catch {
+        // HTTP failures are handled above; this is a network-level fault.
+        setError('Could not reach the server. Please try again.');
       }
     });
   };

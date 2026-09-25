@@ -48,14 +48,13 @@ export default function StaffPanel({
   ) => {
     setError(null);
     startTransition(async () => {
-      try {
-        if (id) await updateStaffAction(id, input);
-        else await createStaffAction(input);
-        setAdding(false);
-        setEditing(null);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = id ? await updateStaffAction(id, input) : await createStaffAction(input);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      setAdding(false);
+      setEditing(null);
     });
   };
 
@@ -63,7 +62,7 @@ export default function StaffPanel({
     setError(null);
     startTransition(async () => {
       const result = await deleteStaffAction(id);
-      if (!result.ok) setError(result.error);
+      if (!result.ok) setError(result.message);
     });
   };
 
@@ -326,12 +325,15 @@ function AvailabilityEditor({ staff, onClose }: { staff: StaffRow; onClose: () =
       windows.push({ weekday, startTime: r.start, endTime: r.end });
     }
     startTransition(async () => {
-      try {
-        await setAvailabilityAction(staff.id, windows);
-        onClose();
-      } catch (err) {
-        setError((err as Error).message);
+      const result = await setAvailabilityAction(staff.id, windows);
+      if (!result.ok) {
+        // U-01: this used to render the framework's masked error. The domain
+        // message ("window 18:00-09:00 ends at or before it starts") now
+        // survives the boundary because the action returns rather than throws.
+        setError(result.message);
+        return;
       }
+      onClose();
     });
   };
 

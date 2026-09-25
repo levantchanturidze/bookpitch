@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { ShieldAlert } from 'lucide-react';
+import { resultFromResponse } from '@/lib/action-result';
 
 /**
  * Break-glass activation UI. SUPER_ADMIN only (enforced server-side).
@@ -80,13 +81,25 @@ export default function BreakGlassForm({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        if (!res.ok) throw new Error(await res.text());
+        // Break-glass is the most sensitive refusal in the product. It must
+        // state WHY it refused (bad TOTP, missing reason, wrong ticket) without
+        // ever emitting an internal identifier or a framework error.
+        const result = await resultFromResponse(res);
+        if (!result.ok) {
+          setError(result.message);
+          return;
+        }
         setPassword('');
         setTotpCode('');
         setRecoveryCode('');
         router.refresh();
       } catch (err) {
-        setError((err as Error).message);
+        // Network-level failure only — the HTTP error path is handled above.
+        setError(
+          err instanceof Error && err.name === 'TypeError'
+            ? 'Could not reach the server. Check your connection and try again.'
+            : 'Something went wrong. Please try again.',
+        );
       }
     });
   };

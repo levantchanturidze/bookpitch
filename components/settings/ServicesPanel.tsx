@@ -34,14 +34,13 @@ export default function ServicesPanel({
   const save = (id: string | null, input: Omit<ServiceRow, 'id' | 'locationName'>) => {
     setError(null);
     startTransition(async () => {
-      try {
-        if (id) await updateServiceAction(id, input);
-        else await createServiceAction(input);
-        setAdding(false);
-        setEditing(null);
-      } catch (err) {
-        setError((err as Error).message);
+      const result = id ? await updateServiceAction(id, input) : await createServiceAction(input);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      setAdding(false);
+      setEditing(null);
     });
   };
 
@@ -49,7 +48,7 @@ export default function ServicesPanel({
     setError(null);
     startTransition(async () => {
       const result = await deleteServiceAction(id);
-      if (!result.ok) setError(result.error);
+      if (!result.ok) setError(result.message);
     });
   };
 

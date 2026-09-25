@@ -33,19 +33,21 @@ export async function saveTemplateAction(fd: FormData) {
       where: { organizationId: session.organizationId, channel },
       select: { id: true },
     });
+    let templateId: string;
     if (existing) {
       await tx.messageTemplate.update({
         where: { id: existing.id },
         data: { body, updatedAt: new Date() },
       });
+      templateId = existing.id;
     } else {
-      await tx.messageTemplate.create({
+      const created = await tx.messageTemplate.create({
         data: { organizationId: session.organizationId, channel, body },
+        select: { id: true },
       });
+      templateId = created.id;
     }
-    await writeAudit(tx, session, 'update', 'appointment', null, {
-      messageTemplate: { channel },
-    });
+    await writeAudit(tx, session, 'update', 'message_template', templateId, { channel });
   });
   revalidatePath('/reminders');
 }
@@ -102,7 +104,7 @@ export async function saveRetentionYearsAction(fd: FormData) {
       where: { id: session.organizationId },
       data: { customerRetentionYears: years },
     });
-    await writeAudit(tx, session, 'update', 'customer', null, {
+    await writeAudit(tx, session, 'update', 'organization', session.organizationId, {
       setting: 'customerRetentionYears',
       years,
     });
