@@ -18,7 +18,9 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     requirePermission(
       ctx,
       'booking.update',
-      { organizationId: ctx.activeOrganizationId!, ownerUserId: ownerUserId ?? undefined },
+      // U-05: pass null through. `?? undefined` re-entered list mode and undid
+      // the resolution this line just performed.
+      { organizationId: ctx.activeOrganizationId!, ownerUserId },
       'waitlist',
     );
     await removeFromWaitlist(ctxToSession(ctx), id);

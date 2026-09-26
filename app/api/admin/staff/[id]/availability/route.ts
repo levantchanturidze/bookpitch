@@ -29,7 +29,9 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     requirePermission(
       ctx,
       'staff.schedule.manage',
-      { organizationId: ctx.activeOrganizationId!, ownerUserId: ownerUserId ?? undefined },
+      // U-05: pass null through, so the ":own-only callers denied" behaviour the
+      // comment above promises is what actually happens.
+      { organizationId: ctx.activeOrganizationId!, ownerUserId },
       'admin',
     );
     const body = (await req.json().catch(() => ({}))) as { windows?: unknown };

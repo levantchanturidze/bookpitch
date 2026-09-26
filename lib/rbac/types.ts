@@ -37,7 +37,16 @@ export const perm = (s: string): PermissionKey => s as PermissionKey;
 export type Resource = {
   readonly organizationId?: string;
   readonly branchId?: string;
-  readonly ownerUserId?: string;
+  /**
+   * U-05: three states, not two.
+   *   • absent    — the caller named no concrete resource (LIST mode)
+   *   • a string  — the resource is owned by that user
+   *   • null      — the resource was RESOLVED and has no owner
+   *
+   * The third used to collapse into the first, which is what let a `:own`
+   * role mutate an appointment whose staff had no linked user account.
+   */
+  readonly ownerUserId?: string | null;
 };
 
 /**

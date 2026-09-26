@@ -159,11 +159,20 @@ export async function scopedLocationIds(ctx: AuthContext): Promise<string[] | nu
 // builds the same shape from the same two fields, and so "did we name the
 // resource" is one grep rather than a reading exercise.
 //
-// `ownerUserId` is OMITTED, never nulled, when the assigned staff member has no
-// linked user account (Staff.userId is nullable). Passing `null` through as a
-// string would compare `'' === ctx.userId` and deny everyone; omitting it lets
-// the decision fall through to the branch check, which is the honest answer
-// when the row has no owner to compare against.
+// U-05 (production C7 UAT, 2026-09-26). `ownerUserId` used to be OMITTED when
+// the assigned staff member had no linked user account, on the reasoning that
+// there was "no owner to compare against". Production proved that reasoning
+// wrong in the worst direction: NOTHING in this product ever writes
+// `Staff.userId`, so EVERY appointment resolved to an absent owner, every
+// absent owner hit can()'s list-mode fallback, and a PROVIDER holding only
+// `booking.update:own` could update and cancel any appointment in the
+// organisation by id — while being unable to list a single one.
+//
+// The three states are now distinct. A key that is PRESENT AND NULL means
+// "resolved, and it has no owner", which `can()` treats as deny for `:own`.
+// A key that is ABSENT still means list mode. `'ownerUserId' in opts` is the
+// discriminator, so a caller that resolved an owner of `null` says so, and a
+// caller that never looked says nothing.
 // -----------------------------------------------------------------------------
 export function appointmentResource(
   organizationId: string,
@@ -172,7 +181,7 @@ export function appointmentResource(
   return {
     organizationId,
     ...(opts.locationId ? { branchId: opts.locationId } : {}),
-    ...(opts.ownerUserId ? { ownerUserId: opts.ownerUserId } : {}),
+    ...('ownerUserId' in opts ? { ownerUserId: opts.ownerUserId ?? null } : {}),
   };
 }
 
