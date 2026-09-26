@@ -125,7 +125,12 @@ export function can(
   //     (e.g. PROVIDER's booking.read:own) can never list ANYTHING under
   //     enforcement mode.
   if (granted.has(perm(`${p}:own`))) {
-    if (!resource?.ownerUserId) return true;
+    // U-05: `undefined` is list mode and still grants. An explicit `null` means
+    // the caller RESOLVED the resource and it has no owner — which can never be
+    // "owned by me", so it denies. Collapsing those two into `!ownerUserId` is
+    // what allowed a `:own` role to mutate any appointment in the org by id
+    // (CLAUDE.md invariant 2: never fall through to allow).
+    if (resource?.ownerUserId === undefined) return true;
     return resource.ownerUserId === ctx.userId;
   }
 

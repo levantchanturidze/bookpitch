@@ -79,13 +79,31 @@ describe('appointmentResource — the shape the scheduler must authorise against
     expect(r.ownerUserId).toBe(ME);
   });
 
-  it('omits owner when the appointment has no linked user, rather than inventing one', () => {
-    // Staff.userId is nullable. Coercing null to a string would make the
-    // comparison `'' === ctx.userId` — false for everyone — which silently
-    // denies rather than falling back to the branch check.
+  it('marks the owner NULL when the appointment has no linked user (U-05)', () => {
+    // THIS EXPECTATION WAS INVERTED ON 2026-09-26, deliberately.
+    //
+    // It previously asserted that `ownerUserId` was OMITTED, reasoning that
+    // coercing null to a string would compare `'' === ctx.userId` and deny
+    // everyone, so omission "falls back to the branch check". The C7 production
+    // UAT proved that reasoning backwards: nothing in this product ever writes
+    // Staff.userId, so EVERY appointment omitted its owner, every omission hit
+    // can()'s list-mode fallback, and a PROVIDER with only booking.update:own
+    // updated and cancelled other staff's appointments against production —
+    // HTTP 200 — while its own list endpoint returned [].
+    //
+    // The fix is a third state rather than a coercion: present-and-null means
+    // "resolved, and unowned", which can() denies for `:own`; absent still
+    // means list mode. So this test now pins the opposite shape, and the
+    // `:own` deny case below is what gives it teeth.
     const r = resourceFor({ ownerUserId: null, locationId: BRANCH_A });
-    expect('ownerUserId' in r ? r.ownerUserId : undefined).toBeUndefined();
+    expect('ownerUserId' in r).toBe(true);
+    expect(r.ownerUserId).toBeNull();
     expect(r.branchId).toBe(BRANCH_A);
+  });
+
+  it('still omits owner when the caller named no owner at all (list mode)', () => {
+    const r = resourceFor({ locationId: BRANCH_A });
+    expect('ownerUserId' in r).toBe(false);
   });
 });
 

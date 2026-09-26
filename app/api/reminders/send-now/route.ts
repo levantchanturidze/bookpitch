@@ -17,7 +17,8 @@ export async function POST(req: NextRequest) {
     requirePermission(
       ctx,
       'booking.update',
-      { organizationId: ctx.activeOrganizationId!, ownerUserId: ownerUserId ?? undefined },
+      // U-05: pass null through rather than collapsing back to list mode.
+      { organizationId: ctx.activeOrganizationId!, ownerUserId },
       'reminders',
     );
     const reports = await sendNowForSession(ctxToSession(ctx), appointmentId);
