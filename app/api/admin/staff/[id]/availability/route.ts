@@ -1,8 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { InvalidInputError, ctxToSession, withApi } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePermission, resolveStaffOwner } from '@/lib/rbac';
 import { setAvailability, type AvailabilityWindow } from '@/lib/admin';
-import { withOrg } from '@/lib/db';
 
 // PUT /api/admin/staff/[id]/availability
 // Body: { windows: Array<{ weekday, startTime, endTime }> } — replaces all
@@ -16,16 +15,10 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     // schedule but not others'. Staff without a linked user (contractor
     // records) resolve to null → :own-only callers denied by can().
     //
-    // SEC-007: routed through withOrg so RLS is the belt to the WHERE
-    // clause's suspenders. Previously read via unsafePrismaAdmin with an
-    // org-scoped WHERE — one bad WHERE would have leaked cross-tenant.
-    const staff = await withOrg(ctx.activeOrganizationId!, (tx) =>
-      tx.staff.findFirst({
-        where: { id },
-        select: { userId: true },
-      }),
-    );
-    const ownerUserId = staff?.userId ?? null;
+    // SEC-007: the resolver reads through withOrg, so RLS is the belt to the
+    // WHERE clause's suspenders. U-06: setAvailabilityAction now uses the same
+    // resolver, so this route and the action cannot disagree again.
+    const ownerUserId = await resolveStaffOwner(id, ctx.activeOrganizationId!);
     requirePermission(
       ctx,
       'staff.schedule.manage',

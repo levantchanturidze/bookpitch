@@ -122,6 +122,30 @@ export async function resolveWaitlistOwner(
 }
 
 /**
+ * Same for a staff row — the user it is linked to, or null when the row does
+ * not resolve inside the caller's organisation or has no linked user. Callers
+ * pass the result straight through as `ownerUserId` (never `?? undefined`), so
+ * a `:own` role is judged against this staff member rather than list mode.
+ *
+ * U-06: the availability API route did this lookup inline and the
+ * setAvailabilityAction beside it did not do it at all, so a PROVIDER could
+ * rewrite any colleague's hours through the action. One resolver, used by
+ * both, is what keeps the two paths from drifting apart again.
+ */
+export async function resolveStaffOwner(
+  staffId: string,
+  activeOrganizationId: string,
+): Promise<string | null> {
+  const row = await withOrg(activeOrganizationId, (tx) =>
+    tx.staff.findFirst({
+      where: { id: staffId },
+      select: { userId: true },
+    }),
+  );
+  return row?.userId ?? null;
+}
+
+/**
  * SEC-007: previously used `unsafePrismaAdmin.branch.findMany({where: {id: {in: [...ctx.branchIds]}}})`
  * with NO organizationId filter — relied entirely on ctx.branchIds having
  * been vetted upstream. That was the worst-case shape: no belt AND no
