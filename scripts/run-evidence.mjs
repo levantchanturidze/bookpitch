@@ -193,3 +193,106 @@ export async function resolveRun(apiRun, fetchAttemptOne) {
   if (resolved.runAttempt !== 1) return { ...latest, unresolved: true, conclusion: null };
   return resolved;
 }
+
+// -----------------------------------------------------------------------------
+// Reading a workflow's runs WITHOUT GitHub's search backend.
+//
+// `GET /repos/{owner}/{repo}/actions/workflows/{workflow}/runs` answers from two
+// different places. Any of `actor`, `branch`, `check_suite_id`, `created`,
+// `event`, `head_sha` or `status` turns the request into a SEARCH, which GitHub
+// documents as capped at 1,000 results, and which on this repository
+// intermittently answers from a stale, truncated snapshot:
+//
+//   2026-09-29T20:28:02Z  ?branch=main&event=schedule   total_count 964,
+//                         newest run 2026-09-15T01:53Z
+//   same second           unfiltered                     total_count 1713,
+//                         newest run 2026-09-29T18:33Z
+//   15 seconds later      ?branch=main&event=schedule   total_count 1699, correct
+//
+// The production monitor believed it on 3 of 29 natural runs between
+// 2026-09-24 and 2026-09-29, and reopened incident #37 each time with "last
+// success 247.1h / 162.7h / 339.7h ago" while the crons ran every few hours.
+// The same run (34974070235) was offered as "the newest" twice, four days
+// apart, and the database heartbeat in the same monitor run said the cron had
+// worked 1.5 hours earlier. The soak controller read its history through the
+// same filter, where a truncated page empties the window and restarts a soak
+// on a gap that never happened.
+//
+// The unfiltered listing has no cap and is ordered newest first. Paging it
+// until a run older than `since` appears is complete by construction, and every
+// filter is then applied here, where it can be tested. Nothing in scripts/ or
+// .github/workflows/ may send a filtered run listing again —
+// tests/run-evidence.test.ts refuses the query shape.
+// -----------------------------------------------------------------------------
+
+/** Query parameters that send a run listing to the search backend. */
+export const SEARCH_BACKED_RUN_FILTERS = Object.freeze([
+  'actor',
+  'branch',
+  'check_suite_id',
+  'created',
+  'event',
+  'head_sha',
+  'status',
+]);
+
+const createdMs = (r) => Date.parse(r?.created_at ?? r?.updated_at ?? '');
+
+/**
+ * Page a workflow's UNFILTERED run listing, newest first.
+ *
+ * Runs are de-duplicated by id (a run created between two page requests shifts
+ * the listing and repeats one record across pages) and returned sorted by the
+ * immutable `created_at`, newest first, whatever order the pages arrived in.
+ *
+ * @param {(page: number, perPage: number) => Promise<{ workflow_runs?: any[] } | null>} fetchPage
+ *   fetches one page of `/actions/workflows/{workflow}/runs?per_page=&page=` — and
+ *   nothing else: no filter parameters (see SEARCH_BACKED_RUN_FILTERS)
+ * @param {{ since?: string | null, maxPages?: number, perPage?: number,
+ *           enough?: ((runs: any[]) => boolean) | null }} [opts]
+ *   since   stop once a page reaches a run created at or before this instant
+ *   enough  stop once this is true of the runs collected so far
+ * @returns {Promise<{ runs: any[], complete: boolean }>} raw API run records.
+ *   `complete` is true when the listing ended or `since` was reached, i.e. no
+ *   run newer than `since` can be missing; false when the page budget ran out
+ *   first, or `enough` stopped the walk.
+ */
+export async function listWorkflowRuns(fetchPage, opts = {}) {
+  const { since = null, maxPages = 6, perPage = 100, enough = null } = opts;
+  const sinceMs = since ? Date.parse(since) : null;
+  const byId = new Map();
+  let complete = false;
+  for (let page = 1; page <= maxPages; page++) {
+    const data = await fetchPage(page, perPage);
+    const batch = Array.isArray(data?.workflow_runs) ? data.workflow_runs : [];
+    for (const r of batch) if (r && r.id != null) byId.set(r.id, r);
+    if (batch.length < perPage) {
+      complete = true;
+      break;
+    }
+    if (sinceMs !== null && Math.min(...batch.map(createdMs)) <= sinceMs) {
+      complete = true;
+      break;
+    }
+    if (enough && enough([...byId.values()])) break;
+  }
+  const runs = [...byId.values()].sort((a, b) => createdMs(b) - createdMs(a));
+  return { runs, complete };
+}
+
+/**
+ * The filters the search backend used to apply, applied here instead.
+ * `conclusion` is what the API's `status=success` parameter selected on.
+ *
+ * @param {any[]} runs raw API run records
+ * @param {{ event?: string, branch?: string, conclusion?: string }} [where]
+ */
+export function runsWhere(runs, where = {}) {
+  const { event, branch, conclusion } = where;
+  return runs.filter(
+    (r) =>
+      (event === undefined || r.event === event) &&
+      (branch === undefined || r.head_branch === branch) &&
+      (conclusion === undefined || r.conclusion === conclusion),
+  );
+}

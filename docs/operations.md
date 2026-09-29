@@ -694,6 +694,41 @@ and the API returns the latest attempt. Natural evidence therefore requires
 (`scripts/run-evidence.mjs`). A genuinely failed first attempt stays visible —
 hiding failures would be the same erasure by another route.
 
+### Never ask GitHub's search backend for runs (2026-09-29)
+
+`GET /repos/{owner}/{repo}/actions/workflows/{workflow}/runs` answers from two
+places. Adding any of `actor`, `branch`, `check_suite_id`, `created`, `event`,
+`head_sha` or `status` turns it into a **search**. GitHub documents searches as
+capped at 1,000 results. On this repository the search also **intermittently
+answers from a stale, truncated snapshot**. Captured one second apart:
+
+| Query | total_count | newest run |
+|---|---|---|
+| `?branch=main&event=schedule` | 964 | 2026-09-15T01:53Z |
+| unfiltered | 1713 | 2026-09-29T18:33Z |
+
+Fifteen seconds later the filtered query answered correctly again.
+
+**Impact.** The production monitor read the filtered listing.
+- On 3 of 29 natural runs between 2026-09-24 and 2026-09-29, `cron-staleness`
+  reported the crons dead for 247h, 163h and 340h, and reopened incident #37
+  each time. The same run id (34974070235) was offered as "the newest" twice,
+  four days apart.
+- In the same monitor run, the database heartbeat said the cron had worked 1.5
+  hours earlier.
+- The soak controller read its evidence the same way. A truncated page empties
+  the window, and `observation-gap` restarts the soak on a gap that never
+  happened.
+
+**The rule.**
+- Every consumer pages the **unfiltered** listing through `listWorkflowRuns()`
+  and filters it with `runsWhere()` (both in `scripts/run-evidence.mjs`).
+- "Latest" is the maximum `created_at`, never "first in the array".
+- `tests/run-listing-search-backend.test.ts` fails if any file in `scripts/` or
+  `.github/workflows/` sends a filtered run listing again. It also keeps the
+  captured snapshot as a regression fixture: the filtered answer fails
+  `cron-staleness`, and the unfiltered answer of the same second passes.
+
 ---
 
 ## 8. Monitoring and alert handling
