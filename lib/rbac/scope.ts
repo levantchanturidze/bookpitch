@@ -216,8 +216,9 @@ export async function resolveStaffResource(
 //
 // The list filter and the concrete resolver below implement that one rule
 // twice — once as a Prisma WHERE, once from a loaded row.
-// tests/scoped-rbac-branch-scope.test.ts pins that they agree for every
-// attribution case, because two copies of a rule is how paths drift.
+// tests/branch-scoping.test.ts ("D2 — the list and the concrete resolver agree
+// on every waitlist row") pins that they agree for every attribution case,
+// because two copies of a rule is how paths drift.
 // -----------------------------------------------------------------------------
 
 /** WHERE fragment: waitlist rows whose derived branch is one of `locationIds`. */
