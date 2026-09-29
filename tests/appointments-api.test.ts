@@ -37,6 +37,12 @@ const HORIZON_MONTH = 3; // April 2027 (JS month index)
 // Locations default to Asia/Tbilisi (prisma/schema.prisma), and the seed does
 // not override it, so this is the calendar the fixtures live in.
 const FIXTURE_TZ = 'Asia/Tbilisi';
+// What every booking this file expects to succeed asks of its staff member:
+// Monday–Friday (PG weekday 1–5), 09:00 to 16:00 local.
+const BOOKED_WEEKDAYS = [1, 2, 3, 4, 5];
+const BOOKED_FROM = '09:00';
+const BOOKED_UNTIL = '16:00';
+const SERVICE_MINUTES = 30;
 
 /**
  * A slot expressed in the LOCATION'S LOCAL calendar, returned as a UTC instant.
@@ -83,10 +89,58 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
       const customer = await tx.customer.findFirst({
         where: { organizationId: primary.id },
       });
-      const staff = await tx.staff.findFirst({
+      // The staff member is chosen by what this file NEEDS, not by row order.
+      //
+      // It used to be `findFirst({ where: { locationId } })` with no orderBy,
+      // which returns whichever clinic row the scan meets first. That changes
+      // when an earlier file UPDATEs a seeded staff row: production-invariants
+      // check 8 links and unlinks the unlinked staff row with the smallest
+      // (random) id, and when that was Dr. Helen Vance her new row version
+      // landed behind the others. The push build on 5a57ea1 then got Dr. Marcus
+      // Sterling (Mon/Wed/Fri), and the Tuesday and Thursday bookings below
+      // were — correctly — refused as outside availability. Same tree, same
+      // file order, different result.
+      //
+      // Every booking this file expects to succeed is Monday–Friday between
+      // 09:00 and 16:00 clinic time, so select a clinic staff member whose
+      // windows cover exactly that, and refuse to run without one.
+      const clinicStaff = await tx.staff.findMany({
         where: { locationId: clinic!.id },
+        orderBy: { name: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          availability: { select: { weekday: true, startTime: true, endTime: true } },
+        },
       });
-      const service = await tx.service.findFirst({ where: { locationId: clinic!.id } });
+      const hhmm = (t: Date) => t.toISOString().slice(11, 16);
+      const staff = clinicStaff.find((s) =>
+        BOOKED_WEEKDAYS.every((day) =>
+          s.availability.some(
+            (w) =>
+              w.weekday === day &&
+              hhmm(w.startTime) <= BOOKED_FROM &&
+              hhmm(w.endTime) >= BOOKED_UNTIL,
+          ),
+        ),
+      );
+      if (!staff) {
+        throw new Error(
+          `fixture: no clinic staff member works Mon–Fri ${BOOKED_FROM}–${BOOKED_UNTIL} ` +
+            `(have: ${clinicStaff.map((s) => s.name).join(', ')}). The bookings below need one.`,
+        );
+      }
+      // Same reason for the service. This file assumes a 30-minute service
+      // ("Book a 30-min slot at 13:00", and 13:30 must stay free), which the
+      // unordered pick only happened to satisfy: a 45-minute Cardiology
+      // Assessment blocks 13:30 and fails the slot-picker complement.
+      const service = await tx.service.findFirst({
+        where: { locationId: clinic!.id, durationMinutes: SERVICE_MINUTES },
+        orderBy: { name: 'asc' },
+      });
+      if (!service) {
+        throw new Error(`fixture: no ${SERVICE_MINUTES}-minute clinic service to book`);
+      }
       return { primary, owner, iso, clinic, customer, staff, service };
     });
     primaryOrgId = seed.primary.id;
