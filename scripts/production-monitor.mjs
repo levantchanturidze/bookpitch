@@ -39,6 +39,8 @@ import {
   isJudgeable,
   naturalEvidenceProblem,
   resolveRun,
+  listWorkflowRuns,
+  runsWhere,
 } from './run-evidence.mjs';
 
 export const DEFAULTS = {
@@ -257,7 +259,13 @@ export function evaluateCronHealth(runs, now = new Date(), opts = DEFAULTS) {
   // completion dropped the record before its authoritative first attempt could
   // be considered — pressing the button was enough to hide a failure, without
   // even waiting for the re-run to finish.
-  const completed = runs.filter(isJudgeable);
+  //
+  // Sorted newest first by the time a rerun cannot move, whatever order the
+  // caller supplied. `scheduled[0]` and `find()` below mean "the most recent",
+  // and taking that on trust from a listing's order is how a stale page became
+  // "the latest run" (scripts/run-evidence.mjs, listWorkflowRuns).
+  const at = (r) => Date.parse(r.scheduledAt ?? r.completedAt ?? '') || 0;
+  const completed = runs.filter(isJudgeable).sort((a, b) => at(b) - at(a));
 
   // Fail closed on an unknown trigger. A run whose event is missing — an older
   // cached payload, or a GitHub response shape change — must not be counted as
@@ -1380,6 +1388,18 @@ async function gh(path, token, init = {}) {
 }
 
 /**
+ * One page of a workflow's UNFILTERED run listing. Deliberately takes no filter
+ * parameters — see SEARCH_BACKED_RUN_FILTERS in scripts/run-evidence.mjs.
+ */
+function runPages(repo, token, workflowFile) {
+  return (page, perPage) =>
+    gh(
+      `/repos/${repo}/actions/workflows/${workflowFile}/runs?per_page=${perPage}&page=${page}`,
+      token,
+    );
+}
+
+/**
  * The most recent successful FIRST-ATTEMPT run of a workflow.
  *
  * Two corrections from the naive version, which took the newest `status=success`
@@ -1394,18 +1414,68 @@ async function gh(path, token, init = {}) {
  * produces a real encrypted artifact, and freshness is a question about
  * artifacts. Whether the SCHEDULER is alive is a different question, asked by
  * the soak's own `scheduled-backup` gate, which requires natural evidence.
+ *
+ * Read from the UNFILTERED listing. This asked for `?status=success&branch=main`,
+ * which is a search, and the search intermittently answers from a stale
+ * snapshot (scripts/run-evidence.mjs, listWorkflowRuns) — the backup would have
+ * looked days old on exactly the reads where the cron did.
+ *
+ * @param {(page: number, perPage: number) => Promise<any>} fetchPage
  */
-async function latestSuccessfulRun(repo, token, workflowFile) {
-  const data = await gh(
-    `/repos/${repo}/actions/workflows/${workflowFile}/runs?status=success&branch=main&per_page=20`,
-    token,
-  );
-  for (const run of data.workflow_runs ?? []) {
-    if ((run.run_attempt ?? 0) !== 1) continue;
-    if (!run.created_at) continue;
-    return { completedAt: run.created_at, runId: run.id };
-  }
-  return null;
+export async function latestSuccessfulRun(fetchPage) {
+  const qualifies = (r) =>
+    r.conclusion === 'success' && r.head_branch === 'main' && r.run_attempt === 1 && r.created_at;
+  const { runs } = await listWorkflowRuns(fetchPage, {
+    maxPages: 3,
+    enough: (collected) => collected.some(qualifies),
+  });
+  // `runs` is newest first by created_at, so the first match is the latest.
+  const run = runs.find(qualifies);
+  return run ? { completedAt: run.created_at, runId: run.id } : null;
+}
+
+/**
+ * The cron workflow's recent runs, as evaluateCronHealth() consumes them:
+ * scheduled runs deep enough for the reliability window, plus the five most
+ * recent manual dispatches, each resolved to its authoritative first attempt.
+ *
+ * One UNFILTERED listing, split here. It used to be two search-backed queries
+ * (`?branch=main&event=schedule`, `?branch=main&event=workflow_dispatch`), and
+ * the scheduled one intermittently returned a snapshot two weeks stale — which
+ * is how cron-staleness came to report "last success 339.7h ago" in the same
+ * run whose database heartbeat said the cron had worked 1.5 hours earlier.
+ *
+ * @param {(page: number, perPage: number) => Promise<any>} fetchPage
+ * @param {(runId: number) => Promise<any>} fetchAttemptOne
+ * @param {{ cronRecentRuns: number }} [opts]
+ */
+export async function collectCronRuns(fetchPage, fetchAttemptOne, opts = DEFAULTS) {
+  const wanted = opts.cronRecentRuns * 2;
+  const { runs } = await listWorkflowRuns(fetchPage, {
+    maxPages: 5,
+    enough: (collected) =>
+      runsWhere(collected, { event: 'schedule', branch: 'main' }).length >= wanted,
+  });
+  const scheduled = runsWhere(runs, { event: 'schedule', branch: 'main' }).slice(0, wanted);
+  const manual = runsWhere(runs, { event: 'workflow_dispatch', branch: 'main' }).slice(0, 5);
+  // normaliseRun() keeps `run_attempt` and separates the immutable
+  // `created_at` from the rerun-mutable `updated_at`. Filtering on the
+  // event alone was not enough: a run KEEPS its `schedule` event when a
+  // human presses "Re-run failed jobs".
+  // A re-run record is replaced by its authoritative FIRST attempt. Simply
+  // excluding `run_attempt > 1` stopped a re-run counting as a success and
+  // also erased the original failure from the window.
+  const authoritative = async (list, event) =>
+    Promise.all(
+      list.map(async (r) => ({
+        ...((r.run_attempt ?? 1) > 1 ? await resolveRun(r, fetchAttemptOne) : normaliseRun(r)),
+        event: r.event ?? event,
+      })),
+    );
+  return [
+    ...(await authoritative(scheduled, 'schedule')),
+    ...(await authoritative(manual, 'workflow_dispatch')),
+  ];
 }
 
 function check(id, title, ok, detail) {
@@ -1506,38 +1576,12 @@ async function main() {
     // histories and must be correct on its own, without depending on the
     // caller having asked the right question.
     try {
-      const [scheduledData, manualData] = await Promise.all([
-        gh(
-          `/repos/${repo}/actions/workflows/cron.yml/runs` +
-            `?branch=main&event=schedule&per_page=${DEFAULTS.cronRecentRuns * 2}`,
-          token,
-        ),
-        gh(
-          `/repos/${repo}/actions/workflows/cron.yml/runs` +
-            `?branch=main&event=workflow_dispatch&per_page=5`,
-          token,
-        ),
-      ]);
-      // normaliseRun() keeps `run_attempt` and separates the immutable
-      // `created_at` from the rerun-mutable `updated_at`. Filtering on the
-      // event alone was not enough: a run KEEPS its `schedule` event when a
-      // human presses "Re-run failed jobs".
-      // A re-run record is replaced by its authoritative FIRST attempt. Simply
-      // excluding `run_attempt > 1` stopped a re-run counting as a success and
-      // also erased the original failure from the window.
-      const attemptOne = async (id) =>
-        gh(`/repos/${repo}/actions/runs/${id}/attempts/1`, token).catch(() => null);
-      const authoritative = async (list, fallbackEvent) =>
-        Promise.all(
-          (list ?? []).map(async (r) => ({
-            ...((r.run_attempt ?? 1) > 1 ? await resolveRun(r, attemptOne) : normaliseRun(r)),
-            event: r.event ?? fallbackEvent,
-          })),
-        );
-      const runs = [
-        ...(await authoritative(scheduledData.workflow_runs, 'schedule')),
-        ...(await authoritative(manualData.workflow_runs, 'workflow_dispatch')),
-      ];
+      // One unfiltered listing, split by event in collectCronRuns(), so the
+      // reliability window is still ten SCHEDULED runs however many manual
+      // dispatches exist — without asking GitHub's search backend for them.
+      const runs = await collectCronRuns(runPages(repo, token, 'cron.yml'), async (id) =>
+        gh(`/repos/${repo}/actions/runs/${id}/attempts/1`, token).catch(() => null),
+      );
       results.push(...evaluateCronHealth(runs, now));
     } catch (err) {
       // `evaluatorFailed` marks this as "the cron evaluator could not run",
@@ -1562,7 +1606,7 @@ async function main() {
           id: 'backup-freshness',
           title: 'Production backup has not run within its window',
           label: 'Production backup',
-          latestSuccess: await latestSuccessfulRun(repo, token, 'production-backup.yml'),
+          latestSuccess: await latestSuccessfulRun(runPages(repo, token, 'production-backup.yml')),
           maxAgeMs: DEFAULTS.backupMaxAgeHours * 3_600_000,
           now,
         }),
@@ -1585,7 +1629,7 @@ async function main() {
           id: 'restore-drill-stale',
           title: 'Restore drill is stale — backups are not proven recoverable',
           label: 'Restore drill',
-          latestSuccess: await latestSuccessfulRun(repo, token, 'restore-drill.yml'),
+          latestSuccess: await latestSuccessfulRun(runPages(repo, token, 'restore-drill.yml')),
           maxAgeMs: DEFAULTS.restoreDrillMaxAgeDays * 86_400_000,
           now,
         }),

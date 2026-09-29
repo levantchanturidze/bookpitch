@@ -87,9 +87,13 @@ jobs:
             RUN_ID="${REQUESTED}"
             echo "using explicitly requested backup run ${RUN_ID}"
           else
+            # UNFILTERED listing, selected here. `?status=success&branch=main`
+            # is a search, and the search intermittently answers from a stale
+            # snapshot (scripts/run-evidence.mjs, listWorkflowRuns): the drill
+            # would have restored a backup weeks older than the latest.
             RUN_ID=$(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/production-backup.yml/runs?status=success&branch=main&per_page=1" \
-              --jq '.workflow_runs[0].id')
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/production-backup.yml/runs?per_page=100" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success" and .head_branch == "main")] | sort_by(.created_at) | last | .id')
             if [ -z "${RUN_ID}" ] || [ "${RUN_ID}" = "null" ]; then
               echo "::error::No successful production-backup run found. There is nothing to restore — this IS the incident."
               exit 1

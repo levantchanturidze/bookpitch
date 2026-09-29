@@ -44,6 +44,8 @@ import {
   isUnknownObservation,
   isJudgeable,
   resolveRun,
+  listWorkflowRuns,
+  runsWhere,
 } from './run-evidence.mjs';
 import { heartbeatSuccessAt } from './heartbeat-contract.mjs';
 
@@ -1630,69 +1632,70 @@ async function ghAll(path, token, maxPages = 10) {
   return { items: out, complete: false };
 }
 
-async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
+/**
+ * A workflow's runs of one event on `main`, back to `since`, each resolved to
+ * its authoritative first attempt.
+ *
+ * Read from the UNFILTERED listing and filtered here. This used to ask for
+ * `?branch=main&event=…`, which is a search, and the search intermittently
+ * answers from a stale, truncated snapshot (scripts/run-evidence.mjs,
+ * listWorkflowRuns). A tick that believed one would find the window empty and
+ * restart the soak on a gap that never happened.
+ *
+ * @param {(page: number, perPage: number) => Promise<any>} fetchPage
+ * @param {(runId: number) => Promise<any>} fetchAttemptOne
+ * @param {string} event
+ * @param {string | null} since
+ * @param {number} [maxPages]
+ */
+export async function collectRuns(fetchPage, fetchAttemptOne, event, since, maxPages = 6) {
+  // Pagination stops on the IMMUTABLE `created_at`. `updated_at` moves when a
+  // run is re-run, so a re-run could push the boundary forward and stop the
+  // fetch before it reached the window start.
+  const listing = await listWorkflowRuns(fetchPage, { since, maxPages });
   const runs = [];
-  let complete = false;
-  for (let page = 1; page <= maxPages; page++) {
-    const data = await gh(
-      `/repos/${repo}/actions/workflows/${workflow}/runs` +
-        `?branch=main&event=${event}&per_page=100&page=${page}`,
-      token,
-    );
-    const batch = data.workflow_runs ?? [];
-    for (const r of batch) {
-      // A re-run record is replaced by its authoritative FIRST attempt, fetched
-      // from GitHub. Dropping it instead — which the first fix did — erased the
-      // original failure from the window entirely, and the surrounding
-      // successes carried the gate.
-      //
-      // RESOLVE BEFORE JUDGING COMPLETENESS. The `status !== 'completed'` skip
-      // used to sit above this, and a re-run carries the LATEST attempt's
-      // status: starting a re-run and not waiting for it was enough to drop the
-      // record, first attempt and all.
-      const authoritative =
-        (r.run_attempt ?? 1) > 1
-          ? await resolveRun(r, async (id) =>
-              gh(`/repos/${repo}/actions/runs/${id}/attempts/1`, token).catch(() => null),
-            )
-          : null;
-      if (!isJudgeable(authoritative ?? r)) continue;
-      // normaliseRun() keeps `run_attempt` and separates the immutable
-      // `created_at` from the rerun-mutable `updated_at`. A run KEEPS its
-      // `schedule` event when a human presses "Re-run failed jobs", so the
-      // event alone never distinguished delivery from a button press.
-      const n = authoritative ?? normaliseRun(r);
-      runs.push({
-        ...n,
-        event: n.event ?? event,
-        // Ordering and window membership use the time a rerun cannot move.
-        // Using `updated_at` let a rerun drag a failure forward past a
-        // recovery boundary the soak orders against.
-        completedAt: n.scheduledAt,
-        rerunCompletedAt: n.completedAt,
-      });
-    }
-    if (batch.length === 0) {
-      complete = true;
-      break;
-    }
-    // Pagination boundary on the IMMUTABLE timestamp. `updated_at` moves when
-    // a run is re-run, so a re-run could push the boundary forward and stop the
-    // fetch before it reached the window start.
-    const oldest = batch.reduce(
-      (min, r) => Math.min(min, new Date(r.created_at ?? r.updated_at).getTime()),
-      Infinity,
-    );
-    if (since && oldest <= new Date(since).getTime()) {
-      complete = true;
-      break;
-    }
-    if (batch.length < 100) {
-      complete = true;
-      break;
-    }
+  for (const r of runsWhere(listing.runs, { event, branch: 'main' })) {
+    // A re-run record is replaced by its authoritative FIRST attempt, fetched
+    // from GitHub. Dropping it instead — which the first fix did — erased the
+    // original failure from the window entirely, and the surrounding
+    // successes carried the gate.
+    //
+    // RESOLVE BEFORE JUDGING COMPLETENESS. The `status !== 'completed'` skip
+    // used to sit above this, and a re-run carries the LATEST attempt's
+    // status: starting a re-run and not waiting for it was enough to drop the
+    // record, first attempt and all.
+    const authoritative = (r.run_attempt ?? 1) > 1 ? await resolveRun(r, fetchAttemptOne) : null;
+    if (!isJudgeable(authoritative ?? r)) continue;
+    // normaliseRun() keeps `run_attempt` and separates the immutable
+    // `created_at` from the rerun-mutable `updated_at`. A run KEEPS its
+    // `schedule` event when a human presses "Re-run failed jobs", so the
+    // event alone never distinguished delivery from a button press.
+    const n = authoritative ?? normaliseRun(r);
+    runs.push({
+      ...n,
+      event: n.event ?? event,
+      // Ordering and window membership use the time a rerun cannot move.
+      // Using `updated_at` let a rerun drag a failure forward past a
+      // recovery boundary the soak orders against.
+      completedAt: n.scheduledAt,
+      rerunCompletedAt: n.completedAt,
+    });
   }
-  return { runs, complete };
+  return { runs, complete: listing.complete };
+}
+
+async function runsFor(repo, token, workflow, event, since, maxPages = 6) {
+  return collectRuns(
+    (page, perPage) =>
+      gh(
+        `/repos/${repo}/actions/workflows/${workflow}/runs?per_page=${perPage}&page=${page}`,
+        token,
+      ),
+    async (id) => gh(`/repos/${repo}/actions/runs/${id}/attempts/1`, token).catch(() => null),
+    event,
+    since,
+    maxPages,
+  );
 }
 
 /**
