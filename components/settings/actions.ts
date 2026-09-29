@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import type { UserRole } from '@prisma/client';
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePermission, resolveStaffOwner } from '@/lib/rbac';
 import { type ActionResult } from '@/lib/action-result';
 import { safeAction } from '@/lib/safe-action';
 import {
@@ -113,7 +113,24 @@ export async function deleteStaffAction(id: string): Promise<ActionResult<void>>
 
 export async function setAvailabilityAction(id: string, windows: AvailabilityWindow[]) {
   return safeAction('settings.setAvailability', async () => {
-    const session = await ctxFor('staff.schedule.manage', 'admin');
+    // U-06: AUTHORISE THE STAFF MEMBER, NOT THE ORGANISATION.
+    //
+    // This used ctxFor('staff.schedule.manage'), i.e. `{ organizationId }` only.
+    // Naming no resource is can()'s list mode, which grants `:own` — so a
+    // PROVIDER holding staff.schedule.manage:own could rewrite ANY colleague's
+    // hours by id, while the API route beside it resolved the owner and
+    // refused. Same resolver as that route; `null` passes straight through, so
+    // an unlinked staff row is refused to `:own` rather than re-entering list
+    // mode (U-05).
+    const ctx = await requireAuthContext();
+    const ownerUserId = await resolveStaffOwner(id, ctx.activeOrganizationId!);
+    requirePermission(
+      ctx,
+      'staff.schedule.manage',
+      { organizationId: ctx.activeOrganizationId!, ownerUserId },
+      'admin',
+    );
+    const session = ctxToSession(ctx);
     // STAGE C stores the editor's digits unchanged.
     //
     // The local -> UTC conversion is gone. It was the original defect: it

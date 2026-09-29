@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import type { MessageChannel } from '@prisma/client';
 import { InvalidInputError, ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
+import { requireAuthContext, requirePermission, resolveBookingOwner } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { runReminderTick, sendNowForSession } from '@/lib/messaging/reminders';
@@ -79,10 +79,25 @@ export async function saveLeadHoursAction(fd: FormData) {
 }
 
 export async function sendNowAction(fd: FormData) {
-  const session = await ctxFor('booking.update', 'reminders');
+  const ctx = await requireAuthContext();
   const appointmentId = String(fd.get('appointmentId') ?? '');
   if (!appointmentId) throw new InvalidInputError('appointmentId is required');
-  await sendNowForSession(session, appointmentId);
+  // U-06: AUTHORISE THE APPOINTMENT, NOT THE ORGANISATION.
+  //
+  // This used ctxFor('booking.update'), i.e. `{ organizationId }` only, then
+  // sent for whatever id arrived. Naming no resource is can()'s list mode,
+  // which grants `:own` — so a PROVIDER could fire customer reminders for ANY
+  // appointment in the organisation. POST /api/reminders/send-now was fixed for
+  // exactly this in U-05; this action beside it was not. Same resolver, and
+  // `null` passes straight through rather than collapsing back to list mode.
+  const ownerUserId = await resolveBookingOwner(appointmentId, ctx.activeOrganizationId!);
+  requirePermission(
+    ctx,
+    'booking.update',
+    { organizationId: ctx.activeOrganizationId!, ownerUserId },
+    'reminders',
+  );
+  await sendNowForSession(ctxToSession(ctx), appointmentId);
   revalidatePath('/reminders');
 }
 
