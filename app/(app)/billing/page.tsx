@@ -1,5 +1,10 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
+import {
+  requireAuthContext,
+  requirePagePermission,
+  scopedByOwn,
+  scopedLocationIds,
+} from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { loadLocationsForOrg } from '@/lib/active-location';
 import BillingList, { type BillingRow } from '@/components/billing/BillingList';
@@ -26,7 +31,16 @@ export default async function BillingPage() {
     ),
   ]);
 
+  // The list below is booking data, so its visibility follows booking.read —
+  // payment.charge is scope-less and decides only whether the page opens. This
+  // used to list any active location to any member who can take a payment
+  // (scoped-RBAC audit §3.5). `[]` (no branches) puts no location in scope.
+  const scoped = await scopedLocationIds(ctx, 'booking.read');
+  const ownUserId = scopedByOwn(ctx, 'booking.read');
+  const locationInScope = scoped === null || scoped.includes(active.id);
+
   const rows: BillingRow[] = await withOrg(session.organizationId, async (tx) => {
+    if (!locationInScope) return [];
     // Show current + last-30d appointments at the active location, plus their
     // most recent payment (for method display on paid rows).
     const since = new Date();
@@ -34,6 +48,7 @@ export default async function BillingPage() {
     const appts = await tx.appointment.findMany({
       where: {
         locationId: active.id,
+        ...(ownUserId ? { staff: { userId: ownUserId } } : {}),
         status: { not: 'cancelled' },
         startsAt: { gte: since },
       },

@@ -1,5 +1,11 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePagePermission, can } from '@/lib/rbac';
+import {
+  can,
+  requireAuthContext,
+  requirePagePermission,
+  scopedByOwn,
+  scopedLocationIds,
+} from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { loadLocationsForOrg } from '@/lib/active-location';
 import RemindersView from '@/components/reminders/RemindersView';
@@ -23,6 +29,27 @@ export default async function RemindersPage() {
     organizationId: ctx.activeOrganizationId!,
   });
 
+  // The guard above passes in LIST mode, so what this page SHOWS is scoped
+  // here, by the caller's booking.read grant. It used to show every upcoming
+  // appointment at any active location — with the customer's phone and email —
+  // and an organisation-wide message log with recipient addresses, to FRONT_DESK
+  // and PROVIDER alike (scoped-RBAC audit §3.5).
+  const scoped = await scopedLocationIds(ctx, 'booking.read');
+  const ownUserId = scopedByOwn(ctx, 'booking.read');
+  const locationInScope = scoped === null || scoped.includes(active.id);
+  const ownFilter = ownUserId ? { staff: { userId: ownUserId } } : {};
+  const logScope =
+    scoped !== null || ownUserId
+      ? {
+          appointment: {
+            is: {
+              ...(scoped !== null ? { locationId: { in: scoped } } : {}),
+              ...ownFilter,
+            },
+          },
+        }
+      : {};
+
   const data = await withOrg(session.organizationId, async (tx) => {
     const org = await tx.organization.findUnique({
       where: { id: session.organizationId },
@@ -39,20 +66,24 @@ export default async function RemindersPage() {
 
     const now = new Date();
     const windowTo = new Date(now.getTime() + leadHours * 3600_000);
-    const upcomingRows = await tx.appointment.findMany({
-      where: {
-        locationId: active.id,
-        status: { notIn: ['cancelled', 'completed'] },
-        startsAt: { gte: now, lte: windowTo },
-      },
-      include: {
-        customer: { select: { name: true, email: true, phone: true } },
-        staff: { select: { name: true } },
-      },
-      orderBy: { startsAt: 'asc' },
-    });
+    const upcomingRows = locationInScope
+      ? await tx.appointment.findMany({
+          where: {
+            locationId: active.id,
+            ...ownFilter,
+            status: { notIn: ['cancelled', 'completed'] },
+            startsAt: { gte: now, lte: windowTo },
+          },
+          include: {
+            customer: { select: { name: true, email: true, phone: true } },
+            staff: { select: { name: true } },
+          },
+          orderBy: { startsAt: 'asc' },
+        })
+      : [];
 
     const log = await tx.messageLog.findMany({
+      where: logScope,
       orderBy: [{ createdAt: 'desc' }],
       take: 30,
       include: {

@@ -333,6 +333,12 @@ model Staff {
   waitlists    Waitlist[]          @relation("WaitlistStaff")
 
   @@index([locationId], map: "idx_staff_location")
+  // SQL-only (Prisma cannot express partial uniques or triggers) —
+  // 20260929000001_scoped_rbac_links:
+  //   staff_location_user_unique  UNIQUE (location_id, user_id) WHERE user_id IS NOT NULL
+  //                               One LINKED row per (location, user) — not per organisation:
+  //                               a practitioner at two locations has two rows, both linked.
+  //   staff_user_is_member        a linked user must hold a membership in organization_id.
   @@map("staff")
 }
 
@@ -854,6 +860,9 @@ model MembershipBranch {
 
   @@id([membershipId, branchId])
   @@index([branchId], map: "idx_membership_branches_branch")
+  // SQL-only trigger membership_branches_same_org (20260929000001): the branch
+  // must belong to the membership's own organisation. An EMPTY set for a
+  // `:branch` role means NO access — see lib/rbac/can.ts 4b.
   @@map("membership_branches")
 }
 

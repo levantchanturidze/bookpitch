@@ -1,6 +1,8 @@
 import type { PrismaClient } from '@prisma/client';
 import { withOrg } from '@/lib/db';
 import { InvalidInputError, type ActiveSession } from '@/lib/auth';
+import { scopedByOwn, scopedLocationIds, waitlistInLocations } from '@/lib/rbac/scope';
+import type { AuthContext } from '@/lib/rbac/types';
 import { notifyEvent } from '@/lib/notifications';
 import { log } from '@/lib/logger';
 import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
@@ -59,20 +61,37 @@ export async function addToWaitlist(
   });
 }
 
-export async function listWaitlist(
-  session: ActiveSession,
-  opts: { scopedLocationIds?: string[] | null; ownUserId?: string | null } = {},
-) {
+/**
+ * What a caller may see of the waitlist. REQUIRED by listWaitlist(), and built
+ * from the caller's grants by waitlistScopeFor() — never assembled by hand.
+ *
+ * The /waitlist page used to call listWaitlist(session) with no scope at all,
+ * while GET /api/waitlist passed both filters: a PROVIDER saw the whole
+ * organisation's waitlist through the page (scoped-RBAC audit §3.5).
+ */
+export type WaitlistScope = {
+  /** Locations whose rows are visible; `null` = every location (an `:org` grant). */
+  scopedLocationIds: string[] | null;
+  /** When set, only rows assigned to this user's staff records. */
+  ownUserId: string | null;
+};
+
+export async function waitlistScopeFor(ctx: AuthContext): Promise<WaitlistScope> {
+  return {
+    scopedLocationIds: await scopedLocationIds(ctx, 'booking.read'),
+    ownUserId: scopedByOwn(ctx, 'booking.read'),
+  };
+}
+
+export async function listWaitlist(session: ActiveSession, scope: WaitlistScope) {
   return withOrg(session.organizationId, async (tx) => {
     // F-09 companion: :own-scoped roles (PROVIDER's booking.read:own) see
-    // only entries assigned to their staff record. Waitlist has staffId
-    // as a bare column (no Prisma relation), so resolve the caller's
-    // staff.id set first and filter waitlist.staffId IN (...). Flexible
-    // entries (staffId null) are excluded.
+    // only entries assigned to their staff records. Flexible entries
+    // (staffId null) are excluded.
     let ownStaffIds: string[] | null = null;
-    if (opts.ownUserId) {
+    if (scope.ownUserId) {
       const staff = await tx.staff.findMany({
-        where: { userId: opts.ownUserId },
+        where: { userId: scope.ownUserId },
         select: { id: true },
       });
       ownStaffIds = staff.map((s) => s.id);
@@ -80,17 +99,14 @@ export async function listWaitlist(
     return tx.waitlist.findMany({
       where: {
         status: { in: ['pending', 'notified'] },
-        // Phase 6 branch scoping. Waitlist entries have an optional
-        // locationId (customers can be "flexible") — include:
-        //   • rows in the caller's scoped locations
-        //   • rows with no locationId (flexible)
-        // A BRANCH_MANAGER shouldn't get to poach a flexible customer
-        // out of another branch's queue; the receiving-side workflow
-        // still filters by the actor's branches when converting to
-        // an appointment.
-        ...(opts.scopedLocationIds
-          ? { OR: [{ locationId: null }, { locationId: { in: opts.scopedLocationIds } }] }
-          : {}),
+        // Branch scoping by the row's DERIVED branch (owner decision D2): its
+        // location, else its staff member's, else its service's. A row with
+        // none of these is org-level and reachable only with an `:org` grant.
+        //
+        // This used to admit every row with `location_id IS NULL`, and the
+        // waitlist form never sets location_id — so the filter let every row
+        // through. `[]` (no branches) matches nothing.
+        ...(scope.scopedLocationIds ? waitlistInLocations(scope.scopedLocationIds) : {}),
         ...(ownStaffIds !== null ? { staffId: { in: ownStaffIds } } : {}),
       },
       orderBy: { createdAt: 'desc' },

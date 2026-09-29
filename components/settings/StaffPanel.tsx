@@ -8,11 +8,16 @@ import StatusMessage from '@/components/ui/StatusMessage';
 import {
   createStaffAction,
   deleteStaffAction,
+  linkStaffAction,
   setAvailabilityAction,
+  unlinkStaffAction,
   updateStaffAction,
 } from './actions';
 
 export type LocationRef = { id: string; name: string; type: 'clinic' | 'salon'; timezone: string };
+
+/** An active member this staff record could be linked to. */
+export type MemberOption = { userId: string; label: string };
 
 export type StaffRow = {
   id: string;
@@ -24,6 +29,13 @@ export type StaffRow = {
   email: string | null;
   phone: string | null;
   calendarColor: string | null;
+  /**
+   * The member account this performer record belongs to (Staff.userId). A
+   * PROVIDER owns — can see and change — exactly the appointments and hours of
+   * the staff records linked to them. A practitioner at two locations has one
+   * record per location, each linked to the same member.
+   */
+  linkedUserId: string | null;
   availability: Array<{ weekday: number; startTime: string; endTime: string }>;
 };
 
@@ -32,9 +44,13 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export default function StaffPanel({
   staff,
   locations,
+  members,
+  canLink,
 }: {
   staff: StaffRow[];
   locations: LocationRef[];
+  members: MemberOption[];
+  canLink: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<StaffRow | null>(null);
@@ -42,9 +58,19 @@ export default function StaffPanel({
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  const link = (staffId: string, userId: string) => {
+    setError(null);
+    startTransition(async () => {
+      const result = userId
+        ? await linkStaffAction(staffId, userId)
+        : await unlinkStaffAction(staffId);
+      if (!result.ok) setError(result.message);
+    });
+  };
+
   const save = (
     id: string | null,
-    input: Omit<StaffRow, 'id' | 'availability' | 'locationName'>,
+    input: Omit<StaffRow, 'id' | 'availability' | 'locationName' | 'linkedUserId'>,
   ) => {
     setError(null);
     startTransition(async () => {
@@ -94,6 +120,9 @@ export default function StaffPanel({
                 Location
               </th>
               <th scope="col" className="px-2 py-2 font-medium">
+                Linked member
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
                 Contact
               </th>
               <th scope="col" className="px-2 py-2 font-medium">
@@ -123,6 +152,25 @@ export default function StaffPanel({
                   )}
                 </td>
                 <td className="px-2 py-2 text-slate-600">{s.locationName}</td>
+                <td className="px-2 py-2">
+                  <select
+                    aria-label={`Member linked to ${s.name}`}
+                    value={s.linkedUserId ?? ''}
+                    disabled={!canLink || isPending}
+                    onChange={(e) => link(s.id, e.target.value)}
+                    className="max-w-[14rem] rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <option value="">— not linked —</option>
+                    {s.linkedUserId && !members.some((m) => m.userId === s.linkedUserId) && (
+                      <option value={s.linkedUserId}>(former member)</option>
+                    )}
+                    {members.map((m) => (
+                      <option key={m.userId} value={m.userId}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </td>
                 <td className="px-2 py-2 font-mono text-[11px] text-slate-500">
                   {s.email ?? '—'} · {s.phone ?? '—'}
                 </td>

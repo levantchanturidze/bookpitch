@@ -735,4 +735,81 @@ BEGIN
   RAISE NOTICE 'ok: current_org_id() is public, 0-arg, returns uuid, LANGUAGE sql STABLE, not SECURITY DEFINER, body pinned, owned by %, unwritable by bookpitch_app, and NULL without context', f_owner;
 END $$;
 
+-- 8. Scoped RBAC (C7): who can reach what stays inside one organisation. -----
+--
+-- Migration 20260929000001 added three guards that Prisma cannot express, so
+-- the datamodel drift check above cannot see them go missing. A restore from an
+-- older dump, or a hand-run DROP, would silently re-open:
+--   8a. two linked staff rows for one person at one location (ambiguous owner)
+--   8b. a staff row linked to a user of another organisation
+--   8c. a membership scoped to another organisation's branch
+-- 8d then checks the DATA those guards protect, so a row written while a guard
+-- was missing is caught too. Deliberately NOT asserted: that every FRONT_DESK
+-- member has a branch. An admin may narrow a member to nothing — that is the
+-- fail-closed state, not a fault.
+DO $$
+DECLARE
+  idx_unique   BOOLEAN;
+  idx_pred     TEXT;
+  idx_cols     TEXT;
+  trg_enabled  "char";
+  crossing     INT;
+BEGIN
+  -- 8a
+  SELECT i.indisunique,
+         pg_get_expr(i.indpred, i.indrelid),
+         (SELECT string_agg(a.attname, ',' ORDER BY k.ord)
+            FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum)
+    INTO idx_unique, idx_pred, idx_cols
+    FROM pg_index i
+    JOIN pg_class ic ON ic.oid = i.indexrelid
+    JOIN pg_class tc ON tc.oid = i.indrelid
+   WHERE ic.relname = 'staff_location_user_unique' AND tc.relname = 'staff';
+  IF idx_unique IS NULL THEN
+    RAISE EXCEPTION 'production-verify: staff_location_user_unique is missing — one person can be linked to two staff rows at one location';
+  END IF;
+  IF NOT idx_unique OR idx_cols <> 'location_id,user_id' OR idx_pred <> '(user_id IS NOT NULL)' THEN
+    RAISE EXCEPTION 'production-verify: staff_location_user_unique is unique=% on (%) where %, expected UNIQUE (location_id,user_id) WHERE (user_id IS NOT NULL)',
+      idx_unique, idx_cols, idx_pred;
+  END IF;
+
+  -- 8b / 8c: present AND enabled. A disabled trigger ('D') is a missing one.
+  SELECT t.tgenabled INTO trg_enabled
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE c.relname = 'staff' AND t.tgname = 'staff_user_is_member' AND NOT t.tgisinternal;
+  IF trg_enabled IS NULL OR trg_enabled = 'D' THEN
+    RAISE EXCEPTION 'production-verify: trigger staff_user_is_member is % — a staff row can be linked to another organisation''s user',
+      CASE WHEN trg_enabled IS NULL THEN 'missing' ELSE 'disabled' END;
+  END IF;
+  trg_enabled := NULL;
+  SELECT t.tgenabled INTO trg_enabled
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE c.relname = 'membership_branches' AND t.tgname = 'membership_branches_same_org'
+     AND NOT t.tgisinternal;
+  IF trg_enabled IS NULL OR trg_enabled = 'D' THEN
+    RAISE EXCEPTION 'production-verify: trigger membership_branches_same_org is missing or disabled — a membership can be scoped to another organisation''s branch';
+  END IF;
+
+  -- 8d. The data, whatever the guards say.
+  SELECT count(*) INTO crossing
+    FROM membership_branches mb
+    JOIN memberships m ON m.id = mb.membership_id
+    JOIN branches b    ON b.id = mb.branch_id
+   WHERE b.organization_id <> m.organization_id;
+  IF crossing > 0 THEN
+    RAISE EXCEPTION 'production-verify: % membership_branches row(s) scope a membership to another organisation''s branch', crossing;
+  END IF;
+  SELECT count(*) INTO crossing
+    FROM staff s
+   WHERE s.user_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM memberships m
+                      WHERE m.organization_id = s.organization_id AND m.user_id = s.user_id);
+  IF crossing > 0 THEN
+    RAISE EXCEPTION 'production-verify: % staff row(s) are linked to a user with no membership in their organisation', crossing;
+  END IF;
+
+  RAISE NOTICE 'ok: staff link and branch scope are single-organisation — unique index, both triggers enabled, no crossing rows';
+END $$;
+
 \echo '=== production invariants: ALL CHECKS PASSED ==='

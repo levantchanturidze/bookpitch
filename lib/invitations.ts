@@ -6,6 +6,11 @@ import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { enqueueEmail, deliverNow } from '@/lib/messaging/outbox';
 import { log } from '@/lib/logger';
 import { buildAuthContext, canManageRoleAssignment } from '@/lib/rbac';
+import { writeAudit } from '@/lib/audit';
+import {
+  ROLES_DEFAULTED_TO_ALL_BRANCHES,
+  assignAllBranchesIfUnscoped,
+} from '@/lib/admin/scoped-access';
 
 // Legacy enum → Phase 3 role key. Kept here (small mapping duplicated
 // with lib/admin.ts) so this module stays self-contained.
@@ -201,7 +206,7 @@ export async function acceptInvitation(
 
     // Idempotent — if they already have a membership in this org (e.g.
     // re-accept from a second tab), just return.
-    await tx.membership.upsert({
+    const membership = await tx.membership.upsert({
       where: {
         organizationId_userId: { organizationId: invite.organizationId, userId },
       },
@@ -212,7 +217,33 @@ export async function acceptInvitation(
         roleId: roleRow.id,
       },
       update: {},
+      select: { id: true, roleId: true },
     });
+    // Owner decision D1: a new FRONT_DESK member starts with every branch of
+    // the organisation, and admins narrow from there. An empty branch set now
+    // means NO access, so without this every newly invited receptionist would
+    // see nothing. Gated on the membership's ACTUAL role — an existing
+    // membership keeps its own role on re-accept — and never widens an
+    // existing scope. Audited with the accepting user as the actor, since
+    // accepting is their act.
+    if (membership.roleId === roleRow.id && ROLES_DEFAULTED_TO_ALL_BRANCHES.has(roleKey)) {
+      const added = await assignAllBranchesIfUnscoped(tx, membership.id, invite.organizationId);
+      if (added.length) {
+        await writeAudit(
+          tx,
+          {
+            userId,
+            email: invite.email,
+            organizationId: invite.organizationId,
+            membershipId: membership.id,
+          },
+          'update',
+          'membership',
+          membership.id,
+          { targetUserId: userId, branches: { added, removed: [] }, source: 'invitation-default' },
+        );
+      }
+    }
     // Owner invitations wire the org pointer so spec §9 rule 1 is satisfied
     // immediately after acceptance — org operations blocked by assertOrgOwnerSet
     // (updateMemberRole, removeMember, billing) become available right away.

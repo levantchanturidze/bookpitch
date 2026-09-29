@@ -636,6 +636,89 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
   });
 
   // ---------------------------------------------------------------------------
+  // Check 8 — scoped RBAC (C7). Migration 20260929000001 added a partial unique
+  // index and two triggers that Prisma cannot express, so the datamodel drift
+  // check cannot see them go missing. Each is removed or weakened here, and the
+  // data check (8d) is proven on rows written while a guard was switched off.
+  // ---------------------------------------------------------------------------
+  describe('scoped RBAC — staff link and branch scope stay single-organisation', () => {
+    const CREATE_INDEX =
+      'CREATE UNIQUE INDEX staff_location_user_unique ON staff (location_id, user_id) WHERE user_id IS NOT NULL';
+
+    injects(
+      'dropping staff_location_user_unique is caught',
+      ['DROP INDEX staff_location_user_unique'],
+      /staff_location_user_unique is missing/,
+      [CREATE_INDEX],
+    );
+
+    injects(
+      'rebuilding it on the wrong column order is caught',
+      [
+        'DROP INDEX staff_location_user_unique',
+        'CREATE UNIQUE INDEX staff_location_user_unique ON staff (user_id, location_id) WHERE user_id IS NOT NULL',
+      ],
+      /expected UNIQUE \(location_id,user_id\)/,
+      ['DROP INDEX staff_location_user_unique', CREATE_INDEX],
+    );
+
+    injects(
+      'disabling staff_user_is_member is caught',
+      ['ALTER TABLE staff DISABLE TRIGGER staff_user_is_member'],
+      /staff_user_is_member is disabled/,
+      ['ALTER TABLE staff ENABLE TRIGGER staff_user_is_member'],
+    );
+
+    injects(
+      'dropping membership_branches_same_org is caught',
+      ['DROP TRIGGER membership_branches_same_org ON membership_branches'],
+      /membership_branches_same_org is missing or disabled/,
+      [
+        'CREATE TRIGGER membership_branches_same_org BEFORE INSERT OR UPDATE ON membership_branches FOR EACH ROW EXECUTE FUNCTION membership_branches_same_org()',
+      ],
+    );
+
+    injects(
+      'a cross-organisation scope row written while the trigger was off is caught',
+      [
+        'ALTER TABLE membership_branches DISABLE TRIGGER membership_branches_same_org',
+        `INSERT INTO membership_branches (membership_id, branch_id)
+         SELECT m.id, b.id FROM memberships m JOIN branches b ON b.organization_id <> m.organization_id
+          ORDER BY m.id, b.id LIMIT 1`,
+        // Back ON: ENABLE does not re-check existing rows, so only 8d can see it.
+        'ALTER TABLE membership_branches ENABLE TRIGGER membership_branches_same_org',
+      ],
+      /scope a membership to another organisation's branch/,
+      [
+        `DELETE FROM membership_branches mb USING memberships m, branches b
+          WHERE mb.membership_id = m.id AND mb.branch_id = b.id
+            AND b.organization_id <> m.organization_id`,
+      ],
+    );
+
+    injects(
+      'a staff row linked outside its organisation while the trigger was off is caught',
+      [
+        'ALTER TABLE staff DISABLE TRIGGER staff_user_is_member',
+        `UPDATE staff SET user_id = (
+           SELECT u.id FROM app_users u
+            WHERE NOT EXISTS (SELECT 1 FROM memberships m
+                               WHERE m.user_id = u.id AND m.organization_id = staff.organization_id)
+            ORDER BY u.id LIMIT 1)
+          WHERE id = (SELECT id FROM staff WHERE user_id IS NULL ORDER BY id LIMIT 1)`,
+        'ALTER TABLE staff ENABLE TRIGGER staff_user_is_member',
+      ],
+      /linked to a user with no membership in their organisation/,
+      [
+        `UPDATE staff s SET user_id = NULL
+          WHERE s.user_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM memberships m
+                             WHERE m.organization_id = s.organization_id AND m.user_id = s.user_id)`,
+      ],
+    );
+  });
+
+  // ---------------------------------------------------------------------------
   // Check 4f — a partition's policy, matched EXACTLY.
   //
   // The children used to be checked with an EXISTS whose predicate was

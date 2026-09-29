@@ -36,11 +36,11 @@ export async function GET(req: NextRequest) {
       url.searchParams.get('to'),
     );
 
-    // Phase 6: branch scoping. When the caller has populated
-    // ctx.branchIds (BRANCH_MANAGER), constrain the query to the
-    // location IDs those branches correspond to — otherwise a
-    // parameter-less list would leak every branch's data.
-    const scoped = await scopedLocationIds(ctx);
+    // Branch scoping. can() granted this call in LIST mode, so the rows are
+    // filtered HERE: a `:branch` caller sees only the locations of their
+    // branches, and a caller with NO branches gets `[]` — zero rows, never
+    // "no filter". An explicit locationId outside that set is refused.
+    const scoped = await scopedLocationIds(ctx, 'booking.read');
     if (scoped && locationId && !scoped.includes(locationId)) {
       throw new InvalidInputError('locationId is outside your branch scope');
     }

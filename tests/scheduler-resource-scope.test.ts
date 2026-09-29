@@ -27,9 +27,18 @@ import { appointmentResource } from '@/lib/rbac/scope';
 // it were already available one line later. Nothing about it was hard.
 //
 // These tests pin the resource shape the action must build. They are written
-// against can() directly, because that is the decision the action delegates to;
-// the Server Action and API paths are exercised in
-// tests/scheduler-actions-authz.test.ts.
+// against can() directly, because that is the decision the action delegates to.
+// The Server Action and API paths are exercised against the database in
+// tests/branch-scoping.test.ts, tests/u06-action-resource-scope.test.ts and
+// tests/reschedule-slots-authz.test.ts. (This header used to name
+// tests/scheduler-actions-authz.test.ts, which never existed.)
+//
+// BRANCH IDS ARE WRITTEN BY HAND HERE, which is exactly how audit §3.4 hid:
+// this file once used ONE constant as both the caller's branch and the
+// appointment's LOCATION, so "allows an assigned branch" passed while
+// production — where the two are different uuids — denied it. Whether the
+// resolvers supply a BRANCH id is therefore pinned against real rows in
+// tests/branch-scoping.test.ts, not here.
 // -----------------------------------------------------------------------------
 
 const ORG = '00000000-0000-0000-0000-0000000000aa';
@@ -68,12 +77,12 @@ function ctx(granted: string[], over: Partial<AuthContext> = {}): AuthContext {
 }
 
 /** What the action must pass. Shape-only; the action supplies the real row. */
-const resourceFor = (opts: { ownerUserId?: string | null; locationId?: string | null }) =>
+const resourceFor = (opts: { ownerUserId?: string | null; branchId?: string | null }) =>
   appointmentResource(ORG, opts);
 
 describe('appointmentResource — the shape the scheduler must authorise against', () => {
   it('carries organisation, branch and owner', () => {
-    const r = resourceFor({ ownerUserId: ME, locationId: BRANCH_A });
+    const r = resourceFor({ ownerUserId: ME, branchId: BRANCH_A });
     expect(r.organizationId).toBe(ORG);
     expect(r.branchId).toBe(BRANCH_A);
     expect(r.ownerUserId).toBe(ME);
@@ -95,14 +104,14 @@ describe('appointmentResource — the shape the scheduler must authorise against
     // "resolved, and unowned", which can() denies for `:own`; absent still
     // means list mode. So this test now pins the opposite shape, and the
     // `:own` deny case below is what gives it teeth.
-    const r = resourceFor({ ownerUserId: null, locationId: BRANCH_A });
+    const r = resourceFor({ ownerUserId: null, branchId: BRANCH_A });
     expect('ownerUserId' in r).toBe(true);
     expect(r.ownerUserId).toBeNull();
     expect(r.branchId).toBe(BRANCH_A);
   });
 
   it('still omits owner when the caller named no owner at all (list mode)', () => {
-    const r = resourceFor({ locationId: BRANCH_A });
+    const r = resourceFor({ branchId: BRANCH_A });
     expect('ownerUserId' in r).toBe(false);
   });
 });
@@ -117,14 +126,14 @@ describe(':own scope on a concrete appointment', () => {
       can(
         provider(),
         'booking.update',
-        resourceFor({ ownerUserId: SOMEONE_ELSE, locationId: BRANCH_A }),
+        resourceFor({ ownerUserId: SOMEONE_ELSE, branchId: BRANCH_A }),
       ),
     ).toBe(false);
   });
 
   it('ALLOWS updating their own appointment', () => {
     expect(
-      can(provider(), 'booking.update', resourceFor({ ownerUserId: ME, locationId: BRANCH_A })),
+      can(provider(), 'booking.update', resourceFor({ ownerUserId: ME, branchId: BRANCH_A })),
     ).toBe(true);
   });
 
@@ -144,7 +153,7 @@ describe(':branch scope on a concrete appointment', () => {
       can(
         branchStaff(),
         'booking.update',
-        resourceFor({ ownerUserId: SOMEONE_ELSE, locationId: BRANCH_B }),
+        resourceFor({ ownerUserId: SOMEONE_ELSE, branchId: BRANCH_B }),
       ),
     ).toBe(false);
   });
@@ -154,9 +163,52 @@ describe(':branch scope on a concrete appointment', () => {
       can(
         branchStaff(),
         'booking.update',
-        resourceFor({ ownerUserId: SOMEONE_ELSE, locationId: BRANCH_A }),
+        resourceFor({ ownerUserId: SOMEONE_ELSE, branchId: BRANCH_A }),
       ),
     ).toBe(true);
+  });
+
+  // C7 — an EMPTY branch set used to mean "unrestricted", so a :branch member
+  // nobody had scoped could act on any appointment in the organisation. It now
+  // means no reach at all (spec §10; docs/scoped-rbac-assumption-audit.md §3).
+  it('DENIES a concrete appointment to a :branch member with NO branches', () => {
+    const unscoped = ctx(['booking.update:branch'], {
+      branchIds: new Set() as ReadonlySet<string>,
+    });
+    expect(
+      can(
+        unscoped,
+        'booking.update',
+        resourceFor({ ownerUserId: SOMEONE_ELSE, branchId: BRANCH_A }),
+      ),
+    ).toBe(false);
+  });
+
+  it('still permits LIST mode for a member with no branches — the list itself returns nothing', () => {
+    // The guard is not where an empty set is enforced for a list:
+    // scopedLocationIds() returns [] and the query matches zero rows
+    // (tests/branch-scoping.test.ts). Refusing here would turn "you see
+    // nothing" into "the page is forbidden", which is a different product.
+    const unscoped = ctx(['booking.read:branch'], { branchIds: new Set() as ReadonlySet<string> });
+    expect(can(unscoped, 'booking.read', { organizationId: ORG })).toBe(true);
+  });
+
+  it('DENIES a resource that was RESOLVED and belongs to no branch (null)', () => {
+    // The `:branch` twin of U-05: present-and-null is not list mode.
+    expect(
+      can(
+        branchStaff(),
+        'booking.update',
+        resourceFor({ ownerUserId: SOMEONE_ELSE, branchId: null }),
+      ),
+    ).toBe(false);
+  });
+
+  it('appointmentResource distinguishes an absent branch from a null one', () => {
+    expect('branchId' in resourceFor({})).toBe(false);
+    expect('branchId' in resourceFor({ branchId: null })).toBe(true);
+    expect(resourceFor({ branchId: null }).branchId).toBeNull();
+    expect(resourceFor({ branchId: undefined }).branchId).toBeNull();
   });
 });
 
@@ -166,18 +218,14 @@ describe('scopes that must keep working', () => {
     // booking.*, and asserting one would have passed for the wrong reason.
     const owner = ctx(['booking.update:org'], { roleKey: 'ORG_OWNER', roleRank: 90 });
     expect(
-      can(
-        owner,
-        'booking.update',
-        resourceFor({ ownerUserId: SOMEONE_ELSE, locationId: BRANCH_B }),
-      ),
+      can(owner, 'booking.update', resourceFor({ ownerUserId: SOMEONE_ELSE, branchId: BRANCH_B })),
     ).toBe(true);
   });
 
   it('cross-tenant stays impossible even for :org', () => {
     const owner = ctx(['booking.update:org'], { roleKey: 'ORG_OWNER', roleRank: 90 });
     expect(
-      can(owner, 'booking.update', appointmentResource(OTHER_ORG, { locationId: BRANCH_A })),
+      can(owner, 'booking.update', appointmentResource(OTHER_ORG, { branchId: BRANCH_A })),
     ).toBe(false);
   });
 
@@ -188,11 +236,11 @@ describe('scopes that must keep working', () => {
       can(
         provider,
         'booking.cancel',
-        resourceFor({ ownerUserId: SOMEONE_ELSE, locationId: BRANCH_A }),
+        resourceFor({ ownerUserId: SOMEONE_ELSE, branchId: BRANCH_A }),
       ),
     ).toBe(false);
     expect(
-      can(provider, 'booking.cancel', resourceFor({ ownerUserId: ME, locationId: BRANCH_A })),
+      can(provider, 'booking.cancel', resourceFor({ ownerUserId: ME, branchId: BRANCH_A })),
     ).toBe(true);
   });
 });

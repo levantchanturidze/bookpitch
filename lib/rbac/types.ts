@@ -36,7 +36,19 @@ export const perm = (s: string): PermissionKey => s as PermissionKey;
  */
 export type Resource = {
   readonly organizationId?: string;
-  readonly branchId?: string;
+  /**
+   * A BRANCH id (`branches.id`) — never a location id. The two are different
+   * uuids linked only by `branches.legacy_location_id`, and comparing one with
+   * the other is what made an assigned branch unmatchable (scoped-RBAC audit
+   * §3.4). Build it with the resolvers in ./scope, not by hand.
+   *
+   * Three states, exactly as `ownerUserId` below (U-05):
+   *   • absent    — the caller named no concrete resource (LIST mode)
+   *   • a string  — the resource lives in that branch
+   *   • null      — the resource was RESOLVED and belongs to no branch, which
+   *                 can never be "one of my branches", so `:branch` denies it
+   */
+  readonly branchId?: string | null;
   /**
    * U-05: three states, not two.
    *   • absent    — the caller named no concrete resource (LIST mode)
@@ -76,9 +88,15 @@ export type AuthContext = {
   readonly platformPermissions: ReadonlySet<PermissionKey>;
 
   /**
-   * Branches this membership is scoped to. Empty set = unrestricted within
-   * the org (spec §4.2: absent membership_branches row means no branch
-   * restriction). BRANCH_MANAGER + multi-branch FRONT_DESK populate it.
+   * Branches this membership is scoped to (`membership_branches`), as branch
+   * ids. Consulted only for `:branch` grants.
+   *
+   * An EMPTY set means NO branch reach — zero rows in lists, deny on every
+   * concrete resource. It used to mean "unrestricted within the org"; spec §10
+   * and §2.3 scenario 4 say otherwise, and the scoped-RBAC change (C7) made the
+   * code agree. FRONT_DESK memberships receive every current branch when they
+   * are created (invitation acceptance, role change) and admins narrow from
+   * there — see docs/scoped-rbac-assumption-audit.md §6 D1.
    */
   readonly branchIds: ReadonlySet<string>;
 

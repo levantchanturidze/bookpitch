@@ -277,6 +277,24 @@ async function main() {
       data: { ownerUserId: owner.id },
     });
 
+    // Owner decision D1 (docs/scoped-rbac-assumption-audit.md §6): a FRONT_DESK
+    // member starts with every branch of the organisation. An empty branch set
+    // means NO booking access, so the seeded receptionist would otherwise see
+    // an empty calendar. The branches themselves were created by the
+    // locations → branches trigger when the two locations were inserted.
+    const receptionMembership = await tx.membership.findFirstOrThrow({
+      where: { organizationId: org.id, userId: reception.id },
+      select: { id: true },
+    });
+    const orgBranches = await tx.branch.findMany({
+      where: { organizationId: org.id },
+      select: { id: true },
+    });
+    await tx.membershipBranch.createMany({
+      data: orgBranches.map((b) => ({ membershipId: receptionMembership.id, branchId: b.id })),
+      skipDuplicates: true,
+    });
+
     console.log('→ Seeding default reminder templates…');
     await tx.messageTemplate.createMany({
       data: [

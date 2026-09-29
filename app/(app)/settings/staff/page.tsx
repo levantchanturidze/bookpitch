@@ -1,7 +1,11 @@
 import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
-import { listLocations, listStaff } from '@/lib/admin';
-import StaffPanel, { type LocationRef, type StaffRow } from '@/components/settings/StaffPanel';
+import { can, requireAuthContext, requirePagePermission } from '@/lib/rbac';
+import { listLocations, listMembers, listStaff } from '@/lib/admin';
+import StaffPanel, {
+  type LocationRef,
+  type MemberOption,
+  type StaffRow,
+} from '@/components/settings/StaffPanel';
 import { availabilityHHMM } from '@/lib/availability-basis';
 
 export const dynamic = 'force-dynamic';
@@ -15,7 +19,18 @@ export default async function SettingsStaffPage() {
     'admin',
   );
   const session = ctxToSession(ctx);
-  const [staffRows, locationRows] = await Promise.all([listStaff(session), listLocations(session)]);
+  const [staffRows, locationRows, memberRows] = await Promise.all([
+    listStaff(session),
+    listLocations(session),
+    listMembers(session),
+  ]);
+  // Linking a staff record to a member decides which appointments that member
+  // OWNS (`:own`) — the same authority as changing their role. The action
+  // enforces it; this only decides whether the control is offered.
+  const canLink = can(ctx, 'staff.role.assign', { organizationId: ctx.activeOrganizationId! });
+  const members: MemberOption[] = memberRows
+    .filter((m) => m.status === 'active')
+    .map((m) => ({ userId: m.userId, label: m.fullName ? `${m.fullName} · ${m.email}` : m.email }));
   const locations: LocationRef[] = locationRows.map((l) => ({
     id: l.id,
     name: l.name,
@@ -34,6 +49,7 @@ export default async function SettingsStaffPage() {
       email: s.email,
       phone: s.phone,
       calendarColor: s.calendarColor,
+      linkedUserId: s.userId,
       // Times are converted to the location's local timezone for display.
       // setAvailabilityAction converts them back to UTC before storage.
       availability: s.availability.map((a) => ({
@@ -45,5 +61,5 @@ export default async function SettingsStaffPage() {
       })),
     };
   });
-  return <StaffPanel staff={staff} locations={locations} />;
+  return <StaffPanel staff={staff} locations={locations} members={members} canLink={canLink} />;
 }

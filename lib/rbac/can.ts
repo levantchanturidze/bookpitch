@@ -11,11 +11,11 @@
 //     suspended organization → deny"). Rejected before the scope check so
 //     no permission bundle can override it.
 //
-//   • Empty branchIds means "unrestricted within the org" (spec §4.2:
-//     absent membership_branches row). A :branch permission with an empty
-//     branchIds set is allowed to reach any branch in ctx.activeOrganizationId.
-//     BRANCH_MANAGER and multi-branch FRONT_DESK populate branchIds; every
-//     other role leaves it empty.
+//   • An EMPTY branchIds set means NO branch reach. It used to mean
+//     "unrestricted within the org", which made every FRONT_DESK org-wide and
+//     contradicted spec §10 (`ctx.branchIds.includes(resource?.branchId)`)
+//     and §2.3 scenario 4 ("FRONT_DESK, with the scope of two branches").
+//     See 4b and docs/scoped-rbac-assumption-audit.md §3.
 // -----------------------------------------------------------------------------
 
 import type { AuthContext, PermissionKey, Resource } from './types';
@@ -101,17 +101,21 @@ export function can(
   // 4a. :org — unrestricted within the org.
   if (granted.has(perm(`${p}:org`))) return true;
 
-  // 4b. :branch — resolve against ctx.branchIds. Two shapes:
-  //     • Empty ctx.branchIds → unrestricted (FRONT_DESK is :branch by role
-  //       but has no per-branch scoping). Always allow.
-  //     • Populated ctx.branchIds (BRANCH_MANAGER):
-  //         - resource.branchId specified → must be in the set.
-  //         - resource.branchId absent    → list-mode call. The caller's
-  //           query is expected to filter results by ctx.branchIds. Grant
-  //           passes the guard; per-row visibility is the query's job.
+  // 4b. :branch — the same three states U-05 gave `:own` (see Resource):
+  //     • branchId absent → LIST mode. The guard passes and per-row visibility
+  //       is the query's job: every list path filters through
+  //       scopedLocationIds(ctx, base), which returns ZERO locations for an
+  //       empty set. The grant here never widens what a list returns.
+  //     • branchId null   → resolved, and in no branch: deny.
+  //     • branchId string → a membership test. An empty set holds nothing, so
+  //       a concrete resource is denied to a member with no branches.
+  //
+  //     This used to allow outright on an empty set, and compared a LOCATION
+  //     id against a set of BRANCH ids on a populated one — so an assigned
+  //     branch could never match. Resolvers in ./scope now supply branch ids.
   if (granted.has(perm(`${p}:branch`))) {
-    if (ctx.branchIds.size === 0) return true;
-    if (!resource?.branchId) return true;
+    if (resource?.branchId === undefined) return true;
+    if (resource.branchId === null) return false;
     return ctx.branchIds.has(resource.branchId);
   }
 

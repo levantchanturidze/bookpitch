@@ -82,9 +82,10 @@ Trio today.
 | `app/api/appointments/[id]/route.ts` PATCH | trio | `booking.update:branch` | FRONT_DESK edits within branch; PROVIDER edits own via server logic |
 | `app/api/appointments/[id]/route.ts` DELETE | trio | `booking.cancel:branch` | same reasoning |
 
-For `:branch` grants, the caller's `ctx.branchIds` may be empty (org-wide
-access) — see `can()` docs. BRANCH_MANAGER is the only role that populates
-a non-empty scope today.
+For `:branch` grants, an empty `ctx.branchIds` means NO access — zero rows
+in lists, deny on every concrete resource (changed 2026-09-29, C7; it used
+to mean org-wide). FRONT_DESK memberships receive every current branch when
+created and admins narrow them — see docs/scoped-rbac-assumption-audit.md.
 
 ## 4. Waitlist module — `app/api/waitlist/**`, `app/(app)/waitlist/page.tsx`
 

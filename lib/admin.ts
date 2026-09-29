@@ -3,6 +3,10 @@ import { ConflictError, InvalidInputError, type ActiveSession } from '@/lib/auth
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { assertNotLastOwner, assertOrgOwnerSet } from '@/lib/admin/last-owner';
+import {
+  ROLES_DEFAULTED_TO_ALL_BRANCHES,
+  assignAllBranchesIfUnscoped,
+} from '@/lib/admin/scoped-access';
 import { canManageRoleAssignment, buildAuthContext } from '@/lib/rbac';
 import { mapPrismaError } from '@/lib/prisma-error';
 
@@ -444,6 +448,11 @@ export type MemberRow = {
   email: string;
   fullName: string | null;
   role: UserRole;
+  /** The authoritative RBAC role (roles.key) — the legacy enum above cannot say BRANCH_MANAGER. */
+  roleKey: string | null;
+  status: string;
+  /** membership_branches, as branch ids. Empty = no branch reach for a `:branch` role. */
+  branchIds: string[];
   createdAt: string;
 };
 
@@ -458,7 +467,11 @@ export async function listMembers(session: ActiveSession): Promise<MemberRow[]> 
   return withOrg(session.organizationId, async (tx) => {
     const memberships = await tx.membership.findMany({
       orderBy: { createdAt: 'asc' },
-      include: { user: { select: { id: true, email: true, fullName: true } } },
+      include: {
+        user: { select: { id: true, email: true, fullName: true } },
+        roleRef: { select: { key: true } },
+        branches: { select: { branchId: true } },
+      },
     });
     return memberships.map((m) => ({
       membershipId: m.id,
@@ -466,6 +479,9 @@ export async function listMembers(session: ActiveSession): Promise<MemberRow[]> 
       email: m.user.email,
       fullName: m.user.fullName,
       role: m.role,
+      roleKey: m.roleRef?.key ?? null,
+      status: m.status,
+      branchIds: m.branches.map((b) => b.branchId),
       createdAt: m.createdAt.toISOString(),
     }));
   });
@@ -540,6 +556,21 @@ export async function updateMemberRole(
       role,
       previousRole: existing.roleRef?.key ?? null,
     });
+
+    // Owner decision D1: a membership that BECOMES FRONT_DESK with no branch
+    // scope starts with every branch of the organisation, exactly as an
+    // invitation does. An existing scope is never widened. Audited as its own
+    // row, because it changes what the member can reach.
+    if (ROLES_DEFAULTED_TO_ALL_BRANCHES.has(targetKey)) {
+      const added = await assignAllBranchesIfUnscoped(tx, membershipId, session.organizationId);
+      if (added.length) {
+        await writeAudit(tx, session, 'update', 'membership', membershipId, {
+          targetUserId: existing.userId,
+          branches: { added, removed: [] },
+          source: 'role-default',
+        });
+      }
+    }
 
     // Phase 6 guardrail 4 (spec §9 rule 10): sessions invalidate on role
     // change. Bump the TARGET user's sessionVersion — their live JWT

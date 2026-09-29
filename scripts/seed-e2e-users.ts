@@ -130,6 +130,31 @@ async function main(): Promise<void> {
       });
       created++;
     }
+
+    // Owner decision D1: a FRONT_DESK member starts with every branch of the
+    // organisation, which is what invitation acceptance does in the product. An
+    // empty set means no booking access, so without this the front-desk
+    // journeys would pass against an empty calendar. Never widens an existing
+    // scope; BRANCH_MANAGER / SENIOR_PROVIDER are deliberately left unscoped.
+    if (roleKey === 'FRONT_DESK') {
+      const membership = await unsafePrismaAdmin.membership.findFirstOrThrow({
+        where: { organizationId: org.id, userId: user.id },
+        select: { id: true },
+      });
+      const scoped = await unsafePrismaAdmin.membershipBranch.count({
+        where: { membershipId: membership.id },
+      });
+      if (scoped === 0) {
+        const branches = await unsafePrismaAdmin.branch.findMany({
+          where: { organizationId: org.id },
+          select: { id: true },
+        });
+        await unsafePrismaAdmin.membershipBranch.createMany({
+          data: branches.map((b) => ({ membershipId: membership.id, branchId: b.id })),
+          skipDuplicates: true,
+        });
+      }
+    }
   }
 
   for (const [roleKey, email] of Object.entries(PLATFORM_ROLE_ACCOUNTS)) {

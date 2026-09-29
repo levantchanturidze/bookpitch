@@ -3,7 +3,12 @@
 import { useState, useTransition } from 'react';
 import type { UserRole } from '@prisma/client';
 import { Link2, Plus, Trash2 } from 'lucide-react';
-import { inviteMemberAction, removeMemberAction, updateMemberRoleAction } from './actions';
+import {
+  inviteMemberAction,
+  removeMemberAction,
+  setMemberBranchesAction,
+  updateMemberRoleAction,
+} from './actions';
 import StatusMessage from '@/components/ui/StatusMessage';
 
 export type MemberRow = {
@@ -12,17 +17,29 @@ export type MemberRow = {
   email: string;
   fullName: string | null;
   role: UserRole;
+  roleKey: string | null;
+  status: string;
+  branchIds: string[];
   createdAt: string;
 };
+
+export type BranchOption = { id: string; name: string };
 
 const ROLES: UserRole[] = ['owner', 'practitioner', 'receptionist'];
 
 export default function MembersPanel({
   members,
   currentUserId,
+  branches,
+  branchScopedRoleKeys,
+  canAssignBranches,
 }: {
   members: MemberRow[];
   currentUserId: string;
+  branches: BranchOption[];
+  /** Roles holding a `:branch` permission — the only ones a branch set affects. */
+  branchScopedRoleKeys: string[];
+  canAssignBranches: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +78,14 @@ export default function MembersPanel({
       if (!result.ok) setError(result.message);
     });
     void email;
+  };
+
+  const saveBranches = (membershipId: string, branchIds: string[]) => {
+    setError(null);
+    startTransition(async () => {
+      const result = await setMemberBranchesAction(membershipId, branchIds);
+      if (!result.ok) setError(result.message);
+    });
   };
 
   return (
@@ -114,6 +139,9 @@ export default function MembersPanel({
                 Role
               </th>
               <th scope="col" className="px-2 py-2 font-medium">
+                Branches
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
                 Joined
               </th>
               <th scope="col" className="px-6 py-2 text-right font-medium">
@@ -148,6 +176,19 @@ export default function MembersPanel({
                         </option>
                       ))}
                     </select>
+                  </td>
+                  <td className="px-2 py-2 align-top">
+                    {m.roleKey && branchScopedRoleKeys.includes(m.roleKey) ? (
+                      <BranchScope
+                        member={m}
+                        branches={branches}
+                        editable={canAssignBranches && !isSelf}
+                        isPending={isPending}
+                        onSave={(ids) => saveBranches(m.membershipId, ids)}
+                      />
+                    ) : (
+                      <span className="text-[10px] text-slate-500">Whole organisation</span>
+                    )}
                   </td>
                   <td className="px-2 py-2 font-mono text-[10px] text-slate-500">
                     {m.createdAt.slice(0, 10)}
@@ -184,6 +225,62 @@ export default function MembersPanel({
         />
       )}
     </section>
+  );
+}
+
+/**
+ * A branch-scoped member's branches. An EMPTY set means the member can see and
+ * change no bookings at all, so it is called out rather than left blank. Edits
+ * are a draft until saved: saving signs the member out of their live session
+ * (a change to what they can reach, spec §9 rule 10), so it must not happen on
+ * every click.
+ */
+function BranchScope({
+  member,
+  branches,
+  editable,
+  isPending,
+  onSave,
+}: {
+  member: MemberRow;
+  branches: BranchOption[];
+  editable: boolean;
+  isPending: boolean;
+  onSave: (branchIds: string[]) => void;
+}) {
+  const [draft, setDraft] = useState<string[]>(member.branchIds);
+  const dirty =
+    draft.length !== member.branchIds.length || draft.some((id) => !member.branchIds.includes(id));
+  const toggle = (id: string) =>
+    setDraft((d) => (d.includes(id) ? d.filter((x) => x !== id) : [...d, id]));
+
+  return (
+    <div className="space-y-1">
+      {member.branchIds.length === 0 && (
+        <p className="text-[10px] font-semibold text-rose-700">
+          No branches — cannot see or change bookings
+        </p>
+      )}
+      <fieldset className="flex flex-wrap gap-x-3 gap-y-1" disabled={!editable || isPending}>
+        <legend className="sr-only">Branches for {member.email}</legend>
+        {branches.map((b) => (
+          <label key={b.id} className="flex items-center gap-1 text-[11px] text-slate-700">
+            <input type="checkbox" checked={draft.includes(b.id)} onChange={() => toggle(b.id)} />
+            {b.name}
+          </label>
+        ))}
+      </fieldset>
+      {editable && dirty && (
+        <button
+          type="button"
+          onClick={() => onSave(draft)}
+          disabled={isPending}
+          className="rounded-md bg-slate-900 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-slate-800 disabled:opacity-40"
+        >
+          Save branches
+        </button>
+      )}
+    </div>
   );
 }
 

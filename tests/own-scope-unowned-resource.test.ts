@@ -63,7 +63,7 @@ describe('U-05 — :own must not grant on a resolved-but-unowned resource', () =
   const ORG = '00000000-0000-0000-0000-0000000000aa';
 
   it('DENIES a concrete appointment whose staff has no linked user', () => {
-    const resource = appointmentResource(ORG, { ownerUserId: null, locationId: 'loc-1' });
+    const resource = appointmentResource(ORG, { ownerUserId: null, branchId: 'branch-1' });
     expect(resource).toHaveProperty('ownerUserId', null);
     expect(can(providerCtx(ORG), 'booking.update', resource)).toBe(false);
     expect(can(providerCtx(ORG), 'booking.cancel', resource)).toBe(false);
@@ -73,18 +73,18 @@ describe('U-05 — :own must not grant on a resolved-but-unowned resource', () =
     // The complement. Removing the fallback outright would leave a :own role
     // unable to list anything, which is why it exists.
     expect(can(providerCtx(ORG), 'booking.update', { organizationId: ORG })).toBe(true);
-    const listShape = appointmentResource(ORG, { locationId: 'loc-1' });
+    const listShape = appointmentResource(ORG, { branchId: 'branch-1' });
     expect('ownerUserId' in listShape).toBe(false);
     expect(can(providerCtx(ORG), 'booking.update', listShape)).toBe(true);
   });
 
   it('ALLOWS an appointment the caller does own', () => {
-    const mine = appointmentResource(ORG, { ownerUserId: ME, locationId: 'loc-1' });
+    const mine = appointmentResource(ORG, { ownerUserId: ME, branchId: 'branch-1' });
     expect(can(providerCtx(ORG), 'booking.update', mine)).toBe(true);
   });
 
   it("DENIES another user's appointment (the case that already worked)", () => {
-    const theirs = appointmentResource(ORG, { ownerUserId: SOMEONE_ELSE, locationId: 'loc-1' });
+    const theirs = appointmentResource(ORG, { ownerUserId: SOMEONE_ELSE, branchId: 'branch-1' });
     expect(can(providerCtx(ORG), 'booking.update', theirs)).toBe(false);
   });
 
@@ -102,7 +102,7 @@ describe('U-05 — :own must not grant on a resolved-but-unowned resource', () =
       roleRank: 100,
       permissions: new Set(['booking.update:org'].map(perm)) as ReadonlySet<PermissionKey>,
     } as unknown as AuthContext;
-    const unowned = appointmentResource(ORG, { ownerUserId: null, locationId: 'loc-1' });
+    const unowned = appointmentResource(ORG, { ownerUserId: null, branchId: 'branch-1' });
     expect(can(owner, 'booking.update', unowned)).toBe(true);
   });
 });
