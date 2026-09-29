@@ -1,7 +1,7 @@
 import { ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
-import { listWaitlist } from '@/lib/waitlist';
+import { listWaitlist, waitlistScopeFor } from '@/lib/waitlist';
 import WaitlistView from './WaitlistView';
 
 export const metadata = { title: 'Waitlist · Bookpitch' };
@@ -16,8 +16,11 @@ export default async function WaitlistPage() {
     'waitlist',
   );
   const session = ctxToSession(ctx);
+  // The guard above passes in LIST mode; the rows are scoped here, by the same
+  // helper GET /api/waitlist uses. This page used to pass no scope at all.
+  const scope = await waitlistScopeFor(ctx);
   const [rows, customers, staff, services] = await Promise.all([
-    listWaitlist(session),
+    listWaitlist(session, scope),
     withOrg(session.organizationId, (tx) =>
       tx.customer.findMany({
         select: { id: true, name: true },

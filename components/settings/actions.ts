@@ -2,8 +2,8 @@
 
 import { revalidatePath } from 'next/cache';
 import type { UserRole } from '@prisma/client';
-import { ctxToSession } from '@/lib/auth';
-import { requireAuthContext, requirePermission, resolveStaffOwner } from '@/lib/rbac';
+import { NotFoundError, ctxToSession } from '@/lib/auth';
+import { requireAuthContext, requirePermission, resolveStaffResource } from '@/lib/rbac';
 import { type ActionResult } from '@/lib/action-result';
 import { safeAction } from '@/lib/safe-action';
 import {
@@ -21,6 +21,7 @@ import {
   updateStaff,
 } from '@/lib/admin';
 import { createInvitation, type CreateInvitationResult } from '@/lib/invitations';
+import { linkStaffToMember, setMemberBranches, unlinkStaff } from '@/lib/admin/scoped-access';
 import {
   assertStaffHardDeleteSafe,
   cleanupServiceById,
@@ -119,17 +120,19 @@ export async function setAvailabilityAction(id: string, windows: AvailabilityWin
     // Naming no resource is can()'s list mode, which grants `:own` — so a
     // PROVIDER holding staff.schedule.manage:own could rewrite ANY colleague's
     // hours by id, while the API route beside it resolved the owner and
-    // refused. Same resolver as that route; `null` passes straight through, so
-    // an unlinked staff row is refused to `:own` rather than re-entering list
-    // mode (U-05).
+    // refused. Same resolver as that route: owner and branch from one row, an
+    // unlinked row refused to `:own` (U-05), an unknown id refused as not-found.
     const ctx = await requireAuthContext();
-    const ownerUserId = await resolveStaffOwner(id, ctx.activeOrganizationId!);
+    // Coarse gate first, so a caller with no grant at all learns nothing.
     requirePermission(
       ctx,
       'staff.schedule.manage',
-      { organizationId: ctx.activeOrganizationId!, ownerUserId },
+      { organizationId: ctx.activeOrganizationId! },
       'admin',
     );
+    const resource = await resolveStaffResource(id, ctx.activeOrganizationId!);
+    if (!resource) throw new NotFoundError('staff not found');
+    requirePermission(ctx, 'staff.schedule.manage', resource, 'admin');
     const session = ctxToSession(ctx);
     // STAGE C stores the editor's digits unchanged.
     //
@@ -196,6 +199,39 @@ export async function updateMemberRoleAction(membershipId: string, role: UserRol
     // denial. It must reach the operator as a sentence, not as a crash.
     await updateMemberRole(session, membershipId, role);
     REVALIDATE_ALL();
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Scoped access (C7). Both change what a member can reach — the same authority
+// as changing their role — so both require staff.role.assign, and
+// lib/admin/scoped-access.ts adds the rank/lattice check against the target.
+// -----------------------------------------------------------------------------
+
+export async function linkStaffAction(staffId: string, userId: string) {
+  return safeAction('settings.linkStaff', async () => {
+    const session = await ctxFor('staff.role.assign', 'admin');
+    const result = await linkStaffToMember(session, staffId, userId);
+    REVALIDATE_ALL();
+    return result;
+  });
+}
+
+export async function unlinkStaffAction(staffId: string) {
+  return safeAction('settings.unlinkStaff', async () => {
+    const session = await ctxFor('staff.role.assign', 'admin');
+    const result = await unlinkStaff(session, staffId);
+    REVALIDATE_ALL();
+    return result;
+  });
+}
+
+export async function setMemberBranchesAction(membershipId: string, branchIds: string[]) {
+  return safeAction('settings.setMemberBranches', async () => {
+    const session = await ctxFor('staff.role.assign', 'admin');
+    const result = await setMemberBranches(session, membershipId, branchIds);
+    REVALIDATE_ALL();
+    return result;
   });
 }
 

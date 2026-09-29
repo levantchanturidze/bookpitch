@@ -19,7 +19,7 @@ trigger-ზე ან UI გვერდზე. როლები არის 
 | გაუქმებისას მოცდის სიის ავტოინფორმირება | `lib/waitlist.ts::notifyWaitlistForCancelled` (გამოძახებული ვიზიტის PATCH ტრანზაქციაში) | სისტემა — გაუქმებაზე რეაქცია | ორგანიზაციულად შემოსაზღვრული |
 | AI-ს დახმარებით ვიზიტის ჩანაწერის მონახაზი (Gemini) | `app/api/assistant/draft/route.ts` POST + `components/scheduler/actions.ts::draftAppointmentAction` | `client.read:contact` | ორგანიზაცია; თვიური ლიმიტი `ASSISTANT_MONTHLY_CAP_PER_ORG` |
 | მოცდის სიაში კლიენტის დამატება | `app/api/waitlist/route.ts` POST + `lib/waitlist.ts::addToWaitlist` | `booking.create` | ორგანიზაცია |
-| მოცდის სიის ჩვენება (`:own` / `:branch` სფეროთი ფილტრირებული) | `app/api/waitlist/route.ts` GET + `app/(app)/waitlist/page.tsx` | `booking.read` | პირადი პერსონალის ID-ები ან ფილიალის ლოკაციები |
+| მოცდის სიის ჩვენება (`:own` / `:branch` სფეროთი ფილტრირებული) | `app/api/waitlist/route.ts` GET + `app/(app)/waitlist/page.tsx` (ორივე `lib/waitlist.ts::waitlistScopeFor`-ით) | `booking.read` | პირადი პერსონალის ID-ები, ან მომხმარებლის ფილიალებზე მიკუთვნებული ჩანაწერები (ლოკაცია → პერსონალის ლოკაცია → სერვისის ლოკაცია); ჩანაწერი, რომელსაც არცერთი არ აქვს, ორგანიზაციის დონისაა |
 | მოცდის ჩანაწერის ამოშლა | `app/api/waitlist/[id]/route.ts` DELETE | `booking.update` — `resolveWaitlistOwner` მოწმებით | იგივე |
 | ორმაგი ჯავშნის აღკვეთა ბაზის დონეზე | `prisma/migrations/20260721220810_init/migration.sql` — `EXCLUDE USING gist (staff_id, tstzrange(starts_at, ends_at))` | Postgres კონსტრეინტი | გამორიცხავს გაუქმებულ ჩანაწერებს |
 | პერსონალის ხელმისაწვდომობის შემოწმება ჯავშნის დროს | `lib/appointments.ts::assertWithinAvailability` (გამოიძახება create + update ორივე გზაზე) | ნებისმიერი ჩამწერი | `staff_availability` ჩანაწერების ჩარჩოში |
@@ -56,12 +56,14 @@ trigger-ზე ან UI გვერდზე. როლები არის 
 | პერსონალის ჩანაწერის შექმნა | `app/api/admin/staff/route.ts` POST + `createStaffAction` | `staff.update` | ორგანიზაცია |
 | პერსონალის ჩანაწერის განახლება | `app/api/admin/staff/[id]/route.ts` PATCH + `updateStaffAction` | `staff.update` | ორგანიზაცია |
 | პერსონალის წაშლა (თუ არსებული ვიზიტებია, 409 შეცდომა) | `app/api/admin/staff/[id]/route.ts` DELETE + `deleteStaffAction` | `staff.deactivate` | ორგანიზაცია |
-| პერსონალის კვირეული ხელმისაწვდომობის დაყენება | `app/api/admin/staff/[id]/availability/route.ts` PUT + `setAvailabilityAction` + `lib/admin.ts::setAvailability` | `staff.schedule.manage` (მიბმული მომხმარებლის owner-check-ით) | `own` — მიბმული მომხმარებელს, თუ არა `org` |
+| პერსონალის კვირეული ხელმისაწვდომობის დაყენება | `app/api/admin/staff/[id]/availability/route.ts` PUT + `setAvailabilityAction` + `lib/admin.ts::setAvailability` | `staff.schedule.manage` — დადგენილი პერსონალის ჩანაწერი, owner და branch ერთად (`resolveStaffResource`), route-სა და action-ში ერთნაირად (U-06) | `own` — მიბმულ მომხმარებელს, `branch` — პერსონალის ფილიალს, თუ არა `org` |
 | ორგანიზაციის წევრების სია (ლოგინის მქონე ხალხი) | `app/api/admin/members/route.ts` GET + `app/(app)/settings/members/page.tsx` | `staff.invite` | ორგანიზაცია |
 | წევრის მოწვევა (invitation ჩანაწერი + სურვილისამებრ email) | `lib/invitations.ts::createInvitation` + `inviteMemberAction` | `staff.invite` + rank check (`canManageRoleAssignment`) | ორგანიზაცია |
 | მოწვევების სია / გაგზავნა / გაუქმება | `app/api/invitations/route.ts` GET/POST + `app/api/invitations/[id]/route.ts` DELETE | `staff.invite` | ორგანიზაცია |
 | მოწვევის მიღება (ქმნის მომხმარებელს ან აქცევს არსებულს) | `app/api/invitations/accept/route.ts` POST + `lib/invitations.ts::acceptInvitation` | ანონიმური, ვალიდური ტოკენით | ორგანიზაცია |
 | წევრის როლის შეცვლა | `app/api/admin/members/[id]/route.ts` PATCH + `updateMemberRoleAction` | `staff.role.assign` + rank guardrails (ბოლო-მფლობელი, უფრო მაღალი რანგის უარყოფა) | ორგანიზაცია |
+| პერსონალის ჩანაწერის წევრთან მიბმა ან მოხსნა | `linkStaffAction` / `unlinkStaffAction` + `lib/admin/scoped-access.ts::linkStaffToMember`, `unlinkStaff` | `staff.role.assign` + rank guardrails (არასოდეს საკუთარ თავზე ან თანაბარ რანგზე); აუდიტირებული | ორგანიზაცია; ერთი მიბმული ჩანაწერი (ლოკაცია, წევრი) წყვილზე |
+| წევრის ფილიალების დაყენება | `setMemberBranchesAction` + `lib/admin/scoped-access.ts::setMemberBranches` | `staff.role.assign` + rank guardrails; აუდიტირებული; წევრის სესია უქმდება | ორგანიზაცია; FRONT_DESK წევრობა ყველა ფილიალით იწყება (მოწვევა, როლის შეცვლა); ცარიელი ნაკრები არაფერზე ვრცელდება |
 | წევრის ამოშლა | `app/api/admin/members/[id]/route.ts` DELETE + `removeMemberAction` | `staff.deactivate` + rank + ბოლო-მფლობელის დაცვა | ორგანიზაცია |
 | მფლობელობის გადაცემა სხვა წევრზე (ნომინირება) | `app/api/admin/ownership-transfer/route.ts` POST + `lib/admin/ownership-transfer.ts::nominateTransfer` | `org.ownership.transfer` | ორგანიზაცია |
 | ნომინირებული პიროვნების მოლოდინის სია | `app/api/admin/ownership-transfer/route.ts` GET | სესიის მომხმარებელი | პირადი inbox |
@@ -122,7 +124,7 @@ trigger-ზე ან UI გვერდზე. როლები არის 
 | ფუნქცია | ფაილი | როლები | სფერო |
 |---|---|---|---|
 | ყველა დაგეგმილი ვიზიტისთვის შეხსენების გაგზავნა (cron) | `app/api/cron/reminders/route.ts` POST + `lib/messaging/reminders.ts::runReminderTick` | Bearer `CRON_SECRET`; ორგანიზაციაზე ცალკე გაშვება | ყველა ორგანიზაცია |
-| კონკრეტული ვიზიტისთვის შეხსენების დაუყოვნებელი გაგზავნა | `app/api/reminders/send-now/route.ts` POST + `sendNowAction` + `lib/messaging/reminders.ts::sendNowForSession` | `booking.update` (per-resource `ownerUserId` check) | პირადი ვიზიტები ან უფრო ფართო |
+| კონკრეტული ვიზიტისთვის შეხსენების დაუყოვნებელი გაგზავნა | `app/api/reminders/send-now/route.ts` POST + `sendNowAction` + `lib/messaging/reminders.ts::sendNowForSession` | `booking.update` — დადგენილი ვიზიტი, owner და branch ერთად (`resolveAppointmentResource`), route-სა და action-ში ერთნაირად (U-06) | პირადი ვიზიტები, საკუთარი ფილიალები ან ორგანიზაცია |
 | ორგანიზაციის შეხსენების lead-hours-ის კონფიგურაცია | `saveLeadHoursAction` + `organizations.reminderLeadHours` column | `org.settings.update:org` | ორგანიზაცია |
 | ორგანიზაციისთვის SMS + email შაბლონების კონფიგურაცია | `saveTemplateAction` + `MessageTemplate` table | `org.settings.update:org` | ორგანიზაცია |
 | შაბლონების რენდერი: `{PatientName}`, `{StaffName}`, `{ServiceName}`, `{Date}`, `{Time}` | `lib/messaging/templates.ts::renderTemplate` | სისტემა | გაგზავნის დროს |

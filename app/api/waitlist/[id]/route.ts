@@ -1,5 +1,5 @@
-import { ctxToSession, withApi } from '@/lib/auth';
-import { requireAuthContext, requirePermission, resolveWaitlistOwner } from '@/lib/rbac';
+import { NotFoundError, ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission, resolveWaitlistResource } from '@/lib/rbac';
 import { removeFromWaitlist } from '@/lib/waitlist';
 
 export const runtime = 'nodejs';
@@ -10,19 +10,25 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   return withApi(async () => {
     const ctx = await requireAuthContext();
     const { id } = await params;
-    // F-09 companion: resolve the row's owner (waitlist.staff.userId) so
-    // :own-scoped roles (PROVIDER's booking.update:own) are checked against
-    // the actual owner. Without this, can()'s list-mode fallback would
-    // grant the delete for ANY waitlist row.
-    const ownerUserId = await resolveWaitlistOwner(id, ctx.activeOrganizationId!);
+    // Resolve the row BEFORE authorising it — owner (via its staff member's
+    // linked user) and branch (derived: location, else staff's, else
+    // service's) together. This used to resolve the owner only, so a `:branch`
+    // caller took list mode and could delete any waitlist row in the
+    // organisation (scoped-RBAC audit §3.3, probe P7). A cross-tenant id and a
+    // deleted one are indistinguishable here, which is the right answer.
+    //
+    // Coarse gate first: a caller holding no booking.update at all is refused
+    // before the lookup, so "not found" is only ever said to someone who
+    // could have acted on the row.
     requirePermission(
       ctx,
       'booking.update',
-      // U-05: pass null through. `?? undefined` re-entered list mode and undid
-      // the resolution this line just performed.
-      { organizationId: ctx.activeOrganizationId!, ownerUserId },
+      { organizationId: ctx.activeOrganizationId! },
       'waitlist',
     );
+    const resource = await resolveWaitlistResource(id, ctx.activeOrganizationId!);
+    if (!resource) throw new NotFoundError('waitlist entry not found');
+    requirePermission(ctx, 'booking.update', resource, 'waitlist');
     await removeFromWaitlist(ctxToSession(ctx), id);
     return { ok: true };
   });

@@ -185,10 +185,14 @@ Use the multi-tenant fixtures in `prisma/rbac-fixtures.ts`:
   invalidation (e.g. after a permission change in a test), bump
   `sessionVersion` on the user and the next `buildAuthContext` will
   rebuild.
-- **`branchIds` empty means unrestricted**, not "no access". FRONT_DESK
-  has `booking.read:branch` but no branch scope — that means "read
-  anywhere in the org". BRANCH_MANAGER also has `:branch`, but with
-  populated `branchIds` — that scopes them down.
+- **`branchIds` empty means NO access** for a `:branch` grant (changed
+  2026-09-29, C7 — docs/scoped-rbac-assumption-audit.md). It used to mean
+  "unrestricted", which made every FRONT_DESK org-wide and contradicted spec
+  §10. A FRONT_DESK membership receives every current branch when it is
+  created (invitation acceptance, role change) and admins narrow it in
+  Settings → Members; an empty set shows zero rows and refuses every
+  concrete resource. `branchIds` holds **branch** ids — never compare it
+  with a location id.
 - **Suspended org denies everything**. If a user complains their perms
   suddenly stopped working, check `organizations.status`. Suspended and
   archived orgs deny every org-plane action regardless of grants.
@@ -435,34 +439,53 @@ check. Payment code calls
 `lib/payments/service.ts` before persisting a discount. Passing a
 non-FRONT_DESK role is a no-op.
 
-### Branch scoping for BRANCH_MANAGER
+### Branch and owner scoping on every list and every concrete resource
 
-When a caller with `ctx.branchIds.size > 0` hits a list endpoint,
-filter the query to their scope:
+A permission check that names no resource is LIST mode: `can()` grants
+`:own` and `:branch`, and **the query must filter**. Every list path applies
+both filters, derived from the caller's grant on the base permission:
 
 ```ts
-import { scopedLocationIds } from '@/lib/rbac';
+import { scopedByOwn, scopedLocationIds } from '@/lib/rbac';
 
-const scoped = await scopedLocationIds(ctx);   // string[] | null
+const scoped = await scopedLocationIds(ctx, 'booking.read'); // string[] | null
+const ownUserId = scopedByOwn(ctx, 'booking.read');          // string | null
 if (scoped && userLocationId && !scoped.includes(userLocationId)) {
   throw new InvalidInputError('locationId is outside your branch scope');
 }
-const whereLocation =
-  userLocationId ? { locationId: userLocationId }
-  : scoped ? { locationId: { in: scoped } }
-  : {};
+const where = {
+  ...(userLocationId ? { locationId: userLocationId }
+      : scoped ? { locationId: { in: scoped } } : {}),
+  ...(ownUserId ? { staff: { userId: ownUserId } } : {}),
+};
 ```
 
-`null` means the caller has org-wide reach (ORG_OWNER, ORG_ADMIN,
-FRONT_DESK with empty branch scope). Non-null means "must filter to
-these locations". Empty array is intentional — a BRANCH_MANAGER with
-zero linked branches sees zero rows.
+`null` means an `:org` (or `:own`, or scope-less) grant: no location
+filter. An array — **including `[]`** — means "only these locations", and
+`[]` is what a `:branch` member with no branches gets: zero rows, never "no
+filter". It used to take no permission and return `null` for every empty
+set, which made every FRONT_DESK org-wide (C7).
 
-Currently applied to `/api/appointments` GET and `/api/waitlist` GET.
-Analytics + insurance export are left to a future audit — spec §6.2
-grants `report.financial:org` to owners only, so BRANCH_MANAGER never
-reaches those endpoints and scope-filtering is defensive rather than
-required.
+Applied to: `GET /api/appointments`, `/scheduler`, `GET /api/waitlist` and
+`/waitlist` (both via `waitlistScopeFor(ctx)`; `listWaitlist` REQUIRES a
+scope), `/reminders` (upcoming list and message log), `/billing`. Waitlist
+rows are attributed to a branch by location, else staff member's location,
+else service's location; a row with none is org-level (`waitlistInLocations`).
+
+A CONCRETE operation must resolve its resource first and authorise against
+it — owner AND branch, from one row, as a **branch** id:
+
+```ts
+const resource = await resolveAppointmentResource(id, ctx.activeOrganizationId!);
+if (!resource) throw new NotFoundError('appointment not found');
+requirePermission(ctx, 'booking.update', resource, 'appointments');
+```
+
+`resolveStaffResource` and `resolveWaitlistResource` do the same for staff
+rows and waitlist entries. Never build `branchId` from a location id — the
+two are different uuids (docs/scoped-rbac-assumption-audit.md §3.4). A
+resolved resource with no branch carries `branchId: null`, which `:branch`
+denies (the twin of U-05's `ownerUserId: null`).
 
 ### Admin guardrails composition
 

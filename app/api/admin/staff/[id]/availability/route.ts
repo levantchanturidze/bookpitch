@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
-import { InvalidInputError, ctxToSession, withApi } from '@/lib/auth';
-import { requireAuthContext, requirePermission, resolveStaffOwner } from '@/lib/rbac';
+import { InvalidInputError, NotFoundError, ctxToSession, withApi } from '@/lib/auth';
+import { requireAuthContext, requirePermission, resolveStaffResource } from '@/lib/rbac';
 import { setAvailability, type AvailabilityWindow } from '@/lib/admin';
 
 // PUT /api/admin/staff/[id]/availability
@@ -10,23 +10,22 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   return withApi(async () => {
     const ctx = await requireAuthContext();
     const { id } = await params;
-    // F-09 companion: resolve the staff row's linked user so :own-scoped
-    // roles (PROVIDER's staff.schedule.manage:own) can edit their own
-    // schedule but not others'. Staff without a linked user (contractor
-    // records) resolve to null → :own-only callers denied by can().
-    //
-    // SEC-007: the resolver reads through withOrg, so RLS is the belt to the
-    // WHERE clause's suspenders. U-06: setAvailabilityAction now uses the same
-    // resolver, so this route and the action cannot disagree again.
-    const ownerUserId = await resolveStaffOwner(id, ctx.activeOrganizationId!);
+    // Resolve the staff row BEFORE authorising it — its linked user for `:own`
+    // (PROVIDER's staff.schedule.manage:own; an unlinked row resolves to null
+    // and is refused, U-05) and its location's branch for `:branch`
+    // (SENIOR_PROVIDER, BRANCH_MANAGER). The resolver reads through withOrg
+    // (SEC-007), and setAvailabilityAction authorises through the same one
+    // (U-06), so this route and the action cannot disagree again. The coarse
+    // gate first means a caller with no grant at all learns nothing from 404.
     requirePermission(
       ctx,
       'staff.schedule.manage',
-      // U-05: pass null through, so the ":own-only callers denied" behaviour the
-      // comment above promises is what actually happens.
-      { organizationId: ctx.activeOrganizationId!, ownerUserId },
+      { organizationId: ctx.activeOrganizationId! },
       'admin',
     );
+    const resource = await resolveStaffResource(id, ctx.activeOrganizationId!);
+    if (!resource) throw new NotFoundError('staff not found');
+    requirePermission(ctx, 'staff.schedule.manage', resource, 'admin');
     const body = (await req.json().catch(() => ({}))) as { windows?: unknown };
     if (!Array.isArray(body.windows)) throw new InvalidInputError('windows must be an array');
     await setAvailability(ctxToSession(ctx), id, body.windows as AvailabilityWindow[]);

@@ -15,12 +15,17 @@ export { requirePagePermission } from './page-guard';
 export { canManageRoleAssignment } from './rank';
 export { buildAuthContext } from './context';
 export { perm } from './types';
+// Concrete resources are authorised through the resolvers, which return owner
+// AND branch from one row. The owner-only resolveBookingOwner is deliberately
+// not re-exported here: on its own it leaves `:branch` in list mode.
 export {
   scopedLocationIds,
   scopedByOwn,
-  resolveBookingOwner,
-  resolveWaitlistOwner,
-  resolveStaffOwner,
+  appointmentResource,
+  resolveAppointmentResource,
+  resolveStaffResource,
+  resolveWaitlistResource,
+  waitlistInLocations,
 } from './scope';
 export { loadOrgToggles, updateOrgToggles, DEFAULT_TOGGLES } from './toggles';
 export type { OrgToggles } from './toggles';

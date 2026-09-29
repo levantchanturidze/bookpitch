@@ -5,8 +5,12 @@ import { safeAction } from '@/lib/safe-action';
 
 import { revalidatePath } from 'next/cache';
 import { ctxToSession, InvalidInputError, SlotTakenError } from '@/lib/auth';
-import { requireAuthContext, requirePermission } from '@/lib/rbac';
-import { appointmentResource } from '@/lib/rbac/scope';
+import {
+  requireAuthContext,
+  requirePermission,
+  resolveAppointmentResource,
+  resolveStaffResource,
+} from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
@@ -144,24 +148,13 @@ export async function updateAppointmentAction(
   // passing its id. Tenant isolation held; scope inside the tenant did not.
   //
   // The read is tenant-scoped via withOrg, so a cross-tenant id resolves to
-  // null here and is refused as not-found without ever reaching can().
-  const target = await withOrg(session.organizationId, (tx) =>
-    tx.appointment.findUnique({
-      where: { id },
-      select: { id: true, locationId: true, staff: { select: { userId: true } } },
-    }),
-  );
-  if (!target) return { ok: true, appointment: null };
+  // null here and is refused as not-found without ever reaching can(). The
+  // resolver supplies the owner AND the branch of the appointment's location
+  // — a branch id, which is what ctx.branchIds holds (scoped-RBAC audit §3.4).
+  const resource = await resolveAppointmentResource(id, session.organizationId);
+  if (!resource) return { ok: true, appointment: null };
 
-  requirePermission(
-    ctx,
-    needed,
-    appointmentResource(session.organizationId, {
-      locationId: target.locationId,
-      ownerUserId: target.staff?.userId ?? null,
-    }),
-    'appointments',
-  );
+  requirePermission(ctx, needed, resource, 'appointments');
 
   try {
     const appointment = await withOrg(session.organizationId, async (tx) => {
@@ -250,6 +243,9 @@ export async function fetchAvailableSlotsAction(
   durationMinutes: number,
 ): Promise<string[]> {
   const ctx = await requireAuthContext();
+  // Coarse gate first, as before: a caller with no booking.read at all is
+  // refused before anything is looked up, so an unknown id cannot be told
+  // apart from a real one.
   requirePermission(
     ctx,
     'booking.read',
@@ -257,6 +253,18 @@ export async function fetchAvailableSlotsAction(
     'appointments',
   );
   const session = ctxToSession(ctx);
+  // Then name the staff member's BRANCH, so a `:branch` caller cannot read the
+  // occupancy of a branch they do not hold. The owner is deliberately NOT
+  // named: `:own` stays in list mode here, exactly as before, because a
+  // PROVIDER's booking form looks up slots for the practitioner being booked.
+  const staffResource = await resolveStaffResource(staffId, session.organizationId);
+  if (!staffResource) return [];
+  requirePermission(
+    ctx,
+    'booking.read',
+    { organizationId: session.organizationId, branchId: staffResource.branchId },
+    'appointments',
+  );
   return withOrg(session.organizationId, async (tx) => {
     // Load the staff member's location timezone so slots are in local time.
     const staffRec = await tx.staff.findUnique({

@@ -44,10 +44,12 @@ export default async function SchedulerPage({
     throw new Error(`scheduler range of ${spanDays}d exceeds the 62d bound`);
   }
 
-  const scoped = await scopedLocationIds(ctx);
+  // The page guard above passes in LIST mode, so visibility is decided here.
+  // `[]` (a `:branch` member with no branches) puts no location in scope.
+  const scoped = await scopedLocationIds(ctx, 'booking.read');
   const ownUserId = scopedByOwn(ctx, 'booking.read');
   const ownFilter = ownUserId ? { staff: { userId: ownUserId } } : {};
-  const locationInScope = !scoped || scoped.includes(active.id);
+  const locationInScope = scoped === null || scoped.includes(active.id);
 
   // U-02: the booking modal hard-coded "$". The organisation's own currency
   // column is authoritative — GEL for this deployment — so it is read here and

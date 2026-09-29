@@ -1,51 +1,37 @@
 // -----------------------------------------------------------------------------
-// RBAC Phase 6 — branch scope resolution helper.
+// RBAC — scope resolution for `:own` and `:branch`.
 //
-// Existing state (Phase 3): can() enforces :branch grants against
-// ctx.branchIds. Route handlers already filter by user-supplied
-// `locationId` params. Gap: a list endpoint hit without a locationId
-// param returns all branches' data for a BRANCH_MANAGER (who has
-// populated ctx.branchIds).
+// can() decides; this module supplies the facts it decides on. Two jobs:
 //
-// This helper resolves ctx.branchIds → the corresponding legacy
-// `locations.id[]` via `branches.legacy_location_id` (Phase 2 backfill).
-// Route handlers merge the result into their query's WHERE clause:
+//   LIST paths name no resource, so can() grants `:own` and `:branch` in LIST
+//   mode and trusts the query to filter. scopedLocationIds() and scopedByOwn()
+//   ARE that filter — every list path must apply both.
 //
-//   const scoped = await scopedLocationIds(ctx);
-//   const where = {
-//     ...(scoped ? { locationId: { in: scoped } } : {}),
-//     ...(userLocationId ? { locationId: userLocationId } : {}),
-//   };
+//   CONCRETE paths (anything acting on one id) must resolve the resource first
+//   and authorise against it. The resolvers below return owner AND branch
+//   together, from the same row, so neither can be forgotten.
 //
-// If both the caller's scope AND a user-supplied locationId are present,
-// the user-supplied one must be inside the scope (can() already checks
-// this on :branch grants when resource.branchId is passed).
+// Branch ids and location ids are different uuids. The app plane stores
+// `location_id` on rows; `ctx.branchIds` holds `branches.id`; the two tables are
+// linked 1:1 by `branches.legacy_location_id`. Lists therefore filter by the
+// LOCATIONS of the caller's branches, and concrete resources carry the BRANCH
+// of their location. Mixing the two is what made an assigned branch impossible
+// to match (docs/scoped-rbac-assumption-audit.md §3.4).
 // -----------------------------------------------------------------------------
 
+import type { Prisma } from '@prisma/client';
 import { withOrg } from '@/lib/db';
 import type { AuthContext, Resource } from './types';
 import { perm } from './types';
 
-/**
- * Resolves the caller's ctx.branchIds to the location IDs the app-plane
- * queries currently reference. Returns:
- *   • `null` when ctx.branchIds is empty → caller has org-wide reach,
- *     no filter needed.
- *   • `string[]` (possibly empty) when populated — the list to filter
- *     queries by. An empty array intentionally matches nothing: a
- *     BRANCH_MANAGER with only cleared branches sees zero rows.
- *
- * Runs through withOrg so RLS on `branches` filters the result set to the
- * caller's active org. See `scopedLocationIds` below for the implementation.
- */
 /**
  * Companion to can()'s :own list-mode fallback (see lib/rbac/can.ts §4c).
  * Returns the userId to filter list queries by when the caller's strongest
  * grant on the given base permission is `:own` — meaning they can only
  * see rows they own.
  *
- * Returns null when the caller has :org or :branch (unrestricted or
- * branch-scoped access) OR no grant at all (can() will separately deny).
+ * Returns null when the caller has :org or :branch (the branch filter is
+ * scopedLocationIds' job) OR no grant at all (can() will separately deny).
  * Callers merge into their query:
  *
  *   const ownUserId = scopedByOwn(ctx, 'booking.read');
@@ -53,9 +39,6 @@ import { perm } from './types';
  *     ...(ownUserId ? { staff: { userId: ownUserId } } : {}),
  *     ...(scoped ? { locationId: { in: scoped } } : {}),
  *   };
- *
- * The permission layer trusts the query layer to apply this filter —
- * same trust model as scopedLocationIds() for :branch.
  */
 export function scopedByOwn(ctx: AuthContext, basePermKey: string): string | null {
   const p = basePermKey.split(':')[0]; // strip any accidental scope suffix
@@ -66,20 +49,62 @@ export function scopedByOwn(ctx: AuthContext, basePermKey: string): string | nul
 }
 
 /**
- * Per-resource ownership resolver. Given an appointment id, returns the
- * user id that owns the booking (via `appointment.staff.userId`), or null
- * if the appointment doesn't exist / has no linked user. Callers pass the
- * result into `requirePermission(ctx, perm, { organizationId, ownerUserId })`
- * so `:own`-scoped roles get evaluated against the actual owner rather
- * than passing the F-09 list-mode fallback.
+ * The LOCATIONS a list query on `basePermKey` may return rows from, decided by
+ * the caller's strongest grant — the same order can() walks:
  *
- * SEC-007: routed through `withOrg` so RLS is the second layer of defense
- * behind the WHERE clause's `organizationId` filter. Previously used
- * `unsafePrismaAdmin` with the org-scoped WHERE as sole protection —
- * exactly the "one bad WHERE = cross-tenant leak" shape SEC-007 exists to
- * prevent. Postgres allows nested `$transaction` on the same connection,
- * so this composes safely inside the caller's own withOrg block (see the
- * nested-tx probe in tests/security-review.test.ts §P7).
+ *   :org        → null, no location filter
+ *   :branch     → the locations of the caller's branches; `[]` when the set is
+ *                 EMPTY, so the query returns zero rows
+ *   :own        → null; rows are restricted by owner instead (scopedByOwn)
+ *   scope-less  → null
+ *   no grant    → `[]` — can() has already refused, and this fails closed anyway
+ *
+ * Callers must treat `[]` as "nothing", never as "no filter":
+ *
+ *   const scoped = await scopedLocationIds(ctx, 'booking.read');
+ *   const where = scoped ? { locationId: { in: scoped } } : {};
+ *
+ * This used to take no permission and return `null` for every caller with an
+ * empty branch set — which made every FRONT_DESK org-wide, and would have
+ * restricted an `:org` caller who happened to hold branch rows.
+ *
+ * SEC-007: the branch lookup runs through withOrg, so RLS on `branches` is the
+ * enforcer even if a JWT bug ever put an out-of-org branch id in the set.
+ */
+export async function scopedLocationIds(
+  ctx: AuthContext,
+  basePermKey: string,
+): Promise<string[] | null> {
+  const p = basePermKey.split(':')[0];
+  if (ctx.permissions.has(perm(`${p}:org`))) return null;
+  if (ctx.permissions.has(perm(`${p}:branch`))) return locationsOfBranches(ctx);
+  if (ctx.permissions.has(perm(`${p}:own`))) return null;
+  if (ctx.permissions.has(perm(p))) return null;
+  return [];
+}
+
+async function locationsOfBranches(ctx: AuthContext): Promise<string[]> {
+  if (ctx.branchIds.size === 0 || !ctx.activeOrganizationId) return [];
+  const rows = await withOrg(ctx.activeOrganizationId, (tx) =>
+    tx.branch.findMany({
+      where: {
+        id: { in: [...ctx.branchIds] },
+        legacyLocationId: { not: null },
+      },
+      select: { legacyLocationId: true },
+    }),
+  );
+  return rows.map((r) => r.legacyLocationId).filter((v): v is string => v !== null);
+}
+
+/**
+ * Owner of one appointment (`appointment.staff.userId`), or null when the id
+ * does not resolve in the caller's organisation or its staff has no linked user.
+ *
+ * OWNER ONLY — never enough to authorise a mutation on its own, because it
+ * leaves `:branch` in list mode. Use resolveAppointmentResource(). Kept for the
+ * RLS probes in tests/security-review.test.ts §P7, which pin that this read is
+ * tenant-scoped.
  */
 export async function resolveBookingOwner(
   appointmentId: string,
@@ -94,80 +119,6 @@ export async function resolveBookingOwner(
   return row?.staff?.userId ?? null;
 }
 
-/**
- * Same for a waitlist row — resolves via a two-step lookup (waitlist has
- * `staffId` as a column with no Prisma relation to Staff). Returns null
- * if the entry has no assigned staff (a flexible customer request) or the
- * staff row has no linked user.
- *
- * SEC-007: routed through `withOrg` for both lookups. Both queries drop
- * their org-scoped WHERE clauses since RLS now enforces the tenant filter.
- */
-export async function resolveWaitlistOwner(
-  waitlistId: string,
-  activeOrganizationId: string,
-): Promise<string | null> {
-  return withOrg(activeOrganizationId, async (tx) => {
-    const row = await tx.waitlist.findFirst({
-      where: { id: waitlistId },
-      select: { staffId: true },
-    });
-    if (!row?.staffId) return null;
-    const staff = await tx.staff.findFirst({
-      where: { id: row.staffId },
-      select: { userId: true },
-    });
-    return staff?.userId ?? null;
-  });
-}
-
-/**
- * Same for a staff row — the user it is linked to, or null when the row does
- * not resolve inside the caller's organisation or has no linked user. Callers
- * pass the result straight through as `ownerUserId` (never `?? undefined`), so
- * a `:own` role is judged against this staff member rather than list mode.
- *
- * U-06: the availability API route did this lookup inline and the
- * setAvailabilityAction beside it did not do it at all, so a PROVIDER could
- * rewrite any colleague's hours through the action. One resolver, used by
- * both, is what keeps the two paths from drifting apart again.
- */
-export async function resolveStaffOwner(
-  staffId: string,
-  activeOrganizationId: string,
-): Promise<string | null> {
-  const row = await withOrg(activeOrganizationId, (tx) =>
-    tx.staff.findFirst({
-      where: { id: staffId },
-      select: { userId: true },
-    }),
-  );
-  return row?.userId ?? null;
-}
-
-/**
- * SEC-007: previously used `unsafePrismaAdmin.branch.findMany({where: {id: {in: [...ctx.branchIds]}}})`
- * with NO organizationId filter — relied entirely on ctx.branchIds having
- * been vetted upstream. That was the worst-case shape: no belt AND no
- * suspenders. Now routed through withOrg so RLS on `branches` is the
- * enforcer even if a JWT bug ever populated ctx.branchIds with an out-of-
- * org branch id.
- */
-export async function scopedLocationIds(ctx: AuthContext): Promise<string[] | null> {
-  if (ctx.branchIds.size === 0) return null;
-  if (!ctx.activeOrganizationId) return [];
-  const rows = await withOrg(ctx.activeOrganizationId, (tx) =>
-    tx.branch.findMany({
-      where: {
-        id: { in: [...ctx.branchIds] },
-        legacyLocationId: { not: null },
-      },
-      select: { legacyLocationId: true },
-    }),
-  );
-  return rows.map((r) => r.legacyLocationId!).filter((v): v is string => v !== null);
-}
-
 // -----------------------------------------------------------------------------
 // 5.2 — the resource shape a CONCRETE appointment must be authorised against.
 //
@@ -177,46 +128,32 @@ export async function scopedLocationIds(ctx: AuthContext): Promise<string[] | nu
 // MUTATION which forgets to name its resource silently takes the same path and
 // is allowed against any row in the organisation.
 //
-// components/scheduler/actions.ts did exactly that: it authorised
-// `{ organizationId }` only, then loaded the appointment on the next line. This
-// helper exists so every mutation path — Server Action, API route, reschedule —
-// builds the same shape from the same two fields, and so "did we name the
-// resource" is one grep rather than a reading exercise.
+// U-05 (production C7 UAT, 2026-09-26) made `ownerUserId` three-state: a key
+// that is PRESENT AND NULL means "resolved, and it has no owner", which `can()`
+// treats as deny for `:own`; a key that is ABSENT still means list mode.
+// `'ownerUserId' in opts` is the discriminator.
 //
-// U-05 (production C7 UAT, 2026-09-26). `ownerUserId` used to be OMITTED when
-// the assigned staff member had no linked user account, on the reasoning that
-// there was "no owner to compare against". Production proved that reasoning
-// wrong in the worst direction: NOTHING in this product ever writes
-// `Staff.userId`, so EVERY appointment resolved to an absent owner, every
-// absent owner hit can()'s list-mode fallback, and a PROVIDER holding only
-// `booking.update:own` could update and cancel any appointment in the
-// organisation by id — while being unable to list a single one.
-//
-// The three states are now distinct. A key that is PRESENT AND NULL means
-// "resolved, and it has no owner", which `can()` treats as deny for `:own`.
-// A key that is ABSENT still means list mode. `'ownerUserId' in opts` is the
-// discriminator, so a caller that resolved an owner of `null` says so, and a
-// caller that never looked says nothing.
+// `branchId` follows the same rule and carries a BRANCH id. It used to be
+// filled from the appointment's location id, which no branch set can contain,
+// and a missing location silently OMITTED it — list mode again.
 // -----------------------------------------------------------------------------
 export function appointmentResource(
   organizationId: string,
-  opts: { ownerUserId?: string | null; locationId?: string | null } = {},
+  opts: { ownerUserId?: string | null; branchId?: string | null } = {},
 ): Resource {
   return {
     organizationId,
-    ...(opts.locationId ? { branchId: opts.locationId } : {}),
+    ...('branchId' in opts ? { branchId: opts.branchId ?? null } : {}),
     ...('ownerUserId' in opts ? { ownerUserId: opts.ownerUserId ?? null } : {}),
   };
 }
 
+/** Prisma selection for "the branch of this row's location". */
+const LOCATION_BRANCH = { select: { branch: { select: { id: true } } } } as const;
+
 /**
  * Resolve ONE appointment into the resource its mutation must be authorised
- * against — owner and branch together.
- *
- * `resolveBookingOwner` above resolves the owner only, which fixed `:own`
- * (F-09) and left `:branch` still taking can()'s list-mode fallback on the API
- * path. Both facts come from the same row, so fetching them separately only
- * created the opportunity to forget one.
+ * against — owner and branch together, from the same row.
  *
  * Returns `null` when the id does not resolve INSIDE the caller's organisation.
  * The read goes through withOrg, so a cross-tenant id is indistinguishable from
@@ -229,12 +166,106 @@ export async function resolveAppointmentResource(
   const row = await withOrg(activeOrganizationId, (tx) =>
     tx.appointment.findFirst({
       where: { id: appointmentId },
-      select: { locationId: true, staff: { select: { userId: true } } },
+      select: { location: LOCATION_BRANCH, staff: { select: { userId: true } } },
     }),
   );
   if (!row) return null;
   return appointmentResource(activeOrganizationId, {
-    locationId: row.locationId,
+    branchId: row.location.branch?.id ?? null,
     ownerUserId: row.staff?.userId ?? null,
   });
+}
+
+/**
+ * Resolve ONE staff row — the user it is linked to (`:own`) and the branch of
+ * its location (`:branch`). `null` when it does not resolve in the caller's
+ * organisation.
+ *
+ * U-06: the availability API route and setAvailabilityAction authorise through
+ * this one resolver, so the two paths cannot disagree again.
+ */
+export async function resolveStaffResource(
+  staffId: string,
+  activeOrganizationId: string,
+): Promise<Resource | null> {
+  const row = await withOrg(activeOrganizationId, (tx) =>
+    tx.staff.findFirst({
+      where: { id: staffId },
+      select: { userId: true, location: LOCATION_BRANCH },
+    }),
+  );
+  if (!row) return null;
+  return {
+    organizationId: activeOrganizationId,
+    branchId: row.location.branch?.id ?? null,
+    ownerUserId: row.userId ?? null,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Waitlist branch attribution — owner decision D2
+// (docs/scoped-rbac-assumption-audit.md §6).
+//
+// The waitlist form never sets `location_id`, so keying on that column alone
+// made every product-created row branchless. A row's branch is therefore
+// DERIVED:
+//
+//   its own location  →  else its staff member's location  →  else its
+//   service's location  →  else none: an org-level row, reachable only
+//   through an `:org` grant.
+//
+// The list filter and the concrete resolver below implement that one rule
+// twice — once as a Prisma WHERE, once from a loaded row.
+// tests/branch-scoping.test.ts ("D2 — the list and the concrete resolver agree
+// on every waitlist row") pins that they agree for every attribution case,
+// because two copies of a rule is how paths drift.
+// -----------------------------------------------------------------------------
+
+/** WHERE fragment: waitlist rows whose derived branch is one of `locationIds`. */
+export function waitlistInLocations(locationIds: string[]): Prisma.WaitlistWhereInput {
+  return {
+    OR: [
+      { locationId: { in: locationIds } },
+      { locationId: null, staff: { is: { locationId: { in: locationIds } } } },
+      {
+        locationId: null,
+        staffId: null,
+        service: { is: { locationId: { in: locationIds } } },
+      },
+    ],
+  };
+}
+
+/**
+ * Resolve ONE waitlist row — owner via its staff member's linked user, branch
+ * derived as above. `null` when it does not resolve in the caller's
+ * organisation.
+ */
+export async function resolveWaitlistResource(
+  waitlistId: string,
+  activeOrganizationId: string,
+): Promise<Resource | null> {
+  const row = await withOrg(activeOrganizationId, (tx) =>
+    tx.waitlist.findFirst({
+      where: { id: waitlistId },
+      select: {
+        location: LOCATION_BRANCH,
+        staff: { select: { userId: true, location: LOCATION_BRANCH } },
+        service: { select: { location: LOCATION_BRANCH } },
+      },
+    }),
+  );
+  if (!row) return null;
+  const branchId = row.location
+    ? (row.location.branch?.id ?? null)
+    : row.staff
+      ? (row.staff.location.branch?.id ?? null)
+      : row.service
+        ? (row.service.location.branch?.id ?? null)
+        : null;
+  return {
+    organizationId: activeOrganizationId,
+    branchId,
+    ownerUserId: row.staff?.userId ?? null,
+  };
 }

@@ -53,6 +53,10 @@ export async function fetchRescheduleSlotsAction(
         startsAt: true,
         endsAt: true,
         staff: { select: { userId: true } },
+        // The BRANCH of the location — the id space ctx.branchIds is in. The
+        // location id used to be passed here as if it were a branch id, so no
+        // assigned branch could ever match (scoped-RBAC audit §3.4).
+        location: { select: { branch: { select: { id: true } } } },
       },
     }),
   );
@@ -62,7 +66,7 @@ export async function fetchRescheduleSlotsAction(
     ctx,
     'booking.update',
     appointmentResource(session.organizationId, {
-      locationId: target.locationId,
+      branchId: target.location.branch?.id ?? null,
       ownerUserId: target.staff?.userId ?? null,
     }),
     'appointments',

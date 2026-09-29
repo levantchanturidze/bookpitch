@@ -312,8 +312,17 @@ describe('U-06 — sendNowAction authorises against the appointment it names', (
   });
 
   it('a cross-tenant id sends nothing, for a PROVIDER or an :org owner', async () => {
+    // Refined by the scoped-RBAC change (C7), deliberately. U-06 shipped with
+    // the action mirroring its route of the day — owner resolved, then the
+    // check — so a PROVIDER got ForbiddenError here while the owner got "not
+    // found". The action now resolves the appointment first, as PATCH does:
+    // an id outside the organisation is "not found" to everyone holding
+    // booking.update at all, which leaks nothing a role difference could. The
+    // property this case exists for is unchanged: nothing is sent.
     await signInAs(fx.providerId, fx.orgId);
-    await expect(sendNowAction(sendNowForm(fx.apptForeign))).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(sendNowAction(sendNowForm(fx.apptForeign))).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
     __clearAuthContextCache();
     await signInAs(fx.ownerId, fx.orgId);
     await expect(sendNowAction(sendNowForm(fx.apptForeign))).rejects.toBeInstanceOf(

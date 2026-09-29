@@ -264,7 +264,12 @@ async function main() {
     'receptionist',
     'BRANCH_MANAGER',
   );
-  await ensureMembership(testClinic.id, users.frontdesk.email, 'receptionist', 'FRONT_DESK');
+  const frontdeskMemId = await ensureMembership(
+    testClinic.id,
+    users.frontdesk.email,
+    'receptionist',
+    'FRONT_DESK',
+  );
   await ensureMembership(testClinic.id, users.provider.email, 'practitioner', 'PROVIDER');
   await ensureMembership(testClinic.id, users.accountant.email, 'receptionist', 'ACCOUNTANT');
   await ensureMembership(testClinic.id, users.multi.email, 'practitioner', 'PROVIDER');
@@ -286,6 +291,9 @@ async function main() {
 
   // Branch scoping — manager sees Downtown ONLY.
   await scopeToBranches(mgrMemId, [downtown.branchId]);
+  // Front desk: every branch (owner decision D1). An empty set now means NO
+  // booking access, not org-wide — docs/scoped-rbac-assumption-audit.md §6.
+  await scopeToBranches(frontdeskMemId, [downtown.branchId, uptown.branchId]);
   // Owner: unrestricted (empty set) — no-op, but call it to prove idempotence.
   await scopeToBranches(ownerMemId, []);
 

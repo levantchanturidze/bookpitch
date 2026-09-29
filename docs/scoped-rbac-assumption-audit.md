@@ -363,8 +363,48 @@ rather than change the design:
   (`lib/active-location.ts`). Once scoping is enforced, an out-of-scope location
   renders empty rather than hidden. This is a UX follow-up.
 - Cross-location double-booking of one person (§2.6).
-- `tests/scheduler-resource-scope.test.ts:30-32` says the Server Action and API
+- `tests/scheduler-resource-scope.test.ts` said the Server Action and API
   paths "are exercised in tests/scheduler-actions-authz.test.ts". That file
-  does not exist. The closest real coverage is
-  `tests/reschedule-slots-authz.test.ts`, and for the two U-06 actions,
-  `tests/u06-action-resource-scope.test.ts`.
+  never existed. The header now names the real coverage.
+
+## 8. Implementation (2026-09-29)
+
+Built exactly the design in §5, with the owner decisions in §6.
+
+| Part | Where |
+|---|---|
+| Three-state `branchId`; empty set denies concrete | `lib/rbac/types.ts`, `lib/rbac/can.ts` 4b |
+| Grant-aware list filter (`[]` for an empty set) | `lib/rbac/scope.ts::scopedLocationIds(ctx, base)` |
+| Branch-id resolvers, owner and branch from one row | `resolveAppointmentResource`, `resolveStaffResource`, `resolveWaitlistResource` |
+| D2 waitlist attribution, list and resolver | `waitlistInLocations`, `resolveWaitlistResource` |
+| Every list path scoped | appointments API, `/scheduler`, waitlist API and page (`waitlistScopeFor`; `listWaitlist` now REQUIRES a scope), `/reminders` (upcoming and log), `/billing` |
+| Every concrete path names its resource | appointment PATCH and action, reschedule, waitlist DELETE, send-now route and action, availability route and action, slot lookup |
+| Staff link / unlink; member branches | `lib/admin/scoped-access.ts`, Settings → Staff and Members; `staff.role.assign` + rank guardrails, audited, session bump on branch change |
+| D1 defaults | migration backfill; `acceptInvitation`; `updateMemberRole` into FRONT_DESK |
+| Database guards | `20260929000001_scoped_rbac_links`: `staff_location_user_unique`, `staff_user_is_member`, `membership_branches_same_org`; invariant check 8 |
+
+**Migration gate** (disposable local database brought to the exact
+predecessor state with `prisma migrate deploy`, production-shaped fixtures):
+32/32. It covers:
+- the backfill result per membership shape;
+- drift at exit 0 before and after the migration;
+- every guard exercised, including one provider linked at two locations of one
+  organisation;
+- the full invariant script passing;
+- the written rollback;
+- two abort paths that fail for their stated reason and leave no partial state.
+
+The gate found one defect, now fixed: inside an explicit `BEGIN … COMMIT`,
+Prisma swallowed the refusal message. The migration is therefore a single DO
+statement.
+
+**Perturbation.** Each control was removed and the suite went red:
+- old empty-set semantics → 9 failing cases;
+- old location-id resolver → 3;
+- unscoped `/waitlist` page → 2.
+
+Invariant check 8 has six injected-failure tests; each breaks the database,
+sees the verifier refuse, restores it, and sees it pass.
+
+Still to do after merge: deploy, confirm the migration and invariants in
+production, and rerun C7 with synthetic users through the product flows.

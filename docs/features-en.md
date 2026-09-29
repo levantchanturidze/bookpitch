@@ -19,7 +19,7 @@ Compiled 2026-08-05 from `main`.
 | Auto-notify the waitlist when a slot is freed | `lib/waitlist.ts::notifyWaitlistForCancelled` (inlined in the appointment PATCH tx) | System — runs on cancel transition | Org-scoped by tx |
 | AI-drafted appointment note (Gemini) | `app/api/assistant/draft/route.ts` POST + `components/scheduler/actions.ts::draftAppointmentAction` | `client.read:contact` | Org; monthly per-org cap via `ASSISTANT_MONTHLY_CAP_PER_ORG` |
 | Add a customer to the waitlist | `app/api/waitlist/route.ts` POST + `lib/waitlist.ts::addToWaitlist` | `booking.create` | Org |
-| List the waitlist (filtered by `:own` / `:branch` scope) | `app/api/waitlist/route.ts` GET + `app/(app)/waitlist/page.tsx` | `booking.read` | `own` staff-ids OR branch locations |
+| List the waitlist (filtered by `:own` / `:branch` scope) | `app/api/waitlist/route.ts` GET + `app/(app)/waitlist/page.tsx` (both via `lib/waitlist.ts::waitlistScopeFor`) | `booking.read` | `own` staff-ids, else rows attributed to the caller's branches (location → staff's location → service's location); a row with none is org-level |
 | Remove a waitlist entry | `app/api/waitlist/[id]/route.ts` DELETE | `booking.update` — per-resource owner via `resolveWaitlistOwner` | Same |
 | Prevent double-booking at the DB layer | `prisma/migrations/20260721220810_init/migration.sql` — `EXCLUDE USING gist (staff_id, tstzrange(starts_at, ends_at))` | Postgres constraint | Applies to non-cancelled rows |
 | Enforce staff availability at booking-time | `lib/appointments.ts::assertWithinAvailability` (called by both create + update paths) | Any writer | `staff_availability` rows govern |
@@ -56,12 +56,14 @@ Compiled 2026-08-05 from `main`.
 | Create a staff record | `app/api/admin/staff/route.ts` POST + `createStaffAction` | `staff.update` | Org |
 | Update a staff record | `app/api/admin/staff/[id]/route.ts` PATCH + `updateStaffAction` | `staff.update` | Org |
 | Delete a staff record (blocks with 409 on active bookings) | `app/api/admin/staff/[id]/route.ts` DELETE + `deleteStaffAction` | `staff.deactivate` | Org |
-| Set a staff member's weekly availability windows | `app/api/admin/staff/[id]/availability/route.ts` PUT + `setAvailabilityAction` + `lib/admin.ts::setAvailability` | `staff.schedule.manage` (with per-row owner check via `resolveBookingOwner` shape) | `own` for the linked user, else `org` |
+| Set a staff member's weekly availability windows | `app/api/admin/staff/[id]/availability/route.ts` PUT + `setAvailabilityAction` + `lib/admin.ts::setAvailability` | `staff.schedule.manage` — resolved staff row, owner AND branch (`resolveStaffResource`), route and action alike (U-06) | `own` for the linked user, `branch` for the staff row's branch, else `org` |
 | List org members (people with logins) | `app/api/admin/members/route.ts` GET + `app/(app)/settings/members/page.tsx` | `staff.invite` | Org |
 | Invite a member (creates an invitation row + optional email) | `lib/invitations.ts::createInvitation` + `inviteMemberAction` | `staff.invite` + rank check (`canManageRoleAssignment`) | Org |
 | List / send / revoke invitations | `app/api/invitations/route.ts` GET/POST + `app/api/invitations/[id]/route.ts` DELETE | `staff.invite` | Org |
 | Accept an invitation (creates the user OR promotes existing) | `app/api/invitations/accept/route.ts` POST + `lib/invitations.ts::acceptInvitation` | Anonymous with valid token | Org |
 | Change a member's role | `app/api/admin/members/[id]/route.ts` PATCH + `updateMemberRoleAction` | `staff.role.assign` + rank guardrails (last-owner, above-rank refusal) | Org |
+| Link a staff record to a member, or unlink it | `linkStaffAction` / `unlinkStaffAction` + `lib/admin/scoped-access.ts::linkStaffToMember`, `unlinkStaff` | `staff.role.assign` + rank guardrails (never yourself or a peer); audited | Org; one linked record per (location, member) |
+| Set a member's branches | `setMemberBranchesAction` + `lib/admin/scoped-access.ts::setMemberBranches` | `staff.role.assign` + rank guardrails; audited; ends the member's session | Org; a FRONT_DESK membership starts with every branch (invitation, role change); an empty set reaches nothing |
 | Remove a member | `app/api/admin/members/[id]/route.ts` DELETE + `removeMemberAction` | `staff.deactivate` + rank + last-owner protection | Org |
 | Nominate ownership transfer to another member | `app/api/admin/ownership-transfer/route.ts` POST + `lib/admin/ownership-transfer.ts::nominateTransfer` | `org.ownership.transfer` | Org |
 | List pending transfers for the nominee | `app/api/admin/ownership-transfer/route.ts` GET | Session user | Own inbox |
@@ -122,7 +124,7 @@ Compiled 2026-08-05 from `main`.
 | Capability | File | Roles | Scope |
 |---|---|---|---|
 | Send reminders for all due appointments (cron) | `app/api/cron/reminders/route.ts` POST + `lib/messaging/reminders.ts::runReminderTick` | Bearer `CRON_SECRET`; per-org fan-out | Every org |
-| Send reminder now for a specific appointment | `app/api/reminders/send-now/route.ts` POST + `sendNowAction` + `lib/messaging/reminders.ts::sendNowForSession` | `booking.update` (per-resource `ownerUserId` check) | Own bookings or wider |
+| Send reminder now for a specific appointment | `app/api/reminders/send-now/route.ts` POST + `sendNowAction` + `lib/messaging/reminders.ts::sendNowForSession` | `booking.update` — resolved appointment, owner AND branch (`resolveAppointmentResource`), route and action alike (U-06) | Own bookings, own branches, or org |
 | Configure reminder lead-hours per org | `saveLeadHoursAction` + `organizations.reminderLeadHours` column | `org.settings.update:org` | Org |
 | Configure SMS + email templates per org | `saveTemplateAction` + `MessageTemplate` table | `org.settings.update:org` | Org |
 | Render templates with `{PatientName}`, `{StaffName}`, `{ServiceName}`, `{Date}`, `{Time}` | `lib/messaging/templates.ts::renderTemplate` | System | Per-send |

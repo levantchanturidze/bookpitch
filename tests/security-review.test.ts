@@ -231,16 +231,32 @@ describe('SEC § cross-tenant isolation', () => {
   it('P1.6: GET /api/appointments with an out-of-scope locationId returns 400', async () => {
     // BRANCH_MANAGER scoped to Downtown+Uptown. Airport is Split, but not
     // in scope. Grab a foreign UUID (nonexistent) to be extra clear.
+    //
+    // This used to ask for 2020..2100, which parseAppointmentRange refuses
+    // (> 62 days) BEFORE the branch check runs — so the 400 held for an
+    // in-scope location too, and the test passed with branch scoping removed
+    // (scoped-RBAC audit §3.7, probe P2). A bounded range, the refusal's own
+    // message, and the in-scope complement make it measure the scope check.
     authMock.mockResolvedValue(await mockJwt(H.splitMgrId, H.splitOrgId));
     const foreign = '00000000-0000-0000-0000-000000000042';
-    const from = new Date(Date.UTC(2020, 0, 1)).toISOString();
-    const to = new Date(Date.UTC(2100, 0, 1)).toISOString();
+    const from = new Date(Date.now() - 15 * 86_400_000).toISOString();
+    const to = new Date(Date.now() + 15 * 86_400_000).toISOString();
+    const range = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
     const res = await routeAppointments.GET(
-      req(
-        `http://x/api/appointments?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&locationId=${foreign}`,
-      ),
+      req(`http://x/api/appointments?${range}&locationId=${foreign}`),
     );
     expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/outside your branch scope/);
+
+    const downtown = await unsafePrismaAdmin.branch.findFirstOrThrow({
+      where: { organizationId: H.splitOrgId, name: 'Downtown' },
+      select: { legacyLocationId: true },
+    });
+    authMock.mockResolvedValue(await mockJwt(H.splitMgrId, H.splitOrgId));
+    const inScope = await routeAppointments.GET(
+      req(`http://x/api/appointments?${range}&locationId=${downtown.legacyLocationId}`),
+    );
+    expect(inScope.status).toBe(200);
   });
 
   it('P1.7: prismaApp raw findMany with NO withOrg returns zero rows on every tenant table', async () => {
@@ -1213,15 +1229,28 @@ describe('SEC § SEC-007 regression — group E migrations to withOrg', () => {
       where: { organizationId: H.splitOrgId, name: 'Downtown' },
       select: { id: true, legacyLocationId: true },
     });
-    const fakeCtx = {
-      activeOrganizationId: H.grandOrgId,
-      branchIds: new Set([splitDowntown.id]),
-    } as unknown as Parameters<typeof scopedLocationIds>[0];
-    const ids = await scopedLocationIds(fakeCtx);
-    // RLS on `branches` filters the Split row from Grand's scope. Result:
-    // empty array (branchIds is non-empty so we don't return null, but the
-    // findMany returns 0 rows post-RLS).
-    expect(ids).toEqual([]);
+    // scopedLocationIds is grant-aware since C7: only a `:branch` grant reaches
+    // the branch lookup at all, and a caller with NO grant also gets []. So the
+    // fake ctx must hold booking.read:branch, or the [] below would prove only
+    // that it had no grant.
+    const ctxWith = (branchId: string) =>
+      ({
+        activeOrganizationId: H.grandOrgId,
+        permissions: new Set(['booking.read:branch']),
+        branchIds: new Set([branchId]),
+      }) as unknown as Parameters<typeof scopedLocationIds>[0];
+    // The complement first: the same caller holding one of Grand's OWN branches
+    // resolves it. That is what makes the empty result below the tenant filter.
+    const grandBranch = await unsafePrismaAdmin.branch.findFirstOrThrow({
+      where: { organizationId: H.grandOrgId, legacyLocationId: { not: null } },
+      select: { id: true, legacyLocationId: true },
+    });
+    expect(await scopedLocationIds(ctxWith(grandBranch.id), 'booking.read')).toEqual([
+      grandBranch.legacyLocationId,
+    ]);
+    // RLS on `branches` filters the Split row from Grand's scope: the set is
+    // non-empty, the lookup runs, and it returns 0 rows post-RLS.
+    expect(await scopedLocationIds(ctxWith(splitDowntown.id), 'booking.read')).toEqual([]);
   });
 
   it('P7.4: nested withOrg — resolveBookingOwner works when the caller is already inside its own withOrg tx', async () => {

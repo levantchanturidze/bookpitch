@@ -120,10 +120,13 @@ describe('waitlist — add/list/remove + cancellation notifier', () => {
       preferredFrom: from,
       preferredTo: to,
     });
-    const listed = await listWaitlist(session());
+    // The org owner's view: an `:org` grant, so no branch or owner filter. The
+    // scope is REQUIRED since C7 — the /waitlist page once passed none.
+    const ORG_WIDE = { scopedLocationIds: null, ownUserId: null };
+    const listed = await listWaitlist(session(), ORG_WIDE);
     expect(listed.find((r) => r.id === id)).toBeTruthy();
     await removeFromWaitlist(session(), id);
-    const after = await listWaitlist(session());
+    const after = await listWaitlist(session(), ORG_WIDE);
     expect(after.find((r) => r.id === id)).toBeUndefined();
   });
 
