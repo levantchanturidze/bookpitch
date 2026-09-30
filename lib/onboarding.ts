@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { withoutRls, unsafePrismaAdmin } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
 import { getEmailProvider } from '@/lib/messaging';
+import { deliverNow } from '@/lib/messaging/outbox';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { encryptField, decryptField, hashEmailForIndex } from '@/lib/crypto';
 import { isE2ELoopbackRuntime } from '@/lib/auth/e2e-runtime';
@@ -204,6 +205,22 @@ export async function createPendingRegistration(input: OnboardInput): Promise<vo
         claimed_at         = NULL
     `;
   });
+
+  // Deliver NOW, best-effort, after the row has committed — exactly as
+  // invitations, password resets and the resend path already do.
+  //
+  // This used to stop at the INSERT, so the verification email waited for the
+  // next housekeeping drain (`3 * * * *`, delivered by GitHub's scheduler). On
+  // 2026-09-30 that schedule went seven hours undelivered (06:24Z to 13:26Z),
+  // and a production sign-up that afternoon received nothing — while
+  // invitations sent from the same deployment arrived within seconds. Pressing
+  // "Resend" straight away did not help either: inside its five-minute
+  // cooldown it correctly does nothing.
+  //
+  // deliverNow() never throws. If the provider refuses, the row goes back to
+  // `pending` and the drain retries it with backoff — the outbox row written
+  // above is still the durable record, this only stops it waiting.
+  await deliverNow(idempotencyKey, 'onboard.verify');
 
   log.info('onboard.pending_created', { orgName });
 }
