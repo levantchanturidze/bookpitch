@@ -1,5 +1,5 @@
 import type { NextRequest } from 'next/server';
-import { withApi } from '@/lib/auth';
+import { withApiRaw } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrgReplica } from '@/lib/db';
 import { queryAudit, type AuditRow } from '@/lib/audit-query';
@@ -29,8 +29,15 @@ function toRow(r: AuditRow): string {
 
 // GET /api/audit/export?customer=&actor=&action=&entity=&from=&to=
 // Returns a CSV download of the org's audit log (up to 5000 rows).
+//
+// withApiRaw, not withApi. withApi JSON-serialises whatever the handler
+// returns, and JSON.stringify(new Response(...)) is "{}" — so this route
+// answered every export with the two bytes `{}` and a JSON content type, in
+// production, while building the CSV correctly. Found in production UAT
+// 2026-09-30; tests/audit-export.test.ts pins the response body, not the
+// wiring.
 export async function GET(req: NextRequest) {
-  return withApi(async () => {
+  return withApiRaw(async () => {
     const ctx = await requireAuthContext();
     requirePermission(ctx, 'audit.read', { organizationId: ctx.activeOrganizationId! }, 'audit');
 
