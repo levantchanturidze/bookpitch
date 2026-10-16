@@ -998,17 +998,29 @@ see the Phase 13 ledger § External blockers):
 
 All durable mail goes through `email_outbox`: onboarding verification, resend,
 break-glass alerts, recovery-code notices, impersonation notices, audit digest.
-State machine `pending → processing → sent | dead`. Housekeeping drains it
-hourly with `FOR UPDATE SKIP LOCKED`, recovers claims whose lease expired,
-retries with exponential backoff and jitter computed from the **database**
-clock, and gives up at `max_attempts` (default 3) — so a permanently invalid
-recipient is retried three times and then dead-lettered, never forever.
+State machine `pending → processing → sent | dead`, plus `pending → cancelled`.
+Housekeeping drains it hourly with `FOR UPDATE SKIP LOCKED`, recovers claims
+whose lease expired, retries with exponential backoff and jitter computed from
+the **database** clock, and gives up at `max_attempts` (default 3) — so a
+permanently invalid recipient is retried three times and then dead-lettered,
+never forever.
 
-Dead rows older than 30 days are swept.
+`dead` means delivery **failed**; `cancelled` means the message was
+**withdrawn** before delivery, on purpose (`failure_category = 'superseded'`):
+a newer password-reset or verification email replaced it, or a queued
+verification email's link stopped being current (token rotated by a resend,
+used by an activation, or expired). Every delivery path re-checks a
+verification link immediately before sending, so a stale one is withdrawn
+rather than sent. Withdrawn mail is never `dead`, so it never opens a
+dead-letter incident and the retry query below can never resurrect a stale
+link. (Before 2026-10-17 superseded mail was written as `dead`.)
+
+Dead and cancelled rows older than 30 days are swept.
 
 ### Dead-letter recovery
 
-The monitor alerts on any `dead` row. To investigate **without reading message
+The monitor alerts on any `dead` row. Superseded mail is `cancelled`, not
+`dead`, so it is not in this queue. To investigate **without reading message
 bodies or recipients**:
 
 ```sql

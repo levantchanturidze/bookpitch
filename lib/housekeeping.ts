@@ -1,5 +1,6 @@
 import { dbNowMs, unsafePrismaAdmin, withoutRls } from '@/lib/db';
 import { getEmailProvider } from '@/lib/messaging';
+import { cancelObsoleteVerificationEmails, OUTBOX_CLAIMABLE_SQL } from '@/lib/messaging/outbox';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { decryptField } from '@/lib/crypto';
 
@@ -242,17 +243,27 @@ async function drainEmailOutbox(now: Date): Promise<{
       WHERE status = 'processing' AND claim_expires_at < transaction_timestamp()
     `;
 
+    // Step 1b: withdraw verification emails whose link is no longer current —
+    // superseded by a resend, used by an activation, or expired. Left pending
+    // they would either be sent carrying a dead link or, once the claim below
+    // refuses them, sit in the backlog the monitor alarms on.
+    await cancelObsoleteVerificationEmails(unsafePrismaAdmin);
+
     // Step 2: atomically claim a batch via FOR UPDATE SKIP LOCKED.
     // This is the concurrent-safe entry point: two workers racing to claim
     // the same row will see different rows because SKIP LOCKED skips rows
-    // already locked by the other worker's transaction.
+    // already locked by the other worker's transaction. OUTBOX_CLAIMABLE_SQL
+    // re-checks a verification link's currency in the claiming statement
+    // itself, so a resend landing after Step 1b still cannot get one sent.
     const claimed = await unsafePrismaAdmin.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<OutboxRow[]>`
-        SELECT id, to_address, to_address_encrypted, subject, body, body_encrypted, purpose, attempts, max_attempts
-        FROM email_outbox
-        WHERE status = 'pending'
-          AND next_attempt_at <= transaction_timestamp()
-        ORDER BY next_attempt_at ASC
+        SELECT o.id, o.to_address, o.to_address_encrypted, o.subject, o.body, o.body_encrypted,
+               o.purpose, o.attempts, o.max_attempts
+        FROM email_outbox o
+        WHERE o.status = 'pending'
+          AND o.next_attempt_at <= transaction_timestamp()
+          AND ${OUTBOX_CLAIMABLE_SQL}
+        ORDER BY o.next_attempt_at ASC
         LIMIT ${OUTBOX_BATCH_SIZE}
         FOR UPDATE SKIP LOCKED
       `;
@@ -337,13 +348,19 @@ async function drainEmailOutbox(now: Date): Promise<{
     log.error('housekeeping.outbox.drain_error', { err: sanitizeErrorMessage(err) });
   }
 
-  // Step 4: sweep dead rows older than 30 days.
+  // Step 4: sweep terminal undelivered rows older than 30 days — dead (failed)
+  // and cancelled (withdrawn). Both still hold an encrypted address and a body
+  // with a link that no longer works. Superseded mail used to be `dead` and was
+  // swept by this rule, so leaving `cancelled` out would have kept it forever.
+  // Rows cancelled before failed_at was stamped on cancellation fall back to
+  // created_at.
   let outboxSwept = 0;
   try {
     const deadCutoff = new Date(now.getTime() - 30 * ONE_DAY_MS);
     const swept = await unsafePrismaAdmin.$executeRaw`
       DELETE FROM email_outbox
-      WHERE status = 'dead' AND failed_at < ${deadCutoff}
+      WHERE (status = 'dead' AND failed_at < ${deadCutoff})
+         OR (status = 'cancelled' AND coalesce(failed_at, created_at) < ${deadCutoff})
     `;
     outboxSwept = Number(swept);
   } catch (err) {
