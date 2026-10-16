@@ -6,8 +6,32 @@ import type { AuthContext } from '@/lib/rbac/types';
 import { notifyEvent } from '@/lib/notifications';
 import { log } from '@/lib/logger';
 import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
+import { writeAudit } from '@/lib/audit';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+
+/**
+ * What a waitlist audit row says about the entry.
+ *
+ * Identifiers only: whose place it is, and the three attribution fields that
+ * decide the entry's branch (owner decision D2). `notes` is free text — anything
+ * a receptionist typed about a patient — so it is never copied, and neither is
+ * any name or contact detail; the customer id resolves those for someone
+ * allowed to see them.
+ */
+function waitlistAuditFacts(row: {
+  customerId: string;
+  locationId: string | null;
+  staffId: string | null;
+  serviceId: string | null;
+}) {
+  return {
+    customerId: row.customerId,
+    locationId: row.locationId,
+    staffId: row.staffId,
+    serviceId: row.serviceId,
+  };
+}
 
 // -----------------------------------------------------------------------------
 // Customer waitlist.
@@ -57,6 +81,9 @@ export async function addToWaitlist(
         notes: input.notes ?? null,
       },
     });
+    // Same transaction: no entry exists without its audit row, and a failed
+    // audit write fails the add.
+    await writeAudit(tx, session, 'create', 'waitlist', row.id, waitlistAuditFacts(row));
     return { id: row.id };
   });
 }
@@ -116,7 +143,15 @@ export async function listWaitlist(session: ActiveSession, scope: WaitlistScope)
 }
 
 export async function removeFromWaitlist(session: ActiveSession, id: string): Promise<void> {
-  await withOrg(session.organizationId, (tx) => tx.waitlist.delete({ where: { id } }));
+  await withOrg(session.organizationId, async (tx) => {
+    const row = await tx.waitlist.delete({ where: { id } });
+    // The row is gone afterwards, so the audit row is the only record of what
+    // was removed — hence the attribution facts and the status it had.
+    await writeAudit(tx, session, 'delete', 'waitlist', id, {
+      ...waitlistAuditFacts(row),
+      status: row.status,
+    });
+  });
 }
 
 /**
@@ -129,11 +164,15 @@ export async function removeFromWaitlist(session: ActiveSession, id: string): Pr
  * organizationId filter — the exact same-shape leak vector SEC-007
  * catalogs). The caller now inlines this inside their existing
  * `withOrg(organizationId, tx => …)` block so RLS on `waitlist` is the
- * enforcer even if `cancelledOrgId` were ever computed wrong.
+ * enforcer even if the organisation were ever computed wrong.
+ *
+ * Takes the SESSION of whoever cancelled: flipping an entry to `notified`
+ * changes who staff will contact, so it is audited per entry, attributed to the
+ * person whose cancellation caused it.
  */
 export async function notifyWaitlistForCancelled(
   tx: TxClient,
-  cancelledOrgId: string,
+  session: ActiveSession,
   cancelled: {
     id: string;
     staffId: string;
@@ -158,10 +197,17 @@ export async function notifyWaitlistForCancelled(
   });
   if (!rows.length) return { matched: 0 };
 
+  const cancelledOrgId = session.organizationId;
   await tx.waitlist.updateMany({
     where: { id: { in: rows.map((r) => r.id) } },
     data: { status: 'notified', notifiedAt: new Date() },
   });
+  for (const r of rows) {
+    await writeAudit(tx, session, 'update', 'waitlist', r.id, {
+      status: 'notified',
+      appointmentId: cancelled.id,
+    });
+  }
 
   const loc = await tx.location.findUnique({
     where: { id: cancelled.locationId },
