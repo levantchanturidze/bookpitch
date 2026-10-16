@@ -269,8 +269,14 @@ function hhmmToMinutes(hhmm: string): number {
 }
 
 // -----------------------------------------------------------------------------
-// Prisma surfaces the GiST exclusion constraint violation with pg SQLSTATE
-// 23P01. Detect it here; callers translate to SlotTakenError (409).
+// Prisma surfaces a double-booking with pg SQLSTATE 23P01. Detect it here;
+// callers translate to SlotTakenError (409). Two sources raise it:
+//   no_staff_double_booking         the GiST exclusion — one staff row
+//   no_practitioner_double_booking  the trigger from 20261017000001 — one
+//                                   practitioner across their linked rows
+// Both arrive as PrismaClientKnownRequestError P2039 whose message carries
+// "exclusion constraint" and the name (tests/practitioner-double-booking.test.ts
+// pins that for each source).
 // -----------------------------------------------------------------------------
 export function isExclusionViolation(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string }; message?: string } | null;
@@ -305,8 +311,9 @@ export function isExclusionViolation(err: unknown): boolean {
 // clinic in UTC−5 doesn't miss late-afternoon appointments that fall in the
 // next UTC date.
 //
-// This is UX filtering only — the GiST exclusion constraint remains the
-// authoritative double-booking guard for race conditions.
+// This is UX filtering only — the GiST exclusion constraint (one staff row) and
+// the practitioner trigger (one person across their linked rows) remain the
+// authoritative double-booking guards for race conditions.
 // -----------------------------------------------------------------------------
 export async function getAvailableSlots(
   tx: TxClient,
@@ -328,8 +335,24 @@ export async function getAvailableSlots(
 
   const staff = await tx.staff.findUnique({
     where: { id: staffId },
-    select: { availabilityConfiguredAt: true },
+    select: { availabilityConfiguredAt: true, organizationId: true, userId: true },
   });
+
+  // Occupancy belongs to the PRACTITIONER, not to the staff row. Someone who
+  // works at two locations is two rows linked to one user, and the write path
+  // (appointments_practitioner_no_overlap, migration 20261017000001) refuses a
+  // booking that overlaps any of them — so the picker must hide those times
+  // too, or it offers slots the write path then refuses. Same organisation
+  // only: another tenant's calendar is never consulted. An unlinked row has no
+  // identity beyond itself.
+  const occupyingStaffIds = staff?.userId
+    ? (
+        await tx.staff.findMany({
+          where: { organizationId: staff.organizationId, userId: staff.userId },
+          select: { id: true },
+        })
+      ).map((s) => s.id)
+    : [staffId];
 
   const windows = await tx.staffAvailability.findMany({
     where: { staffId, weekday },
@@ -352,7 +375,7 @@ export async function getAvailableSlots(
 
   const booked = await tx.appointment.findMany({
     where: {
-      staffId,
+      staffId: { in: occupyingStaffIds },
       status: { not: 'cancelled' },
       startsAt: { gte: dayStart, lt: dayEnd },
       ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
