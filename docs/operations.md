@@ -733,7 +733,10 @@ Fifteen seconds later the filtered query answered correctly again.
 
 ## 8. Monitoring and alert handling
 
-**Workflow:** `.github/workflows/production-monitor.yml`, every 30 minutes.
+**Workflow:** `.github/workflows/production-monitor.yml`, on four hourly cron
+lines (:07, :22, :37, :52). GitHub delivers each line only ~5 times a day on this
+account, so four lines are what keep the gap between runs under the soak's 6-hour
+limit — see `docs/scheduler-resilience.md`.
 **Logic:** `scripts/production-monitor.mjs` (dependency-free; no `npm ci`).
 
 Checks, each of which is its own incident class:
