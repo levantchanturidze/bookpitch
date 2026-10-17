@@ -281,6 +281,18 @@ describe('production monitor workflow safety', () => {
     expect(Object.keys(doc.on ?? {}).sort()).toEqual(['schedule', 'workflow_dispatch']);
   });
 
+  it('runs on several independent schedule lines, none in the top-of-hour rush', () => {
+    // GitHub delivers each LINE ~5 times a day on this account, so one line —
+    // however frequent it asks to be — left 9-hour holes (see the workflow).
+    const schedules = (doc.on?.schedule as Array<{ cron: string }>).map((x) => x.cron);
+    expect(new Set(schedules).size).toBeGreaterThanOrEqual(4);
+    for (const cron of schedules) {
+      const minute = cron.trim().split(/\s+/)[0];
+      expect(minute, `${cron}: one fixed minute per line`).toMatch(/^\d+$/);
+      expect(Number(minute), `${cron} sits in GitHub's top-of-hour rush`).toBeGreaterThan(5);
+    }
+  });
+
   it('does not run more often than every 15 minutes', () => {
     const schedules = doc.on?.schedule as Array<{ cron: string }>;
     for (const { cron } of schedules) {
@@ -961,15 +973,36 @@ describe('manual cron dispatch is safe by default', () => {
     }
   });
 
-  it('only the 15-minute schedule sends reminders', () => {
+  // CHANGED 2026-10-17 (scheduler resilience): reminders now run on three cron
+  // lines instead of one, because GitHub delivers each LINE only ~5 times a
+  // day (see the header of cron.yml). The property this test exists for is
+  // unchanged and still asserted for every schedule in the file: no
+  // housekeeping, retention, digest or partition schedule sends reminders.
+  const REMINDER_SCHEDULES = ['*/15 * * * *', '26 * * * *', '41 * * * *'];
+
+  it('only the reminder schedules send reminders — every one of them does', () => {
     const schedules = ((doc.on as Record<string, Array<{ cron: string }>>).schedule ?? []).map(
       (s) => s.cron,
     );
+    for (const r of REMINDER_SCHEDULES) expect(schedules).toContain(r);
     for (const cron of schedules) {
       const started = jobsStartedBy({ eventName: 'schedule', schedule: cron });
-      if (cron === '*/15 * * * *') expect(started).toContain('reminders');
+      if (REMINDER_SCHEDULES.includes(cron)) expect(started).toEqual(['reminders']);
       else expect(started, `${cron} unexpectedly sends reminders`).not.toContain('reminders');
     }
+  });
+
+  it('housekeeping runs on two lines, and the added one does not re-run the digest', () => {
+    expect(jobsStartedBy({ eventName: 'schedule', schedule: '3 * * * *' })).toEqual([
+      'audit-digest',
+      'housekeeping',
+    ]);
+    // The digest queues owner mail; running it twice as often is not the
+    // point of the second line, which exists only to keep the outbox drain
+    // and its heartbeat inside their limits.
+    expect(jobsStartedBy({ eventName: 'schedule', schedule: '33 * * * *' })).toEqual([
+      'housekeeping',
+    ]);
   });
 
   it('documents which jobs can contact customers', () => {

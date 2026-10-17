@@ -3,11 +3,33 @@ name: Scheduled crons
 # Reminders every 15 min; housekeeping hourly.
 # Both endpoints authenticate via bearer CRON_SECRET (repo secret).
 # APP_URL must be the deployed origin.
+#
+# WHY REMINDERS AND HOUSEKEEPING HAVE SEVERAL CRON LINES (2026-10-17).
+# GitHub throttles each schedule LINE on this account to roughly five runs a
+# day, whatever the line asks for — measured over the 7 days to 2026-10-16:
+#
+#   line            asks for   delivered    max gap
+#   */15 * * * *    672        36           9.9h   (reminders)
+#   3 * * * *       168        33           9.7h   (housekeeping + digest)
+#   17 2 * * *      7          7            —      (retention: delivered fully)
+#
+# and the lines are delivered INDEPENDENTLY (no two within 120s of each other
+# in that week). So capacity comes from more lines, not from asking one line
+# for more. A reminders gap over the 6h heartbeat limit fails the monitor's
+# cron checks and the soak's cron-outcomes gate, and a gap longer than an
+# organisation's lead time means appointments starting inside it are never
+# reminded at all (lib/messaging/reminder-window.ts). Extra lines start the
+# SAME job; a tick that overlaps another is a no-op (claims dedupe reminders,
+# an advisory lock serialises housekeeping). Nothing else changes.
+# docs/scheduler-resilience.md has the measurements and how to verify.
 
 on:
   schedule:
     - cron: '*/15 * * * *'
+    - cron: '26 * * * *'
+    - cron: '41 * * * *'
     - cron: '3 * * * *'
+    - cron: '33 * * * *'
     - cron: '17 2 * * *'
     - cron: '0 8 * * 1'
     - cron: '30 1 1 * *'
@@ -129,6 +151,8 @@ jobs:
   reminders:
     if: >-
       github.event.schedule == '*/15 * * * *' ||
+      github.event.schedule == '26 * * * *' ||
+      github.event.schedule == '41 * * * *' ||
       (github.event_name == 'workflow_dispatch' &&
        (inputs.only == 'reminders' || inputs.only == 'all') &&
        inputs.confirm == 'DELIVER-EMAIL-TO-REAL-RECIPIENTS')
@@ -148,6 +172,7 @@ jobs:
   housekeeping:
     if: >-
       github.event.schedule == '3 * * * *' ||
+      github.event.schedule == '33 * * * *' ||
       (github.event_name == 'workflow_dispatch' &&
        (inputs.only == 'housekeeping' || inputs.only == 'all') &&
        inputs.confirm == 'DELIVER-EMAIL-TO-REAL-RECIPIENTS')
