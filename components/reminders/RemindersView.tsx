@@ -18,6 +18,8 @@ import {
   saveTemplateAction,
   sendNowAction,
 } from './actions';
+import { resultMessage } from '@/lib/action-result';
+import StatusMessage from '@/components/ui/StatusMessage';
 
 type UpcomingAppointment = {
   id: string;
@@ -113,36 +115,44 @@ export default function RemindersView({
 // -----------------------------------------------------------------------------
 function LeadHoursForm({ initial }: { initial: number }) {
   const [value, setValue] = useState(String(initial));
+  const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   return (
-    <form
-      action={(fd) => startTransition(() => saveLeadHoursAction(fd))}
-      className="flex items-end gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
-    >
-      <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
-        Lead time
-        <div className="mt-1 flex items-center gap-1">
-          <input
-            name="hours"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            type="number"
-            min={1}
-            max={168}
-            className="w-16 rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm font-bold text-slate-800"
-          />
-          <span className="text-[11px] text-slate-500">hours before</span>
-        </div>
-      </label>
-      <button
-        type="submit"
-        disabled={isPending || value === String(initial)}
-        className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-slate-800 disabled:opacity-40"
+    <div className="space-y-2">
+      <form
+        action={(fd) =>
+          startTransition(async () => {
+            setError(resultMessage(await saveLeadHoursAction(fd)));
+          })
+        }
+        className="flex items-end gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
       >
-        {isPending ? 'Saving…' : 'Save'}
-      </button>
-    </form>
+        <label className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+          Lead time
+          <div className="mt-1 flex items-center gap-1">
+            <input
+              name="hours"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              type="number"
+              min={1}
+              max={168}
+              className="w-16 rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm font-bold text-slate-800"
+            />
+            <span className="text-[11px] text-slate-500">hours before</span>
+          </div>
+        </label>
+        <button
+          type="submit"
+          disabled={isPending || value === String(initial)}
+          className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-slate-800 disabled:opacity-40"
+        >
+          {isPending ? 'Saving…' : 'Save'}
+        </button>
+      </form>
+      <StatusMessage tone="error">{error}</StatusMessage>
+    </div>
   );
 }
 
@@ -159,6 +169,7 @@ function TemplateCard({
   previewVars: TemplateVars;
 }) {
   const [body, setBody] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const preview = useMemo(() => renderTemplate(body, previewVars), [body, previewVars]);
   const isSms = channel === 'sms';
@@ -180,7 +191,14 @@ function TemplateCard({
         <div className="font-mono text-[10px] text-slate-500">{body.length} chars</div>
       </div>
 
-      <form action={(fd) => startTransition(() => saveTemplateAction(fd))} className="space-y-3">
+      <form
+        action={(fd) =>
+          startTransition(async () => {
+            setError(resultMessage(await saveTemplateAction(fd)));
+          })
+        }
+        className="space-y-3"
+      >
         <input type="hidden" name="channel" value={channel} />
         <textarea
           name="body"
@@ -208,6 +226,7 @@ function TemplateCard({
         >
           {isPending ? 'Saving…' : 'Save template'}
         </button>
+        <StatusMessage tone="error">{error}</StatusMessage>
       </form>
 
       <div className="mt-4 rounded-lg border border-slate-100 bg-slate-50 p-3">
@@ -230,6 +249,7 @@ function UpcomingCard({
   upcoming: UpcomingAppointment[];
   canRunTick: boolean;
 }) {
+  const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   return (
     <section className="rounded-2xl border border-slate-200 bg-white">
@@ -241,7 +261,13 @@ function UpcomingCard({
           </h3>
         </div>
         {canRunTick && (
-          <form action={() => startTransition(() => runTickAction())}>
+          <form
+            action={() =>
+              startTransition(async () => {
+                setError(resultMessage(await runTickAction()));
+              })
+            }
+          >
             <button
               type="submit"
               disabled={isPending}
@@ -253,6 +279,9 @@ function UpcomingCard({
           </form>
         )}
       </header>
+      <StatusMessage tone="error" className="mx-6 mt-3">
+        {error}
+      </StatusMessage>
       {upcoming.length === 0 ? (
         <p className="px-6 py-8 text-center text-xs text-slate-500">
           No appointments within the current lead-time window.
@@ -269,6 +298,7 @@ function UpcomingCard({
 }
 
 function UpcomingRow({ appointment: a }: { appointment: UpcomingAppointment }) {
+  const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   return (
     <div className="flex flex-col gap-3 px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -288,7 +318,14 @@ function UpcomingRow({ appointment: a }: { appointment: UpcomingAppointment }) {
           </span>
         </p>
       </div>
-      <form action={(fd) => startTransition(() => sendNowAction(fd))} className="shrink-0">
+      <form
+        action={(fd) =>
+          startTransition(async () => {
+            setError(resultMessage(await sendNowAction(fd)));
+          })
+        }
+        className="shrink-0"
+      >
         <input type="hidden" name="appointmentId" value={a.id} />
         <button
           type="submit"
@@ -298,6 +335,9 @@ function UpcomingRow({ appointment: a }: { appointment: UpcomingAppointment }) {
           <Send className="h-3 w-3" />
           {isPending ? 'Sending…' : 'Send now'}
         </button>
+        <StatusMessage tone="error" className="mt-2 max-w-xs">
+          {error}
+        </StatusMessage>
       </form>
     </div>
   );
@@ -404,6 +444,7 @@ function LogCard({ log }: { log: LogEntry[] }) {
 // -----------------------------------------------------------------------------
 function RetentionCard({ initial }: { initial: number }) {
   const [years, setYears] = useState(String(initial));
+  const [error, setError] = useState<string | null>(null);
   const [isPendingSave, startSave] = useTransition();
   const [isPendingTick, startTick] = useTransition();
   return (
@@ -421,7 +462,11 @@ function RetentionCard({ initial }: { initial: number }) {
       </div>
       <div className="flex flex-wrap items-end gap-2">
         <form
-          action={(fd) => startSave(() => saveRetentionYearsAction(fd))}
+          action={(fd) =>
+            startSave(async () => {
+              setError(resultMessage(await saveRetentionYearsAction(fd)));
+            })
+          }
           className="flex items-end gap-2"
         >
           <label className="text-[10px] font-bold tracking-wider text-slate-500 uppercase">
@@ -447,7 +492,14 @@ function RetentionCard({ initial }: { initial: number }) {
             {isPendingSave ? 'Saving…' : 'Save'}
           </button>
         </form>
-        <form action={() => startTick(() => runRetentionTickAction())} className="ml-auto">
+        <form
+          action={() =>
+            startTick(async () => {
+              setError(resultMessage(await runRetentionTickAction()));
+            })
+          }
+          className="ml-auto"
+        >
           <button
             type="submit"
             disabled={isPendingTick}
@@ -458,6 +510,9 @@ function RetentionCard({ initial }: { initial: number }) {
           </button>
         </form>
       </div>
+      <StatusMessage tone="error" className="mt-3">
+        {error}
+      </StatusMessage>
     </section>
   );
 }

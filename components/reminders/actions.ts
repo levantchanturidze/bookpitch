@@ -9,6 +9,8 @@ import { writeAudit } from '@/lib/audit';
 import { runReminderTick, sendNowForSession } from '@/lib/messaging/reminders';
 import { runRetentionTick } from '@/lib/gdpr';
 import { MIN_REMINDER_LEAD_HOURS } from '@/lib/messaging/reminders';
+import type { ActionResult } from '@/lib/action-result';
+import { safeAction } from '@/lib/safe-action';
 
 // Server Actions used by the /reminders page. Each mirrors an API concept and
 // revalidates the page so the message-log table + upcoming list refresh.
@@ -19,7 +21,7 @@ async function ctxFor(permission: string, module: string) {
   return ctxToSession(ctx);
 }
 
-export async function saveTemplateAction(fd: FormData) {
+async function saveTemplateImpl(fd: FormData) {
   const session = await ctxFor('booking.update', 'reminders');
   const channel = String(fd.get('channel') ?? '') as MessageChannel;
   const body = String(fd.get('body') ?? '').trim();
@@ -52,7 +54,7 @@ export async function saveTemplateAction(fd: FormData) {
   revalidatePath('/reminders');
 }
 
-export async function saveLeadHoursAction(fd: FormData) {
+async function saveLeadHoursImpl(fd: FormData) {
   const session = await ctxFor('booking.update', 'reminders');
   const raw = String(fd.get('hours') ?? '');
   const hours = Number(raw);
@@ -78,7 +80,7 @@ export async function saveLeadHoursAction(fd: FormData) {
   revalidatePath('/reminders');
 }
 
-export async function sendNowAction(fd: FormData) {
+async function sendNowImpl(fd: FormData) {
   const ctx = await requireAuthContext();
   const appointmentId = String(fd.get('appointmentId') ?? '');
   if (!appointmentId) throw new InvalidInputError('appointmentId is required');
@@ -104,13 +106,13 @@ export async function sendNowAction(fd: FormData) {
   revalidatePath('/reminders');
 }
 
-export async function runTickAction() {
+async function runTickImpl() {
   const session = await ctxFor('org.settings.update:org', 'reminders');
   await runReminderTick(session.organizationId);
   revalidatePath('/reminders');
 }
 
-export async function saveRetentionYearsAction(fd: FormData) {
+async function saveRetentionYearsImpl(fd: FormData) {
   const session = await ctxFor('org.settings.update:org', 'reminders');
   const raw = String(fd.get('years') ?? '');
   const years = Number(raw);
@@ -130,9 +132,47 @@ export async function saveRetentionYearsAction(fd: FormData) {
   revalidatePath('/reminders');
 }
 
-export async function runRetentionTickAction() {
+async function runRetentionTickImpl() {
   const session = await ctxFor('client.export', 'reminders');
   await runRetentionTick(session.organizationId);
   revalidatePath('/reminders');
   revalidatePath('/patients');
+}
+
+// -----------------------------------------------------------------------------
+// The exported Server Actions return an ActionResult; they never throw.
+//
+// Each body above throws its refusals — UnauthenticatedError, ForbiddenError,
+// InvalidInputError — exactly as before. Thrown out of a Server Action, any of
+// those reached the browser as a masked error with a digest and an HTTP 500:
+// a crafted call by someone without the permission was refused (nothing
+// changed), but looked like a crash, and a real user saw the error page
+// instead of the reason (production C7 UAT, 2026-10-01). safeAction() turns a
+// refusal into `{ ok: false, code, message }` and anything unexpected into the
+// generic message, reported to Sentry. The bodies are untouched, so the
+// permission checks they run are the same ones.
+// -----------------------------------------------------------------------------
+
+export async function saveTemplateAction(fd: FormData): Promise<ActionResult> {
+  return safeAction('reminders.saveTemplate', () => saveTemplateImpl(fd));
+}
+
+export async function saveLeadHoursAction(fd: FormData): Promise<ActionResult> {
+  return safeAction('reminders.saveLeadHours', () => saveLeadHoursImpl(fd));
+}
+
+export async function sendNowAction(fd: FormData): Promise<ActionResult> {
+  return safeAction('reminders.sendNow', () => sendNowImpl(fd));
+}
+
+export async function runTickAction(): Promise<ActionResult> {
+  return safeAction('reminders.runTick', () => runTickImpl());
+}
+
+export async function saveRetentionYearsAction(fd: FormData): Promise<ActionResult> {
+  return safeAction('reminders.saveRetentionYears', () => saveRetentionYearsImpl(fd));
+}
+
+export async function runRetentionTickAction(): Promise<ActionResult> {
+  return safeAction('reminders.runRetentionTick', () => runRetentionTickImpl());
 }

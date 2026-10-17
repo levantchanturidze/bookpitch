@@ -68,7 +68,11 @@ export default function ReschedulePanel({ appointments, staff, timezone }: Props
               ? 'That staff member does not work at this location.'
               : result.error === 'appointment_not_found'
                 ? 'The appointment no longer exists.'
-                : 'Could not load available times.',
+                : result.error === 'forbidden'
+                  ? 'You do not have permission to reschedule this appointment.'
+                  : result.error === 'unauthenticated'
+                    ? 'Your session has ended. Sign in again to continue.'
+                    : 'Could not load available times.',
           );
           return;
         }

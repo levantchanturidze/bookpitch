@@ -1,11 +1,11 @@
-import { Banknote, CreditCard, Receipt, ShieldCheck } from 'lucide-react';
+import { Receipt, ShieldCheck } from 'lucide-react';
 import type { AppointmentStatus, PaymentStatus } from '@prisma/client';
-import { settleCashAction, startCardCheckoutAction } from './actions';
+import PaymentButtons from './PaymentButtons';
 
 // -----------------------------------------------------------------------------
-// Server component (rendered inside the /billing server page). Server Actions
-// mean we don't need client state for the buttons — each `<form action>` posts
-// straight to the action, then the layout revalidates and re-renders.
+// Server component (rendered inside the /billing server page). The payment
+// buttons are a small client component (PaymentButtons) because the actions
+// return typed results that have to be read to be shown.
 // -----------------------------------------------------------------------------
 
 export type BillingRow = {
@@ -117,24 +117,7 @@ function UnpaidRow({ row, currency }: { row: BillingRow; currency: string }) {
           {row.price.toFixed(2)}
           <span className="ml-1 font-mono text-xs font-normal text-slate-400">{currency}</span>
         </p>
-        <form action={settleCashAction}>
-          <input type="hidden" name="appointmentId" value={row.id} />
-          <button
-            type="submit"
-            className="flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
-          >
-            <Banknote className="h-3.5 w-3.5" /> Cash
-          </button>
-        </form>
-        <form action={startCardCheckoutAction}>
-          <input type="hidden" name="appointmentId" value={row.id} />
-          <button
-            type="submit"
-            className="flex items-center gap-1 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-slate-800"
-          >
-            <CreditCard className="h-3.5 w-3.5" /> Pay by card
-          </button>
-        </form>
+        <PaymentButtons appointmentId={row.id} />
       </div>
     </div>
   );

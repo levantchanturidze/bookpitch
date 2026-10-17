@@ -1,6 +1,6 @@
 'use server';
 
-import { type ActionResult } from '@/lib/action-result';
+import { type ActionErrorCode, type ActionResult } from '@/lib/action-result';
 import { safeAction } from '@/lib/safe-action';
 
 import { revalidatePath } from 'next/cache';
@@ -39,19 +39,22 @@ import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 // Server Action propagates to the nearest error boundary, not to the
 // try/catch in the startTransition callback.
 // -----------------------------------------------------------------------------
+// `code` is present on failures that came through safeAction (refusals and
+// unexpected errors); the domain failures these actions always returned —
+// 'slot_taken', availability, invalid input — keep their `error` string, which
+// is what the clients branch on.
 export type BookActionResult =
-  { ok: true; appointment: AppointmentDto } | { ok: false; error: string };
+  { ok: true; appointment: AppointmentDto } | { ok: false; error: string; code?: ActionErrorCode };
 
 export type UpdateActionResult =
-  { ok: true; appointment: AppointmentDto | null } | { ok: false; error: string };
+  | { ok: true; appointment: AppointmentDto | null }
+  | { ok: false; error: string; code?: ActionErrorCode };
 
 // Mirror the /api/appointments endpoints but skip the HTTP hop for internal
 // UI callers. Same withOrg + writeAudit pattern. revalidatePath refreshes
 // the server-rendered scheduler list.
 
-export async function bookAppointmentAction(
-  input: AppointmentCreateInput,
-): Promise<BookActionResult> {
+async function bookAppointmentImpl(input: AppointmentCreateInput): Promise<BookActionResult> {
   const ctx = await requireAuthContext();
   requirePermission(
     ctx,
@@ -122,7 +125,7 @@ export async function bookAppointmentAction(
   }
 }
 
-export async function updateAppointmentAction(
+async function updateAppointmentImpl(
   id: string,
   input: AppointmentUpdateInput,
 ): Promise<UpdateActionResult> {
@@ -237,7 +240,7 @@ export async function updateAppointmentAction(
 // a local YYYY-MM-DD in that timezone. Uses booking.read permission (same as
 // GET /api/appointments). Not a mutation; no revalidatePath needed.
 // -----------------------------------------------------------------------------
-export async function fetchAvailableSlotsAction(
+async function fetchAvailableSlotsImpl(
   staffId: string,
   date: string, // YYYY-MM-DD in the location's local timezone
   durationMinutes: number,
@@ -298,4 +301,46 @@ export async function draftAppointmentAction(
     // into the generic one.
     return draftAppointment(ctxToSession(ctx), locationId, prompt);
   });
+}
+
+// -----------------------------------------------------------------------------
+// The exported Server Actions never throw.
+//
+// The bodies above throw their refusals — UnauthenticatedError from
+// requireAuthContext(), ForbiddenError from requirePermission() — and rethrow
+// anything they do not recognise. Out of a Server Action, either reached the
+// browser as a masked error with a digest and an HTTP 500: a crafted call
+// without the permission was refused, but looked like a crash (production C7
+// UAT, 2026-10-01). safeAction() turns a refusal into a typed result and
+// anything unexpected into the generic message, reported to Sentry. The
+// bodies, and so the checks they run, are unchanged.
+// -----------------------------------------------------------------------------
+
+export async function bookAppointmentAction(
+  input: AppointmentCreateInput,
+): Promise<BookActionResult> {
+  const r = await safeAction('scheduler.bookAppointment', () => bookAppointmentImpl(input));
+  return r.ok ? r.data : { ok: false, error: r.message, code: r.code };
+}
+
+export async function updateAppointmentAction(
+  id: string,
+  input: AppointmentUpdateInput,
+): Promise<UpdateActionResult> {
+  const r = await safeAction('scheduler.updateAppointment', () => updateAppointmentImpl(id, input));
+  return r.ok ? r.data : { ok: false, error: r.message, code: r.code };
+}
+
+/**
+ * Open slots, or a typed refusal. It used to return the bare list and THROW
+ * on a refusal, which the picker could only render as "no slots".
+ */
+export async function fetchAvailableSlotsAction(
+  staffId: string,
+  date: string,
+  durationMinutes: number,
+): Promise<ActionResult<string[]>> {
+  return safeAction('scheduler.fetchAvailableSlots', () =>
+    fetchAvailableSlotsImpl(staffId, date, durationMinutes),
+  );
 }
