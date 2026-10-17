@@ -26,7 +26,7 @@ const { locationMock } = vi.hoisted(() => ({ locationMock: vi.fn() }));
 vi.mock('@/lib/active-location', async () => {
   const actual =
     await vi.importActual<typeof import('@/lib/active-location')>('@/lib/active-location');
-  return { ...actual, loadLocationsForOrg: locationMock };
+  return { ...actual, loadLocationsForCaller: locationMock };
 });
 
 // Dynamic imports so the mocks are in place first.

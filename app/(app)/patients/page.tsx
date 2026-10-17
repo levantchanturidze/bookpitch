@@ -2,7 +2,7 @@ import { ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePagePermission, can } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
-import { loadLocationsForOrg } from '@/lib/active-location';
+import { loadLocationsForCaller } from '@/lib/active-location';
 import {
   CUSTOMER_LIST_ORDER,
   CUSTOMER_LIST_SELECT,
@@ -31,7 +31,9 @@ export default async function PatientsPage() {
     'customers',
   );
   const session = ctxToSession(ctx);
-  const { active } = await loadLocationsForOrg(session.organizationId);
+  // Customers are organisation-level; the active location only picks the
+  // vertical's vocabulary (patient / client), so none is not a refusal here.
+  const { active } = await loadLocationsForCaller(ctx);
   // UI-branching: only callers who can export get the GDPR export button.
   // Phase 0 §8.2 called out the old `session.role === 'owner'` check here.
   const canExport = can(ctx, 'client.export', { organizationId: ctx.activeOrganizationId! });
@@ -62,7 +64,7 @@ export default async function PatientsPage() {
       initialCustomers={page.items}
       initialCursor={page.nextCursor}
       initialHasMore={page.hasMore}
-      locationType={active.type}
+      locationType={active?.type ?? 'clinic'}
       isOwner={canExport}
     />
   );

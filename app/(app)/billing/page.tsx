@@ -6,7 +6,8 @@ import {
   scopedLocationIds,
 } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
-import { loadLocationsForOrg } from '@/lib/active-location';
+import { loadLocationsForCaller } from '@/lib/active-location';
+import NoLocationAssigned from '@/components/shell/NoLocationAssigned';
 import BillingList, { type BillingRow } from '@/components/billing/BillingList';
 
 export const metadata = { title: 'Billing · Bookpitch' };
@@ -22,7 +23,7 @@ export default async function BillingPage() {
   );
   const session = ctxToSession(ctx);
   const [{ active }, org] = await Promise.all([
-    loadLocationsForOrg(session.organizationId),
+    loadLocationsForCaller(ctx),
     withOrg(session.organizationId, (tx) =>
       tx.organization.findUniqueOrThrow({
         where: { id: session.organizationId },
@@ -30,6 +31,7 @@ export default async function BillingPage() {
       }),
     ),
   ]);
+  if (!active) return <NoLocationAssigned />;
 
   // The list below is booking data, so its visibility follows booking.read —
   // payment.charge is scope-less and decides only whether the page opens. This

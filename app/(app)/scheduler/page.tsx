@@ -9,7 +9,8 @@ import {
 import { currentLocalYearMonth, localMonthRange, MONTH_PARAM_RE } from '@/lib/tz';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
-import { loadLocationsForOrg } from '@/lib/active-location';
+import { loadLocationsForCaller } from '@/lib/active-location';
+import NoLocationAssigned from '@/components/shell/NoLocationAssigned';
 import { toAppointmentDto } from '@/lib/appointments';
 import SchedulerView from '@/components/scheduler/SchedulerView';
 import ReschedulePanel from '@/components/scheduler/ReschedulePanel';
@@ -29,7 +30,8 @@ export default async function SchedulerPage({
     'appointments',
   );
   const session = ctxToSession(ctx);
-  const { active } = await loadLocationsForOrg(session.organizationId);
+  const { active } = await loadLocationsForCaller(ctx);
+  if (!active) return <NoLocationAssigned />;
   const tz = active.timezone ?? 'UTC';
 
   const raw = (await searchParams).month;
