@@ -757,6 +757,30 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
     const emptyWindow = measured === 0;
     const unmeasurable = measured === null;
 
+    // Five states, and only one of them is a failure (backlog H, 2026-10-17):
+    //
+    //   verified healthy  sample > 0, none missed   PASS; may close an incident
+    //   failed            a reminder was missed      FAIL; opens / reopens
+    //   no eligible work  the window is EMPTY        INFORMATIONAL, below
+    //   unmeasurable      no denominator reported    FAIL: the monitor and the
+    //                                                deployment disagree on the
+    //                                                contract — blindness
+    //   scheduler absent  ticks not running          not this check: the cron
+    //                                                staleness / heartbeat checks
+    //
+    // An empty window used to be a FAIL. That was right about what it is NOT
+    // (health — so `ok` stays false and it can never close an incident) and
+    // wrong about what it IS: nothing failed, there was simply nothing to
+    // measure. As a gate it turned every monitor run red whenever traffic was
+    // low, and it REOPENED #90 on 2026-10-05 — five days after #90 had closed on
+    // real evidence ("0 of 2") — on zero evidence, with a comment saying the
+    // incident "was closed while its check was still failing". Informational
+    // keeps it in the report, out of the exit code, and away from the incident
+    // lifecycle in both directions: it cannot open, reopen, comment on or close
+    // anything. An incident that is open stays open until a real
+    // owed-and-delivered appointment closes it.
+    const noEligibleWork = emptyWindow && missed === 0;
+
     results.push({
       id: 'reminders-missed',
       title: 'Appointments started without a reminder ever being sent',
@@ -764,16 +788,19 @@ export function evaluateOpsMetrics(metrics, opts = DEFAULTS) {
       // A green reading here only closes an incident when it rests on a real
       // sample. With no sample there is nothing to be green about.
       canClose: !emptyWindow && !unmeasurable,
+      ...(noEligibleWork ? { informational: true } : {}),
       detail: unmeasurable
         ? 'this deployment does not report how many appointments were OWED a reminder, ' +
           'so a zero missed-count cannot be distinguished from an empty window. ' +
           'Redeploy to enable the denominator.'
         : emptyWindow
           ? 'NOT VERIFIED — 0 appointments in the last 48h were owed a reminder, so ' +
-            'nothing was measured. This is not evidence of health, and it is exactly ' +
-            'how incident #90 closed itself: its failing sample aged out of the window ' +
-            'and the count fell to zero. A fresh appointment must pass through the ' +
-            'reminder path before this check can clear an incident.'
+            'nothing was measured. No eligible work is not evidence of health — this is ' +
+            'exactly how incident #90 once closed itself, its failing sample aging out of ' +
+            'the window — and it is not a failure either, so it is reported for ' +
+            'information only: it cannot open, reopen or close an incident. A fresh ' +
+            'appointment must pass through the reminder path before this check can ' +
+            'clear one.'
           : `${missed} of ${measured} appointment(s) owed a reminder in the last 48h ` +
             'started with no reminder logged, despite having been booked early enough ' +
             'for the lead window to cover them. This cannot be retried — the ' +

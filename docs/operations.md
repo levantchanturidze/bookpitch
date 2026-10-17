@@ -760,6 +760,7 @@ Checks, each of which is its own incident class:
 | `audit-digest-stalled` | the weekly digest queued nothing for 10 days |
 | `partition-maintenance` | no future partition, or rows in `audit_log_default` |
 | `production-config-incomplete` | a required env var is unset (§2) |
+| `reminders-missed` | an appointment that was owed a reminder started in the last 48 h without one being delivered. **No eligible work** (0 owed) is `NOT VERIFIED` and **INFO only**: not health, not a failure — it neither fails the run nor opens, reopens or closes an incident, and an open incident closes only on a real owed-and-delivered appointment. A deployment that reports no denominator still fails (the monitor cannot see) |
 
 ### Alerts
 
