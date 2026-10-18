@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { deleteUnlessReferenced } from './helpers/delete-unless-referenced';
 
 vi.mock('@/auth', () => ({ auth: vi.fn(), handlers: {}, signIn: vi.fn(), signOut: vi.fn() }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
@@ -103,7 +104,7 @@ afterAll(async () => {
       if (mktMembershipId) await tx.membership.deleteMany({ where: { id: mktMembershipId } });
       if (mktUserId) {
         await tx.appUser.updateMany({ where: { id: mktUserId }, data: { status: 'deleted' } });
-        await tx.appUser.deleteMany({ where: { id: mktUserId } }).catch(() => undefined);
+        await deleteUnlessReferenced(tx, () => tx.appUser.deleteMany({ where: { id: mktUserId } }));
       }
     });
   }

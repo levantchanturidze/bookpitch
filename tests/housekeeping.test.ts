@@ -65,7 +65,7 @@ describe('runHousekeeping', () => {
       await tx.rateLimit.deleteMany({ where: { organizationId: orgId } });
       await tx.notification.deleteMany({ where: { organizationId: orgId } });
       await tx.verificationToken.deleteMany({ where: { identifier: email } });
-      await tx.organization.delete({ where: { id: orgId } });
+      await tx.organization.deleteMany({ where: { id: orgId } });
     });
   });
 
@@ -151,11 +151,11 @@ describe('runHousekeeping — platform security tables', () => {
 
   afterAll(async () => {
     await withoutRls(async (tx) => {
-      await tx.platformRateLimit.deleteMany({ where: { bucket: testBucket } }).catch(() => {});
-      await tx.pendingRegistration.deleteMany({ where: { email: pendingEmail } }).catch(() => {});
-      await tx.platformReauthGrant.deleteMany({ where: { userId: testUserId } }).catch(() => {});
-      await tx.appUserRecoveryCode.deleteMany({ where: { userId: testUserId } }).catch(() => {});
-      await tx.appUser.delete({ where: { id: testUserId } }).catch(() => {});
+      await tx.platformRateLimit.deleteMany({ where: { bucket: testBucket } });
+      await tx.pendingRegistration.deleteMany({ where: { email: pendingEmail } });
+      await tx.platformReauthGrant.deleteMany({ where: { userId: testUserId } });
+      await tx.appUserRecoveryCode.deleteMany({ where: { userId: testUserId } });
+      await tx.appUser.deleteMany({ where: { id: testUserId } });
     });
   });
 
@@ -217,12 +217,10 @@ describe('runHousekeeping — advisory lock + session sweeps', () => {
 
   afterAll(async () => {
     await withoutRls(async (tx) => {
-      await tx.breakGlassSession.deleteMany({ where: { actorUserId: testUserId } }).catch(() => {});
-      await tx.impersonationSession
-        .deleteMany({ where: { actorUserId: testUserId } })
-        .catch(() => {});
-      await tx.appUser.delete({ where: { id: testUserId } }).catch(() => {});
-      await tx.organization.delete({ where: { id: testOrgId } }).catch(() => {});
+      await tx.breakGlassSession.deleteMany({ where: { actorUserId: testUserId } });
+      await tx.impersonationSession.deleteMany({ where: { actorUserId: testUserId } });
+      await tx.appUser.deleteMany({ where: { id: testUserId } });
+      await tx.organization.deleteMany({ where: { id: testOrgId } });
     });
   });
 
