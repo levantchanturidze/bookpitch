@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/nextjs';
+import { unstable_rethrow } from 'next/navigation';
 import {
   ConflictError,
   ForbiddenError,
@@ -52,6 +53,11 @@ export async function safeAction<T>(name: string, fn: () => Promise<T>): Promise
   try {
     return { ok: true, data: await fn() };
   } catch (err) {
+    // Next's own control flow — redirect(), notFound(), forbidden() — is
+    // implemented as a thrown error and must reach the framework untouched.
+    // Without this, an action that ends in redirect() (card checkout does)
+    // would have its navigation swallowed and reported as an internal failure.
+    unstable_rethrow(err);
     const code = domainCode(err);
     if (code) {
       // Expected refusal. The message was authored for this audience.

@@ -776,6 +776,9 @@ function BookingModal({
   // null = not yet loaded, [] = loaded but empty, string[] = available slots
   const [slots, setSlots] = useState<string[] | null>(null);
   const [slotsLoading, setSlotsLoading] = useState(false);
+  // A refused or failed slot lookup, said out loud. Before the action returned
+  // a typed result, a refusal threw and the picker could only show "no slots".
+  const [slotsError, setSlotsError] = useState<string | null>(null);
   const activeService = services.find((s) => s.id === values.serviceId);
 
   // Load available slots whenever provider + service + date are all chosen.
@@ -793,10 +796,18 @@ function BookingModal({
     if (!svc) return;
     setSlotsLoading(true);
     setSlots(null);
+    setSlotsError(null);
     let cancelled = false;
     fetchAvailableSlotsAction(values.staffId, values.date, svc.durationMinutes)
-      .then((s) => {
+      .then((result) => {
         if (cancelled) return;
+        if (!result.ok) {
+          setSlots([]);
+          setSlotsError(result.message);
+          setValues((v) => ({ ...v, time: '' }));
+          return;
+        }
+        const s = result.data;
         setSlots(s);
         // Keep the prefilled time if it's still available; otherwise pick the
         // first open slot so the form is always in a submittable state.
@@ -950,6 +961,7 @@ function BookingModal({
             />
           </Field>
 
+          {slotsError && <StatusMessage tone="error">{slotsError}</StatusMessage>}
           {error && <StatusMessage tone="error">{error}</StatusMessage>}
 
           <div className="flex items-center justify-end gap-2 pt-3">

@@ -13,7 +13,6 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 const { withoutRls } = await import('@/lib/db');
 const { mockJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
-const { ForbiddenError, InvalidInputError } = await import('@/lib/auth');
 const { createLocation, createStaff } = await import('@/lib/admin');
 const { sendNowAction } = await import('@/components/reminders/actions');
 const { setAvailabilityAction } = await import('@/components/settings/actions');
@@ -285,29 +284,42 @@ beforeEach(() => {
 });
 
 describe('U-06 — sendNowAction authorises against the appointment it names', () => {
+  // Backlog F (2026-10-17): sendNowAction RETURNS a typed result instead of
+  // throwing — a thrown refusal reached the browser as an HTTP 500 with a
+  // digest. The refusals below are therefore asserted as results, the way the
+  // setAvailabilityAction cases in this file always were; every "sends
+  // nothing" assertion is unchanged, and the allowed complements now also
+  // assert the success result rather than only its side effect.
   it("REFUSES a PROVIDER sending for a colleague's appointment, and sends nothing", async () => {
     await signInAs(fx.providerId, fx.orgId);
-    await expect(sendNowAction(sendNowForm(fx.apptTheirs))).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await sendNowAction(sendNowForm(fx.apptTheirs))).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+    });
     expect(await messageLogCount(fx.apptTheirs)).toBe(0);
   });
 
   it('REFUSES a PROVIDER on an appointment whose staff has no linked user (U-05 shape)', async () => {
     await signInAs(fx.providerId, fx.orgId);
-    await expect(sendNowAction(sendNowForm(fx.apptUnlinked))).rejects.toBeInstanceOf(
-      ForbiddenError,
-    );
+    expect(await sendNowAction(sendNowForm(fx.apptUnlinked))).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+    });
     expect(await messageLogCount(fx.apptUnlinked)).toBe(0);
   });
 
   it('ALLOWS the same PROVIDER on their own appointment — the complement', async () => {
     await signInAs(fx.providerId, fx.orgId);
-    await sendNowAction(sendNowForm(fx.apptMine));
+    expect(await sendNowAction(sendNowForm(fx.apptMine))).toEqual({ ok: true, data: undefined });
     expect(await messageLogCount(fx.apptMine)).toBeGreaterThan(0);
   });
 
   it('an :org owner still sends for any appointment in the organisation', async () => {
     await signInAs(fx.ownerId, fx.orgId);
-    await sendNowAction(sendNowForm(fx.apptUnlinked));
+    expect(await sendNowAction(sendNowForm(fx.apptUnlinked))).toEqual({
+      ok: true,
+      data: undefined,
+    });
     expect(await messageLogCount(fx.apptUnlinked)).toBeGreaterThan(0);
   });
 
@@ -320,14 +332,18 @@ describe('U-06 — sendNowAction authorises against the appointment it names', (
     // booking.update at all, which leaks nothing a role difference could. The
     // property this case exists for is unchanged: nothing is sent.
     await signInAs(fx.providerId, fx.orgId);
-    await expect(sendNowAction(sendNowForm(fx.apptForeign))).rejects.toBeInstanceOf(
-      InvalidInputError,
-    );
+    expect(await sendNowAction(sendNowForm(fx.apptForeign))).toMatchObject({
+      ok: false,
+      code: 'invalid_input',
+      message: 'appointment not found',
+    });
     __clearAuthContextCache();
     await signInAs(fx.ownerId, fx.orgId);
-    await expect(sendNowAction(sendNowForm(fx.apptForeign))).rejects.toBeInstanceOf(
-      InvalidInputError,
-    );
+    expect(await sendNowAction(sendNowForm(fx.apptForeign))).toMatchObject({
+      ok: false,
+      code: 'invalid_input',
+      message: 'appointment not found',
+    });
     expect(await messageLogCount(fx.apptForeign)).toBe(0);
   });
 });

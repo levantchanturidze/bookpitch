@@ -20,7 +20,6 @@ vi.mock('@/lib/active-location', async () => {
 const { withoutRls } = await import('@/lib/db');
 const { mockJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
-const { ForbiddenError } = await import('@/lib/auth');
 const {
   buildAuthContext,
   can,
@@ -638,12 +637,17 @@ describe('concrete resources — in an assigned branch allowed, outside it refus
   });
 
   it('slot lookup reads branch A, and is refused branch B', async () => {
+    // Backlog F (2026-10-17): the action returns a typed result rather than
+    // throwing the refusal (which reached the browser as an HTTP 500). Same
+    // decision, asserted as a result.
     await as('fdA');
-    expect(Array.isArray(await fetchAvailableSlotsAction(fx.staffA, '2030-03-06', 30))).toBe(true);
+    const atA = await fetchAvailableSlotsAction(fx.staffA, '2030-03-06', 30);
+    expect(atA.ok && Array.isArray(atA.data)).toBe(true);
     await as('fdA');
-    await expect(fetchAvailableSlotsAction(fx.staffB, '2030-03-06', 30)).rejects.toBeInstanceOf(
-      ForbiddenError,
-    );
+    expect(await fetchAvailableSlotsAction(fx.staffB, '2030-03-06', 30)).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+    });
   });
 });
 

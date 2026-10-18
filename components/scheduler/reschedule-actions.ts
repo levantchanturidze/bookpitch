@@ -5,10 +5,22 @@ import { getAvailableSlots } from '@/lib/appointments';
 import { withOrg } from '@/lib/db';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { appointmentResource } from '@/lib/rbac/scope';
+import { safeAction } from '@/lib/safe-action';
 
 export type RescheduleSlotsResult =
   | { ok: true; slots: string[] }
-  | { ok: false; error: 'invalid_request' | 'appointment_not_found' | 'staff_not_at_location' };
+  | {
+      ok: false;
+      error:
+        | 'invalid_request'
+        | 'appointment_not_found'
+        | 'staff_not_at_location'
+        // Refusals and unexpected failures. These used to be THROWN, which
+        // reached the browser as an HTTP 500 with a digest.
+        | 'unauthenticated'
+        | 'forbidden'
+        | 'internal';
+    };
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -32,7 +44,7 @@ function validLocalDate(value: string): boolean {
  * browser. Otherwise a caller could ask for five-minute availability for a
  * sixty-minute booking and make the picker disagree with the write path again.
  */
-export async function fetchRescheduleSlotsAction(
+async function fetchRescheduleSlotsImpl(
   appointmentId: string,
   staffId: string,
   date: string,
@@ -96,4 +108,25 @@ export async function fetchRescheduleSlotsAction(
     );
     return { ok: true, slots } as const;
   });
+}
+
+/**
+ * The exported action never throws: a refusal from requireAuthContext() or
+ * requirePermission() comes back as `unauthenticated` / `forbidden`, anything
+ * unexpected as `internal` (reported to Sentry by safeAction). The body above
+ * is unchanged.
+ */
+export async function fetchRescheduleSlotsAction(
+  appointmentId: string,
+  staffId: string,
+  date: string,
+): Promise<RescheduleSlotsResult> {
+  const r = await safeAction('scheduler.fetchRescheduleSlots', () =>
+    fetchRescheduleSlotsImpl(appointmentId, staffId, date),
+  );
+  if (r.ok) return r.data;
+  return {
+    ok: false,
+    error: r.code === 'unauthenticated' || r.code === 'forbidden' ? r.code : 'internal',
+  };
 }

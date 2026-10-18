@@ -28,6 +28,12 @@ export default async function RemindersPage() {
   const canRunTick = can(ctx, 'org.settings.update:org', {
     organizationId: ctx.activeOrganizationId!,
   });
+  // Templates and lead time are organisation-wide, so the same gate as
+  // saveTemplateAction / saveLeadHoursAction. The actions enforce it; this only
+  // stops the page offering a control the caller cannot use.
+  const canEditSettings = can(ctx, 'org.settings.update:org', {
+    organizationId: ctx.activeOrganizationId!,
+  });
 
   // The guard above passes in LIST mode, so what this page SHOWS is scoped
   // here, by the caller's booking.read grant. It used to show every upcoming
@@ -140,6 +146,7 @@ export default async function RemindersPage() {
       log={data.log}
       sampleVars={data.sampleAppointment}
       canRunTick={canRunTick}
+      canEditSettings={canEditSettings}
     />
   );
 }

@@ -9,6 +9,8 @@ import { writeAudit } from '@/lib/audit';
 import { runReminderTick, sendNowForSession } from '@/lib/messaging/reminders';
 import { runRetentionTick } from '@/lib/gdpr';
 import { MIN_REMINDER_LEAD_HOURS } from '@/lib/messaging/reminders';
+import type { ActionResult } from '@/lib/action-result';
+import { safeAction } from '@/lib/safe-action';
 
 // Server Actions used by the /reminders page. Each mirrors an API concept and
 // revalidates the page so the message-log table + upcoming list refresh.
@@ -19,8 +21,26 @@ async function ctxFor(permission: string, module: string) {
   return ctxToSession(ctx);
 }
 
-export async function saveTemplateAction(fd: FormData) {
-  const session = await ctxFor('booking.update', 'reminders');
+/**
+ * Who may change what every customer of the organisation is sent, and when.
+ *
+ * Reminder templates (one message_template row per organisation and channel)
+ * and the lead time (organizations.reminder_lead_hours) are ORGANISATION-WIDE
+ * configuration. These two actions used to be gated by `booking.update` in list
+ * mode — the permission for editing a booking — so any PROVIDER or FRONT_DESK
+ * could rewrite the text sent to every customer of the organisation, or shorten
+ * the lead time for all of them (scoped-RBAC audit §7).
+ *
+ * `org.settings.update:org` is the key spec §6.2 gives organisation settings
+ * (ORG_OWNER, ORG_ADMIN), and the one the retention and tick actions on this
+ * same page already require. It is passed fully qualified, so a `:branch` grant
+ * (BRANCH_MANAGER's org.settings.update:branch) does not reach org-wide
+ * configuration through can()'s scope walk.
+ */
+const REMINDER_SETTINGS_PERMISSION = 'org.settings.update:org';
+
+async function saveTemplateImpl(fd: FormData) {
+  const session = await ctxFor(REMINDER_SETTINGS_PERMISSION, 'reminders');
   const channel = String(fd.get('channel') ?? '') as MessageChannel;
   const body = String(fd.get('body') ?? '').trim();
   if (channel !== 'sms' && channel !== 'email') {
@@ -52,8 +72,8 @@ export async function saveTemplateAction(fd: FormData) {
   revalidatePath('/reminders');
 }
 
-export async function saveLeadHoursAction(fd: FormData) {
-  const session = await ctxFor('booking.update', 'reminders');
+async function saveLeadHoursImpl(fd: FormData) {
+  const session = await ctxFor(REMINDER_SETTINGS_PERMISSION, 'reminders');
   const raw = String(fd.get('hours') ?? '');
   const hours = Number(raw);
   // The floor is not cosmetic. The reminder window is sliding —
@@ -70,15 +90,34 @@ export async function saveLeadHoursAction(fd: FormData) {
     );
   }
   await withOrg(session.organizationId, async (tx) => {
+    // The audit row must name the value THIS write replaced. A plain read in
+    // the same transaction does not guarantee that: under READ COMMITTED it
+    // takes no lock, so two concurrent saves can both read 24, and the second
+    // then records `previous: 24` for a value the first had already replaced.
+    // Locking the row first makes read-then-write one step; a concurrent save
+    // waits here and then reads what the first one committed.
+    await tx.$executeRaw`SELECT id FROM organizations WHERE id = ${session.organizationId}::uuid FOR UPDATE`;
+    const before = await tx.organization.findUnique({
+      where: { id: session.organizationId },
+      select: { reminderLeadHours: true },
+    });
     await tx.organization.update({
       where: { id: session.organizationId },
       data: { reminderLeadHours: hours },
+    });
+    // This change decides, for every customer of the organisation, whether a
+    // reminder arrives at all (MIN_REMINDER_LEAD_HOURS), and it was the one
+    // settings write on this page with no audit row.
+    await writeAudit(tx, session, 'update', 'organization', session.organizationId, {
+      setting: 'reminderLeadHours',
+      hours,
+      previous: before?.reminderLeadHours ?? null,
     });
   });
   revalidatePath('/reminders');
 }
 
-export async function sendNowAction(fd: FormData) {
+async function sendNowImpl(fd: FormData) {
   const ctx = await requireAuthContext();
   const appointmentId = String(fd.get('appointmentId') ?? '');
   if (!appointmentId) throw new InvalidInputError('appointmentId is required');
@@ -104,13 +143,13 @@ export async function sendNowAction(fd: FormData) {
   revalidatePath('/reminders');
 }
 
-export async function runTickAction() {
+async function runTickImpl() {
   const session = await ctxFor('org.settings.update:org', 'reminders');
   await runReminderTick(session.organizationId);
   revalidatePath('/reminders');
 }
 
-export async function saveRetentionYearsAction(fd: FormData) {
+async function saveRetentionYearsImpl(fd: FormData) {
   const session = await ctxFor('org.settings.update:org', 'reminders');
   const raw = String(fd.get('years') ?? '');
   const years = Number(raw);
@@ -130,9 +169,47 @@ export async function saveRetentionYearsAction(fd: FormData) {
   revalidatePath('/reminders');
 }
 
-export async function runRetentionTickAction() {
+async function runRetentionTickImpl() {
   const session = await ctxFor('client.export', 'reminders');
   await runRetentionTick(session.organizationId);
   revalidatePath('/reminders');
   revalidatePath('/patients');
+}
+
+// -----------------------------------------------------------------------------
+// The exported Server Actions return an ActionResult; they never throw.
+//
+// Each body above throws its refusals — UnauthenticatedError, ForbiddenError,
+// InvalidInputError — exactly as before. Thrown out of a Server Action, any of
+// those reached the browser as a masked error with a digest and an HTTP 500:
+// a crafted call by someone without the permission was refused (nothing
+// changed), but looked like a crash, and a real user saw the error page
+// instead of the reason (production C7 UAT, 2026-10-01). safeAction() turns a
+// refusal into `{ ok: false, code, message }` and anything unexpected into the
+// generic message, reported to Sentry. The bodies are untouched, so the
+// permission checks they run are the same ones.
+// -----------------------------------------------------------------------------
+
+export async function saveTemplateAction(fd: FormData): Promise<ActionResult> {
+  return safeAction('reminders.saveTemplate', () => saveTemplateImpl(fd));
+}
+
+export async function saveLeadHoursAction(fd: FormData): Promise<ActionResult> {
+  return safeAction('reminders.saveLeadHours', () => saveLeadHoursImpl(fd));
+}
+
+export async function sendNowAction(fd: FormData): Promise<ActionResult> {
+  return safeAction('reminders.sendNow', () => sendNowImpl(fd));
+}
+
+export async function runTickAction(): Promise<ActionResult> {
+  return safeAction('reminders.runTick', () => runTickImpl());
+}
+
+export async function saveRetentionYearsAction(fd: FormData): Promise<ActionResult> {
+  return safeAction('reminders.saveRetentionYears', () => saveRetentionYearsImpl(fd));
+}
+
+export async function runRetentionTickAction(): Promise<ActionResult> {
+  return safeAction('reminders.runRetentionTick', () => runRetentionTickImpl());
 }
