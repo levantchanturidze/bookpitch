@@ -13,18 +13,19 @@ vi.mock('@/auth', () => ({
   __clearSessionVersionCache: vi.fn(),
 }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
-// The page reads the active location from a cookie; the test chooses it.
-const { locationMock } = vi.hoisted(() => ({ locationMock: vi.fn() }));
-vi.mock('@/lib/active-location', async () => {
-  const actual =
-    await vi.importActual<typeof import('@/lib/active-location')>('@/lib/active-location');
-  return { ...actual, loadLocationsForOrg: locationMock };
+// The page resolves its location through the REAL loader, so this file does
+// not depend on that loader's name or signature. Only the cookie store, which
+// needs a request scope, is replaced: no cookie, so the default location.
+vi.mock('next/headers', async () => {
+  const actual = await vi.importActual<typeof import('next/headers')>('next/headers');
+  return { ...actual, cookies: async () => ({ get: () => undefined, set: () => undefined }) };
 });
 
 const { unsafePrismaAdmin, withoutRls } = await import('@/lib/db');
 const { mockJwt } = await import('./helpers/session');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 const { ForbiddenError, InvalidInputError } = await import('@/lib/auth');
+const { Client } = await import('pg');
 const { saveTemplateAction, saveLeadHoursAction } = await import('@/components/reminders/actions');
 const remindersPage = await import('@/app/(app)/reminders/page');
 
@@ -155,6 +156,19 @@ beforeAll(async () => {
     const location = await tx.location.create({
       data: { organizationId: org.id, type: 'clinic', name: 'RS Clinic' },
     });
+    // Branch-scoped roles reach the location through its branch (created by
+    // the locations sync trigger), as they do in production.
+    const branch = await tx.branch.findFirstOrThrow({
+      where: { legacyLocationId: location.id },
+      select: { id: true },
+    });
+    for (const scoped of [users.frontDesk, users.branchManager]) {
+      const m = await tx.membership.findFirstOrThrow({
+        where: { organizationId: org.id, userId: scoped },
+        select: { id: true },
+      });
+      await tx.membershipBranch.create({ data: { membershipId: m.id, branchId: branch.id } });
+    }
     const sms = await tx.messageTemplate.create({
       data: { organizationId: org.id, channel: 'sms', body: ORIGINAL_SMS },
     });
@@ -290,6 +304,50 @@ describe('saveLeadHoursAction — who may decide when every customer is reminded
     expect(await settingsAudits()).toEqual([]);
   });
 
+  it('a save that waits behind another records the value that other save committed', async () => {
+    // Another writer holds the row: it has set 12 and not yet committed.
+    const holder = new Client({ connectionString: process.env.DATABASE_URL });
+    await holder.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(`SET LOCAL app.current_org_id = '${fx.orgId}'`);
+      await holder.query('UPDATE organizations SET reminder_lead_hours = 12 WHERE id = $1', [
+        fx.orgId,
+      ]);
+      const holderPid = (await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+        .rows[0].pid;
+
+      await as('owner');
+      const saving = saveLeadHoursAction(fd({ hours: '36' }));
+      // The save must be WAITING on that row, not racing past it.
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i++) {
+        const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT count(*)::bigint AS n FROM pg_stat_activity WHERE ${holderPid} = ANY(pg_blocking_pids(pid))`,
+        );
+        waiting = Number(rows[0].n) > 0;
+        if (!waiting) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(waiting, 'the save never waited for the row').toBe(true);
+      await holder.query('COMMIT');
+      await saving;
+    } finally {
+      await holder.end();
+    }
+
+    expect(await leadHours()).toBe(36);
+    // 12, not 24: the value this write replaced, not the one it first saw.
+    expect(await settingsAudits()).toEqual([
+      {
+        action: 'update',
+        entity: 'organization',
+        entityId: fx.orgId,
+        actorUserId: fx.users.owner,
+        meta: { setting: 'reminderLeadHours', hours: 36, previous: 12 },
+      },
+    ]);
+  });
+
   it('another organisation changes only its own lead time', async () => {
     await as('otherOwner');
     await saveLeadHoursAction(fd({ hours: '48', organizationId: fx.orgId }));
@@ -303,10 +361,6 @@ describe('saveLeadHoursAction — who may decide when every customer is reminded
 describe('the /reminders page offers editing only to those who can save', () => {
   async function render(who: Role) {
     await as(who);
-    locationMock.mockResolvedValue({
-      locations: [{ id: fx.locationId, name: 'RS Clinic', type: 'clinic', timezone: 'UTC' }],
-      active: { id: fx.locationId, name: 'RS Clinic', type: 'clinic', timezone: 'UTC' },
-    });
     const el = (await remindersPage.default()) as ReactElement;
     return { el, html: renderToStaticMarkup(el) };
   }

@@ -88,8 +88,13 @@ export async function saveLeadHoursAction(fd: FormData) {
     );
   }
   await withOrg(session.organizationId, async (tx) => {
-    // Read inside the same transaction so the audit row states the value this
-    // write actually replaced.
+    // The audit row must name the value THIS write replaced. A plain read in
+    // the same transaction does not guarantee that: under READ COMMITTED it
+    // takes no lock, so two concurrent saves can both read 24, and the second
+    // then records `previous: 24` for a value the first had already replaced.
+    // Locking the row first makes read-then-write one step; a concurrent save
+    // waits here and then reads what the first one committed.
+    await tx.$executeRaw`SELECT id FROM organizations WHERE id = ${session.organizationId}::uuid FOR UPDATE`;
     const before = await tx.organization.findUnique({
       where: { id: session.organizationId },
       select: { reminderLeadHours: true },
