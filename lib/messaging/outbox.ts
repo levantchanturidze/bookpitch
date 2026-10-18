@@ -1,10 +1,108 @@
-import type { PrismaClient } from '@prisma/client';
+import { createHash } from 'node:crypto';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { unsafePrismaAdmin } from '@/lib/db';
 import { encryptField, decryptField, hashEmailForIndex } from '@/lib/crypto';
 import { getEmailProvider } from './index';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+type RawCapable = Pick<TxClient, '$executeRaw'>;
+
+// -----------------------------------------------------------------------------
+// Terminal states, and what each one means.
+//
+//   sent       the provider accepted it
+//   dead       delivery FAILED for good (retries exhausted). The production
+//              monitor's `outbox-dead-letters` check and the soak's
+//              `outbox-clean` gate alarm on any of these.
+//   cancelled  WITHDRAWN before delivery, on purpose: a newer message made it
+//              obsolete (failure_category 'superseded'). Not a failure, so it
+//              must never be counted as one.
+//
+// Superseded mail used to be marked `dead`, which meant a user requesting a
+// second password reset while the first was still queued would open a
+// dead-letter incident — and, during a soak, fail its outbox-clean gate. One
+// state, two meanings, is how a monitor learns to cry wolf.
+// -----------------------------------------------------------------------------
+
+/** Purpose of every email that carries an onboarding verification link. */
+export const VERIFICATION_EMAIL_PURPOSE = 'onboard.verify';
+
+/**
+ * Idempotency key for an email carrying an onboarding verification link:
+ *
+ *   onboard_verify:<email sha256, 16 hex>:<token hash, 16 hex>   (sign-up)
+ *   onboard_resend:<email sha256, 16 hex>:<token hash, 16 hex>   (resend)
+ *
+ * The LAST segment is the first 16 hex characters of the SHA-256 that the
+ * link's token hashes to — the prefix pending_registrations.token_hash starts
+ * with. That is what lets the outbox tell, without decrypting anything, whether
+ * a queued email still carries the CURRENT link (VERIFICATION_LINK_IS_CURRENT).
+ * The format is the one these rows have always had, so mail queued before this
+ * code shipped is recognised too.
+ */
+export function verificationEmailKey(
+  kind: 'verify' | 'resend',
+  email: string,
+  tokenHash: string,
+): string {
+  const emailHash = createHash('sha256').update(email).digest('hex').slice(0, 16);
+  return `onboard_${kind}:${emailHash}:${tokenHash.slice(0, 16)}`;
+}
+
+/**
+ * SQL, for an `email_outbox o` row of VERIFICATION_EMAIL_PURPOSE: TRUE while
+ * the link it carries is its registration's current, unexpired token. FALSE
+ * once that token has been rotated (resend, repeat sign-up), used (the account
+ * was activated — the pending row is deleted) or has expired. On the database
+ * clock, like every other expiry comparison in this codebase.
+ */
+const VERIFICATION_LINK_IS_CURRENT = Prisma.sql`EXISTS (
+  SELECT 1 FROM pending_registrations pr
+   WHERE left(pr.token_hash, 16) = split_part(o.idempotency_key, ':', 3)
+     AND pr.expires_at > transaction_timestamp())`;
+
+/**
+ * SQL: an `email_outbox o` row a claim may take — anything except a
+ * verification email whose link is stale. Evaluated in the claiming statement
+ * itself, so a resend that lands between a stale-row sweep and the claim still
+ * cannot get the old link sent.
+ */
+export const OUTBOX_CLAIMABLE_SQL = Prisma.sql`(o.purpose <> ${VERIFICATION_EMAIL_PURPOSE} OR ${VERIFICATION_LINK_IS_CURRENT})`;
+
+/**
+ * Withdraw queued verification emails whose link is no longer current.
+ *
+ * Supersession at RESEND time only reaches rows that are `pending` at that
+ * moment. A row that was mid-send (`processing`) and then failed goes back to
+ * `pending` for a retry — still carrying the link the resend just killed — and
+ * a row can also outlive its token's expiry, or the account's activation,
+ * while it waits for a scheduled drain. Delivering any of those sends the user
+ * a dead link. So every delivery path re-asks, immediately before claiming:
+ * is this link still the current one?
+ *
+ * Only `pending` rows are touched: a `processing` row is mid-send, and its
+ * outcome comes back through this check if it fails. Pass `idempotencyKey` to
+ * limit it to one row.
+ */
+export async function cancelObsoleteVerificationEmails(
+  client: RawCapable,
+  idempotencyKey?: string,
+): Promise<number> {
+  const n = await client.$executeRaw`
+    UPDATE email_outbox o
+       SET status           = 'cancelled',
+           failure_category = 'superseded',
+           failed_at        = NOW(),
+           last_error       = 'verification link no longer current',
+           claim_owner      = NULL
+     WHERE o.status = 'pending'
+       AND o.purpose = ${VERIFICATION_EMAIL_PURPOSE}
+       ${idempotencyKey === undefined ? Prisma.empty : Prisma.sql`AND o.idempotency_key = ${idempotencyKey}`}
+       AND NOT ${VERIFICATION_LINK_IS_CURRENT}
+  `;
+  return Number(n);
+}
 
 // -----------------------------------------------------------------------------
 // P17-002 — the durable-email helper.
@@ -89,17 +187,21 @@ export async function enqueueEmail(tx: TxClient, input: EnqueueEmailInput): Prom
 }
 
 /**
- * Mark still-pending rows for this (purpose, recipient) as dead, because a
- * newer message has superseded them.
+ * Withdraw still-pending rows for this (purpose, recipient), because a newer
+ * message has superseded them. They become `cancelled` — withdrawn, NOT failed
+ * (see the terminal states above).
  *
- * Password reset needs this. Requesting a second reset invalidates the first
- * token — `requestPasswordReset` deletes prior verification_tokens rows — so a
- * queued-but-undelivered first email would arrive carrying a link that is
- * already dead. Superseding it means the user gets one working link instead of
- * one working and one broken.
+ * Password reset and onboarding verification both need this. Issuing a new
+ * token invalidates the previous one, so a queued-but-undelivered earlier
+ * email would arrive carrying a link that is already dead. Superseding it
+ * means the user gets one working link instead of one working and one broken.
+ * Call it in the SAME transaction that issues the new token and queues the new
+ * email, so the old mail is withdrawn exactly when its replacement exists.
  *
  * Matches on the address HMAC, so nothing has to be decrypted. Rows already
  * claimed by a worker (`processing`) are left alone: that send is in flight.
+ * For verification mail, cancelObsoleteVerificationEmails() catches one that
+ * fails and comes back.
  */
 export async function supersedePendingEmails(
   tx: TxClient,
@@ -109,7 +211,7 @@ export async function supersedePendingEmails(
   const hash = hashEmailForIndex(to);
   const n = await tx.$executeRaw`
     UPDATE email_outbox
-    SET status = 'dead',
+    SET status = 'cancelled',
         failed_at = NOW(),
         last_error = 'superseded by a newer message',
         failure_category = 'superseded',
@@ -143,14 +245,19 @@ type ClaimedRow = {
  */
 export async function deliverNow(idempotencyKey: string, purpose: string): Promise<boolean> {
   try {
+    // A stale verification link is withdrawn rather than left `pending` for a
+    // drain that would only withdraw it later. A no-op for any other row.
+    await cancelObsoleteVerificationEmails(unsafePrismaAdmin, idempotencyKey);
     const [claimed] = await unsafePrismaAdmin.$queryRaw<ClaimedRow[]>`
-      UPDATE email_outbox
+      UPDATE email_outbox o
       SET status = 'processing',
           claim_owner = 'immediate',
           claim_expires_at = now() + interval '120 seconds',
           claimed_at = now()
-      WHERE idempotency_key = ${idempotencyKey} AND status = 'pending'
-      RETURNING id, to_address, to_address_encrypted, subject, body, body_encrypted
+      WHERE o.idempotency_key = ${idempotencyKey}
+        AND o.status = 'pending'
+        AND ${OUTBOX_CLAIMABLE_SQL}
+      RETURNING o.id, o.to_address, o.to_address_encrypted, o.subject, o.body, o.body_encrypted
     `;
     if (!claimed) return false;
 
