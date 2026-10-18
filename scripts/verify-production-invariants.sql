@@ -70,6 +70,7 @@ DECLARE
   is_super bool;
   is_bypass bool;
   can_login bool;
+  replica_defaults text;
 BEGIN
   SELECT rolsuper, rolbypassrls, rolcanlogin INTO is_super, is_bypass, can_login
     FROM pg_roles WHERE rolname = 'bookpitch_app';
@@ -87,7 +88,28 @@ BEGIN
     RAISE EXCEPTION 'production-verify: bookpitch_app cannot log in';
   END IF;
 
-  RAISE NOTICE 'ok: bookpitch_app is NOSUPERUSER NOBYPASSRLS and can log in';
+  -- 2b. Nothing switches its triggers off by default. session_replication_role
+  -- = replica, set as a default (ALTER ROLE … SET, ALTER DATABASE … SET, or
+  -- ALTER ROLE … IN DATABASE … SET), stops every ordinary trigger AND
+  -- foreign-key enforcement in each session it applies to. The guards that
+  -- checks 8 and 9 find enabled in pg_trigger would never fire. Only the value
+  -- is reported, never another setting.
+  SELECT string_agg(coalesce(r.rolname, 'every role') || ' in '
+                    || coalesce(d.datname, 'every database'), '; ')
+    INTO replica_defaults
+    FROM pg_db_role_setting rs
+    LEFT JOIN pg_roles r    ON r.oid = rs.setrole
+    LEFT JOIN pg_database d ON d.oid = rs.setdatabase
+   CROSS JOIN LATERAL unnest(rs.setconfig) AS cfg
+   WHERE (rs.setrole = 0 OR r.rolname = 'bookpitch_app')
+     AND (rs.setdatabase = 0 OR d.datname = current_database())
+     AND lower(replace(cfg, ' ', '')) = 'session_replication_role=replica';
+  IF replica_defaults IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: session_replication_role defaults to replica for % — triggers and foreign keys do not fire for the application',
+      replica_defaults;
+  END IF;
+
+  RAISE NOTICE 'ok: bookpitch_app is NOSUPERUSER NOBYPASSRLS, can log in, and has no replica-mode default';
 END $$;
 
 -- 3. The audit log is append-only, enforced by privilege not by code. --------
@@ -774,13 +796,18 @@ BEGIN
       idx_unique, idx_cols, idx_pred;
   END IF;
 
-  -- 8b / 8c: present AND enabled. A disabled trigger ('D') is a missing one.
+  -- 8b / 8c: present AND firing. A disabled trigger ('D') is a missing one, and
+  -- so is a replica-only one ('R', ENABLE REPLICA TRIGGER): it fires only when
+  -- session_replication_role = replica, which the application never sets.
+  -- 'O' (the default) and 'A' (always) fire for the application.
   SELECT t.tgenabled INTO trg_enabled
     FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
    WHERE c.relname = 'staff' AND t.tgname = 'staff_user_is_member' AND NOT t.tgisinternal;
-  IF trg_enabled IS NULL OR trg_enabled = 'D' THEN
+  IF trg_enabled IS NULL OR trg_enabled NOT IN ('O', 'A') THEN
     RAISE EXCEPTION 'production-verify: trigger staff_user_is_member is % — a staff row can be linked to another organisation''s user',
-      CASE WHEN trg_enabled IS NULL THEN 'missing' ELSE 'disabled' END;
+      CASE WHEN trg_enabled IS NULL THEN 'missing'
+           WHEN trg_enabled = 'R' THEN 'enabled for replica sessions only, so it never fires for the application'
+           ELSE 'disabled' END;
   END IF;
   trg_enabled := NULL;
   SELECT t.tgenabled INTO trg_enabled
@@ -789,6 +816,9 @@ BEGIN
      AND NOT t.tgisinternal;
   IF trg_enabled IS NULL OR trg_enabled = 'D' THEN
     RAISE EXCEPTION 'production-verify: trigger membership_branches_same_org is missing or disabled — a membership can be scoped to another organisation''s branch';
+  END IF;
+  IF trg_enabled NOT IN ('O', 'A') THEN
+    RAISE EXCEPTION 'production-verify: trigger membership_branches_same_org is enabled for replica sessions only, so it never fires for the application — a membership can be scoped to another organisation''s branch';
   END IF;
 
   -- 8d. The data, whatever the guards say.
