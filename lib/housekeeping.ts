@@ -36,7 +36,9 @@ const ONE_DAY_MS = 24 * 3600 * 1000;
 
 // Stable bigint key for pg_try_advisory_xact_lock.
 // Must not collide with any other advisory lock in the codebase.
-const HOUSEKEEPING_LOCK_KEY = BigInt('7698234761');
+// Exported so tests/scheduler-overlap-safety can hold it from another session
+// and prove an overlapping run is a no-op, rather than assume it.
+export const HOUSEKEEPING_LOCK_KEY = BigInt('7698234761');
 
 export type HousekeepingResult = {
   rateLimit: number;
