@@ -21,8 +21,26 @@ async function ctxFor(permission: string, module: string) {
   return ctxToSession(ctx);
 }
 
+/**
+ * Who may change what every customer of the organisation is sent, and when.
+ *
+ * Reminder templates (one message_template row per organisation and channel)
+ * and the lead time (organizations.reminder_lead_hours) are ORGANISATION-WIDE
+ * configuration. These two actions used to be gated by `booking.update` in list
+ * mode — the permission for editing a booking — so any PROVIDER or FRONT_DESK
+ * could rewrite the text sent to every customer of the organisation, or shorten
+ * the lead time for all of them (scoped-RBAC audit §7).
+ *
+ * `org.settings.update:org` is the key spec §6.2 gives organisation settings
+ * (ORG_OWNER, ORG_ADMIN), and the one the retention and tick actions on this
+ * same page already require. It is passed fully qualified, so a `:branch` grant
+ * (BRANCH_MANAGER's org.settings.update:branch) does not reach org-wide
+ * configuration through can()'s scope walk.
+ */
+const REMINDER_SETTINGS_PERMISSION = 'org.settings.update:org';
+
 async function saveTemplateImpl(fd: FormData) {
-  const session = await ctxFor('booking.update', 'reminders');
+  const session = await ctxFor(REMINDER_SETTINGS_PERMISSION, 'reminders');
   const channel = String(fd.get('channel') ?? '') as MessageChannel;
   const body = String(fd.get('body') ?? '').trim();
   if (channel !== 'sms' && channel !== 'email') {
@@ -55,7 +73,7 @@ async function saveTemplateImpl(fd: FormData) {
 }
 
 async function saveLeadHoursImpl(fd: FormData) {
-  const session = await ctxFor('booking.update', 'reminders');
+  const session = await ctxFor(REMINDER_SETTINGS_PERMISSION, 'reminders');
   const raw = String(fd.get('hours') ?? '');
   const hours = Number(raw);
   // The floor is not cosmetic. The reminder window is sliding —
@@ -72,9 +90,28 @@ async function saveLeadHoursImpl(fd: FormData) {
     );
   }
   await withOrg(session.organizationId, async (tx) => {
+    // The audit row must name the value THIS write replaced. A plain read in
+    // the same transaction does not guarantee that: under READ COMMITTED it
+    // takes no lock, so two concurrent saves can both read 24, and the second
+    // then records `previous: 24` for a value the first had already replaced.
+    // Locking the row first makes read-then-write one step; a concurrent save
+    // waits here and then reads what the first one committed.
+    await tx.$executeRaw`SELECT id FROM organizations WHERE id = ${session.organizationId}::uuid FOR UPDATE`;
+    const before = await tx.organization.findUnique({
+      where: { id: session.organizationId },
+      select: { reminderLeadHours: true },
+    });
     await tx.organization.update({
       where: { id: session.organizationId },
       data: { reminderLeadHours: hours },
+    });
+    // This change decides, for every customer of the organisation, whether a
+    // reminder arrives at all (MIN_REMINDER_LEAD_HOURS), and it was the one
+    // settings write on this page with no audit row.
+    await writeAudit(tx, session, 'update', 'organization', session.organizationId, {
+      setting: 'reminderLeadHours',
+      hours,
+      previous: before?.reminderLeadHours ?? null,
     });
   });
   revalidatePath('/reminders');

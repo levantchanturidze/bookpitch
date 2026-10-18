@@ -52,6 +52,12 @@ type Props = {
   log: LogEntry[];
   sampleVars: TemplateVars;
   canRunTick: boolean;
+  /**
+   * Templates and lead time are organisation-wide (org.settings.update:org).
+   * Without it they are shown read-only: a receptionist can still see what
+   * customers are sent, but is not offered a save the server would refuse.
+   */
+  canEditSettings: boolean;
 };
 
 const SAMPLE_HINT: TemplateVars = {
@@ -71,6 +77,7 @@ export default function RemindersView({
   log,
   sampleVars,
   canRunTick,
+  canEditSettings,
 }: Props) {
   const previewVars = { ...SAMPLE_HINT, ...sampleVars };
 
@@ -84,7 +91,16 @@ export default function RemindersView({
               SMS + email templates, per-org lead time, and a live send log.
             </p>
           </div>
-          <LeadHoursForm initial={leadHours} />
+          {canEditSettings ? (
+            <LeadHoursForm initial={leadHours} />
+          ) : (
+            <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+              <span className="block text-[10px] font-bold tracking-wider text-slate-600 uppercase">
+                Lead time
+              </span>
+              <span className="text-sm font-bold text-slate-800">{leadHours}</span> hours before
+            </p>
+          )}
         </div>
       </header>
 
@@ -93,11 +109,13 @@ export default function RemindersView({
           channel="sms"
           initial={smsBody ?? DEFAULT_SMS_TEMPLATE}
           previewVars={previewVars}
+          editable={canEditSettings}
         />
         <TemplateCard
           channel="email"
           initial={emailBody ?? DEFAULT_EMAIL_TEMPLATE}
           previewVars={previewVars}
+          editable={canEditSettings}
         />
       </div>
 
@@ -163,10 +181,12 @@ function TemplateCard({
   channel,
   initial,
   previewVars,
+  editable,
 }: {
   channel: MessageChannel;
   initial: string;
   previewVars: TemplateVars;
+  editable: boolean;
 }) {
   const [body, setBody] = useState(initial);
   const [error, setError] = useState<string | null>(null);
@@ -191,43 +211,49 @@ function TemplateCard({
         <div className="font-mono text-[10px] text-slate-500">{body.length} chars</div>
       </div>
 
-      <form
-        action={(fd) =>
-          startTransition(async () => {
-            setError(resultMessage(await saveTemplateAction(fd)));
-          })
-        }
-        className="space-y-3"
-      >
-        <input type="hidden" name="channel" value={channel} />
-        <textarea
-          name="body"
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          rows={isSms ? 4 : 8}
-          className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-[12px] text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1"
-        />
-        <div className="flex flex-wrap items-center gap-1">
-          {PLACEHOLDER_KEYS.map((k) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setBody((prev) => `${prev}{${k}}`)}
-              className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[10px] text-slate-600 hover:bg-slate-100"
-            >
-              {'{' + k + '}'}
-            </button>
-          ))}
-        </div>
-        <button
-          type="submit"
-          disabled={isPending}
-          className="w-full rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-40"
+      {editable ? (
+        <form
+          action={(fd) =>
+            startTransition(async () => {
+              setError(resultMessage(await saveTemplateAction(fd)));
+            })
+          }
+          className="space-y-3"
         >
-          {isPending ? 'Saving…' : 'Save template'}
-        </button>
-        <StatusMessage tone="error">{error}</StatusMessage>
-      </form>
+          <input type="hidden" name="channel" value={channel} />
+          <textarea
+            name="body"
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={isSms ? 4 : 8}
+            className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-[12px] text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1"
+          />
+          <div className="flex flex-wrap items-center gap-1">
+            {PLACEHOLDER_KEYS.map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setBody((prev) => `${prev}{${k}}`)}
+                className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[10px] text-slate-600 hover:bg-slate-100"
+              >
+                {'{' + k + '}'}
+              </button>
+            ))}
+          </div>
+          <button
+            type="submit"
+            disabled={isPending}
+            className="w-full rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-40"
+          >
+            {isPending ? 'Saving…' : 'Save template'}
+          </button>
+          <StatusMessage tone="error">{error}</StatusMessage>
+        </form>
+      ) : (
+        <p className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-[11px] text-slate-600">
+          Templates are organisation-wide. An owner or administrator can change them.
+        </p>
+      )}
 
       <div className="mt-4 rounded-lg border border-slate-100 bg-slate-50 p-3">
         <p className="mb-1 font-mono text-[10px] tracking-wider text-slate-500 uppercase">
