@@ -2201,3 +2201,97 @@ describe('incident recovery requires a natural run', () => {
     expect(toComment).toHaveLength(1);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Backlog H — "no eligible work" is neither health nor failure.
+//
+// An empty 48-hour reminder window used to FAIL `reminders-missed`. That turned
+// every monitor run red whenever traffic was low, and on 2026-10-05 it REOPENED
+// #90 — which had closed five days earlier on real evidence ("0 of 2") — with
+// zero evidence, saying the incident "was closed while its check was still
+// failing". The result objects below come from the REAL evaluator, so these
+// tests exercise the contract the monitor actually emits, end to end through
+// the run verdict and the incident reconciler.
+// -----------------------------------------------------------------------------
+describe('reminders-missed with no eligible work never moves an incident', () => {
+  const reminders = (unreminded: number, eligible?: number) =>
+    (
+      evaluateOpsMetrics({
+        config: {},
+        cronHeartbeat: {
+          unremindedStartedAppointments: unreminded,
+          ...(eligible === undefined ? {} : { eligibleStartedAppointments: eligible }),
+        },
+      }) as Array<Record<string, unknown>>
+    ).find((r) => r.id === 'reminders-missed')!;
+
+  const empty = () => reminders(0, 0);
+  const verified = () => reminders(0, 2);
+  const missed = () => reminders(1, 2);
+  const unmeasurable = () => reminders(0);
+
+  const issue90 = (state: 'open' | 'closed') => ({
+    number: 90,
+    title: '[ops] Appointments started without a reminder ever being sent',
+    body: `${incidentMarker('reminders-missed')}\nfirst detected …`,
+    state,
+  });
+
+  it('is reported as NOT VERIFIED, and is not a pass', () => {
+    const r = empty();
+    expect(r.ok).toBe(false);
+    expect(r.canClose).toBe(false);
+    expect(r.informational).toBe(true);
+    expect(String(r.detail)).toMatch(/NOT VERIFIED/);
+  });
+
+  it('does not fail the monitor run', () => {
+    const summary = summariseResults([empty()] as never);
+    expect(summary.healthy).toBe(true);
+    expect(summary.infoCount).toBe(1);
+    expect(summary.failingInformational).toHaveLength(1); // still visible in the log
+  });
+
+  it('does not open an incident', () => {
+    const plan = reconcileIncidents([empty()], [], [], NATURAL);
+    expect(plan.toOpen).toHaveLength(0);
+  });
+
+  it('does not REOPEN an incident that closed on real evidence — the 2026-10-05 defect', () => {
+    const plan = reconcileIncidents([empty()], [], [issue90('closed')], NATURAL);
+    expect(plan.toReopen).toHaveLength(0);
+    expect(plan.toOpen).toHaveLength(0);
+  });
+
+  it('does not close, or comment on, an incident that is open', () => {
+    const plan = reconcileIncidents([empty()], [issue90('open')], [], {
+      ...NATURAL,
+      ownedCheckIds: 'all',
+    });
+    expect(plan.toClose).toHaveLength(0); // neither as a recovery nor as an orphan
+    expect(plan.toComment).toHaveLength(0);
+  });
+
+  it('COMPLEMENT: a genuine miss still fails the run, and reopens a closed incident', () => {
+    const r = missed();
+    expect(r.informational).toBeUndefined();
+    expect(summariseResults([r] as never).healthy).toBe(false);
+    const plan = reconcileIncidents([r], [], [issue90('closed')], NATURAL);
+    expect(plan.toReopen.map((x: { issue: { number: number } }) => x.issue.number)).toEqual([90]);
+  });
+
+  it('COMPLEMENT: a verified sample still closes an open incident on a natural run', () => {
+    const r = verified();
+    expect(r).toMatchObject({ ok: true, canClose: true });
+    expect(r.informational).toBeUndefined();
+    const plan = reconcileIncidents([r], [issue90('open')], [], NATURAL);
+    expect(plan.toClose.map((x: { issue: { number: number } }) => x.issue.number)).toEqual([90]);
+  });
+
+  it('COMPLEMENT: an unmeasurable window is blindness, and stays a failing gate', () => {
+    const r = unmeasurable();
+    expect(r.informational).toBeUndefined();
+    expect(r.ok).toBe(false);
+    expect(summariseResults([r] as never).healthy).toBe(false);
+  });
+});
