@@ -1,6 +1,7 @@
 name: Production monitor
 
-# Watches bookpitch.ge and the operational jobs behind it, every 30 minutes.
+# Watches bookpitch.ge and the operational jobs behind it, several times an hour
+# on paper — see the schedule below for what GitHub actually delivers.
 #
 # What it actually checks is in scripts/production-monitor.mjs. The short
 # version: the public health endpoint returns exactly {"ok":true} with no
@@ -17,10 +18,31 @@ name: Production monitor
 
 on:
   schedule:
-    # Every 30 minutes. Frequent enough to catch an outage inside half an hour,
-    # infrequent enough not to double this repository's Actions consumption
-    # (the cron workflow already runs every 15 minutes).
-    - cron: '5,35 * * * *'
+    # FOUR separate lines, not one `5,35 * * * *` (2026-10-17).
+    #
+    # GitHub throttles each schedule LINE on this account to roughly five runs
+    # a day, whatever the line asks for. `5,35` asked for 48 a day and got ~5:
+    # over the 14 days to 2026-10-16 the gap between scheduled monitor runs had
+    # p50 5.0h, p95 7.4h and max 9.0h, so 84% of 24-hour windows contained a gap
+    # over the soak's 6-hour observation-gap limit — a soak was a lottery
+    # against the scheduler, not a measurement of production. Lines are
+    # delivered INDEPENDENTLY (adding cron.yml's deliveries to the monitor's
+    # brought that 84% to 0%), so capacity comes from more lines.
+    #
+    # The 6-hour limit is deliberately NOT raised: a window nobody watched for
+    # nine hours is not an observed window. Minutes avoid :00-:05, the
+    # top-of-the-hour load GitHub documents as the main cause of delay.
+    # Two overlapping deliveries queue (concurrency below). Only a THIRD
+    # delivery inside one ~20-second run would cancel the queued one, and the
+    # soak counts a cancelled scheduled run against the window — the safe
+    # direction, a restart rather than a false pass. It has not happened once
+    # in 60 days of history, and the lines did not arrive in bursts.
+    # docs/scheduler-resilience.md has the measurements and the post-merge
+    # verification.
+    - cron: '7 * * * *'
+    - cron: '22 * * * *'
+    - cron: '37 * * * *'
+    - cron: '52 * * * *'
   workflow_dispatch:
     inputs:
       simulate_failure:

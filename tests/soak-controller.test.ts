@@ -1598,6 +1598,23 @@ describe('the observation-gap limit sits above delivery lag and below an outage'
   it('the limit is the calibrated value, not an incidental one', () => {
     expect(SOAK_DEFAULTS.maxObservationGapHours).toBe(6);
   });
+
+  it('a failing gap names its interval and calls it scheduler delivery, not a fault', () => {
+    // A failed run is an observation, so a gap can only be missing delivery.
+    // Saying so keeps a GitHub outage from being read as a production fault.
+    const r = evaluateSoak({ state: state(), evidence: withGap(7), now: NOW });
+    const detail = gate(r, 'observation-gap').detail;
+    expect(detail).toMatch(/largest gap between natural observations 7\.0h \(limit 6h\)/);
+    expect(detail).toContain(`between ${at(5)} and ${at(12)}`);
+    expect(detail).toMatch(/scheduler delivery, not an observed production failure/);
+    // …and the verdict is unchanged: it still stops the clock.
+    expect(r.status).toBe('awaiting-recovery');
+  });
+
+  it('a tolerated gap does not claim a delivery problem', () => {
+    const r = evaluateSoak({ state: state(), evidence: withGap(5), now: NOW });
+    expect(gate(r, 'observation-gap').detail).not.toMatch(/scheduler delivery/);
+  });
 });
 
 // -----------------------------------------------------------------------------

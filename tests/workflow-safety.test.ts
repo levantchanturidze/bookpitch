@@ -32,6 +32,7 @@ type Step = {
   if?: string;
 };
 type Job = {
+  name?: string;
   'runs-on'?: string;
   steps?: Step[];
   permissions?: Record<string, string> | string;
@@ -279,6 +280,18 @@ describe('production monitor workflow safety', () => {
 
   it('runs on a schedule and can be dispatched', () => {
     expect(Object.keys(doc.on ?? {}).sort()).toEqual(['schedule', 'workflow_dispatch']);
+  });
+
+  it('runs on several independent schedule lines, none in the top-of-hour rush', () => {
+    // GitHub delivers each LINE ~5 times a day on this account, so one line —
+    // however frequent it asks to be — left 9-hour holes (see the workflow).
+    const schedules = (doc.on?.schedule as Array<{ cron: string }>).map((x) => x.cron);
+    expect(new Set(schedules).size).toBeGreaterThanOrEqual(4);
+    for (const cron of schedules) {
+      const minute = cron.trim().split(/\s+/)[0];
+      expect(minute, `${cron}: one fixed minute per line`).toMatch(/^\d+$/);
+      expect(Number(minute), `${cron} sits in GitHub's top-of-hour rush`).toBeGreaterThan(5);
+    }
   });
 
   it('does not run more often than every 15 minutes', () => {
@@ -961,15 +974,36 @@ describe('manual cron dispatch is safe by default', () => {
     }
   });
 
-  it('only the 15-minute schedule sends reminders', () => {
+  // CHANGED 2026-10-17 (scheduler resilience): reminders now run on three cron
+  // lines instead of one, because GitHub delivers each LINE only ~5 times a
+  // day (see the header of cron.yml). The property this test exists for is
+  // unchanged and still asserted for every schedule in the file: no
+  // housekeeping, retention, digest or partition schedule sends reminders.
+  const REMINDER_SCHEDULES = ['*/15 * * * *', '26 * * * *', '41 * * * *'];
+
+  it('only the reminder schedules send reminders — every one of them does', () => {
     const schedules = ((doc.on as Record<string, Array<{ cron: string }>>).schedule ?? []).map(
       (s) => s.cron,
     );
+    for (const r of REMINDER_SCHEDULES) expect(schedules).toContain(r);
     for (const cron of schedules) {
       const started = jobsStartedBy({ eventName: 'schedule', schedule: cron });
-      if (cron === '*/15 * * * *') expect(started).toContain('reminders');
+      if (REMINDER_SCHEDULES.includes(cron)) expect(started).toEqual(['reminders']);
       else expect(started, `${cron} unexpectedly sends reminders`).not.toContain('reminders');
     }
+  });
+
+  it('housekeeping runs on two lines, and the added one does not re-run the digest', () => {
+    expect(jobsStartedBy({ eventName: 'schedule', schedule: '3 * * * *' })).toEqual([
+      'audit-digest',
+      'housekeeping',
+    ]);
+    // The digest queues owner mail; running it twice as often is not the
+    // point of the second line, which exists only to keep the outbox drain
+    // and its heartbeat inside their limits.
+    expect(jobsStartedBy({ eventName: 'schedule', schedule: '33 * * * *' })).toEqual([
+      'housekeeping',
+    ]);
   });
 
   it('documents which jobs can contact customers', () => {
@@ -1087,11 +1121,15 @@ describe('the soak refuses to start without Sentry receipt', () => {
 // of them is about us.
 // -----------------------------------------------------------------------------
 describe('the dependency audit distinguishes an outage from a finding', () => {
-  const { raw } = readWorkflow('ci.yml');
-  const step = raw.slice(
-    raw.indexOf('- name: Audit dependencies'),
-    raw.indexOf('- name: Check formatting'),
+  const { doc } = readWorkflow('ci.yml');
+  const auditStep = (doc.jobs?.['dependency-audit']?.steps ?? []).find((s) =>
+    /^Audit dependencies/.test(s.name ?? ''),
   );
+  const step = String(auditStep?.run ?? '');
+
+  it('the audit step exists, in its own job', () => {
+    expect(auditStep, 'the dependency audit must still exist').toBeDefined();
+  });
 
   it('still runs npm audit at high severity', () => {
     expect(step).toMatch(/npm audit --audit-level=high/);
@@ -1113,6 +1151,87 @@ describe('the dependency audit distinguishes an outage from a finding', () => {
   it('and it is not suppressed with continue-on-error', () => {
     expect(step).not.toMatch(/continue-on-error/);
     expect(step).not.toMatch(/\|\| true/);
+    expect(auditStep?.['continue-on-error']).toBeUndefined();
+    expect(auditStep?.if).toBeUndefined();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The audit's verdict and the code's verdict are separate facts (2026-10-18).
+//
+// The audit used to be step 6 of `quality`. When `braces` (GHSA-vfj7-8cjw-p6xm)
+// had no patched release, that step failed on every pull request and the 16
+// steps after it never ran: eleven PRs reached review with no CI result for
+// format, lint, types, migrations, tests or build. The fix separates the two
+// facts. It must not weaken either.
+// -----------------------------------------------------------------------------
+describe('a failing dependency audit cannot hide the code checks, or be hidden by them', () => {
+  const { doc } = readWorkflow('ci.yml');
+  const jobs = doc.jobs ?? {};
+  const audit = jobs['dependency-audit'];
+  const quality = jobs['quality'];
+  const names = (j: Job | undefined) => (j?.steps ?? []).map((s) => s.name ?? s.uses ?? '');
+  const needsOf = (j: Job) => (j.needs === undefined ? [] : ([] as string[]).concat(j.needs));
+
+  it('THE DEFECT: the code checks no longer sit behind the audit', () => {
+    const inQuality = (quality?.steps ?? []).filter((s) => /npm audit/.test(s.run ?? ''));
+    expect(inQuality, 'an audit step inside quality stops every check after it').toEqual([]);
+  });
+
+  it('no job waits for the audit, and the audit waits for nothing', () => {
+    for (const [id, job] of Object.entries(jobs)) {
+      expect(needsOf(job), `${id} must not need dependency-audit`).not.toContain(
+        'dependency-audit',
+      );
+    }
+    expect(audit?.needs, 'the audit must run on every trigger, unconditionally').toBeUndefined();
+    expect(audit?.if).toBeUndefined();
+  });
+
+  it('the audit job cannot be quietly turned into a pass', () => {
+    expect(audit?.['continue-on-error']).toBeUndefined();
+    for (const s of audit?.steps ?? []) {
+      expect(s['continue-on-error'], s.name ?? s.uses).toBeUndefined();
+      expect(s.run ?? '', s.name ?? s.uses).not.toMatch(/\|\| true/);
+    }
+  });
+
+  it('it audits the installed tree, not only the lockfile', () => {
+    const n = names(audit);
+    const install = n.indexOf('Install dependencies');
+    const run = n.findIndex((x) => /^Audit dependencies/.test(x));
+    expect(install, 'npm ci must run in the audit job').toBeGreaterThanOrEqual(0);
+    expect(run).toBeGreaterThan(install);
+    expect(audit?.steps?.[install]?.run).toBe('npm ci');
+  });
+
+  it('quality still runs every check it ran before the split, in order', () => {
+    const expected = [
+      'Install dependencies',
+      'Check formatting',
+      'Lint',
+      'Type-check',
+      'Validate Prisma schema',
+      'Generate Prisma client',
+      'Create shadow database for migrate diff',
+      'Apply migrations to main CI database',
+      'Verify schema matches migrations (strict drift detection)',
+      'Seed CI database',
+      'Set bookpitch_app password and switch DATABASE_URL to app role',
+      'Verify bookpitch_app role attributes (NOSUPERUSER NOBYPASSRLS)',
+      'Run unit + security tests',
+      'Run guard checker',
+      'Check orphan permissions',
+      'Build',
+    ];
+    const n = names(quality);
+    expect(n.filter((x) => expected.includes(x))).toEqual(expected);
+  });
+
+  it('the check names every ledger cites are unchanged', () => {
+    expect(quality?.['runs-on']).toBe('ubuntu-latest');
+    expect(quality?.name).toBe('Lint, type-check, test, and build');
+    expect(audit?.name).toMatch(/^Dependency audit/);
   });
 });
 

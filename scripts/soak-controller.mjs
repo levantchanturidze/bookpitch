@@ -93,6 +93,12 @@ export const SOAK_DEFAULTS = {
    * against GitHub's scheduler rather than a measurement of production. At 6h
    * it fires only on the outage. 7h and 8h fire on exactly the same one gap, so
    * they buy nothing and only widen the hole an outage could hide in.
+   *
+   * KEPT AT 6h ON 2026-10-17 although delivery got much worse: over the 14 days
+   * to 2026-10-16 the monitor's single cron line delivered ~5 runs a day (p95
+   * gap 7.4h, max 9.0h) and 84% of 24-hour windows held a gap over 6h. The
+   * response was more schedule lines, which GitHub delivers independently, not
+   * a wider hole — see docs/scheduler-resilience.md.
    */
   maxObservationGapHours: 6,
   /** Both canonical hosts must resolve to the deployment under soak. */
@@ -1029,8 +1035,15 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
     now.getTime(),
   ].sort((a, b) => a - b);
   let maxGapHours = 0;
+  let maxGapFrom = obsTimes[0];
+  let maxGapTo = obsTimes[0];
   for (let i = 1; i < obsTimes.length; i++) {
-    maxGapHours = Math.max(maxGapHours, (obsTimes[i] - obsTimes[i - 1]) / 3_600_000);
+    const gapHours = (obsTimes[i] - obsTimes[i - 1]) / 3_600_000;
+    if (gapHours > maxGapHours) {
+      maxGapHours = gapHours;
+      maxGapFrom = obsTimes[i - 1];
+      maxGapTo = obsTimes[i];
+    }
   }
 
   // Continuity: the history fetched must reach back past the window start, or
@@ -1107,11 +1120,23 @@ export function evaluateSoak({ state, evidence, now = new Date(), opts = SOAK_DE
       // A window with a 9-hour hole in the middle is not observed, even if the
       // observations either side are clean and numerous enough.
       ok: maxGapHours <= opts.maxObservationGapHours,
+      // A FAILED scheduled run is itself an observation (it voids the window
+      // through monitor-clean), so a gap can only mean GitHub delivered no
+      // scheduled monitor run at all in that interval. The detail says which
+      // interval, and says it is the scheduler — so nobody reads a delivery
+      // outage as a production fault, or the other way round. It still fails:
+      // nothing watched production in it.
       detail:
         observations.length < 2
           ? `too few observations to measure a gap (${observations.length})`
           : `largest gap between natural observations ${maxGapHours.toFixed(1)}h ` +
-            `(limit ${opts.maxObservationGapHours}h)`,
+            `(limit ${opts.maxObservationGapHours}h)` +
+            (maxGapHours > opts.maxObservationGapHours
+              ? `: GitHub delivered no scheduled monitor run between ` +
+                `${new Date(maxGapFrom).toISOString()} and ${new Date(maxGapTo).toISOString()}. ` +
+                'That is scheduler delivery, not an observed production failure — but nothing ' +
+                'watched production in it, so the window cannot be certified across it.'
+              : ''),
     },
     {
       id: 'no-incident-in-window',
