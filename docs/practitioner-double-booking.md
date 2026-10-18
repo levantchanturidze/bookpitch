@@ -58,28 +58,72 @@ in the same organisation only. A branch-scoped user therefore sees a time at
 their branch as busy without seeing why. That is the minimum disclosure that
 preventing the double-booking requires.
 
-## Release gate — before applying
+## Release gate
 
-Read-only preflight against production. A non-zero count is a real person booked
-in two places, and should be resolved with the organisation first. Invariant
-check 9 enforces the same condition afterwards.
+### Merging this PR is the production migration
 
-```sql
-SELECT count(*) AS upcoming_cross_row_overlaps
-  FROM appointments a
-  JOIN staff sa ON sa.id = a.staff_id AND sa.user_id IS NOT NULL
-  JOIN appointments b ON b.organization_id = a.organization_id
-                     AND b.id > a.id AND b.staff_id <> a.staff_id
-                     AND b.status <> 'cancelled'
-                     AND b.starts_at < a.ends_at AND b.ends_at > a.starts_at
-  JOIN staff sb ON sb.id = b.staff_id AND sb.user_id = sa.user_id
- WHERE a.status <> 'cancelled' AND (a.ends_at > now() OR b.ends_at > now());
+`migrate.yml` runs on any push to `main` touching `prisma/migrations/**` or
+`scripts/verify-production-invariants.sql`, and this PR touches both. On the
+merge push, in order, against production (`DATABASE_URL_SUPERUSER_MIGRATE`):
+
+1. `prisma migrate status` (informational) and the availability backfill
+   preflight (read-only).
+2. **The practitioner double-booking preflight** (read-only, counts only;
+   below). It never stops the apply.
+3. `prisma migrate deploy`: this migration, one `DO` block with a 5 s
+   `lock_timeout` and a 60 s `statement_timeout`. CREATE FUNCTION and CREATE
+   TRIGGER only; no row is read or written.
+4. The ledger check, the read-only drift check, and the invariant verifier,
+   whose **check 9** requires both triggers to exist and to *fire for the
+   application* (`tgenabled` `O` or `A`; disabled `D` and replica-only `R` both
+   fail), and no upcoming cross-row overlap (9c).
+5. On any failure: an `[urgent] Migration workflow failed` issue, assigned to
+   the owner.
+
+Vercel deploys the same push **in parallel**, so the order of code and schema
+is not guaranteed. Both orders are safe, and that is why this is expand-only:
+
+| Running | Behaviour |
+|---|---|
+| New code, schema without the triggers | as today: a cross-row double-booking is still possible. The picker already hides the practitioner's other bookings, so it offers fewer times, which is harmless. The link `ConflictError` mapping is simply never triggered |
+| Old code, schema with the triggers | the guard refuses with `23P01`, which every write path on `main` already answers as **409 `slot_taken`** (verified per path in `tests/practitioner-double-booking.test.ts`). Only the staff-link path would show a raw error, a 500 instead of a 409, until the new code is live |
+
+### Before merging: the preflight (owner-operated, read-only)
+
+`scripts/practitioner-double-booking-preflight.sql`. Paste it into the Supabase
+SQL editor, or run it with `psql -f` (never `-c`) as the superuser.
+**It is read-only**: the session is pinned read-only before the first query.
+`tests/production-invariants.test.ts` proves an appended `DELETE` is refused,
+and `tests/workflow-safety.test.ts` scans it for any write statement. **It prints
+counts only**: no identifier, name or time.
+
+Expected evidence, the last row:
+
+```
+upcoming_overlapping_pairs | practitioners_affected | organisations_affected | verdict
+                         0 |                      0 |                      0 | PASS: nobody is booked in two places
 ```
 
-Rollback is in the migration header. It must delete the `_prisma_migrations` row
-in the same transaction. `prisma migrate resolve --rolled-back` refuses a
-migration that succeeded (P3012, measured), and dropping only the objects leaves
-the guard gone while the ledger still says "applied".
+If `upcoming_overlapping_pairs` is not 0, **do not merge yet**. Each pair is a
+real person booked in two places at once, which the organisation has to
+resolve: one booking moved or cancelled, through the product. Then re-run the
+preflight. Merging anyway installs the guard, which is good, but check 9c then
+fails the deploy verification. The overlap is not created by the migration;
+it is reported by it.
+
+### If something goes wrong
+
+| What happened | What it means | Do this |
+|---|---|---|
+| The apply aborts: `P3018` / `55P03` "canceling statement due to lock timeout" | `appointments` or `staff` was locked for 5 s. **Nothing was created** (proven: 0 functions or triggers left). Prisma records the migration as failed and refuses further deploys (P3009) | `npx prisma migrate resolve --rolled-back 20261017000001_practitioner_double_booking` against production, then re-run `migrate.yml` (workflow_dispatch) at a quieter time |
+| The apply succeeds, and the verifier fails on **9c** | Someone was already booked in two places; the preflight was skipped or the data changed since | **Do not roll back**: the guard is what prevents new ones. Resolve the pair with the organisation, then re-run `migrate.yml` for a green verification |
+| The verifier fails on **9a/9b** (missing, disabled or replica-only) | The guard is not firing | `ALTER TABLE appointments ENABLE TRIGGER appointments_practitioner_no_overlap` (or the `staff` one). Find out what changed it before re-running the verifier |
+| Legitimate bookings are refused (a defect in the trigger) | The guard itself is wrong | **Two steps, in this order.** (1) Run the rollback in the migration header, in one transaction. It drops both triggers and functions **and deletes the `_prisma_migrations` row**. `prisma migrate resolve --rolled-back` is refused for a migration that succeeded (P3012, measured), and dropping only the objects leaves the ledger saying "applied". (2) Merge a revert of this PR. Until that revert lands, the migration file is still in the repository with no ledger row, so the next `migrate.yml` run would **re-apply it** |
+
+The rollback was proven on a disposable database: the schema dump after it is
+byte-identical to the predecessor's, and a later deploy re-applies cleanly. It
+loses no data, because the migration wrote none. What it gives back is the
+defect: a cross-row double-booking becomes possible again.
 
 ## Evidence (local, 2026-10-17)
 
@@ -90,7 +134,9 @@ the guard gone while the ledger still says "applied".
 | Written rollback | schema dump **byte-identical** to the predecessor's. The double-booking is possible again. A later deploy re-applies cleanly |
 | `prisma migrate diff --from-migrations … --exit-code` (CI's strict drift check) | exit 0. A perturbed schema gives exit 2 |
 | `tests/practitioner-double-booking.test.ts` | 27/27 |
-| `tests/production-invariants.test.ts` (with check 9) | 52/52 on a fresh seeded database |
+| `tests/production-invariants.test.ts` (with check 9) | 52/52 on a fresh seeded database (2026-10-17); **58/58** with the 2026-10-18 additions below |
+| Check 9 and replica-only triggers (Codex review, 2026-10-18) | `ENABLE REPLICA TRIGGER` on either trigger fails check 9 ("enabled for replica sessions only"); `ENABLE ALWAYS` passes |
+| Preflight (2026-10-18), on the same database | clean: `0\|0\|0\|PASS`; with an injected overlap: `1\|1\|1\|RESOLVE FIRST`, with no UUID or fixture name in the output; an appended `DELETE` refused as read-only |
 
 Perturbations. Each control was switched off, and the count of tests that went red:
 
@@ -101,3 +147,6 @@ Perturbations. Each control was switched off, and the count of tests that went r
 | picker reverted to the single row | 1 |
 | link path's `ConflictError` mapping removed | 1 (a raw Prisma error, i.e. a 500) |
 | verifier check 9c disabled | 1 |
+| check 9 back to `= 'D'` (replica-only accepted) | 2 |
+| preflight read-only pin removed | 1 |
+| preflight predicate made blind (`WHERE false`) | 1 |

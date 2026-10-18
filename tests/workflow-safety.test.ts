@@ -501,6 +501,70 @@ describe('the committed age recipient is a public key only', () => {
 });
 
 // -----------------------------------------------------------------------------
+// The practitioner double-booking preflight (20261017000001) runs against
+// PRODUCTION inside migrate.yml, before the apply. It must be unable to write,
+// must print no identifier, and must run before the migration it informs.
+// Its behaviour against a real database is in tests/production-invariants.
+// -----------------------------------------------------------------------------
+describe('the practitioner double-booking preflight is read-only and runs before the apply', () => {
+  const file = path.join(ROOT, 'scripts', 'practitioner-double-booking-preflight.sql');
+  const raw = readFileSync(file, 'utf8');
+  const code = raw
+    .split(/\r?\n/)
+    .map((line) => line.replace(/--.*$/, ''))
+    .join('\n');
+  const executable = code.replace(/'(?:[^']|'')*'/g, "''");
+
+  it('contains no statement that could write', () => {
+    const writes = [
+      'INSERT',
+      'UPDATE',
+      'DELETE',
+      'TRUNCATE',
+      'DROP',
+      'CREATE',
+      'ALTER',
+      'GRANT',
+      'REVOKE',
+    ];
+    expect(writes.filter((w) => new RegExp(`\\b${w}\\b`, 'i').test(executable))).toEqual([]);
+  });
+
+  it('COMPLEMENT: the scan sees the queries at all', () => {
+    expect(executable).toMatch(/FROM appointments a/);
+    expect(executable).toMatch(/upcoming_overlapping_pairs/);
+  });
+
+  it('pins the session read-only before its first query', () => {
+    const pin = executable.search(/SET\s+default_transaction_read_only\s*=\s*on/i);
+    const firstSelect = executable.search(/\bSELECT\b/i);
+    expect(pin).toBeGreaterThan(-1);
+    expect(pin).toBeLessThan(firstSelect);
+  });
+
+  it('selects counts and a verdict, never a row identifier', () => {
+    // Every output column is an aggregate or the verdict text.
+    expect(executable).not.toMatch(/SELECT\s+(a|b|s|sa|sb)\.id\b/i);
+    expect(executable).not.toMatch(/\b(email|name|phone|customer_id)\b/i);
+  });
+
+  it('migrate.yml runs it with -f, before the apply', () => {
+    const steps = (
+      readWorkflow('migrate.yml').doc as unknown as {
+        jobs: Record<string, { steps: Array<{ name?: string; run?: string }> }>;
+      }
+    ).jobs.migrate.steps;
+    const at = steps.findIndex((st) =>
+      /-f scripts\/practitioner-double-booking-preflight\.sql/.test(st.run ?? ''),
+    );
+    const applyAt = steps.findIndex((st) => /prisma migrate deploy/.test(st.run ?? ''));
+    expect(at, 'migrate.yml must run the preflight with psql -f').toBeGreaterThan(-1);
+    expect(at, 'the preflight informs the apply, so it must run first').toBeLessThan(applyAt);
+    expect(steps[at].run).not.toMatch(/\s-c\s/);
+  });
+});
+
+// -----------------------------------------------------------------------------
 // The post-migration production invariant check.
 //
 // Production was restored from a 2026-08-22 backup on 2026-09-01. A restore is
