@@ -49,6 +49,9 @@ const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 const waitlistRoute = await import('@/app/api/waitlist/route');
 const waitlistEntryRoute = await import('@/app/api/waitlist/[id]/route');
 const appointmentRoute = await import('@/app/api/appointments/[id]/route');
+const customerRoute = await import('@/app/api/customers/[id]/route');
+const { deleteCustomerAction } = await import('@/components/patients/actions');
+const { Client } = await import('pg');
 
 import type { NextRequest } from 'next/server';
 
@@ -505,5 +508,210 @@ describe('audit failure policy', () => {
         where: { organizationId: fx.orgId, type: 'waitlist' },
       }),
     ).toBe(0);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Deleting a customer removes their waitlist entries with them
+// (waitlist_customer_fk ON DELETE CASCADE). The cascade writes no audit row, so
+// both deletion paths used to remove entries without any `waitlist` record
+// (Codex review on #114). Each removed entry is now audited, after the delete
+// succeeds, attributed to whoever deleted the customer.
+// -----------------------------------------------------------------------------
+describe('deleting a customer audits the waitlist entries that go with them', () => {
+  async function freshCustomer(name: string) {
+    return (
+      await withoutRls((tx) =>
+        tx.customer.create({ data: { organizationId: fx.orgId, name }, select: { id: true } }),
+      )
+    ).id;
+  }
+  async function entryFor(
+    customerId: string,
+    attrs: { staffId?: string; serviceId?: string } = {},
+  ) {
+    return (
+      await withoutRls((tx) =>
+        tx.waitlist.create({
+          data: {
+            organizationId: fx.orgId,
+            customerId,
+            locationId: fx.locA,
+            staffId: attrs.staffId ?? null,
+            serviceId: attrs.serviceId ?? null,
+            preferredFrom: new Date(WINDOW.preferredFrom),
+            preferredTo: new Date(WINDOW.preferredTo),
+            notes: 'Prefers mornings; recovering from knee surgery',
+          },
+          select: { id: true },
+        }),
+      )
+    ).id;
+  }
+  async function deleteViaApi(id: string) {
+    return customerRoute.DELETE(req(`http://x/api/customers/${id}`, { method: 'DELETE' }), {
+      params: Promise.resolve({ id }),
+    });
+  }
+  const removedRow = (entryId: string, customerId: string, extra: Record<string, unknown>) => ({
+    action: 'delete',
+    entity: 'waitlist',
+    entityId: entryId,
+    actorUserId: fx.users.owner,
+    meta: {
+      customerId,
+      locationId: fx.locA,
+      staffId: null,
+      serviceId: null,
+      ...extra,
+      status: 'pending',
+      reason: 'customer_deleted',
+    },
+  });
+
+  it('DELETE /api/customers/[id] audits every entry it removes, notes never copied', async () => {
+    const c = await freshCustomer('WLA delete via API');
+    const e1 = await entryFor(c);
+    const e2 = await entryFor(c, { staffId: fx.staffA, serviceId: fx.svcA });
+    await as('owner');
+    const res = await deleteViaApi(c);
+    expect(res.status).toBe(200);
+    expect(await unsafePrismaAdmin.customer.count({ where: { id: c } })).toBe(0);
+    expect(await unsafePrismaAdmin.waitlist.count({ where: { id: { in: [e1, e2] } } })).toBe(0);
+    const audits = await waitlistAudits();
+    expect(audits).toEqual(
+      [removedRow(e1, c, {}), removedRow(e2, c, { staffId: fx.staffA, serviceId: fx.svcA })].sort(
+        (a, b) => (a.entityId < b.entityId ? -1 : 1),
+      ),
+    );
+    expect(JSON.stringify(audits)).not.toMatch(/knee|mornings/);
+  });
+
+  it('deleteCustomerAction audits the entries it removes too', async () => {
+    const c = await freshCustomer('WLA delete via action');
+    const e1 = await entryFor(c);
+    await as('owner');
+    expect(await deleteCustomerAction(c)).toEqual({ ok: true, data: { deleted: true } });
+    expect(await waitlistAudits()).toEqual([removedRow(e1, c, {})]);
+  });
+
+  it('a refused delete (the customer has appointments) removes nothing and audits nothing', async () => {
+    const c = await freshCustomer('WLA has history');
+    const e1 = await entryFor(c);
+    await withoutRls((tx) =>
+      tx.appointment.create({
+        data: {
+          organizationId: fx.orgId,
+          locationId: fx.locA,
+          customerId: c,
+          staffId: fx.staffA,
+          startsAt: new Date('2031-06-01T09:00:00Z'),
+          endsAt: new Date('2031-06-01T09:30:00Z'),
+          serviceName: 'WLA svc',
+          price: 10,
+        },
+      }),
+    );
+    await as('owner');
+    expect((await deleteViaApi(c)).status).toBe(409);
+    expect(await deleteCustomerAction(c)).toEqual({
+      ok: true,
+      data: { deleted: false, reason: 'has_appointments' },
+    });
+    expect(await unsafePrismaAdmin.waitlist.count({ where: { id: e1 } })).toBe(1);
+    expect(await waitlistAudits()).toEqual([]);
+  });
+
+  it('if the waitlist audit cannot be written, the customer is not deleted either', async () => {
+    const c = await freshCustomer('WLA audit store down');
+    const e1 = await entryFor(c);
+    faults.failWaitlistAudit = true;
+    await as('owner');
+    await expect(deleteViaApi(c)).rejects.toThrow(/audit store unavailable/);
+    faults.failWaitlistAudit = false;
+    expect(await unsafePrismaAdmin.customer.count({ where: { id: c } })).toBe(1);
+    expect(await unsafePrismaAdmin.waitlist.count({ where: { id: e1 } })).toBe(1);
+  });
+
+  it('an entry added while the delete runs is audited too: the delete waits for it', async () => {
+    const c = await freshCustomer('WLA concurrent entry');
+    const e1 = await entryFor(c);
+    // Another connection adds an entry for this customer and has not committed.
+    // Its foreign-key check holds a lock on the customer row.
+    const other = new Client({ connectionString: process.env.DATABASE_URL });
+    await other.connect();
+    let concurrent = '';
+    try {
+      await other.query('BEGIN');
+      await other.query(`SET LOCAL app.current_org_id = '${fx.orgId}'`);
+      concurrent = (
+        await other.query<{ id: string }>(
+          `INSERT INTO waitlist (organization_id, customer_id, preferred_from, preferred_to)
+           VALUES ($1, $2, $3, $4) RETURNING id`,
+          [fx.orgId, c, WINDOW.preferredFrom, WINDOW.preferredTo],
+        )
+      ).rows[0].id;
+      const otherPid = (await other.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+        .rows[0].pid;
+
+      await as('owner');
+      const deleting = deleteViaApi(c);
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i++) {
+        const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT count(*)::bigint AS n FROM pg_stat_activity WHERE ${otherPid} = ANY(pg_blocking_pids(pid))`,
+        );
+        waiting = Number(rows[0].n) > 0;
+        if (!waiting) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(waiting, 'the delete never waited for the concurrent entry').toBe(true);
+      await other.query('COMMIT');
+      expect((await deleting).status).toBe(200);
+    } finally {
+      await other.end();
+    }
+    const ids = (await waitlistAudits()).map((a) => a.entityId).sort();
+    expect(ids).toEqual([e1, concurrent].sort());
+    expect(await unsafePrismaAdmin.waitlist.count({ where: { customerId: c } })).toBe(0);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// CLAUDE.md invariant 1: every tenant query names the organisation, whatever
+// else appears to guarantee it. RLS makes the filter invisible in ordinary
+// tests, so it is proven where it is not redundant: under a client that
+// bypasses RLS, which is how this function ran before SEC-007.
+// -----------------------------------------------------------------------------
+describe('the waitlist fan-out names the organisation itself', () => {
+  it("under an RLS-bypassing client, another organisation's matching entry is left alone", async () => {
+    const foreign = await seedEntry({ orgId: fx.otherOrgId });
+    const mine = await seedEntry();
+    const { notifyWaitlistForCancelled } = await import('@/lib/waitlist');
+    const { ctxToSession } = await import('@/lib/auth');
+    const { requireAuthContext } = await import('@/lib/rbac');
+    await as('owner');
+    const session = ctxToSession(await requireAuthContext());
+    const starts = new Date('2031-05-10T09:00:00Z');
+    const result = await withoutRls((tx) =>
+      notifyWaitlistForCancelled(tx, session, {
+        id: '00000000-0000-4000-8000-000000000001',
+        staffId: fx.staffA,
+        serviceId: fx.svcA,
+        locationId: fx.locA,
+        startsAt: starts,
+        endsAt: new Date(starts.getTime() + 30 * 60_000),
+      }),
+    );
+    expect(result.matched).toBe(1);
+    const status = async (id: string) =>
+      (
+        await unsafePrismaAdmin.waitlist.findUniqueOrThrow({
+          where: { id },
+          select: { status: true },
+        })
+      ).status;
+    expect(await status(mine)).toBe('notified');
+    expect(await status(foreign)).toBe('pending');
+    expect(await waitlistAudits(fx.otherOrgId)).toEqual([]);
   });
 });
