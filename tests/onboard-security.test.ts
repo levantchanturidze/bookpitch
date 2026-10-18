@@ -47,23 +47,21 @@ describe('POST /api/onboard — F3 security controls', () => {
     const { withoutRls } = await import('@/lib/db');
     await withoutRls(async (tx) => {
       for (const userId of createdUsers) {
-        await tx.membership.deleteMany({ where: { userId } }).catch(() => {});
-        await tx.appUser.delete({ where: { id: userId } }).catch(() => {});
+        await tx.membership.deleteMany({ where: { userId } });
+        await tx.appUser.deleteMany({ where: { id: userId } });
       }
       for (const orgId of createdOrgs) {
-        await tx.location.deleteMany({ where: { organizationId: orgId } }).catch(() => {});
-        await tx.organization.delete({ where: { id: orgId } }).catch(() => {});
+        await tx.location.deleteMany({ where: { organizationId: orgId } });
+        await tx.organization.deleteMany({ where: { id: orgId } });
       }
     });
   });
 
   beforeEach(async () => {
     // Flush the rate-limit buckets for the IPs used below so tests are independent.
-    await unsafePrismaAdmin.platformRateLimit
-      .deleteMany({
-        where: { bucket: { startsWith: 'onboard:ip:' } },
-      })
-      .catch(() => {});
+    await unsafePrismaAdmin.platformRateLimit.deleteMany({
+      where: { bucket: { startsWith: 'onboard:ip:' } },
+    });
   });
 
   // ── Body size guard ─────────────────────────────────────────────────────────
@@ -263,9 +261,9 @@ describe('POST /api/onboard — F3 security controls', () => {
     expect(firstRows.length).toBeGreaterThan(0);
 
     // Flush rate limit so the second attempt is not blocked.
-    await unsafePrismaAdmin.platformRateLimit
-      .deleteMany({ where: { bucket: { startsWith: 'onboard:ip:' } } })
-      .catch(() => {});
+    await unsafePrismaAdmin.platformRateLimit.deleteMany({
+      where: { bucket: { startsWith: 'onboard:ip:' } },
+    });
 
     // Second registration (resend / upsert).
     const r2 = await onboardRoute.POST(onboardReq({ ...goodBody, email }, { ip }));

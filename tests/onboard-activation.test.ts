@@ -43,15 +43,15 @@ describe('activatePendingRegistration — single-use token enforcement', () => {
     await withoutRls(async (tx) => {
       // Clean up entities created by activation (if any).
       if (createdUserId) {
-        await tx.membership.deleteMany({ where: { userId: createdUserId } }).catch(() => {});
-        await tx.appUser.delete({ where: { id: createdUserId } }).catch(() => {});
+        await tx.membership.deleteMany({ where: { userId: createdUserId } });
+        await tx.appUser.deleteMany({ where: { id: createdUserId } });
       }
       if (createdOrgId) {
-        await tx.location.deleteMany({ where: { organizationId: createdOrgId } }).catch(() => {});
-        await tx.organization.delete({ where: { id: createdOrgId } }).catch(() => {});
+        await tx.location.deleteMany({ where: { organizationId: createdOrgId } });
+        await tx.organization.deleteMany({ where: { id: createdOrgId } });
       }
       // Also clean up any leftover pending row.
-      await tx.pendingRegistration.deleteMany({ where: { email } }).catch(() => {});
+      await tx.pendingRegistration.deleteMany({ where: { email } });
     });
   });
 
@@ -103,7 +103,7 @@ describe('activatePendingRegistration — expired token rejection', () => {
   let rawTokenHex: string;
 
   afterAll(async () => {
-    await unsafePrismaAdmin.pendingRegistration.deleteMany({ where: { email } }).catch(() => {});
+    await unsafePrismaAdmin.pendingRegistration.deleteMany({ where: { email } });
   });
 
   it('plants an expired pending row', async () => {
@@ -150,14 +150,14 @@ describe('activatePendingRegistration — concurrent double-verify (race)', () =
   afterAll(async () => {
     await withoutRls(async (tx) => {
       if (createdUserId) {
-        await tx.membership.deleteMany({ where: { userId: createdUserId } }).catch(() => {});
-        await tx.appUser.delete({ where: { id: createdUserId } }).catch(() => {});
+        await tx.membership.deleteMany({ where: { userId: createdUserId } });
+        await tx.appUser.deleteMany({ where: { id: createdUserId } });
       }
       if (createdOrgId) {
-        await tx.location.deleteMany({ where: { organizationId: createdOrgId } }).catch(() => {});
-        await tx.organization.delete({ where: { id: createdOrgId } }).catch(() => {});
+        await tx.location.deleteMany({ where: { organizationId: createdOrgId } });
+        await tx.organization.deleteMany({ where: { id: createdOrgId } });
       }
-      await tx.pendingRegistration.deleteMany({ where: { email } }).catch(() => {});
+      await tx.pendingRegistration.deleteMany({ where: { email } });
     });
   });
 
@@ -272,22 +272,20 @@ describe('GET /api/onboard/verify — public-access, redirect, and security head
     const { decryptField } = await import('@/lib/crypto');
     const { withoutRls: wrl } = await import('@/lib/db');
     await wrl(async (tx) => {
-      await tx.pendingRegistration.deleteMany({ where: { email } }).catch(() => {});
+      await tx.pendingRegistration.deleteMany({ where: { email } });
       // Delete created org+user
       const membership = await uAdmin.membership.findFirst({
         where: { user: { email } },
         select: { userId: true, organizationId: true },
       });
       if (membership) {
-        await tx.membership.deleteMany({ where: { userId: membership.userId } }).catch(() => {});
-        await tx.location
-          .deleteMany({ where: { organizationId: membership.organizationId } })
-          .catch(() => {});
-        await tx.organization.delete({ where: { id: membership.organizationId } }).catch(() => {});
-        await tx.appUser.delete({ where: { id: membership.userId } }).catch(() => {});
+        await tx.membership.deleteMany({ where: { userId: membership.userId } });
+        await tx.location.deleteMany({ where: { organizationId: membership.organizationId } });
+        await tx.organization.deleteMany({ where: { id: membership.organizationId } });
+        await tx.appUser.deleteMany({ where: { id: membership.userId } });
       }
     });
-    await uAdmin.emailOutbox.deleteMany({ where: { toAddressHash: toHash } }).catch(() => {});
+    await uAdmin.emailOutbox.deleteMany({ where: { toAddressHash: toHash } });
     void decryptField; // suppress unused warning
   });
 
@@ -373,7 +371,7 @@ describe('createPendingRegistration — expires_at uses DB clock', () => {
   const email = `clock-${Date.now()}@example.dev`;
 
   afterAll(async () => {
-    await unsafePrismaAdmin.pendingRegistration.deleteMany({ where: { email } }).catch(() => {});
+    await unsafePrismaAdmin.pendingRegistration.deleteMany({ where: { email } });
   });
 
   it('expires_at is ~24h from DB now(), not from Node.js now()', async () => {

@@ -211,9 +211,7 @@ describe('runReminderTick / sendForAppointment', () => {
     await clearMessageLogs(trackedApptIds);
     await withoutRls((tx) => tx.appointment.deleteMany({ where: { id: { in: trackedApptIds } } }));
     if (noContactCustomerId) {
-      await withoutRls((tx) =>
-        tx.customer.delete({ where: { id: noContactCustomerId! } }).catch(() => null),
-      );
+      await withoutRls((tx) => tx.customer.deleteMany({ where: { id: noContactCustomerId! } }));
     }
   });
 
