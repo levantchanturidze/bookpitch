@@ -339,6 +339,9 @@ model Staff {
   //                               One LINKED row per (location, user) — not per organisation:
   //                               a practitioner at two locations has two rows, both linked.
   //   staff_user_is_member        a linked user must hold a membership in organization_id.
+  // 20261017000001_practitioner_double_booking:
+  //   staff_link_no_practitioner_overlap  linking refuses when one of this row's upcoming
+  //                               bookings overlaps the practitioner's on another row.
   @@map("staff")
 }
 
@@ -499,6 +502,13 @@ model Appointment {
   @@index([locationId, startsAt], map: "idx_appt_location_day")
   @@index([staffId, startsAt], map: "idx_appt_staff")
   @@index([customerId], map: "idx_appt_customer")
+  // SQL-only double-booking guards (Prisma cannot express them):
+  //   no_staff_double_booking              GiST EXCLUDE (staff_id, tstzrange) — one staff ROW
+  //                                        (20260721220810_init).
+  //   appointments_practitioner_no_overlap trigger — one PRACTITIONER across every staff row
+  //                                        linked to their user, same organisation
+  //                                        (20261017000001_practitioner_double_booking).
+  // Both raise 23P01; lib/appointments.ts isExclusionViolation maps them to 409 slot_taken.
   @@map("appointments")
 }
 

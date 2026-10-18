@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -40,6 +40,7 @@ import path from 'node:path';
 
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'verify-production-invariants.sql');
+const PREFLIGHT = path.join(ROOT, 'scripts', 'practitioner-double-booking-preflight.sql');
 
 // The migration/superuser role: these tests need to ALTER TABLE and DETACH
 // PARTITION, which the app role deliberately cannot do.
@@ -212,6 +213,39 @@ const havePsql = (() => {
 })();
 
 const runnable = Boolean(ADMIN_URL) && havePsql && assertDisposable(ADMIN_URL);
+
+// One practitioner, two locations, overlapping upcoming bookings, written with the
+// booking trigger off and switched back on (enabling does not re-check rows).
+const INV9_OVERLAP: string[] = [
+  'ALTER TABLE appointments DISABLE TRIGGER appointments_practitioner_no_overlap',
+  // Two NEW staff rows, at two locations of one organisation, linked to a
+  // member who has no other staff row there — so no seeded row changes.
+  `INSERT INTO staff (organization_id, location_id, user_id, name, role_title)
+   SELECT pick.org, l.id, pick.uid, 'inv9 ' || l.id, 'probe'
+     FROM (SELECT o.org, m.user_id AS uid
+             FROM (SELECT organization_id AS org FROM locations
+                    GROUP BY organization_id HAVING count(*) >= 2
+                    ORDER BY organization_id LIMIT 1) o
+             JOIN memberships m ON m.organization_id = o.org
+            WHERE NOT EXISTS (SELECT 1 FROM staff s
+                               WHERE s.user_id = m.user_id AND s.organization_id = o.org)
+            ORDER BY m.user_id LIMIT 1) pick
+     JOIN LATERAL (SELECT id FROM locations WHERE organization_id = pick.org
+                    ORDER BY id LIMIT 2) l ON true`,
+  `INSERT INTO appointments (organization_id, location_id, customer_id, staff_id,
+                             starts_at, ends_at, service_name, price)
+   SELECT s.organization_id, s.location_id,
+          (SELECT c.id FROM customers c WHERE c.organization_id = s.organization_id
+            ORDER BY c.id LIMIT 1),
+          s.id, timestamptz '2099-01-01 10:00Z', timestamptz '2099-01-01 11:00Z', 'inv9', 0
+     FROM staff s WHERE s.name LIKE 'inv9 %'`,
+  // Back ON: enabling does not re-check existing rows, so only 9c can see it.
+  'ALTER TABLE appointments ENABLE TRIGGER appointments_practitioner_no_overlap',
+];
+const INV9_CLEAN: string[] = [
+  "DELETE FROM appointments WHERE service_name = 'inv9'",
+  "DELETE FROM staff WHERE name LIKE 'inv9 %'",
+];
 
 describe.skipIf(!runnable)('production invariants fail against a broken database', () => {
   // Captured so a DROP can be undone exactly rather than approximately.
@@ -716,6 +750,125 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
                              WHERE m.organization_id = s.organization_id AND m.user_id = s.user_id)`,
       ],
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Check 9 — one practitioner, one place at a time (20261017000001).
+  //
+  // The cross-row guard is two triggers the datamodel check cannot see. Each is
+  // removed or disabled here, and the data check (9c) is proven on an upcoming
+  // overlap written while the booking trigger was switched off — the shape a
+  // disabled trigger, or data predating the migration, would leave behind.
+  // ---------------------------------------------------------------------------
+  describe('practitioner double-booking — both triggers, and the data they protect', () => {
+    injects(
+      'dropping appointments_practitioner_no_overlap is caught',
+      ['DROP TRIGGER appointments_practitioner_no_overlap ON appointments'],
+      /appointments_practitioner_no_overlap is missing/,
+      [
+        'CREATE TRIGGER appointments_practitioner_no_overlap BEFORE INSERT OR UPDATE OF staff_id, starts_at, ends_at, status ON appointments FOR EACH ROW EXECUTE FUNCTION appointments_practitioner_no_overlap()',
+      ],
+    );
+
+    injects(
+      'disabling appointments_practitioner_no_overlap is caught',
+      ['ALTER TABLE appointments DISABLE TRIGGER appointments_practitioner_no_overlap'],
+      /appointments_practitioner_no_overlap is disabled/,
+      ['ALTER TABLE appointments ENABLE TRIGGER appointments_practitioner_no_overlap'],
+    );
+
+    injects(
+      'disabling staff_link_no_practitioner_overlap is caught',
+      ['ALTER TABLE staff DISABLE TRIGGER staff_link_no_practitioner_overlap'],
+      /staff_link_no_practitioner_overlap is disabled/,
+      ['ALTER TABLE staff ENABLE TRIGGER staff_link_no_practitioner_overlap'],
+    );
+
+    injects(
+      'an upcoming overlap for one practitioner, written while the trigger was off, is caught',
+      INV9_OVERLAP,
+      /1 upcoming pair\(s\) of overlapping bookings for one practitioner/,
+      INV9_CLEAN,
+    );
+
+    // 'R' fires only when session_replication_role = replica. The application
+    // never sets it, so a replica-only guard never fires for it (Codex review).
+    injects(
+      'a replica-only appointments_practitioner_no_overlap is caught',
+      ['ALTER TABLE appointments ENABLE REPLICA TRIGGER appointments_practitioner_no_overlap'],
+      /appointments_practitioner_no_overlap is enabled for replica sessions only/,
+      ['ALTER TABLE appointments ENABLE TRIGGER appointments_practitioner_no_overlap'],
+    );
+
+    injects(
+      'a replica-only staff_link_no_practitioner_overlap is caught',
+      ['ALTER TABLE staff ENABLE REPLICA TRIGGER staff_link_no_practitioner_overlap'],
+      /staff_link_no_practitioner_overlap is enabled for replica sessions only/,
+      ['ALTER TABLE staff ENABLE TRIGGER staff_link_no_practitioner_overlap'],
+    );
+
+    it('COMPLEMENT: an ALWAYS trigger fires for the application, and passes', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql('ALTER TABLE appointments ENABLE ALWAYS TRIGGER appointments_practitioner_no_overlap');
+        sql('ALTER TABLE staff ENABLE ALWAYS TRIGGER staff_link_no_practitioner_overlap');
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        sql('ALTER TABLE appointments ENABLE TRIGGER appointments_practitioner_no_overlap');
+        sql('ALTER TABLE staff ENABLE TRIGGER staff_link_no_practitioner_overlap');
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The preflight for the same migration, run as migrate.yml runs it.
+  // ---------------------------------------------------------------------------
+  describe('the practitioner double-booking preflight', () => {
+    const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    function preflight(file = PREFLIGHT): string {
+      return execFileSync('psql', ['-X', '-v', 'ON_ERROR_STOP=1', '-At', '-F', '|', '-f', file], {
+        env: pgEnv!,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }
+    const verdict = (out: string) => out.trim().split('\n').at(-1) ?? '';
+
+    it('a clean database passes: no pairs, nobody affected, guard installed', () => {
+      const out = preflight();
+      expect(verdict(out)).toBe('0|0|0|PASS: nobody is booked in two places');
+      expect(out.split('\n')).toContain('2');
+      expect(out).not.toMatch(UUID);
+    });
+
+    it('an existing overlap is counted, with no identifier in the output', () => {
+      try {
+        for (const s of INV9_OVERLAP) sql(s);
+        const out = preflight();
+        expect(verdict(out)).toMatch(/^1\|1\|1\|RESOLVE FIRST: /);
+        expect(out).not.toMatch(UUID);
+        expect(out).not.toMatch(/inv9/);
+      } finally {
+        for (const s of INV9_CLEAN) sql(s);
+      }
+      expect(verdict(preflight())).toMatch(/^0\|0\|0\|PASS/);
+    });
+
+    it('cannot write, even if a write is appended to it', () => {
+      // The pin covers every statement after it under `psql -f`.
+      const dir = mkdtempSync(path.join(tmpdir(), 'pdb-preflight-'));
+      const file = path.join(dir, 'preflight-plus-write.sql');
+      try {
+        writeFileSync(
+          file,
+          `${readFileSync(PREFLIGHT, 'utf8')}\nDELETE FROM appointments WHERE service_name = 'never-matches';\n`,
+        );
+        expect(() => preflight(file)).toThrow(/cannot execute DELETE in a read-only transaction/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------

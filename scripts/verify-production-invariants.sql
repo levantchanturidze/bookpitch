@@ -812,4 +812,64 @@ BEGIN
   RAISE NOTICE 'ok: staff link and branch scope are single-organisation — unique index, both triggers enabled, no crossing rows';
 END $$;
 
+-- 9. One practitioner, one place at a time, across their linked staff rows. ---
+--
+-- no_staff_double_booking is a constraint and the datamodel check sees it; the
+-- cross-row guard from 20261017000001 is two triggers, which nothing else
+-- would notice going missing or disabled (ALTER TABLE … DISABLE TRIGGER is one
+-- statement). "Enabled" means it FIRES for the application: tgenabled 'O'
+-- (origin and local sessions, the default) or 'A' (always). 'R' — ENABLE
+-- REPLICA TRIGGER — fires only when session_replication_role = replica, which
+-- the application never sets, so a replica-only trigger is as absent as a
+-- disabled one and is refused here (Codex review on #112). 9c checks the DATA: an upcoming overlap between two linked rows
+-- of one practitioner is a person booked in two places, whether a disabled
+-- trigger let it in or it predates the migration. Past overlaps are history
+-- and are deliberately not asserted.
+DO $$
+DECLARE
+  trg     "char";
+  overlap INT;
+BEGIN
+  SELECT t.tgenabled INTO trg
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE c.relname = 'appointments' AND t.tgname = 'appointments_practitioner_no_overlap'
+     AND NOT t.tgisinternal;
+  IF trg IS NULL OR trg NOT IN ('O', 'A') THEN
+    RAISE EXCEPTION 'production-verify: trigger appointments_practitioner_no_overlap is % — one practitioner can be booked at two locations at once',
+      CASE WHEN trg IS NULL THEN 'missing'
+           WHEN trg = 'R' THEN 'enabled for replica sessions only, so it never fires for the application'
+           ELSE 'disabled' END;
+  END IF;
+
+  trg := NULL;
+  SELECT t.tgenabled INTO trg
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE c.relname = 'staff' AND t.tgname = 'staff_link_no_practitioner_overlap'
+     AND NOT t.tgisinternal;
+  IF trg IS NULL OR trg NOT IN ('O', 'A') THEN
+    RAISE EXCEPTION 'production-verify: trigger staff_link_no_practitioner_overlap is % — linking a staff row can double-book a practitioner',
+      CASE WHEN trg IS NULL THEN 'missing'
+           WHEN trg = 'R' THEN 'enabled for replica sessions only, so it never fires for the application'
+           ELSE 'disabled' END;
+  END IF;
+
+  -- 9c. The data, whatever the triggers say.
+  SELECT count(*) INTO overlap
+    FROM appointments a
+    JOIN staff sa ON sa.id = a.staff_id AND sa.user_id IS NOT NULL
+    JOIN appointments b ON b.organization_id = a.organization_id
+                       AND b.id > a.id
+                       AND b.staff_id <> a.staff_id
+                       AND b.status <> 'cancelled'
+                       AND b.starts_at < a.ends_at AND b.ends_at > a.starts_at
+    JOIN staff sb ON sb.id = b.staff_id AND sb.user_id = sa.user_id
+   WHERE a.status <> 'cancelled'
+     AND (a.ends_at > now() OR b.ends_at > now());
+  IF overlap > 0 THEN
+    RAISE EXCEPTION 'production-verify: % upcoming pair(s) of overlapping bookings for one practitioner across their staff records', overlap;
+  END IF;
+
+  RAISE NOTICE 'ok: practitioner double-booking guard — both triggers enabled, no upcoming cross-row overlap';
+END $$;
+
 \echo '=== production invariants: ALL CHECKS PASSED ==='

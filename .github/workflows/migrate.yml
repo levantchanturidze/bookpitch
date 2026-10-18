@@ -82,6 +82,19 @@ jobs:
           PGURL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
         run: psql "$PGURL" -v ON_ERROR_STOP=1 -f scripts/availability-backfill-preflight.sql
 
+      # Read-only: is anyone ALREADY booked in two places at once? The
+      # practitioner double-booking guard (20261017000001) judges writes, not
+      # existing rows, so an existing upcoming overlap survives the apply and
+      # fails invariant check 9c right after it. Printed before the apply so the
+      # run log holds the state the migration was applied against. Counts only.
+      # A non-zero count does NOT stop the apply: refusing to install the guard
+      # would leave everyone unprotected and remove nothing. The verifier below
+      # fails the run instead, and that opens the urgent issue.
+      - name: Practitioner double-booking preflight (read-only)
+        env:
+          PGURL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
+        run: psql "$PGURL" -v ON_ERROR_STOP=1 -f scripts/practitioner-double-booking-preflight.sql
+
       - name: Apply migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL_SUPERUSER_MIGRATE || secrets.ADMIN_MIGRATE_DATABASE_URL }}
