@@ -39,7 +39,10 @@ export type AuditEntity =
   | 'location'
   | 'membership'
   | 'organization'
-  | 'message_template';
+  | 'message_template'
+  // A customer's place on the waitlist: added, removed, or marked notified when
+  // a matching slot opens (lib/waitlist.ts). Unaudited until 2026-10-17.
+  | 'waitlist';
 
 /** Every entity value, for filter UIs and tests. Order is display order. */
 export const AUDIT_ENTITIES: readonly AuditEntity[] = [
@@ -52,6 +55,7 @@ export const AUDIT_ENTITIES: readonly AuditEntity[] = [
   'membership',
   'organization',
   'message_template',
+  'waitlist',
 ] as const;
 
 /**

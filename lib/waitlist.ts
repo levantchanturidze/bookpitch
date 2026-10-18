@@ -6,8 +6,32 @@ import type { AuthContext } from '@/lib/rbac/types';
 import { notifyEvent } from '@/lib/notifications';
 import { log } from '@/lib/logger';
 import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
+import { writeAudit } from '@/lib/audit';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+
+/**
+ * What a waitlist audit row says about the entry.
+ *
+ * Identifiers only: whose place it is, and the three attribution fields that
+ * decide the entry's branch (owner decision D2). `notes` is free text — anything
+ * a receptionist typed about a patient — so it is never copied, and neither is
+ * any name or contact detail; the customer id resolves those for someone
+ * allowed to see them.
+ */
+function waitlistAuditFacts(row: {
+  customerId: string;
+  locationId: string | null;
+  staffId: string | null;
+  serviceId: string | null;
+}) {
+  return {
+    customerId: row.customerId,
+    locationId: row.locationId,
+    staffId: row.staffId,
+    serviceId: row.serviceId,
+  };
+}
 
 // -----------------------------------------------------------------------------
 // Customer waitlist.
@@ -57,6 +81,9 @@ export async function addToWaitlist(
         notes: input.notes ?? null,
       },
     });
+    // Same transaction: no entry exists without its audit row, and a failed
+    // audit write fails the add.
+    await writeAudit(tx, session, 'create', 'waitlist', row.id, waitlistAuditFacts(row));
     return { id: row.id };
   });
 }
@@ -91,13 +118,15 @@ export async function listWaitlist(session: ActiveSession, scope: WaitlistScope)
     let ownStaffIds: string[] | null = null;
     if (scope.ownUserId) {
       const staff = await tx.staff.findMany({
-        where: { userId: scope.ownUserId },
+        where: { organizationId: session.organizationId, userId: scope.ownUserId },
         select: { id: true },
       });
       ownStaffIds = staff.map((s) => s.id);
     }
     return tx.waitlist.findMany({
       where: {
+        // Explicit, not only RLS: CLAUDE.md invariant 1.
+        organizationId: session.organizationId,
         status: { in: ['pending', 'notified'] },
         // Branch scoping by the row's DERIVED branch (owner decision D2): its
         // location, else its staff member's, else its service's. A row with
@@ -116,7 +145,72 @@ export async function listWaitlist(session: ActiveSession, scope: WaitlistScope)
 }
 
 export async function removeFromWaitlist(session: ActiveSession, id: string): Promise<void> {
-  await withOrg(session.organizationId, (tx) => tx.waitlist.delete({ where: { id } }));
+  await withOrg(session.organizationId, async (tx) => {
+    const row = await tx.waitlist.delete({
+      where: { id, organizationId: session.organizationId },
+    });
+    // The row is gone afterwards, so the audit row is the only record of what
+    // was removed — hence the attribution facts and the status it had.
+    await writeAudit(tx, session, 'delete', 'waitlist', id, {
+      ...waitlistAuditFacts(row),
+      status: row.status,
+    });
+  });
+}
+
+/**
+ * A customer's waitlist entries are deleted WITH the customer:
+ * `waitlist_customer_fk` is ON DELETE CASCADE, and a cascade writes no audit
+ * row. Both customer-deletion paths used to remove entries that way, leaving no
+ * `waitlist` record of them (Codex review on #114).
+ *
+ * Call this inside the deleting transaction, BEFORE deleting the customer. It
+ * locks the customer row FOR UPDATE, so no entry can be added for them until
+ * the transaction ends (an insert's foreign-key check needs a lock that
+ * conflicts with it), then returns exactly the entries the cascade will
+ * remove. It writes nothing, so a delete refused afterwards (P2003, the
+ * customer has appointments) leaves nothing to undo. Returns null when the
+ * customer row is not there to lock.
+ *
+ * After the delete succeeds, pass the result to auditWaitlistRemovedWithCustomer.
+ */
+export async function lockCustomerWaitlist(
+  tx: TxClient,
+  organizationId: string,
+  customerId: string,
+) {
+  const locked = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM customers
+     WHERE id = ${customerId}::uuid AND organization_id = ${organizationId}::uuid
+       FOR UPDATE`;
+  if (locked.length === 0) return null;
+  return tx.waitlist.findMany({
+    where: { organizationId, customerId },
+    select: {
+      id: true,
+      status: true,
+      customerId: true,
+      locationId: true,
+      staffId: true,
+      serviceId: true,
+    },
+    orderBy: { id: 'asc' },
+  });
+}
+
+/** One `delete` audit row per entry the customer deletion cascaded away. */
+export async function auditWaitlistRemovedWithCustomer(
+  tx: TxClient,
+  session: ActiveSession,
+  entries: NonNullable<Awaited<ReturnType<typeof lockCustomerWaitlist>>>,
+): Promise<void> {
+  for (const e of entries) {
+    await writeAudit(tx, session, 'delete', 'waitlist', e.id, {
+      ...waitlistAuditFacts(e),
+      status: e.status,
+      reason: 'customer_deleted',
+    });
+  }
 }
 
 /**
@@ -129,11 +223,15 @@ export async function removeFromWaitlist(session: ActiveSession, id: string): Pr
  * organizationId filter — the exact same-shape leak vector SEC-007
  * catalogs). The caller now inlines this inside their existing
  * `withOrg(organizationId, tx => …)` block so RLS on `waitlist` is the
- * enforcer even if `cancelledOrgId` were ever computed wrong.
+ * enforcer even if the organisation were ever computed wrong.
+ *
+ * Takes the SESSION of whoever cancelled: flipping an entry to `notified`
+ * changes who staff will contact, so it is audited per entry, attributed to the
+ * person whose cancellation caused it.
  */
 export async function notifyWaitlistForCancelled(
   tx: TxClient,
-  cancelledOrgId: string,
+  session: ActiveSession,
   cancelled: {
     id: string;
     staffId: string;
@@ -143,8 +241,13 @@ export async function notifyWaitlistForCancelled(
     endsAt: Date;
   },
 ): Promise<{ matched: number }> {
+  // Every query here names the organisation explicitly. RLS also filters, but
+  // the caller's transaction is the only thing establishing it, and SEC-007
+  // was exactly this function running under a bypassing client (CLAUDE.md
+  // invariant 1: a tenant query without organization_id is a bug).
   const rows = await tx.waitlist.findMany({
     where: {
+      organizationId: session.organizationId,
       status: 'pending',
       preferredFrom: { lte: cancelled.startsAt },
       preferredTo: { gte: cancelled.endsAt },
@@ -158,13 +261,20 @@ export async function notifyWaitlistForCancelled(
   });
   if (!rows.length) return { matched: 0 };
 
+  const cancelledOrgId = session.organizationId;
   await tx.waitlist.updateMany({
-    where: { id: { in: rows.map((r) => r.id) } },
+    where: { organizationId: cancelledOrgId, id: { in: rows.map((r) => r.id) } },
     data: { status: 'notified', notifiedAt: new Date() },
   });
+  for (const r of rows) {
+    await writeAudit(tx, session, 'update', 'waitlist', r.id, {
+      status: 'notified',
+      appointmentId: cancelled.id,
+    });
+  }
 
-  const loc = await tx.location.findUnique({
-    where: { id: cancelled.locationId },
+  const loc = await tx.location.findFirst({
+    where: { id: cancelled.locationId, organizationId: cancelledOrgId },
     select: { timezone: true },
   });
   const tz = loc?.timezone ?? 'UTC';
