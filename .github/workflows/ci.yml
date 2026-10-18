@@ -54,6 +54,73 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ---------------------------------------------------------------------------
+  # The dependency audit is its own job, so its verdict and the code's verdict
+  # are separate facts with separate check names (2026-10-18).
+  #
+  # It used to be step 6 of `quality`. From 2026-10-06 `braces` <= 3.0.3
+  # (GHSA-vfj7-8cjw-p6xm, lint-only: eslint-config-next -> fast-glob ->
+  # micromatch -> braces) had no patched release, so that step failed on every
+  # pull request and the 16 steps after it never ran. Format, lint, type-check,
+  # migrations, drift, the unit and integration suites, the guard checks and
+  # the build reported nothing for eleven pull requests, while a red check was
+  # all anyone could see. A gate whose failure hides every other result is not
+  # stricter, it is blinder.
+  #
+  # Nothing about the audit is weakened. Same command, same threshold, same
+  # transport-only retry, no `continue-on-error`, no `|| true`, no allowlist.
+  # It still fails this workflow while the advisory is open: a green test run
+  # is not a passed security gate, and the check list says which one failed.
+  # `quality` does not depend on it, and nothing may (tests/workflow-safety).
+  # ---------------------------------------------------------------------------
+  dependency-audit:
+    name: Dependency audit (high and critical)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit dependencies for known vulnerabilities
+        # Fails on high or critical severity. Run after install so the exact
+        # installed tree is scanned, not just the lockfile resolution.
+        #
+        # Retried, because "the registry did not answer" and "this tree has
+        # vulnerabilities" are different facts and only one of them is about us.
+        # npm's audit endpoint returned 503 on three of five runs on
+        # 2026-09-04; a gate that fails most of the time for reasons unrelated
+        # to the code is one people learn to re-run without reading, which is
+        # how a real finding gets waved through.
+        #
+        # This retries the TRANSPORT only. `npm audit` exits non-zero for both
+        # causes, so the two are told apart by the message it prints: anything
+        # that is not an endpoint error is a real result and fails immediately.
+        # A persistent outage still fails the job — it is not a skip.
+        run: |
+          set -o pipefail
+          for attempt in 1 2 3; do
+            out=$(npm audit --audit-level=high 2>&1) && { echo "$out"; exit 0; }
+            echo "$out"
+            if ! grep -q "audit endpoint returned an error" <<<"$out"; then
+              echo "::error::npm audit reported findings, not a transport failure."
+              exit 1
+            fi
+            echo "::warning::npm audit endpoint unavailable (attempt ${attempt}/3)."
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 20))
+          done
+          echo "::error::npm's audit endpoint did not answer after 3 attempts."
+          echo "::error::Dependencies are UNVERIFIED. This fails closed rather than passing."
+          exit 1
+
   quality:
     name: Lint, type-check, test, and build
     runs-on: ubuntu-latest
@@ -107,37 +174,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Audit dependencies for known vulnerabilities
-        # Fails on high or critical severity. Run after install so the exact
-        # installed tree is scanned, not just the lockfile resolution.
-        #
-        # Retried, because "the registry did not answer" and "this tree has
-        # vulnerabilities" are different facts and only one of them is about us.
-        # npm's audit endpoint returned 503 on three of five runs on
-        # 2026-09-04; a gate that fails most of the time for reasons unrelated
-        # to the code is one people learn to re-run without reading, which is
-        # how a real finding gets waved through.
-        #
-        # This retries the TRANSPORT only. `npm audit` exits non-zero for both
-        # causes, so the two are told apart by the message it prints: anything
-        # that is not an endpoint error is a real result and fails immediately.
-        # A persistent outage still fails the job — it is not a skip.
-        run: |
-          set -o pipefail
-          for attempt in 1 2 3; do
-            out=$(npm audit --audit-level=high 2>&1) && { echo "$out"; exit 0; }
-            echo "$out"
-            if ! grep -q "audit endpoint returned an error" <<<"$out"; then
-              echo "::error::npm audit reported findings, not a transport failure."
-              exit 1
-            fi
-            echo "::warning::npm audit endpoint unavailable (attempt ${attempt}/3)."
-            [ "$attempt" -lt 3 ] && sleep $((attempt * 20))
-          done
-          echo "::error::npm's audit endpoint did not answer after 3 attempts."
-          echo "::error::Dependencies are UNVERIFIED. This fails closed rather than passing."
-          exit 1
 
       - name: Check formatting
         run: npm run format:check
