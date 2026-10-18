@@ -20,6 +20,7 @@ export { perm } from './types';
 // not re-exported here: on its own it leaves `:branch` in list mode.
 export {
   scopedLocationIds,
+  navigableLocationIds,
   scopedByOwn,
   appointmentResource,
   resolveAppointmentResource,

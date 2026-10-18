@@ -83,6 +83,32 @@ export async function scopedLocationIds(
   return [];
 }
 
+/**
+ * The locations the location switcher may offer this caller, and the only ones
+ * an active-location cookie may select.
+ *
+ * Decided by the same grant that decides what the location-centric pages show
+ * (scheduler, reminders, billing all list by `booking.read`):
+ *
+ *   booking.read:org     → null: every location
+ *   booking.read:branch  → the locations of the caller's branches; `[]` for an
+ *                          EMPTY set (no reach, exactly as can() 4b decides)
+ *   booking.read:own     → null: a provider's own bookings can be at any
+ *                          location, so no location is out of reach
+ *   no booking.read      → null: the caller's access is not location-scoped
+ *                          (an ACCOUNTANT's reports are organisation-wide)
+ *
+ * It used to be every location of the organisation for everyone, so a
+ * receptionist scoped to one branch was offered the others' names and, on
+ * switching, an empty view (scoped-RBAC audit §7). Branch ids are mapped to
+ * their LOCATIONS (branches.legacy_location_id) — never compared with them.
+ */
+export async function navigableLocationIds(ctx: AuthContext): Promise<string[] | null> {
+  if (ctx.permissions.has(perm('booking.read:org'))) return null;
+  if (ctx.permissions.has(perm('booking.read:branch'))) return locationsOfBranches(ctx);
+  return null;
+}
+
 async function locationsOfBranches(ctx: AuthContext): Promise<string[]> {
   if (ctx.branchIds.size === 0 || !ctx.activeOrganizationId) return [];
   const rows = await withOrg(ctx.activeOrganizationId, (tx) =>

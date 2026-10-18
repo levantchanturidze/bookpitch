@@ -4,7 +4,7 @@ import PlatformSessionBanner from '@/components/shell/PlatformSessionBanner';
 import { UnauthenticatedError } from '@/lib/auth';
 import { requireAuthContext, can } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
-import { loadLocationsForOrg } from '@/lib/active-location';
+import { loadLocationsForCaller } from '@/lib/active-location';
 import { NAV_ITEMS } from '@/components/shell/nav-items';
 
 /**
@@ -39,7 +39,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     withOrg(orgId, (tx) =>
       tx.organization.findUnique({ where: { id: orgId }, select: { name: true } }),
     ),
-    loadLocationsForOrg(orgId), // redirects to /signin if empty
+    // Only the locations THIS caller may navigate to; `active` is null when
+    // they reach none (empty branch set). Redirects to /signin if the org has
+    // no locations at all.
+    loadLocationsForCaller(ctx),
   ]);
 
   if (!organization) redirect('/signin');

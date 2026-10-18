@@ -7,7 +7,8 @@ import {
   scopedLocationIds,
 } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
-import { loadLocationsForOrg } from '@/lib/active-location';
+import { loadLocationsForCaller } from '@/lib/active-location';
+import NoLocationAssigned from '@/components/shell/NoLocationAssigned';
 import RemindersView from '@/components/reminders/RemindersView';
 
 export const metadata = { title: 'Reminders · Bookpitch' };
@@ -22,7 +23,8 @@ export default async function RemindersPage() {
     'reminders',
   );
   const session = ctxToSession(ctx);
-  const { active } = await loadLocationsForOrg(session.organizationId);
+  const { active } = await loadLocationsForCaller(ctx);
+  if (!active) return <NoLocationAssigned />;
   // UI-branching: only callers who can edit org-level settings can trigger
   // the reminder tick. Phase 0 §8.2 called out the old `session.role === 'owner'`.
   const canRunTick = can(ctx, 'org.settings.update:org', {

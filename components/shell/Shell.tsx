@@ -36,7 +36,8 @@ type Props = {
   };
   organizationName: string;
   locations: ActiveLocation[];
-  activeLocation: ActiveLocation;
+  /** Null when the caller reaches no location (an empty branch set). */
+  activeLocation: ActiveLocation | null;
   /**
    * Nav ids the caller has permission to see (computed server-side in
    * app/(app)/layout.tsx via `can()`). Items not in this set render as
@@ -74,7 +75,8 @@ export default function Shell({
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const isClinic = activeLocation.type === 'clinic';
+  const locationType = activeLocation?.type ?? 'clinic';
+  const isClinic = locationType === 'clinic';
   const accent = isClinic ? 'teal' : 'pink';
 
   return (
@@ -108,7 +110,7 @@ export default function Shell({
               </div>
               <div className="hidden min-w-0 sm:block">
                 <h1 className="font-display truncate text-sm font-extrabold tracking-tight text-slate-900">
-                  {activeLocation.name}
+                  {activeLocation?.name ?? 'No location assigned'}
                 </h1>
                 <p className="truncate font-mono text-[10px] text-slate-500">
                   {organizationName} · Operations Portal
@@ -116,7 +118,9 @@ export default function Shell({
               </div>
             </div>
 
-            <LocationSwitcher locations={locations} activeLocation={activeLocation} />
+            {activeLocation && (
+              <LocationSwitcher locations={locations} activeLocation={activeLocation} />
+            )}
             <OrgSwitcher
               activeName={organizationName}
               activeOrganizationId={session.organizationId}
@@ -149,7 +153,7 @@ export default function Shell({
             <SidebarNav
               accent={accent}
               visibleNavIds={visibleNavIds}
-              locationType={activeLocation.type}
+              locationType={locationType}
               pathname={pathname}
             />
           </div>
@@ -180,7 +184,7 @@ export default function Shell({
               <div>
                 <div className="mb-6 flex items-center justify-between border-b border-slate-100 pb-4">
                   <span className="font-display text-sm font-extrabold tracking-tight text-slate-800">
-                    {activeLocation.name}
+                    {activeLocation?.name ?? 'No location assigned'}
                   </span>
                   <button
                     onClick={() => setMobileOpen(false)}
@@ -193,7 +197,7 @@ export default function Shell({
                 <SidebarNav
                   accent={accent}
                   visibleNavIds={visibleNavIds}
-                  locationType={activeLocation.type}
+                  locationType={locationType}
                   pathname={pathname}
                   onNavigate={() => setMobileOpen(false)}
                 />

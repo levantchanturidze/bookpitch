@@ -1,6 +1,7 @@
 import { ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
-import { loadLocationsForOrg } from '@/lib/active-location';
+import { loadLocationsForCaller } from '@/lib/active-location';
+import NoLocationAssigned from '@/components/shell/NoLocationAssigned';
 import { computeMetrics, dailyRoster } from '@/lib/analytics';
 import AnalyticsView from '@/components/analytics/AnalyticsView';
 import { withOrg } from '@/lib/db';
@@ -17,7 +18,8 @@ export default async function AnalyticsPage() {
     'analytics',
   );
   const session = ctxToSession(ctx);
-  const { active } = await loadLocationsForOrg(session.organizationId);
+  const { active } = await loadLocationsForCaller(ctx);
+  if (!active) return <NoLocationAssigned />;
 
   const [metrics, roster, org] = await Promise.all([
     computeMetrics(session, active.id),
