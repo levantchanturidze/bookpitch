@@ -57,6 +57,24 @@ text.
       privacy notice currently discloses the behaviour and flags it as an open
       question, which is honest but not a resolution. See §"Erasure, and its
       limits" on `/privacy` and the comment in `lib/gdpr.ts`.
+- [ ] **Erasure leaves more than the notice says (found 2026-10-18).** `/privacy`
+      says two things survive a redaction: the audit log, and treatment
+      history. In the code, both erasure paths (`anonymizeCustomer` and the
+      retention tick in `lib/gdpr.ts`) clear the customer columns only, so
+      these survive as well:
+      - the customer's **waitlist entries**, including `notes`, free text a
+        receptionist typed about the patient;
+      - their **reminder delivery records** (`message_log`): the recipient
+        address, and a body that contains the patient's name;
+      - **the erased name itself**: both paths write it into the append-only
+        audit log (`meta.previousName`), where it can never be removed, and
+        `anonymizeCustomer` also writes it into a staff notification.
+
+      Nothing sweeps `message_log` or waitlist rows later. Decide what erasure
+      must cover: delete or clear each of these, retain some with a stated
+      reason, or keep the behaviour and disclose it accurately. Then make the
+      code and the notice agree. The notice states that it "describes
+      implemented behaviour", and here it does not.
 - [ ] **Retention period justified.** `organizations.customer_retention_years`
       defaults to 7. Confirm 7 years is the right default for clinical records
       in the target jurisdiction, and that per-organisation override is
