@@ -641,9 +641,75 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
   // check cannot see them go missing. Each is removed or weakened here, and the
   // data check (8d) is proven on rows written while a guard was switched off.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Check 2b — no default puts the application's sessions in replica mode,
+  // where ordinary triggers and foreign keys do not fire. Scoped to THIS
+  // database (IN DATABASE / ALTER DATABASE), so nothing else is affected.
+  // ---------------------------------------------------------------------------
+  describe('no default switches triggers off for the application', () => {
+    const forRole = (verb: string) =>
+      `DO $$ BEGIN EXECUTE format('ALTER ROLE bookpitch_app IN DATABASE %I ${verb}', current_database()); END $$`;
+    const forDb = (verb: string) =>
+      `DO $$ BEGIN EXECUTE format('ALTER DATABASE %I ${verb}', current_database()); END $$`;
+
+    injects(
+      'a replica default for bookpitch_app in this database is caught',
+      [forRole('SET session_replication_role = replica')],
+      /session_replication_role defaults to replica for bookpitch_app in /,
+      [forRole('RESET session_replication_role')],
+    );
+
+    injects(
+      'a replica default for every role in this database is caught',
+      [forDb('SET session_replication_role = replica')],
+      /session_replication_role defaults to replica for every role in /,
+      [forDb('RESET session_replication_role')],
+    );
+
+    it('COMPLEMENT: an unrelated default on the role is not mistaken for one', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql(forRole('SET statement_timeout = 120000'));
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        sql(forRole('RESET statement_timeout'));
+      }
+    });
+  });
+
   describe('scoped RBAC — staff link and branch scope stay single-organisation', () => {
     const CREATE_INDEX =
       'CREATE UNIQUE INDEX staff_location_user_unique ON staff (location_id, user_id) WHERE user_id IS NOT NULL';
+
+    // A trigger that exists and is not disabled can still never fire: 'R'
+    // (ENABLE REPLICA TRIGGER) fires only for replica-mode sessions.
+    injects(
+      'a replica-only staff_user_is_member is caught',
+      ['ALTER TABLE staff ENABLE REPLICA TRIGGER staff_user_is_member'],
+      /staff_user_is_member is enabled for replica sessions only/,
+      ['ALTER TABLE staff ENABLE TRIGGER staff_user_is_member'],
+    );
+
+    injects(
+      'a replica-only membership_branches_same_org is caught',
+      ['ALTER TABLE membership_branches ENABLE REPLICA TRIGGER membership_branches_same_org'],
+      /membership_branches_same_org is enabled for replica sessions only/,
+      ['ALTER TABLE membership_branches ENABLE TRIGGER membership_branches_same_org'],
+    );
+
+    it('COMPLEMENT: ALWAYS triggers fire for the application, and pass', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql('ALTER TABLE staff ENABLE ALWAYS TRIGGER staff_user_is_member');
+        sql('ALTER TABLE membership_branches ENABLE ALWAYS TRIGGER membership_branches_same_org');
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        sql('ALTER TABLE staff ENABLE TRIGGER staff_user_is_member');
+        sql('ALTER TABLE membership_branches ENABLE TRIGGER membership_branches_same_org');
+      }
+    });
 
     injects(
       'dropping staff_location_user_unique is caught',
