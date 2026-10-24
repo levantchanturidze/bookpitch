@@ -20,8 +20,10 @@
 --
 -- Read-only by construction: the session is pinned read-only on the first
 -- line. RUN IT WITH `psql -f`, NEVER `psql -c` (the pin sets the default for
--- SUBSEQUENT transactions; see scripts/verify-production-invariants.sql). Or
--- paste it into the Supabase SQL editor, which runs it as one script.
+-- SUBSEQUENT transactions; see scripts/verify-production-invariants.sql).
+-- NOT in the Supabase SQL editor: `\set` and `\echo` below are psql
+-- meta-commands, which a web SQL editor rejects. The operator procedure is in
+-- docs/practitioner-double-booking.md.
 -- ---------------------------------------------------------------------------
 
 SET default_transaction_read_only = on;

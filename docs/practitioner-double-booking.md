@@ -90,26 +90,66 @@ is not guaranteed. Both orders are safe, and that is why this is expand-only:
 
 ### Before merging: the preflight (owner-operated, read-only)
 
-`scripts/practitioner-double-booking-preflight.sql`. Paste it into the Supabase
-SQL editor, or run it with `psql -f` (never `-c`) as the superuser.
-**It is read-only**: the session is pinned read-only before the first query.
-`tests/production-invariants.test.ts` proves an appended `DELETE` is refused,
-and `tests/workflow-safety.test.ts` scans it for any write statement. **It prints
-counts only**: no identifier, name or time.
+Run `scripts/practitioner-double-booking-preflight.sql` against production with
+**`psql -f`**, from a checkout of this branch. It needs the superuser connection
+string that `migrate.yml` uses (`DATABASE_URL_SUPERUSER_MIGRATE`).
 
-Expected evidence, the last row:
+1. Read the connection string into a variable without echoing it, so it never
+   lands in shell history or on screen, then run the script:
 
-```
-upcoming_overlapping_pairs | practitioners_affected | organisations_affected | verdict
-                         0 |                      0 |                      0 | PASS: nobody is booked in two places
-```
+   ```bash
+   read -rs PGURL && export PGURL          # paste the URL, press Enter
+   psql "$PGURL" -X -q -v ON_ERROR_STOP=1 -At -F '|' \
+     -f scripts/practitioner-double-booking-preflight.sql
+   unset PGURL
+   ```
 
-If `upcoming_overlapping_pairs` is not 0, **do not merge yet**. Each pair is a
-real person booked in two places at once, which the organisation has to
-resolve: one booking moved or cancelled, through the product. Then re-run the
-preflight. Merging anyway installs the guard, which is good, but check 9c then
-fails the deploy verification. The overlap is not created by the migration;
-it is reported by it.
+2. Expected output **before the migration has applied**, line by line:
+
+   ```
+   === practitioner double-booking preflight (counts only) ===
+   0
+   <n>
+   0|0|0|PASS: nobody is booked in two places
+   ```
+
+   | Line | Meaning |
+   |---|---|
+   | `0` | guard triggers present. **0** before the migration, **2** after it |
+   | `<n>` | people with more than one staff row in one organisation. Context only; any value is fine |
+   | `0\|0\|0\|PASS…` | the verdict: upcoming overlapping pairs, practitioners affected, organisations affected |
+
+   Verified on 2026-10-25 against a database at the predecessor's 74 migrations
+   (production's state before this merge). The command above printed exactly
+   these four lines, with `<n>` = 0. Without `-q`, psql also prints a `SET`
+   command tag for each of the two session settings.
+
+3. **Not in the Supabase SQL editor.** The script uses psql meta-commands
+   (`\set ON_ERROR_STOP on`, `\echo`) that a web SQL editor rejects as syntax
+   errors. Its read-only pin (`SET default_transaction_read_only = on`) also
+   binds only later transactions, which a single-request editor run may not
+   give. `psql -f` gives both.
+
+4. **It is read-only:**
+   - the session is pinned read-only before the first query, and an appended
+     `DELETE` is refused (`tests/production-invariants.test.ts`);
+   - the script contains no write statement (`tests/workflow-safety.test.ts`);
+   - it prints counts only: no identifier, name or time;
+   - it stops after 60 seconds (`statement_timeout`).
+
+5. **If the verdict is not PASS, do not merge yet.** Each pair is a real person
+   booked in two places at once, which the organisation has to resolve: one
+   booking moved or cancelled, through the product. Then re-run the preflight.
+   Merging anyway installs the guard, which is good, but check 9c then fails
+   the deploy verification. The overlap is not created by the migration; it is
+   reported by it.
+
+6. **If psql errors** (connection refused, authentication, the 60-second
+   timeout), nothing was read or written. Re-run later. Do not merge without a
+   recorded PASS.
+
+7. **Record** the date and time (UTC) and the verdict line on this pull request
+   before merging.
 
 ### If something goes wrong
 
