@@ -1096,14 +1096,26 @@ audit, and the audit may not be turned into a pass.
 
 ### Open advisories with no published fix
 
-| Advisory | Package and path | Reaches production? | Status |
-| --- | --- | --- | --- |
-| [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm), high: stack-exhaustion DoS through deeply nested brace patterns | `braces@3.0.3`, the only path: `eslint-config-next@16.2.11` (devDependency) → `@next/eslint-plugin-next` → `fast-glob@3.3.1` → `micromatch@4.0.8` → `braces` | **No.** Lint-time only, expanding the plugin's own patterns. A production build's 130 server file traces (`.next/**/*.nft.json`) name no `braces`, `micromatch` or `fast-glob` file (checked 2026-10-18) | `braces` 3.0.3 is the latest release. `@next/eslint-plugin-next@16.4.2` still pins `fast-glob@3.3.1`, and every `micromatch@4` depends on `braces`, so no upgrade or override removes it. `npm audit fix --force` would downgrade `eslint-config-next` to 14.2.35. **Unresolved, and the audit job stays red while it is.** An exception is an owner decision; none is configured |
+None on 2026-10-25.
 
-To re-check: `npm view braces version` (fixed when above 3.0.3), `npm view
-@next/eslint-plugin-next@latest dependencies`, `npm ls braces --all`, and after
-`npm run build`, `grep -l node_modules/braces/ $(find .next -name '*.nft.json')`
-must print nothing.
+The one entry here was
+[GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
+(`braces` ≤ 3.0.3, high, reached only through `eslint-config-next` at lint
+time). GitHub **withdrew** it at 2026-10-23T12:53:02Z, and `npm audit` no
+longer reports it. Nothing was excepted while it was open: the audit job stayed
+red.
+
+The audit is still red on `main`, for a different reason: advisories published
+since 2026-10-18 against `next`, `@sentry/nextjs`, `sharp`, `zod`, `undici`,
+`fast-uri`, `source-map-js`, `vite` and `vitest`, **all with published fixes**.
+On 2026-10-25 `main`'s lockfile reports 2 critical, 5 high and 3 moderate. #111
+upgrades them, and its tree audits to 0 at every severity.
+
+To check whether an advisory with no fix reaches production: `npm audit --json`
+marks it `fixAvailable: false`, `npm ls <package> --all` gives its path, and
+after `npm run build`,
+`grep -l node_modules/<package>/ $(find .next -name '*.nft.json')` prints
+nothing if no deployed server file uses it.
 
 ### Active overrides
 
