@@ -2,8 +2,14 @@ import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { withOrg, withoutRls } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
-import { decryptField } from '@/lib/crypto';
+import { decryptField, erasedNamePseudonym } from '@/lib/crypto';
 import { retentionCutoffSql } from '@/lib/retention-window';
+import {
+  lockCustomerWaitlist,
+  auditWaitlistRemovedWithCustomer,
+  waitlistRemovalMeta,
+  type CustomerWaitlistEntries,
+} from '@/lib/waitlist';
 
 // -----------------------------------------------------------------------------
 // GDPR-style tooling: per-customer data export, per-customer anonymize
@@ -185,6 +191,49 @@ export const CUSTOMER_REDACTION_FIELDS = {
   insurancePolicyNumber: null,
 } as const;
 
+/** What remains in a cleared reminder delivery record's address and text. */
+export const REDACTED_MESSAGE_FIELD = '[redacted]';
+
+type GdprTx = Parameters<Parameters<typeof withoutRls>[0]>[0];
+
+/**
+ * Everything a redaction removes or clears besides the customer row, done in
+ * the redacting transaction so the erasure is all or nothing:
+ *
+ * - the customer's waitlist entries are deleted. Their free-text notes are
+ *   whatever a receptionist typed about the person. Each removal gets its own
+ *   `waitlist` audit row (identifiers and status, never the notes), as when a
+ *   customer is deleted (#114). The customer row is locked first, so no entry
+ *   can be added mid-erasure;
+ * - the reminder delivery records of the customer's appointments keep their
+ *   channel, state and timestamps (that a reminder was sent, when, and what
+ *   happened), but the recipient address and the message text (which carried
+ *   the name) are cleared.
+ *
+ * /privacy said redaction clears the name, email address and telephone number,
+ * and that only the audit log and treatment history survive. Both of these held
+ * them anyway. Returns counts for the erasure's own audit row.
+ */
+async function eraseCustomerTraces(
+  tx: GdprTx,
+  organizationId: string,
+  customerId: string,
+  auditEntries: (entries: CustomerWaitlistEntries) => Promise<void>,
+): Promise<{ waitlistEntriesRemoved: number; messagesCleared: number }> {
+  const entries = (await lockCustomerWaitlist(tx, organizationId, customerId)) ?? [];
+  if (entries.length > 0) {
+    await tx.waitlist.deleteMany({
+      where: { organizationId, id: { in: entries.map((e) => e.id) } },
+    });
+    await auditEntries(entries);
+  }
+  const cleared = await tx.messageLog.updateMany({
+    where: { organizationId, appointment: { is: { customerId } } },
+    data: { toAddress: REDACTED_MESSAGE_FIELD, body: REDACTED_MESSAGE_FIELD },
+  });
+  return { waitlistEntriesRemoved: entries.length, messagesCleared: cleared.count };
+}
+
 export async function anonymizeCustomer(
   session: ActiveSession,
   customerId: string,
@@ -199,6 +248,10 @@ export async function anonymizeCustomer(
     });
     if (!existing) throw new InvalidInputError('customer not found');
 
+    const traces = await eraseCustomerTraces(tx, session.organizationId, customerId, (entries) =>
+      auditWaitlistRemovedWithCustomer(tx, session, entries, 'customer_redacted'),
+    );
+
     // Preserve a short suffix so the redacted row is still individually
     // findable in operational logs.
     const suffix = existing.id.slice(0, 8);
@@ -209,14 +262,18 @@ export async function anonymizeCustomer(
         ...CUSTOMER_REDACTION_FIELDS,
       },
     });
+    // Neither record copies the name. The audit log is append-only: a name
+    // written there could never be erased again. The pseudonym lets an operator
+    // confirm a claimed name was erased, by recomputing it, without storing it.
     await writeAudit(tx, session, 'delete', 'customer', customerId, {
       reason,
-      previousName: existing.name,
+      previousNameHmac: erasedNamePseudonym(existing.name),
+      ...traces,
     });
     await notifyEvent(tx, session.organizationId, {
       type: 'system',
       title: 'Customer anonymized',
-      body: `${existing.name} → Redacted Customer #${suffix} (${reason})`,
+      body: `Redacted Customer #${suffix} (${reason})`,
     });
   });
 }
@@ -274,6 +331,21 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
 
     const anonymizedIds: string[] = [];
     for (const c of stale) {
+      // A system action: there is no session, so each waitlist removal is
+      // audited with a null actor, like the customer row below.
+      const traces = await eraseCustomerTraces(tx, organizationId, c.id, async (entries) => {
+        for (const e of entries) {
+          await tx.auditLog.create({
+            data: {
+              organizationId,
+              action: 'delete',
+              entity: 'waitlist',
+              entityId: e.id,
+              meta: waitlistRemovalMeta(e, 'customer_redacted'),
+            },
+          });
+        }
+      });
       const suffix = c.id.slice(0, 8);
       await tx.customer.update({
         where: { id: c.id },
@@ -288,7 +360,11 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
           action: 'delete',
           entity: 'customer',
           entityId: c.id,
-          meta: { reason: 'retention', previousName: c.name },
+          meta: {
+            reason: 'retention',
+            previousNameHmac: erasedNamePseudonym(c.name),
+            ...traces,
+          },
         },
       });
       anonymizedIds.push(c.id);

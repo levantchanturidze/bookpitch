@@ -120,22 +120,37 @@ export default function PrivacyPage() {
         <p>
           A client record can be redacted on request. Redaction clears name, email address,
           telephone number, date of birth, gender, avatar, allergies, clinical notes, insurer name
-          and insurance policy number. The row itself is retained in a redacted form so that linked
-          appointments and payments remain coherent.
+          and insurance policy number. It also removes the client&rsquo;s waitlist requests, and
+          clears the recipient address and the message text from the records of reminders sent to
+          them: what remains of those records is that a reminder was sent, when, and by which
+          channel. The client row itself is retained in a redacted form so that linked appointments
+          and payments remain coherent.
         </p>
         <p>
-          Two things are <strong>not</strong> removed, and you should know this before relying on a
+          Some things are <strong>not</strong> removed, and you should know this before relying on a
           deletion request:
         </p>
         <ul className="list-disc space-y-1 pl-5">
           <li>
             The audit log is append-only and cannot be edited or deleted by anyone, including
             platform administrators. It records that an action happened, by which account, and when.
+            A redaction is recorded with a one-way, keyed code derived from the name, not with the
+            name itself. Redactions made by earlier versions of the service recorded the name, and
+            those entries cannot be changed.
           </li>
           <li>
             Treatment history entries are retained. Whether they should survive an erasure request,
             or be covered by a clinical-records retention duty instead, is an open question flagged
             for legal review rather than decided in software.
+          </li>
+          <li>
+            Appointment records are retained, including any free-text notes staff added to them.
+            Whether those notes should be cleared on erasure is part of the same legal review.
+          </li>
+          <li>
+            Notifications already shown to staff, such as a new-booking notice, can contain the
+            client&rsquo;s name. Notifications that have been read are deleted after 30 days; unread
+            ones are kept until they are read.
           </li>
         </ul>
         <p>

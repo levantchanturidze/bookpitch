@@ -198,18 +198,26 @@ export async function lockCustomerWaitlist(
   });
 }
 
-/** One `delete` audit row per entry the customer deletion cascaded away. */
+export type CustomerWaitlistEntries = NonNullable<Awaited<ReturnType<typeof lockCustomerWaitlist>>>;
+export type WaitlistRemovalReason = 'customer_deleted' | 'customer_redacted';
+
+/** The audit meta for an entry removed with its customer: identifiers, never the notes. */
+export function waitlistRemovalMeta(
+  e: CustomerWaitlistEntries[number],
+  reason: WaitlistRemovalReason,
+) {
+  return { ...waitlistAuditFacts(e), status: e.status, reason };
+}
+
+/** One `delete` audit row per entry removed with its customer (deleted or redacted). */
 export async function auditWaitlistRemovedWithCustomer(
   tx: TxClient,
   session: ActiveSession,
-  entries: NonNullable<Awaited<ReturnType<typeof lockCustomerWaitlist>>>,
+  entries: CustomerWaitlistEntries,
+  reason: WaitlistRemovalReason = 'customer_deleted',
 ): Promise<void> {
   for (const e of entries) {
-    await writeAudit(tx, session, 'delete', 'waitlist', e.id, {
-      ...waitlistAuditFacts(e),
-      status: e.status,
-      reason: 'customer_deleted',
-    });
+    await writeAudit(tx, session, 'delete', 'waitlist', e.id, waitlistRemovalMeta(e, reason));
   }
 }
 

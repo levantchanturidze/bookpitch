@@ -250,6 +250,24 @@ export function hashEmailForIndex(email: string): string {
   return createHmac('sha256', key).update('email-index:').update(email.toLowerCase()).digest('hex');
 }
 
+/**
+ * A keyed pseudonym for a name that has just been erased: HMAC-SHA256 under the
+ * same privacy key, with its own domain label, over the name trimmed,
+ * lower-cased and whitespace-collapsed.
+ *
+ * The audit log is append-only, so a name written into it can never be erased
+ * again. This lets an operator confirm "was the record of <name> erased?" by
+ * recomputing the value, without the log holding the name. Not reversible
+ * without the key.
+ */
+export function erasedNamePseudonym(name: string): string {
+  const key = getEmailHmacKey();
+  return createHmac('sha256', key)
+    .update('erased-name:')
+    .update(name.trim().toLowerCase().replace(/\s+/g, ' '))
+    .digest('hex');
+}
+
 /** Reset the cached HMAC key — for tests that swap env vars. */
 export function __clearEmailHmacKeyCache(): void {
   _emailHmacKey = null;
