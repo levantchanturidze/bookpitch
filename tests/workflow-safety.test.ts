@@ -1203,6 +1203,54 @@ describe('a failing dependency audit cannot hide the code checks, or be hidden b
 });
 
 // -----------------------------------------------------------------------------
+// The documented branch-protection rule requires every pull-request check
+// (Codex on #111, 2026-10-24). The rule an owner was pointed at listed three
+// contexts from 2026-09-01, before the audit became its own job, so applying it
+// would let a high or critical advisory merge with every required check green.
+// And a required check that does not run on every pull request never reports,
+// which blocks the pull request for good: a gate that cannot go green.
+// -----------------------------------------------------------------------------
+describe('the documented branch-protection rule requires every pull-request check', () => {
+  const RULE_DOC = path.join(ROOT, 'docs', 'release-state.md');
+  const documented = (text: string) => {
+    const section = text.slice(text.indexOf('### 4. Branch protection'));
+    const contexts = /contexts = \[([^\]]*)\]/.exec(section)?.[1] ?? '';
+    return [...contexts.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+  };
+  const pullRequestWorkflows = readdirSync(WORKFLOW_DIR)
+    .filter((f) => f.endsWith('.yml'))
+    .map((f) => ({ file: f, doc: readWorkflow(f).doc }))
+    .filter(({ doc }) => doc.on !== undefined && 'pull_request' in doc.on);
+  const pullRequestChecks = pullRequestWorkflows
+    .flatMap(({ doc }) => Object.values(doc.jobs ?? {}).map((j) => j.name ?? ''))
+    .sort();
+
+  it('names exactly the checks the pull-request workflows run', () => {
+    expect(pullRequestChecks).toContain('Dependency audit (high and critical)');
+    expect(documented(readFileSync(RULE_DOC, 'utf8'))).toEqual(pullRequestChecks);
+  });
+
+  it('COMPLEMENT: a rule without the audit, or with a check nothing runs, is caught', () => {
+    const rule = readFileSync(RULE_DOC, 'utf8');
+    const withoutAudit = rule.replace('"Dependency audit (high and critical)",', '');
+    expect(documented(withoutAudit)).not.toEqual(pullRequestChecks);
+    const withPhantom = rule.replace('"Secret scanning",', '"Secret scanning", "Phantom",');
+    expect(documented(withPhantom)).not.toEqual(pullRequestChecks);
+  });
+
+  it('every required check runs on every pull request: no path filter, no job condition', () => {
+    for (const { file, doc } of pullRequestWorkflows) {
+      const trigger = (doc.on?.pull_request ?? {}) as Record<string, unknown>;
+      expect(trigger.paths, `${file}: a path filter leaves some PRs unchecked`).toBeUndefined();
+      expect(trigger['paths-ignore'], file).toBeUndefined();
+      for (const [id, job] of Object.entries(doc.jobs ?? {})) {
+        expect(job.if, `${file} ${id}: a skipped required check never reports`).toBeUndefined();
+      }
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------
 // §7 and §8 — closure authority, ordering, and continuing proof.
 // -----------------------------------------------------------------------------
 describe('the observability incident is closed by evidence, in the right order', () => {
