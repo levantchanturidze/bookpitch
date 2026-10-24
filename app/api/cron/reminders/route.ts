@@ -5,6 +5,7 @@ import { runReminderTick } from '@/lib/messaging/reminders';
 import { cronOrgConcurrency, mapWithConcurrency } from '@/lib/concurrency';
 import { log } from '@/lib/logger';
 import { recordCronHeartbeat } from '@/lib/cron-heartbeat';
+import { bearerMatches } from '@/lib/bearer-secret';
 
 // POST /api/cron/reminders
 //
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
   if (!secret) {
     return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
   }
-  if (provided !== `Bearer ${secret}`) {
+  if (!bearerMatches(provided, secret)) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 

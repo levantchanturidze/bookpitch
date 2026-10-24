@@ -8,11 +8,11 @@ export const dynamic = 'force-dynamic';
 // POST /api/push/unsubscribe  { endpoint }
 export async function POST(req: NextRequest) {
   return withApi(async () => {
-    await requireSession();
+    const session = await requireSession();
     const body = (await req.json().catch(() => null)) as { endpoint?: unknown } | null;
     const endpoint = typeof body?.endpoint === 'string' ? body.endpoint : '';
     if (!endpoint) throw new InvalidInputError('endpoint is required');
-    await removeSubscription(endpoint);
+    await removeSubscription(session.userId, endpoint);
     return { ok: true };
   });
 }

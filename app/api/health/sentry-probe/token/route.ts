@@ -5,6 +5,7 @@ import {
   CHALLENGE_COOKIE,
   CHALLENGE_TTL_SECONDS,
 } from '@/lib/sentry-probe-challenge';
+import { bearerMatches } from '@/lib/bearer-secret';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
   if (!secret) {
     return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
   }
-  if (req.headers.get('authorization') !== `Bearer ${secret}`) {
+  if (!bearerMatches(req.headers.get('authorization'), secret)) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 

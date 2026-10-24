@@ -526,9 +526,15 @@ export async function sendNowForSession(
   session: ActiveSession,
   appointmentId: string,
 ): Promise<ChannelReport[]> {
-  // Confirm the appointment belongs to the caller's org before firing.
+  // Confirm the appointment belongs to the caller's org before firing. This
+  // check is the only thing standing between a session and sendForAppointment,
+  // which runs WITHOUT RLS, so it names the organisation itself rather than
+  // relying on RLS alone (CLAUDE.md invariant 1).
   const appt = await withOrg(session.organizationId, (tx) =>
-    tx.appointment.findUnique({ where: { id: appointmentId }, select: { id: true } }),
+    tx.appointment.findFirst({
+      where: { id: appointmentId, organizationId: session.organizationId },
+      select: { id: true },
+    }),
   );
   if (!appt) throw new InvalidInputError('appointment not found');
 

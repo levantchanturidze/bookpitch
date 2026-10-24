@@ -118,6 +118,6 @@ describe('push subscription persistence', () => {
   });
 
   it('removeSubscription is idempotent', async () => {
-    await expect(removeSubscription('https://does-not-exist')).resolves.toBeUndefined();
+    await expect(removeSubscription(userId, 'https://does-not-exist')).resolves.toBeUndefined();
   });
 });
