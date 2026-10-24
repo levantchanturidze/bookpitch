@@ -121,14 +121,24 @@ describe('the Sentry probe surface is reachable past the proxy', () => {
     expect(src).toMatch(/redeemChallenge/);
   });
 
-  it('the two API probe routes require the bearer secret', () => {
+  it('the two API probe routes require the bearer secret, compared in constant time', () => {
+    // This used to require the literal `authorization') !== \`Bearer ${secret}\``,
+    // which is the non-constant-time comparison (CWE-208) #125 removed. The
+    // requirement is the same: the secret comes from CRON_SECRET and the header
+    // is checked against it. The check now goes through bearerMatches, and the
+    // old comparison may not come back. A wrong bearer answering 401 on both
+    // routes is asserted in tests/auth-tenancy-hardening.test.ts.
     for (const f of [
       'app/api/health/sentry-probe/route.ts',
       'app/api/health/sentry-probe/token/route.ts',
     ]) {
       const src = readFileSync(f, 'utf8');
-      expect(src, `${f} must compare a bearer against CRON_SECRET`).toMatch(
-        /authorization'\) !== `Bearer \$\{secret\}`/,
+      expect(src, `${f} must read CRON_SECRET`).toMatch(/process\.env\.CRON_SECRET/);
+      expect(src, `${f} must check the bearer against it`).toMatch(
+        /bearerMatches\(req\.headers\.get\('authorization'\), secret\)/,
+      );
+      expect(src, `${f} must not compare the bearer with !==`).not.toMatch(
+        /!== `Bearer \$\{secret\}`/,
       );
     }
   });

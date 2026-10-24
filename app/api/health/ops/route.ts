@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { timingSafeEqual } from 'node:crypto';
+import { bearerMatches } from '@/lib/bearer-secret';
 import { collectOpsMetrics, assertMetricsAreNumericOnly } from '@/lib/ops-metrics';
 import { log } from '@/lib/logger';
 
@@ -24,17 +24,6 @@ export const dynamic = 'force-dynamic';
 // draining the outbox, or whether the nightly retention job has stopped
 // anonymising. Those failures are invisible from outside — this endpoint is
 // how the monitor sees them.
-
-function bearerMatches(header: string | null, secret: string): boolean {
-  if (!header) return false;
-  const expected = `Bearer ${secret}`;
-  const a = Buffer.from(header);
-  const b = Buffer.from(expected);
-  // Length is compared first because timingSafeEqual throws on a mismatch;
-  // the length of a bearer header is not the secret.
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
 
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;

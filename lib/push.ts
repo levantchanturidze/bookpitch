@@ -61,8 +61,16 @@ export async function saveSubscription(input: SaveSubscriptionInput): Promise<{ 
   });
 }
 
-export async function removeSubscription(endpoint: string): Promise<void> {
-  await withoutRls((tx) => tx.pushSubscription.delete({ where: { endpoint } }).catch(() => null));
+/**
+ * Removes the CALLER's subscription for this endpoint, and nobody else's.
+ *
+ * It used to delete by endpoint alone (RLS bypassed), so any signed-in user who
+ * knew another user's endpoint URL could remove that user's subscription.
+ * Scoped to the owner now. deleteMany is idempotent on its own, so nothing is
+ * caught inside the transaction (see tests/no-swallowed-db-errors on #123).
+ */
+export async function removeSubscription(userId: string, endpoint: string): Promise<void> {
+  await withoutRls((tx) => tx.pushSubscription.deleteMany({ where: { userId, endpoint } }));
 }
 
 export type PushPayload = {
