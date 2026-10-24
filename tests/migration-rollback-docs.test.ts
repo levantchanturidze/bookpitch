@@ -30,7 +30,15 @@ const ROLLBACK_RULE_FROM = '20261017000000';
  * that reverses something. Matching the delete anywhere in the comments (the
  * first version) let `-- ROLLBACK: unavailable` plus an unrelated comment
  * quoting the delete pass (Codex review on #124).
+ *
+ * And nothing else in the section may be SQL. A second transaction after the
+ * first, or a statement before it, runs separately: if it fails, the ledger row
+ * is already gone and the rollback is partial (Codex review on #124, again).
  */
+/** A line that starts a statement, not prose: an SQL verb in capitals, then its object. */
+const SQL_STATEMENT =
+  /^((BEGIN|COMMIT|END|ROLLBACK|START TRANSACTION|SAVEPOINT|TRUNCATE)\b|(DROP|ALTER|CREATE|GRANT|REVOKE) [A-Z]|(DELETE FROM|INSERT INTO|UPDATE|SELECT)\s|DO [$']|SET [a-z_]+\s*(=|TO\b))/;
+
 function rollbackProblems(name: string, sql: string): string[] {
   const lines = sql.split(/\r?\n/);
   const code = lines.map((l) => l.replace(/--.*$/, '')).join('\n');
@@ -65,6 +73,17 @@ function rollbackProblems(name: string, sql: string): string[] {
   }
   if (!statements.some((st) => !/_prisma_migrations/i.test(st))) {
     problems.push('the rollback transaction reverses nothing but the ledger');
+  }
+  // Line by line: split on `;` instead and a statement after a line of prose
+  // merges into the prose and is missed.
+  const headingEnd = text.indexOf('\n') + 1;
+  const commitEnd = begin.index + begin[0].length + commit.index + commit[0].length;
+  const stray = [text.slice(headingEnd, begin.index), text.slice(commitEnd)]
+    .flatMap((part) => part.split('\n'))
+    .map((line) => line.trim())
+    .find((line) => SQL_STATEMENT.test(line));
+  if (stray) {
+    problems.push(`the ROLLBACK section has SQL outside its one transaction: "${stray}"`);
   }
   return problems;
 }
@@ -124,6 +143,7 @@ describe('new migrations document a rollback that a deploy will not silently und
       );
     expect(rollbackProblems(name, sql)).toEqual([
       'the rollback transaction does not delete its own ledger row',
+      `the ROLLBACK section has SQL outside its one transaction: "DELETE FROM _prisma_migrations WHERE migration_name = '${name}';"`,
     ]);
   });
 
@@ -139,6 +159,50 @@ describe('new migrations document a rollback that a deploy will not silently und
     expect(rollbackProblems(name, sql)).toEqual([
       'the rollback transaction reverses nothing but the ledger',
     ]);
+  });
+
+  it('COMPLEMENT (Codex on #124): a second transaction after the first is reported', () => {
+    // The ledger row is deleted in the first; if the second then fails, the
+    // rollback is partial and the ledger already says "not applied".
+    const sql = complete.replace(
+      '--   COMMIT;',
+      '--   COMMIT;\n--   BEGIN;\n--   DROP INDEX IF EXISTS example_idx;\n--   COMMIT;',
+    );
+    expect(rollbackProblems(name, sql)).toEqual([
+      'the ROLLBACK section has SQL outside its one transaction: "BEGIN;"',
+    ]);
+  });
+
+  it('COMPLEMENT: a reverse step before the transaction is reported', () => {
+    const sql = complete.replace(
+      '--   BEGIN;',
+      '--   DROP INDEX IF EXISTS example_idx;\n--   BEGIN;',
+    );
+    expect(rollbackProblems(name, sql)).toEqual([
+      'the ROLLBACK section has SQL outside its one transaction: "DROP INDEX IF EXISTS example_idx;"',
+    ]);
+  });
+
+  it('COMPLEMENT: a statement after a line of prose is still seen', () => {
+    const sql = complete.replace(
+      '-- Prose after the transaction is fine.',
+      '-- Prose after the transaction is fine.\n--   DROP INDEX IF EXISTS example_idx;',
+    );
+    expect(rollbackProblems(name, sql)).toEqual([
+      'the ROLLBACK section has SQL outside its one transaction: "DROP INDEX IF EXISTS example_idx;"',
+    ]);
+  });
+
+  it('COMPLEMENT: prose around the transaction, even with semicolons and capitals, passes', () => {
+    const sql = complete.replace(
+      '-- Prose after the transaction is fine.',
+      [
+        '-- The ledger row goes in the SAME transaction; that is not optional.',
+        '-- DO NOT split it, and do not run any of this by hand; use psql -f.',
+        '-- Rolling back re-opens the old behaviour; nothing else depends on it.',
+      ].join('\n'),
+    );
+    expect(rollbackProblems(name, sql)).toEqual([]);
   });
 
   it('COMPLEMENT: a migration that EXECUTES a ledger change is refused', () => {

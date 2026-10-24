@@ -143,7 +143,12 @@ and the contiguous comment block under it, and requires:
    objects and the ledger row go together or not at all;
 3. inside it too, at least one statement that reverses something other than
    the ledger;
-4. no executable SQL in the migration that touches `_prisma_migrations`.
+4. no other SQL in the section: no second transaction, and no statement before
+   the `BEGIN` or after the `COMMIT`. A step outside the transaction runs on its
+   own, and if it fails after the ledger row is gone the rollback is partial.
+   Statements are recognised line by line, by an SQL verb in capitals and its
+   object, so prose around the transaction is free;
+5. no executable SQL in the migration that touches `_prisma_migrations`.
 
 The complements prove that each of these is reported:
 - a missing section;
@@ -153,9 +158,13 @@ The complements prove that each of these is reported:
 - a delete placed after the `COMMIT`;
 - a delete naming another migration;
 - a transaction that only deletes the ledger row;
+- a second transaction after the first (Codex review on #124, 2026-10-24: the
+  second version checked only the first transaction);
+- a reverse step before the `BEGIN`, and one after a line of prose;
 - an executable ledger write.
 
-A complete rollback whose ledger step spans two lines passes.
+A complete rollback whose ledger step spans two lines passes, and so does prose
+after the `COMMIT` that has semicolons and capitals in it.
 
 The first migration it applies to is `20261017000001_practitioner_double_booking`
 (#112), whose header was written to this rule.
