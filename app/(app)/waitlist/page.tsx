@@ -2,6 +2,7 @@ import { ctxToSession } from '@/lib/auth';
 import { requireAuthContext, requirePagePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { listWaitlist, waitlistScopeFor } from '@/lib/waitlist';
+import { isRedactedCustomerName } from '@/lib/redaction';
 import WaitlistView from './WaitlistView';
 
 export const metadata = { title: 'Waitlist · Bookpitch' };
@@ -23,6 +24,7 @@ export default async function WaitlistPage() {
     listWaitlist(session, scope),
     withOrg(session.organizationId, (tx) =>
       tx.customer.findMany({
+        where: { organizationId: session.organizationId },
         select: { id: true, name: true },
         orderBy: { name: 'asc' },
         take: 500,
@@ -63,6 +65,8 @@ export default async function WaitlistPage() {
           createdAt: r.createdAt.toISOString(),
         }))}
         customers={customers}
+        // addToWaitlist refuses a redacted customer, so the form does not offer one.
+        pickableCustomers={customers.filter((c) => !isRedactedCustomerName(c.name))}
         staff={staff}
         services={services}
       />

@@ -303,6 +303,23 @@ describe('every waitlist change leaves an audit row', () => {
     ]);
   });
 
+  it('adding an entry for a redacted customer is refused, and nothing is audited', async () => {
+    const redacted = (
+      await withoutRls((tx) =>
+        tx.customer.create({
+          data: { organizationId: fx.orgId, name: 'Redacted Customer #wla00000' },
+          select: { id: true },
+        }),
+      )
+    ).id;
+    await as('owner');
+    const res = await post({ customerId: redacted, ...WINDOW, notes: 'call after 5pm' });
+    expect(res.status).toBe(400);
+    expect(await unsafePrismaAdmin.waitlist.count({ where: { customerId: redacted } })).toBe(0);
+    expect(await waitlistAudits()).toEqual([]);
+    await withoutRls((tx) => tx.customer.deleteMany({ where: { id: redacted } }));
+  });
+
   it('removing an entry is audited with what was removed', async () => {
     const id = await seedEntry({ locationId: fx.locA, staffId: fx.staffA });
     await as('owner');

@@ -11,6 +11,7 @@ import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { loadLocationsForOrg } from '@/lib/active-location';
 import { toAppointmentDto } from '@/lib/appointments';
+import { REDACTED_NAME_PREFIX } from '@/lib/redaction';
 import SchedulerView from '@/components/scheduler/SchedulerView';
 import ReschedulePanel from '@/components/scheduler/ReschedulePanel';
 
@@ -82,7 +83,13 @@ export default async function SchedulerPage({
           select: { id: true, name: true, price: true, durationMinutes: true },
           orderBy: { name: 'asc' },
         }),
+        // Bookable customers only: assertCustomerInOrg refuses a redacted one.
+        // Booked appointments carry their own customer, so none goes unnamed.
         tx.customer.findMany({
+          where: {
+            organizationId: session.organizationId,
+            NOT: { name: { startsWith: REDACTED_NAME_PREFIX } },
+          },
           select: { id: true, name: true, phone: true },
           orderBy: { name: 'asc' },
         }),

@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
     try {
       const appointment = await withOrg(session.organizationId, async (tx) => {
         await assertStaffAtLocation(tx, input.locationId, input.staffId);
-        await assertCustomerInOrg(tx, input.customerId);
+        await assertCustomerInOrg(tx, session.organizationId, input.customerId);
         const service = await loadServiceForLocation(tx, input.locationId, input.serviceId);
         const endsAt = new Date(startsAt.getTime() + service.durationMinutes * 60_000);
         await assertWithinAvailability(tx, input.staffId, startsAt, endsAt);

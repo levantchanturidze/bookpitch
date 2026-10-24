@@ -72,7 +72,7 @@ export async function bookAppointmentAction(
   try {
     const appointment = await withOrg(session.organizationId, async (tx) => {
       await assertStaffAtLocation(tx, parsed.locationId, parsed.staffId);
-      await assertCustomerInOrg(tx, parsed.customerId);
+      await assertCustomerInOrg(tx, session.organizationId, parsed.customerId);
       const service = await loadServiceForLocation(tx, parsed.locationId, parsed.serviceId);
       const endsAt = new Date(startsAt.getTime() + service.durationMinutes * 60_000);
       await assertWithinAvailability(tx, parsed.staffId, startsAt, endsAt);

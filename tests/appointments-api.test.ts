@@ -319,6 +319,41 @@ describe('/api/appointments — booking, double-booking, cross-tenant', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects booking for a redacted customer, and books a live one (Codex review on #126)', async () => {
+    // A new appointment would attach new personal data to an erased record.
+    const redacted = await withoutRls(async (tx) => {
+      const c = await tx.customer.create({
+        data: { organizationId: primaryOrgId, name: 'Placeholder' },
+        select: { id: true },
+      });
+      return tx.customer.update({
+        where: { id: c.id },
+        data: { name: `Redacted Customer #${c.id.slice(0, 8)}` },
+        select: { id: true },
+      });
+    });
+    try {
+      const refused = await book(iso(19, 10), { customerId: redacted.id });
+      expect(refused.status).toBe(400);
+      expect(JSON.stringify(await refused.json())).toMatch(/anonymized/);
+      expect(
+        await withoutRls((tx) => tx.appointment.count({ where: { customerId: redacted.id } })),
+      ).toBe(0);
+      // COMPLEMENT: the same slot, booked for a live customer.
+      const booked = await book(iso(19, 10));
+      expect(booked.status).toBe(200);
+      createdIds.push((await jsonBody<{ appointment: { id: string } }>(booked)).appointment.id);
+    } finally {
+      // The appointment first: if the refusal ever regresses, a booking exists,
+      // and the customer cannot be deleted while it does. Left behind, that
+      // customer is in the shared seeded organisation for every later file.
+      await withoutRls(async (tx) => {
+        await tx.appointment.deleteMany({ where: { customerId: redacted.id } });
+        await tx.customer.deleteMany({ where: { id: redacted.id } });
+      });
+    }
+  });
+
   it('concurrent double-booking: exactly one succeeds, the other gets slot_taken (no 500)', async () => {
     // Two simultaneous requests for the same staff + slot. The DB exclusion
     // constraint (23P01) ensures only one row lands; the other must come back

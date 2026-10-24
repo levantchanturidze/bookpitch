@@ -7,6 +7,7 @@ import { notifyEvent } from '@/lib/notifications';
 import { log } from '@/lib/logger';
 import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 import { writeAudit } from '@/lib/audit';
+import { lockCustomerForNewRecords } from '@/lib/redaction';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
@@ -63,12 +64,13 @@ export async function addToWaitlist(
     throw new InvalidInputError('preferredFrom must be before preferredTo');
   }
   return withOrg(session.organizationId, async (tx) => {
-    // Sanity: customer must exist in this org (RLS makes this trivial).
-    const customer = await tx.customer.findUnique({
-      where: { id: input.customerId },
-      select: { id: true },
-    });
-    if (!customer) throw new InvalidInputError('unknown customer');
+    // The customer must exist in this organisation and not be redacted, held
+    // under a lock until the entry is written (see lockCustomerForNewRecords).
+    const customer = await lockCustomerForNewRecords(tx, session.organizationId, input.customerId);
+    if (customer === 'missing') throw new InvalidInputError('unknown customer');
+    if (customer === 'redacted') {
+      throw new InvalidInputError('this customer has been anonymized');
+    }
     const row = await tx.waitlist.create({
       data: {
         organizationId: session.organizationId,

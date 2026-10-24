@@ -4,6 +4,7 @@ import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
 import { decryptField, erasedNamePseudonym } from '@/lib/crypto';
 import { retentionCutoffSql } from '@/lib/retention-window';
+import { REDACTED_NAME_PREFIX, redactedCustomerName } from '@/lib/redaction';
 import {
   lockCustomerWaitlist,
   auditWaitlistRemovedWithCustomer,
@@ -196,6 +197,8 @@ export const REDACTED_MESSAGE_FIELD = '[redacted]';
 
 type GdprTx = Parameters<Parameters<typeof withoutRls>[0]>[0];
 
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Everything a redaction removes or clears besides the customer row, done in
  * the redacting transaction so the erasure is all or nothing:
@@ -242,23 +245,29 @@ export async function anonymizeCustomer(
   if (!ANON_REASONS.includes(reason)) throw new InvalidInputError('invalid reason');
 
   await withOrg(session.organizationId, async (tx) => {
-    const existing = await tx.customer.findUnique({
-      where: { id: customerId },
-      select: { id: true, name: true },
-    });
+    // Read under the lock the whole redaction holds, so the name hashed below
+    // is the name this redaction clears. Read before the lock, a rename
+    // committed in between was hashed stale while the new name was cleared
+    // (Codex review on #126). FOR UPDATE returns the latest committed row.
+    const [existing] = UUID_SHAPE.test(customerId)
+      ? await tx.$queryRaw<Array<{ id: string; name: string }>>`
+          SELECT id, name FROM customers
+           WHERE id = ${customerId}::uuid AND organization_id = ${session.organizationId}::uuid
+             FOR UPDATE`
+      : [];
     if (!existing) throw new InvalidInputError('customer not found');
 
     const traces = await eraseCustomerTraces(tx, session.organizationId, customerId, (entries) =>
       auditWaitlistRemovedWithCustomer(tx, session, entries, 'customer_redacted'),
     );
 
-    // Preserve a short suffix so the redacted row is still individually
-    // findable in operational logs.
-    const suffix = existing.id.slice(0, 8);
+    // The placeholder keeps a short id suffix, so the redacted row is still
+    // individually findable in operational logs.
+    const placeholder = redactedCustomerName(existing.id);
     await tx.customer.update({
       where: { id: customerId },
       data: {
-        name: `Redacted Customer #${suffix}`,
+        name: placeholder,
         ...CUSTOMER_REDACTION_FIELDS,
       },
     });
@@ -273,7 +282,7 @@ export async function anonymizeCustomer(
     await notifyEvent(tx, session.organizationId, {
       type: 'system',
       title: 'Customer anonymized',
-      body: `Redacted Customer #${suffix} (${reason})`,
+      body: `${placeholder} (${reason})`,
     });
   });
 }
@@ -306,19 +315,19 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
     // early and customers are redacted up to a day before the organization's
     // policy permits. Redaction is irreversible. See lib/retention-window.ts.
     const cutoffExpr = retentionCutoffSql(`${org.customerRetentionYears}`);
-    const stale = await tx.$queryRawUnsafe<Array<{ id: string; name: string }>>(
-      `SELECT c.id, c.name
-         FROM customers c
-        WHERE c.organization_id = $1::uuid
+    // Idle, by one expression for both reads below. $1 is the organisation.
+    const idle = `c.organization_id = $1::uuid
           AND c.updated_at < ${cutoffExpr}
           -- Not already redacted (name carries the sentinel).
-          AND c.name NOT LIKE 'Redacted Customer #%'
+          AND c.name NOT LIKE '${REDACTED_NAME_PREFIX}%'
           -- No appointment inside the window keeps the record live.
           AND NOT EXISTS (
                 SELECT 1 FROM appointments a
                  WHERE a.customer_id = c.id
                    AND a.starts_at >= ${cutoffExpr}
-              )`,
+              )`;
+    const stale = await tx.$queryRawUnsafe<Array<{ id: string }>>(
+      `SELECT c.id FROM customers c WHERE ${idle}`,
       organizationId,
     );
 
@@ -331,6 +340,26 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
 
     const anonymizedIds: string[] = [];
     for (const c of stale) {
+      // The candidates were read without a lock. Lock this one, then ask again
+      // in a NEW statement: it sees everything committed before the lock was
+      // granted, and nothing can be added for the customer while it is held.
+      // A customer who booked, or was edited, in between is no longer idle and
+      // is left alone, and the name hashed below is the name this redaction
+      // clears (Codex review on #126). Asking in the locking statement itself
+      // is not enough: its NOT EXISTS keeps that statement's snapshot, taken
+      // before a booking that held the row committed.
+      await tx.$executeRawUnsafe(
+        'SELECT 1 FROM customers WHERE id = $1::uuid AND organization_id = $2::uuid FOR UPDATE',
+        c.id,
+        organizationId,
+      );
+      const [still] = await tx.$queryRawUnsafe<Array<{ name: string }>>(
+        `SELECT c.name FROM customers c WHERE c.id = $2::uuid AND ${idle}`,
+        organizationId,
+        c.id,
+      );
+      if (!still) continue;
+
       // A system action: there is no session, so each waitlist removal is
       // audited with a null actor, like the customer row below.
       const traces = await eraseCustomerTraces(tx, organizationId, c.id, async (entries) => {
@@ -346,11 +375,10 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
           });
         }
       });
-      const suffix = c.id.slice(0, 8);
       await tx.customer.update({
         where: { id: c.id },
         data: {
-          name: `Redacted Customer #${suffix}`,
+          name: redactedCustomerName(c.id),
           ...CUSTOMER_REDACTION_FIELDS,
         },
       });
@@ -362,7 +390,7 @@ export async function runRetentionTick(organizationId: string): Promise<Retentio
           entityId: c.id,
           meta: {
             reason: 'retention',
-            previousNameHmac: erasedNamePseudonym(c.name),
+            previousNameHmac: erasedNamePseudonym(still.name),
             ...traces,
           },
         },
