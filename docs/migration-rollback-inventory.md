@@ -134,12 +134,28 @@ separately. They do not say that a rollback is safe; read the migration for that
 ## The rule for new migrations
 
 `tests/migration-rollback-docs.test.ts` applies to every migration from
-`20261017000000` on. Each must have a `ROLLBACK` section in its header, whose
-statements delete **its own** ledger row by exact name. The migration's
-executable SQL must never touch `_prisma_migrations`. The test's complements
-prove the checker reports a missing section, a missing ledger step, a ledger
-step naming another migration, and an executable ledger write, and accepts a
-complete rollback whose ledger step spans two lines.
+`20261017000000` on. It reads the `ROLLBACK` section, meaning the heading comment
+and the contiguous comment block under it, and requires:
+
+1. one transaction in it, `BEGIN; … COMMIT;`;
+2. inside that transaction, the migration's **own** ledger delete
+   (`DELETE FROM _prisma_migrations WHERE migration_name = '<its name>'`), so the
+   objects and the ledger row go together or not at all;
+3. inside it too, at least one statement that reverses something other than
+   the ledger;
+4. no executable SQL in the migration that touches `_prisma_migrations`.
+
+The complements prove that each of these is reported:
+- a missing section;
+- `ROLLBACK: unavailable` plus a delete quoted in some other comment (Codex
+  review on #124: the first version matched the delete anywhere in the
+  comments);
+- a delete placed after the `COMMIT`;
+- a delete naming another migration;
+- a transaction that only deletes the ledger row;
+- an executable ledger write.
+
+A complete rollback whose ledger step spans two lines passes.
 
 The first migration it applies to is `20261017000001_practitioner_double_booking`
 (#112), whose header was written to this rule.
