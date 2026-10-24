@@ -8,6 +8,7 @@ import { ctxToSession, InvalidInputError } from '@/lib/auth';
 import { requireAuthContext, requirePermission } from '@/lib/rbac';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
+import { auditWaitlistRemovedWithCustomer, lockCustomerWaitlist } from '@/lib/waitlist';
 import { anonymizeCustomer, exportCustomerData, type CustomerExport } from '@/lib/gdpr';
 import {
   buildCreateData,
@@ -94,6 +95,12 @@ export async function deleteCustomerAction(
     const result = await withOrg(session.organizationId, async (tx) => {
       const existing = await tx.customer.findUnique({ where: { id }, select: { id: true } });
       if (!existing) return { deleted: false as const, reason: 'not_found' as const };
+      // Nothing may be written before the delete. A refused delete (P2003) is
+      // caught below and returns normally, and PostgreSQL has already aborted
+      // the transaction, so any earlier write would be silently undone. Read and
+      // lock what the cascade is about to remove; audit it after the delete.
+      const cascaded = await lockCustomerWaitlist(tx, session.organizationId, id);
+      if (!cascaded) return { deleted: false as const, reason: 'not_found' as const };
       try {
         await tx.customer.delete({ where: { id } });
       } catch (err: unknown) {
@@ -102,6 +109,7 @@ export async function deleteCustomerAction(
           return { deleted: false as const, reason: 'has_appointments' as const };
         throw err;
       }
+      await auditWaitlistRemovedWithCustomer(tx, session, cascaded);
       await writeAudit(tx, session, 'delete', 'customer', id);
       return { deleted: true as const };
     });

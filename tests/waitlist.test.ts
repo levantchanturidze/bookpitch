@@ -77,6 +77,10 @@ describe('waitlist — add/list/remove + cancellation notifier', () => {
   });
 
   afterAll(async () => {
+    // Waitlist writes are audited (append-only, FK to the org and the actor),
+    // so the audit rows go first or the org and user cannot be removed.
+    const { resetAuditForOrgs } = await import('./helpers/audit-reset');
+    await resetAuditForOrgs([orgId]);
     await withoutRls(async (tx) => {
       await tx.waitlist.deleteMany({ where: { organizationId: orgId } });
       await tx.notification.deleteMany({ where: { organizationId: orgId } });
@@ -162,7 +166,7 @@ describe('waitlist — add/list/remove + cancellation notifier', () => {
     // ActiveSession we can use for org id.
     const { withOrg } = await import('@/lib/db');
     const { matched } = await withOrg(orgId, (tx) =>
-      notifyWaitlistForCancelled(tx, orgId, {
+      notifyWaitlistForCancelled(tx, session(), {
         id: 'fake-appt',
         staffId,
         serviceId,
