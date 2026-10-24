@@ -666,6 +666,30 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
       [forDb('RESET session_replication_role')],
     );
 
+    // Codex review on #122: precedence. The most specific entry wins.
+    it('COMPLEMENT: a database replica default overridden for the role in this database passes', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql(forDb('SET session_replication_role = replica'));
+        sql(forRole('SET session_replication_role = origin'));
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        sql(forRole('RESET session_replication_role'));
+        sql(forDb('RESET session_replication_role'));
+      }
+    });
+
+    injects(
+      'a replica default for the role in this database wins over an origin database default',
+      [
+        forDb('SET session_replication_role = origin'),
+        forRole('SET session_replication_role = replica'),
+      ],
+      /session_replication_role defaults to replica for bookpitch_app in /,
+      [forRole('RESET session_replication_role'), forDb('RESET session_replication_role')],
+    );
+
     it('COMPLEMENT: an unrelated default on the role is not mistaken for one', () => {
       expect(runVerifier().ok, 'fixture must be clean').toBe(true);
       try {

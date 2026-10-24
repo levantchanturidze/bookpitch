@@ -92,18 +92,34 @@ BEGIN
   -- = replica, set as a default (ALTER ROLE … SET, ALTER DATABASE … SET, or
   -- ALTER ROLE … IN DATABASE … SET), stops every ordinary trigger AND
   -- foreign-key enforcement in each session it applies to. The guards that
-  -- checks 8 and 9 find enabled in pg_trigger would never fire. Only the value
-  -- is reported, never another setting.
-  SELECT string_agg(coalesce(r.rolname, 'every role') || ' in '
-                    || coalesce(d.datname, 'every database'), '; ')
-    INTO replica_defaults
-    FROM pg_db_role_setting rs
-    LEFT JOIN pg_roles r    ON r.oid = rs.setrole
-    LEFT JOIN pg_database d ON d.oid = rs.setdatabase
-   CROSS JOIN LATERAL unnest(rs.setconfig) AS cfg
-   WHERE (rs.setrole = 0 OR r.rolname = 'bookpitch_app')
-     AND (rs.setdatabase = 0 OR d.datname = current_database())
-     AND lower(replace(cfg, ' ', '')) = 'session_replication_role=replica';
+  -- checks 8 and 9 find enabled in pg_trigger would never fire.
+  --
+  -- What matters is the EFFECTIVE default for bookpitch_app here, by
+  -- PostgreSQL's precedence: role-in-this-database, then role, then this
+  -- database, then every role everywhere; the first entry found wins
+  -- (postinit.c, process_settings). A replica entry overridden by a more
+  -- specific origin or local one is not in effect, and must not block a
+  -- deploy (Codex review on #122). Only the value and its scope are
+  -- reported, never another setting. Server-level defaults (postgresql.conf,
+  -- ALTER SYSTEM) sit below all of these and are not read here.
+  SELECT x.scope INTO replica_defaults
+    FROM (SELECT lower(split_part(replace(cfg, ' ', ''), '=', 2)) AS val,
+                 coalesce(r.rolname, 'every role') || ' in '
+                   || coalesce(d.datname, 'every database') AS scope,
+                 CASE WHEN rs.setrole <> 0 AND rs.setdatabase <> 0 THEN 1
+                      WHEN rs.setrole <> 0 THEN 2
+                      WHEN rs.setdatabase <> 0 THEN 3
+                      ELSE 4 END AS precedence
+            FROM pg_db_role_setting rs
+            LEFT JOIN pg_roles r    ON r.oid = rs.setrole
+            LEFT JOIN pg_database d ON d.oid = rs.setdatabase
+           CROSS JOIN LATERAL unnest(rs.setconfig) AS cfg
+           WHERE (rs.setrole = 0 OR r.rolname = 'bookpitch_app')
+             AND (rs.setdatabase = 0 OR d.datname = current_database())
+             AND lower(split_part(replace(cfg, ' ', ''), '=', 1)) = 'session_replication_role'
+           ORDER BY precedence
+           LIMIT 1) x
+   WHERE x.val = 'replica';
   IF replica_defaults IS NOT NULL THEN
     RAISE EXCEPTION 'production-verify: session_replication_role defaults to replica for % — triggers and foreign keys do not fire for the application',
       replica_defaults;
