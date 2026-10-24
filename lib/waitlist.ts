@@ -167,10 +167,16 @@ export async function removeFromWaitlist(session: ActiveSession, id: string): Pr
  * Call this inside the deleting transaction, BEFORE deleting the customer. It
  * locks the customer row FOR UPDATE, so no entry can be added for them until
  * the transaction ends (an insert's foreign-key check needs a lock that
- * conflicts with it), then returns exactly the entries the cascade will
- * remove. It writes nothing, so a delete refused afterwards (P2003, the
+ * conflicts with it), then locks and returns exactly the entries the cascade
+ * will remove. It writes nothing, so a delete refused afterwards (P2003, the
  * customer has appointments) leaves nothing to undo. Returns null when the
  * customer row is not there to lock.
+ *
+ * The entries are locked, not only read. An entry removed by someone else
+ * (DELETE /api/waitlist/[id]) after a plain read but before the cascade stayed
+ * in the result, so the caller audited a removal it did not make: two `delete`
+ * rows for one entry (Codex review on #114). Locked, an entry being removed is
+ * waited for and then left out.
  *
  * After the delete succeeds, pass the result to auditWaitlistRemovedWithCustomer.
  */
@@ -184,8 +190,13 @@ export async function lockCustomerWaitlist(
      WHERE id = ${customerId}::uuid AND organization_id = ${organizationId}::uuid
        FOR UPDATE`;
   if (locked.length === 0) return null;
+  const entries = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM waitlist
+     WHERE organization_id = ${organizationId}::uuid AND customer_id = ${customerId}::uuid
+     ORDER BY id
+       FOR UPDATE`;
   return tx.waitlist.findMany({
-    where: { organizationId, customerId },
+    where: { organizationId, id: { in: entries.map((e) => e.id) } },
     select: {
       id: true,
       status: true,
@@ -245,27 +256,26 @@ export async function notifyWaitlistForCancelled(
   // the caller's transaction is the only thing establishing it, and SEC-007
   // was exactly this function running under a bypassing client (CLAUDE.md
   // invariant 1: a tenant query without organization_id is a bug).
-  const rows = await tx.waitlist.findMany({
-    where: {
-      organizationId: session.organizationId,
-      status: 'pending',
-      preferredFrom: { lte: cancelled.startsAt },
-      preferredTo: { gte: cancelled.endsAt },
-      AND: [
-        { OR: [{ staffId: null }, { staffId: cancelled.staffId }] },
-        { OR: [{ serviceId: null }, { serviceId: cancelled.serviceId }] },
-        { OR: [{ locationId: null }, { locationId: cancelled.locationId }] },
-      ],
-    },
-    select: { id: true },
-  });
+  //
+  // One statement: the entries marked notified ARE the entries audited below.
+  // Found first and updated after, an entry removed in between was skipped by
+  // the update but still audited as notified (Codex review on #114). A null
+  // staff, service or location on the entry matches any; a null serviceId on
+  // the appointment matches only entries without one, as before.
+  const cancelledOrgId = session.organizationId;
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`
+    UPDATE waitlist
+       SET status = 'notified', notified_at = transaction_timestamp()
+     WHERE organization_id = ${cancelledOrgId}::uuid
+       AND status = 'pending'
+       AND preferred_from <= ${cancelled.startsAt}::timestamptz
+       AND preferred_to >= ${cancelled.endsAt}::timestamptz
+       AND (staff_id IS NULL OR staff_id = ${cancelled.staffId}::uuid)
+       AND (service_id IS NULL OR service_id = ${cancelled.serviceId}::uuid)
+       AND (location_id IS NULL OR location_id = ${cancelled.locationId}::uuid)
+    RETURNING id`;
   if (!rows.length) return { matched: 0 };
 
-  const cancelledOrgId = session.organizationId;
-  await tx.waitlist.updateMany({
-    where: { organizationId: cancelledOrgId, id: { in: rows.map((r) => r.id) } },
-    data: { status: 'notified', notifiedAt: new Date() },
-  });
   for (const r of rows) {
     await writeAudit(tx, session, 'update', 'waitlist', r.id, {
       status: 'notified',
