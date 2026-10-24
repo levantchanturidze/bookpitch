@@ -690,6 +690,66 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
       [forRole('RESET session_replication_role'), forDb('RESET session_replication_role')],
     );
 
+    // Codex review on #122, 2026-10-24: with no role or database default, the
+    // application takes the SERVER's value, which was not read at all.
+    const forMe = (verb: string) =>
+      `DO $$ BEGIN EXECUTE format('ALTER ROLE %I IN DATABASE %I ${verb}', current_user, current_database()); END $$`;
+
+    injects(
+      "the server's value hidden by a default on the verifier's own role fails as unverified",
+      [forMe('SET session_replication_role = origin')],
+      /cannot verify session_replication_role for bookpitch_app .*source: database user/,
+      [forMe('RESET session_replication_role')],
+    );
+
+    it("COMPLEMENT: a hidden server value does not matter when the application role's default decides", () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql(forMe('SET session_replication_role = origin'));
+        sql(forRole('SET session_replication_role = origin'));
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        sql(forRole('RESET session_replication_role'));
+        sql(forMe('RESET session_replication_role'));
+      }
+    });
+
+    // ALTER SYSTEM is cluster-wide: while it is set, every session on this
+    // server runs with triggers and foreign keys off. So this runs where the
+    // server is disposable, CI's service container, and on a developer machine
+    // only when asked for, with nothing else using the server.
+    const clusterWide =
+      process.env.CI === 'true' || process.env.INVARIANT_TEST_ALTER_SYSTEM === '1';
+    const awaitServerValue = (want: string) => {
+      for (let i = 0; i < 50; i++) {
+        const now = sql(
+          "SELECT setting FROM pg_settings WHERE name = 'session_replication_role'",
+        ).trim();
+        if (now === want) return;
+        execFileSync('sleep', ['0.1']);
+      }
+      throw new Error(`the server never reported session_replication_role = ${want}`);
+    };
+    it.runIf(clusterWide)('a replica value in the server configuration is caught', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql('ALTER SYSTEM SET session_replication_role = replica');
+        sql('SELECT pg_reload_conf()');
+        awaitServerValue('replica');
+        const r = runVerifier();
+        expect(r.ok, 'a server-level replica default must fail').toBe(false);
+        expect(r.output).toMatch(
+          /defaults to replica for every session, from the server's configuration file/,
+        );
+      } finally {
+        sql('ALTER SYSTEM RESET session_replication_role');
+        sql('SELECT pg_reload_conf()');
+        awaitServerValue('origin');
+      }
+      expect(runVerifier().ok, 'passes again once the server value is reset').toBe(true);
+    });
+
     it('COMPLEMENT: an unrelated default on the role is not mistaken for one', () => {
       expect(runVerifier().ok, 'fixture must be clean').toBe(true);
       try {

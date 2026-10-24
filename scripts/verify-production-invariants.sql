@@ -71,6 +71,9 @@ DECLARE
   is_bypass bool;
   can_login bool;
   replica_defaults text;
+  srr_value text;
+  srr_scope text;
+  server_source text;
 BEGIN
   SELECT rolsuper, rolbypassrls, rolcanlogin INTO is_super, is_bypass, can_login
     FROM pg_roles WHERE rolname = 'bookpitch_app';
@@ -100,9 +103,8 @@ BEGIN
   -- (postinit.c, process_settings). A replica entry overridden by a more
   -- specific origin or local one is not in effect, and must not block a
   -- deploy (Codex review on #122). Only the value and its scope are
-  -- reported, never another setting. Server-level defaults (postgresql.conf,
-  -- ALTER SYSTEM) sit below all of these and are not read here.
-  SELECT x.scope INTO replica_defaults
+  -- reported, never another setting.
+  SELECT x.val, x.scope INTO srr_value, srr_scope
     FROM (SELECT lower(split_part(replace(cfg, ' ', ''), '=', 2)) AS val,
                  coalesce(r.rolname, 'every role') || ' in '
                    || coalesce(d.datname, 'every database') AS scope,
@@ -118,8 +120,29 @@ BEGIN
              AND (rs.setdatabase = 0 OR d.datname = current_database())
              AND lower(split_part(replace(cfg, ' ', ''), '=', 1)) = 'session_replication_role'
            ORDER BY precedence
-           LIMIT 1) x
-   WHERE x.val = 'replica';
+           LIMIT 1) x;
+
+  -- No role or database default applies, so the application's sessions take
+  -- the SERVER's value: postgresql.conf, postgresql.auto.conf (ALTER SYSTEM),
+  -- the server command line, or the built-in `origin` (Codex review on #122,
+  -- 2026-10-24: these were not read at all). This session holds that value
+  -- too, unless something more specific applies to this session alone (a
+  -- default on the verifier's own role, or a value set by this connection),
+  -- which masks it. Then it cannot be read here, and that fails as unverified
+  -- rather than passing.
+  IF srr_value IS NULL THEN
+    SELECT lower(setting), source INTO srr_value, server_source
+      FROM pg_settings WHERE name = 'session_replication_role';
+    IF server_source NOT IN ('default', 'configuration file', 'command line', 'environment variable') THEN
+      RAISE EXCEPTION 'production-verify: cannot verify session_replication_role for bookpitch_app — no role or database default applies, and this session''s own value (source: %) hides the server''s. Run the verifier as a role with no session_replication_role default',
+        server_source;
+    END IF;
+    srr_scope := 'every session, from the server''s ' || server_source;
+  END IF;
+
+  IF srr_value = 'replica' THEN
+    replica_defaults := srr_scope;
+  END IF;
   IF replica_defaults IS NOT NULL THEN
     RAISE EXCEPTION 'production-verify: session_replication_role defaults to replica for % — triggers and foreign keys do not fire for the application',
       replica_defaults;
