@@ -715,3 +715,117 @@ describe('the waitlist fan-out names the organisation itself', () => {
     expect(await waitlistAudits(fx.otherOrgId)).toEqual([]);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Codex review on #114 (2026-10-24). An entry removed by someone else while a
+// customer deletion or a slot opening was in progress was audited by THAT path
+// too: a second `delete` row for one entry, or an `update` to notified for an
+// entry that was never updated. Another connection removes the entry and holds
+// its transaction open, so the interleaving is real, not simulated.
+// -----------------------------------------------------------------------------
+describe('an entry removed meanwhile is audited only by the removal that happened', () => {
+  async function removedByAnotherConnection(entryId: string, run: () => Promise<Response>) {
+    const other = new Client({ connectionString: process.env.DATABASE_URL });
+    await other.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query(`SET LOCAL app.current_org_id = '${fx.orgId}'`);
+      expect((await other.query('DELETE FROM waitlist WHERE id = $1', [entryId])).rowCount).toBe(1);
+      const otherPid = (await other.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+        .rows[0].pid;
+      const running = run();
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i++) {
+        const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT count(*)::bigint AS n FROM pg_stat_activity WHERE ${otherPid} = ANY(pg_blocking_pids(pid))`,
+        );
+        waiting = Number(rows[0].n) > 0;
+        if (!waiting) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(waiting, 'the path under test never waited for the removal').toBe(true);
+      await other.query('COMMIT');
+      return await running;
+    } finally {
+      await other.end();
+    }
+  }
+  async function entryFor(customerId: string) {
+    return (
+      await withoutRls((tx) =>
+        tx.waitlist.create({
+          data: {
+            organizationId: fx.orgId,
+            customerId,
+            preferredFrom: new Date(WINDOW.preferredFrom),
+            preferredTo: new Date(WINDOW.preferredTo),
+          },
+          select: { id: true },
+        }),
+      )
+    ).id;
+  }
+
+  it('deleting the customer does not audit an entry removed meanwhile', async () => {
+    const c = (
+      await withoutRls((tx) =>
+        tx.customer.create({
+          data: { organizationId: fx.orgId, name: 'WLA removed meanwhile' },
+          select: { id: true },
+        }),
+      )
+    ).id;
+    const gone = await entryFor(c);
+    const kept = await entryFor(c);
+    await as('owner');
+    const res = await removedByAnotherConnection(gone, () =>
+      customerRoute.DELETE(req(`http://x/api/customers/${c}`, { method: 'DELETE' }), {
+        params: Promise.resolve({ id: c }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect((await waitlistAudits()).map((a) => a.entityId)).toEqual([kept]);
+  });
+
+  it('opening a slot does not audit as notified an entry removed meanwhile', async () => {
+    const starts = new Date('2031-05-12T09:00:00Z');
+    const appt = await withoutRls((tx) =>
+      tx.appointment.create({
+        data: {
+          organizationId: fx.orgId,
+          locationId: fx.locA,
+          customerId: fx.customer,
+          staffId: fx.staffA,
+          serviceId: fx.svcA,
+          startsAt: starts,
+          endsAt: new Date(starts.getTime() + 30 * 60_000),
+          serviceName: 'WLA svc',
+          price: 10,
+        },
+        select: { id: true },
+      }),
+    );
+    const gone = await seedEntry();
+    const kept = await seedEntry();
+    await as('owner');
+    const res = await removedByAnotherConnection(gone, () =>
+      appointmentRoute.PATCH(
+        req(`http://x/api/appointments/${appt.id}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ status: 'cancelled' }),
+        }),
+        { params: Promise.resolve({ id: appt.id }) },
+      ),
+    );
+    expect(res.status).toBe(200);
+    const audits = await waitlistAudits();
+    expect(audits.map((a) => a.entityId)).toEqual([kept]);
+    expect(audits[0]).toMatchObject({ action: 'update', meta: { status: 'notified' } });
+    // The staff notification counts what was marked, too.
+    const notes = await unsafePrismaAdmin.notification.findMany({
+      where: { organizationId: fx.orgId, type: 'waitlist' },
+      select: { title: true },
+    });
+    expect(notes.map((n) => n.title)).toEqual(['Slot opened — 1 waitlist match']);
+  });
+});
