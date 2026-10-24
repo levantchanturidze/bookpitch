@@ -52,7 +52,6 @@ export async function requestPasswordReset(input: RequestResetInput): Promise<vo
 
   const rawToken = randomBytes(32).toString('base64url');
   const tokenHash = hashToken(rawToken);
-  const expires = new Date(Date.now() + TOKEN_TTL_MS);
 
   const origin = process.env.APP_URL ?? 'http://localhost:3000';
   const url = `${origin}/reset?token=${encodeURIComponent(rawToken)}`;
@@ -61,6 +60,11 @@ export async function requestPasswordReset(input: RequestResetInput): Promise<vo
   const idempotencyKey = `password_reset:${tokenHash.slice(0, 32)}`;
 
   await withoutRls(async (tx) => {
+    // The expiry is the DATABASE's now plus the TTL, the clock consumeReset and
+    // housekeeping judge it by. It used to be this process's Date.now(): an
+    // instance whose clock ran behind honoured a link past its expiry.
+    const [{ now }] = await tx.$queryRaw<[{ now: Date }]>`SELECT transaction_timestamp() AS now`;
+    const expires = new Date(now.getTime() + TOKEN_TTL_MS);
     // Drop any prior in-flight tokens for this email so only the newest is valid.
     await tx.verificationToken.deleteMany({ where: { identifier: email } });
     await tx.verificationToken.create({
@@ -106,28 +110,34 @@ export async function consumeReset(input: ConsumeResetInput): Promise<{ userId: 
   }
 
   const tokenHash = hashToken(token);
-  const row = await unsafePrismaAdmin.verificationToken.findUnique({ where: { token: tokenHash } });
-  if (!row) throw new InvalidInputError('invalid or expired token');
-  if (row.expires.getTime() < Date.now()) {
-    // Best-effort cleanup; don't leak the reason.
-    await unsafePrismaAdmin.verificationToken
-      .delete({ where: { token: tokenHash } })
-      .catch(() => {});
-    throw new InvalidInputError('invalid or expired token');
-  }
+  // Expiry is judged by the database clock, the one the expiry was set by.
+  // A cheap check first, so an invalid link never costs an argon2 hash.
+  const live = await unsafePrismaAdmin.$queryRaw<Array<{ identifier: string }>>`
+    SELECT identifier FROM verification_tokens
+     WHERE token = ${tokenHash} AND expires > transaction_timestamp()`;
+  if (live.length === 0) throw new InvalidInputError('invalid or expired token');
 
-  const user = await withoutRls((tx) =>
-    tx.appUser.findUnique({
-      where: { email: row.identifier },
-      select: { id: true, sessionVersion: true },
-    }),
-  );
-  if (!user) throw new InvalidInputError('invalid or expired token');
-
+  // Hashed outside the transaction: argon2 is slow, and an interactive
+  // transaction has a time limit.
   const passwordHash = await hash(newPassword);
-  await withoutRls(async (tx) => {
+
+  // Check-and-consume is one locked step. Two requests with the same link used
+  // to both pass the check above; the loser then failed on deleting an already
+  // deleted token, an unhandled error (a 500) rather than a refusal. Now the
+  // second waits on the row lock, finds the token gone, and is refused cleanly.
+  const user = await withoutRls(async (tx) => {
+    const locked = await tx.$queryRaw<Array<{ identifier: string }>>`
+      SELECT identifier FROM verification_tokens
+       WHERE token = ${tokenHash} AND expires > transaction_timestamp()
+         FOR UPDATE`;
+    if (locked.length === 0) return null;
+    const owner = await tx.appUser.findUnique({
+      where: { email: locked[0].identifier },
+      select: { id: true },
+    });
+    if (!owner) return null;
     await tx.appUser.update({
-      where: { id: user.id },
+      where: { id: owner.id },
       data: {
         passwordHash,
         // Revoke every existing JWT for this user.
@@ -135,7 +145,9 @@ export async function consumeReset(input: ConsumeResetInput): Promise<{ userId: 
       },
     });
     await tx.verificationToken.delete({ where: { token: tokenHash } });
+    return owner;
   });
+  if (!user) throw new InvalidInputError('invalid or expired token');
   log.info('password_reset.consume.ok', { userId: user.id });
   return { userId: user.id };
 }
