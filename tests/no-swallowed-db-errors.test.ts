@@ -23,9 +23,21 @@ const { resetAuditForOrgs } = await import('./helpers/audit-reset');
 const ROOT = path.resolve(__dirname, '..');
 const SELF = path.join(ROOT, 'tests', 'no-swallowed-db-errors.test.ts');
 
-/** `tx.<model>.<op>(…)` followed by `.catch` with an empty or value-only handler. */
+/**
+ * ANY `.catch(` attached directly to a transaction-client call: `tx.<model>.<op>(…)`
+ * or `tx.$executeRaw…(…)`.
+ *
+ * Not only empty handlers. Inside an interactive transaction the failed statement
+ * has already aborted the transaction, so EVERY handler that does not rethrow,
+ * including a selective `.catch((e) => { if (e.code !== 'P2003') throw e; })`,
+ * lets the callback return while the commit silently rolls back the earlier
+ * writes. Tolerating one error needs a SAVEPOINT (deleteUnlessReferenced), or a
+ * catch on the transaction's promise, outside it. (Codex review on #123 found
+ * the first version missed `.catch(e => {})`; widening it showed the rule itself
+ * was too narrow.)
+ */
 const SWALLOW_ON_TX =
-  /\btx\s*\.\s*\w+\s*\.\s*\w+\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)\s*\.catch\(\s*\(\s*\w*\s*\)\s*=>\s*(?:\{\s*\}|undefined|null|void 0)\s*\)/g;
+  /\btx\s*\.\s*\$?\w+\s*(?:\.\s*\w+\s*)?\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)\s*\.catch\(/g;
 
 function testFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -46,25 +58,43 @@ describe('no test swallows a database error inside a transaction', () => {
         hits.push(`${path.relative(ROOT, f)}:${line}`);
       }
     }
-    expect(hits, 'use deleteUnlessReferenced, or let the error fail the suite').toEqual([]);
+    expect(
+      hits,
+      'use deleteUnlessReferenced, catch outside the transaction, or let the error fail the suite',
+    ).toEqual([]);
   });
 
-  it('COMPLEMENT: the scan finds the shape, on one line or across several', () => {
-    const swallow = '.catch(() => ' + '{})';
-    const oneLine = `await tx.appUser.delete({ where: { id: x } })${swallow};`;
-    const multiLine = `await tx.impersonationSession\n  .deleteMany({ where: { actorUserId: u, at: new Date(f(1)) } })\n  ${swallow};`;
-    const asValue = 'tx.customer.delete({ where: { id } }).catch(() => ' + 'null)';
-    for (const s of [oneLine, multiLine, asValue]) {
-      expect(s.match(new RegExp(SWALLOW_ON_TX.source))).not.toBeNull();
+  it('COMPLEMENT: the scan finds every handler form, on one line or across several', () => {
+    // Built by concatenation so this file's own source does not match.
+    const c = '.cat' + 'ch(';
+    const forms = [
+      `await tx.appUser.delete({ where: { id: x } })${c}() => {});`,
+      `await tx.impersonationSession\n  .deleteMany({ where: { actorUserId: u, at: new Date(f(1)) } })\n  ${c}() => {});`,
+      `tx.customer.delete({ where: { id } })${c}() => null)`,
+      // Codex review on #123: the unparenthesised parameter.
+      `await tx.appUser.deleteMany({ where: { id } })${c}error => {});`,
+      `await tx.appUser.deleteMany({ where: { id } })${c}async () => undefined);`,
+      `await tx.appUser.deleteMany({ where: { id } })${c}function () {});`,
+      `await tx.appUser.deleteMany({ where: { id } })${c}() => { /* ignore */ });`,
+      `await tx.appUser.deleteMany({ where: { id } })${c}(e) => console.warn(e));`,
+      // A selective rethrow still swallows the one error it tolerates.
+      `await tx.appUser.deleteMany({ where: { id } })${c}(e) => { if (e.code !== "P2003") throw e; });`,
+      `await tx.$executeRawUnsafe('DELETE FROM x')${c}() => 0);`,
+    ];
+    for (const s of forms) {
+      expect(s.match(new RegExp(SWALLOW_ON_TX.source)), s).not.toBeNull();
     }
   });
 
-  it('COMPLEMENT: a handled catch, or one outside a transaction, is not flagged', () => {
-    const handled =
-      'await tx.appUser.deleteMany({ where: { id } }).catch((e) => { if (e.code !== "P2003") throw e; });';
-    const noTx = 'await res.json().catch(() => ' + 'null);';
-    for (const s of [handled, noTx]) {
-      expect(s.match(new RegExp(SWALLOW_ON_TX.source))).toBeNull();
+  it('COMPLEMENT: a catch outside the transaction, or not on a DB call, is not flagged', () => {
+    const c = '.cat' + 'ch(';
+    const allowed = [
+      `await withoutRls((tx) => tx.pushSubscription.deleteMany({ where: { endpoint } }))${c}() => {});`,
+      `await res.json()${c}() => null);`,
+      `await deleteUnlessReferenced(tx, () => tx.appUser.deleteMany({ where: { id } }));`,
+    ];
+    for (const s of allowed) {
+      expect(s.match(new RegExp(SWALLOW_ON_TX.source)), s).toBeNull();
     }
   });
 });
