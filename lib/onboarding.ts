@@ -1,12 +1,17 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { hash } from '@node-rs/argon2';
 import { Prisma } from '@prisma/client';
-import { withoutRls, unsafePrismaAdmin } from '@/lib/db';
+import { withoutRls } from '@/lib/db';
 import { InvalidInputError } from '@/lib/auth';
-import { getEmailProvider } from '@/lib/messaging';
-import { deliverNow } from '@/lib/messaging/outbox';
-import { log, sanitizeErrorMessage } from '@/lib/logger';
-import { encryptField, decryptField, hashEmailForIndex } from '@/lib/crypto';
+import {
+  deliverNow,
+  enqueueEmail,
+  supersedePendingEmails,
+  VERIFICATION_EMAIL_PURPOSE,
+  verificationEmailKey,
+} from '@/lib/messaging/outbox';
+import { log } from '@/lib/logger';
+import { encryptField, hashEmailForIndex } from '@/lib/crypto';
 import { isE2ELoopbackRuntime } from '@/lib/auth/e2e-runtime';
 
 // -----------------------------------------------------------------------------
@@ -146,9 +151,9 @@ export async function createPendingRegistration(input: OnboardInput): Promise<vo
   const verifyUrl = `${appUrl}/api/onboard/verify?token=${rawToken.toString('hex')}`;
   const emailBody = `Thanks for signing up!\n\nClick the link below to verify your email and activate your account.\nThis link expires in 24 hours.\n\n${verifyUrl}\n\nIf you didn't sign up, you can ignore this email.`;
   const encryptedBody = encryptField(emailBody) ?? emailBody;
-  // Use a SHA-256 digest of the email so the idempotency key contains no PII.
-  const emailHash = createHash('sha256').update(email).digest('hex').slice(0, 16);
-  const idempotencyKey = `onboard_verify:${emailHash}:${tokenHash.slice(0, 16)}`;
+  // No PII in the key (a digest of the address), and the token-hash prefix
+  // that lets the outbox tell a current link from a stale one.
+  const idempotencyKey = verificationEmailKey('verify', email, tokenHash);
   // HMAC-SHA256 of the lowercase address — stored in to_address_hash for indexed
   // lookup. Keyed by EMAIL_PRIVACY_HMAC_KEY to resist rainbow-table attacks.
   const toAddressHash = hashEmailForIndex(email);
@@ -172,16 +177,13 @@ export async function createPendingRegistration(input: OnboardInput): Promise<vo
         token_hash     = EXCLUDED.token_hash,
         expires_at     = now() + (${tokenTtlMs} * interval '1 millisecond')
     `;
-    // Cancel any previously pending verification emails for this address. The
-    // cancel query matches on to_address_hash (for encrypted rows) OR the
-    // plaintext to_address (for legacy plaintext rows), so both are covered.
-    await tx.$executeRaw`
-      UPDATE email_outbox
-      SET status = 'cancelled'
-      WHERE purpose = 'onboard.verify'
-        AND (to_address_hash = ${toAddressHash} OR to_address = ${email})
-        AND status = 'pending'
-    `;
+    // The token above replaced any earlier one, so every queued verification
+    // email for this address now carries a dead link: withdraw them, in the
+    // same transaction that issues the replacement. Same helper and same
+    // terminal state as the resend path and password reset. (A legacy
+    // plaintext-address row is not matched by its HMAC here, but its token is
+    // not current either, so the delivery-time check withdraws it.)
+    await supersedePendingEmails(tx, VERIFICATION_EMAIL_PURPOSE, email);
     // Insert new outbox row via raw SQL — idempotency_key has a partial unique index
     // (WHERE idempotency_key IS NOT NULL) so the ON CONFLICT clause must include
     // the same predicate to match the index. Prisma's upsert can't use partial indexes.
@@ -438,9 +440,21 @@ export async function resendPendingRegistration(email: string): Promise<void> {
   const ttlMs = RESEND_TOKEN_TTL_MS;
   const cooldownMs = RESEND_COOLDOWN_MS;
 
-  // Atomically: rotate the token + write outbox intent.
+  // ONE transaction: rotate the token, withdraw every queued email carrying an
+  // earlier one, and queue the email carrying the new one. Nothing about the
+  // old link changes until the new link AND its delivery intent exist: if any
+  // step fails, all of it rolls back and the previous email and token stand.
+  //
+  // The withdrawal is what this used to be missing. The rotation killed the
+  // previous token, but a previous email still queued — the sign-up mail whose
+  // first send failed and is waiting for a retry, say — was left pending, and
+  // the next drain delivered it: a verification email whose link no longer
+  // worked, arriving beside the one that did.
+  //
   // WHERE clause enforces cooldown: update only if the old token's expiry implies
   // it was issued more than cooldownMs ago (expires_at < now() + TTL - cooldown).
+  // Two concurrent resends serialise on this row; the second sees the first's
+  // new expiry and changes nothing.
   type PendingRow = { email: string; full_name: string };
   const rotated = await withoutRls(async (tx) => {
     const rows = await tx.$queryRaw<PendingRow[]>`
@@ -454,76 +468,34 @@ export async function resendPendingRegistration(email: string): Promise<void> {
 
     if (rows.length === 0) return null; // not registered, cooldown, or already expired+rotated
 
-    const rawBody =
-      `Hi ${rows[0].full_name},\n\n` +
-      `You requested a new verification link.\n\n` +
-      `Click the link below to verify your email and activate your account.\n` +
-      `This link expires in 24 hours.\n\n` +
-      `${verifyUrl}\n\n` +
-      `If you didn't request this, you can ignore this email.`;
-    const encryptedOrRaw = encryptField(rawBody);
-    const bodyEncrypted = encryptedOrRaw !== null;
-    const encryptedBody = encryptedOrRaw ?? rawBody;
-    const resendEmailHash = createHash('sha256').update(email).digest('hex').slice(0, 16);
-    const idempotencyKey = `onboard_resend:${resendEmailHash}:${tokenHash.slice(0, 16)}`;
-    const resendToAddressHash = hashEmailForIndex(email);
-    const encryptedToAddress = encryptField(email) ?? email;
-    const toAddressEncrypted = encryptedToAddress !== email;
-    await tx.emailOutbox.create({
-      data: {
-        idempotencyKey,
-        toAddress: encryptedToAddress,
-        toAddressEncrypted,
-        toAddressHash: resendToAddressHash,
-        subject: 'Verify your Bookpitch account',
-        body: encryptedBody,
-        bodyEncrypted,
-        purpose: 'onboard.verify',
-      },
+    await supersedePendingEmails(tx, VERIFICATION_EMAIL_PURPOSE, email);
+
+    const idempotencyKey = verificationEmailKey('resend', email, tokenHash);
+    await enqueueEmail(tx, {
+      idempotencyKey,
+      to: email,
+      subject: 'Verify your Bookpitch account',
+      body:
+        `Hi ${rows[0].full_name},\n\n` +
+        `You requested a new verification link.\n\n` +
+        `Click the link below to verify your email and activate your account.\n` +
+        `This link expires in 24 hours.\n\n` +
+        `${verifyUrl}\n\n` +
+        `If you didn't request this, you can ignore this email.`,
+      purpose: VERIFICATION_EMAIL_PURPOSE,
     });
 
-    return { idempotencyKey, encryptedBody, bodyEncrypted };
+    return { idempotencyKey };
   });
 
   if (rotated === null) return; // enumeration-safe
 
-  // Immediate drain — best-effort, outside the DB transaction.
-  try {
-    type ClaimedRow = {
-      id: string;
-      to_address: string;
-      to_address_encrypted: boolean;
-      subject: string;
-      body: string;
-      body_encrypted: boolean;
-    };
-    const [claimed] = await unsafePrismaAdmin.$queryRaw<ClaimedRow[]>`
-      UPDATE email_outbox
-      SET status = 'processing',
-          claim_owner = 'onboard_resend_immediate',
-          claim_expires_at = now() + interval '120 seconds',
-          claimed_at = now()
-      WHERE idempotency_key = ${rotated.idempotencyKey} AND status = 'pending'
-      RETURNING id, to_address, to_address_encrypted, subject, body, body_encrypted
-    `;
-    if (claimed) {
-      const toAddress = claimed.to_address_encrypted
-        ? (decryptField(claimed.to_address) ?? claimed.to_address)
-        : claimed.to_address;
-      const body = claimed.body_encrypted
-        ? (decryptField(claimed.body) ?? claimed.body)
-        : claimed.body;
-      const provider = getEmailProvider();
-      await provider.send(toAddress, claimed.subject, body);
-      await unsafePrismaAdmin.$executeRaw`
-        UPDATE email_outbox
-        SET status = 'sent', sent_at = now(), claim_owner = NULL
-        WHERE id = ${claimed.id}::uuid
-      `;
-    }
-  } catch (err) {
-    log.warn('onboard.resend.immediate_drain_failed', { err: sanitizeErrorMessage(err) });
-  }
+  // Deliver now, best-effort, after the commit — the same path sign-up,
+  // invitations and password resets take. It never throws; a provider failure
+  // returns the row to `pending` for the drain to retry with backoff (the hand-
+  // rolled send this replaces left it `processing` until its claim expired),
+  // and it re-checks that the link is still current immediately before sending.
+  await deliverNow(rotated.idempotencyKey, VERIFICATION_EMAIL_PURPOSE);
 
   log.info('onboard.resend.ok', {}); // deliberately empty — no email or token in log
 }

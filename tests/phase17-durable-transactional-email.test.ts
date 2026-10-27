@@ -268,6 +268,7 @@ describe('the security properties of password reset are unchanged', () => {
     failNextSends = 1;
     await requestPasswordReset({ email: TEST_EMAIL });
     expect((await outboxRows()).filter((r) => r.status === 'pending').length).toBe(1);
+    const deadBefore = (await collectOpsMetrics()).outbox.dead;
 
     // Second request invalidates the first token (verification_tokens is
     // cleared for the identifier), so the queued first email now carries a
@@ -278,7 +279,14 @@ describe('the security properties of password reset are unchanged', () => {
     expect(rows.length).toBe(2);
     const superseded = rows.filter((r) => r.failureCategory === 'superseded');
     expect(superseded.length).toBe(1);
-    expect(superseded[0].status).toBe('dead');
+    // CHANGED 2026-10-17, deliberately: this was 'dead'. Superseded mail is
+    // WITHDRAWN, not failed, and 'dead' is exactly what the production
+    // monitor's outbox-dead-letters check and the soak's outbox-clean gate
+    // alarm on — so a user asking twice for a reset while the first email was
+    // still queued opened a false incident. The property that matters is now
+    // asserted directly: it is not counted as a dead letter.
+    expect(superseded[0].status).toBe('cancelled');
+    expect((await collectOpsMetrics()).outbox.dead).toBe(deadBefore);
     expect(rows.filter((r) => r.status === 'pending').length).toBe(0);
 
     // Draining now must not resurrect the superseded link.
