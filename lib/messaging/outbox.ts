@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { unsafePrismaAdmin } from '@/lib/db';
 import { encryptField, decryptField, hashEmailForIndex } from '@/lib/crypto';
-import { getEmailProvider } from './index';
+import { getEmailProvider, type EmailProvider } from './index';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
@@ -230,7 +230,52 @@ type ClaimedRow = {
   subject: string;
   body: string;
   body_encrypted: boolean;
+  purpose: string;
 };
+
+/**
+ * Send one row this worker has CLAIMED (`processing`). The one place both
+ * delivery paths, deliverNow() and the housekeeping drain, hand mail to the
+ * provider. Throws what the provider throws; the caller settles the row.
+ *
+ * Returns false, sending nothing, for a verification email whose link went
+ * stale AFTER the claim. The claim checked the link (OUTBOX_CLAIMABLE_SQL),
+ * but a resend that commits after it withdraws only `pending` rows: this one
+ * is `processing`, so it used to go out carrying the link the resend had just
+ * killed (Codex review on #115). The drain sends its batch one row at a time,
+ * so for a row near the end that window was every earlier provider call. It is
+ * now re-asked here, in one statement that withdraws the row as superseded if
+ * the link is stale.
+ *
+ * What remains: a resend committing while the provider call itself is in
+ * flight cannot recall that email. Its link is dead by then, and the
+ * replacement is already queued.
+ */
+export async function sendClaimedEmail(
+  provider: Pick<EmailProvider, 'send'>,
+  row: ClaimedRow,
+): Promise<boolean> {
+  if (row.purpose === VERIFICATION_EMAIL_PURPOSE) {
+    const withdrawn = await unsafePrismaAdmin.$executeRaw`
+      UPDATE email_outbox o
+         SET status           = 'cancelled',
+             failure_category = 'superseded',
+             failed_at        = NOW(),
+             last_error       = 'verification link no longer current',
+             claim_owner      = NULL
+       WHERE o.id = ${row.id}::uuid
+         AND o.status = 'processing'
+         AND NOT ${VERIFICATION_LINK_IS_CURRENT}
+    `;
+    if (Number(withdrawn) > 0) return false;
+  }
+  const to = row.to_address_encrypted
+    ? (decryptField(row.to_address) ?? row.to_address)
+    : row.to_address;
+  const body = row.body_encrypted ? (decryptField(row.body) ?? row.body) : row.body;
+  await provider.send(to, row.subject, body);
+  return true;
+}
 
 /**
  * Best-effort immediate delivery of one enqueued row, after its transaction
@@ -257,20 +302,15 @@ export async function deliverNow(idempotencyKey: string, purpose: string): Promi
       WHERE o.idempotency_key = ${idempotencyKey}
         AND o.status = 'pending'
         AND ${OUTBOX_CLAIMABLE_SQL}
-      RETURNING o.id, o.to_address, o.to_address_encrypted, o.subject, o.body, o.body_encrypted
+      RETURNING o.id, o.to_address, o.to_address_encrypted, o.subject, o.body, o.body_encrypted,
+                o.purpose
     `;
     if (!claimed) return false;
 
-    const to = claimed.to_address_encrypted
-      ? (decryptField(claimed.to_address) ?? claimed.to_address)
-      : claimed.to_address;
-    const body = claimed.body_encrypted
-      ? (decryptField(claimed.body) ?? claimed.body)
-      : claimed.body;
-
     try {
-      const provider = getEmailProvider();
-      await provider.send(to, claimed.subject, body);
+      // False: a verification link that went stale after the claim. The row
+      // is withdrawn, so there is nothing to settle.
+      if (!(await sendClaimedEmail(getEmailProvider(), claimed))) return false;
     } catch (err) {
       // Hand the row back so the drain retries it with backoff. Without this
       // it sits in `processing` until its claim lease expires — recoverable,

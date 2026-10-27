@@ -1,8 +1,11 @@
 import { dbNowMs, unsafePrismaAdmin, withoutRls } from '@/lib/db';
 import { getEmailProvider } from '@/lib/messaging';
-import { cancelObsoleteVerificationEmails, OUTBOX_CLAIMABLE_SQL } from '@/lib/messaging/outbox';
+import {
+  cancelObsoleteVerificationEmails,
+  OUTBOX_CLAIMABLE_SQL,
+  sendClaimedEmail,
+} from '@/lib/messaging/outbox';
 import { log, sanitizeErrorMessage } from '@/lib/logger';
-import { decryptField } from '@/lib/crypto';
 
 // -----------------------------------------------------------------------------
 // Housekeeping: prunes rows that are safe to drop once they're stale.
@@ -283,11 +286,10 @@ async function drainEmailOutbox(now: Date): Promise<{
     // Step 3: send each claimed row outside the DB transaction.
     for (const row of claimed) {
       try {
-        const toAddress = row.to_address_encrypted
-          ? (decryptField(row.to_address) ?? row.to_address)
-          : row.to_address;
-        const body = row.body_encrypted ? (decryptField(row.body) ?? row.body) : row.body;
-        await provider.send(toAddress, row.subject, body);
+        // False: a verification link that went stale after the claim, for
+        // example while this loop was sending the rows before it. Withdrawn,
+        // so nothing to settle (see sendClaimedEmail).
+        if (!(await sendClaimedEmail(provider, row))) continue;
         await unsafePrismaAdmin.$executeRaw`
           UPDATE email_outbox
           SET status = 'sent', sent_at = transaction_timestamp(), claim_owner = NULL

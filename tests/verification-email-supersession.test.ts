@@ -9,7 +9,13 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 type Sent = { to: string; subject: string; body: string };
 const { sends, faults } = vi.hoisted(() => ({
   sends: [] as Array<{ to: string; subject: string; body: string }>,
-  faults: { failNextSends: 0, failEnqueue: false, skipDrainWithdrawal: false },
+  faults: {
+    failNextSends: 0,
+    failEnqueue: false,
+    skipDrainWithdrawal: false,
+    // Runs once, right after the provider takes an email to this address.
+    afterSendTo: null as null | { to: string; run: () => Promise<void> },
+  },
 }));
 vi.mock('@/lib/messaging', () => ({
   getEmailProvider: () => ({
@@ -20,6 +26,11 @@ vi.mock('@/lib/messaging', () => ({
         throw new Error('provider unavailable');
       }
       sends.push({ to, subject, body });
+      const hook = faults.afterSendTo;
+      if (hook && hook.to === to) {
+        faults.afterSendTo = null;
+        await hook.run();
+      }
       return { providerMsgId: `test_${sends.length}` };
     },
   }),
@@ -146,6 +157,7 @@ beforeEach(() => {
   faults.failNextSends = 0;
   faults.failEnqueue = false;
   faults.skipDrainWithdrawal = false;
+  faults.afterSendTo = null;
 });
 
 afterAll(async () => {
@@ -255,6 +267,47 @@ describe('one current link per registration — in the inbox, not only in the da
     });
     expect(sendsTo(email)).toHaveLength(1);
     expect(sha(tokenIn(sendsTo(email)[0].body))).toBe(await currentTokenHash(email));
+  });
+
+  it('a resend that commits AFTER the drain claimed the old email still keeps it from being sent', async () => {
+    // Codex review on #115. The drain claims its batch, then sends one row at a
+    // time. A resend committing in between withdraws only `pending` rows, and
+    // the claimed one is `processing`: it went out carrying the killed link.
+    const first = nextEmail();
+    const second = nextEmail();
+    faults.failNextSends = 2; // both sign-up emails wait for the drain
+    await signUp(first);
+    await signUp(second);
+    const [stale] = await rows(second);
+    // Both due, the first one earlier, so the drain claims both and sends the
+    // first one first.
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE email_outbox SET next_attempt_at = now() - interval '2 minutes'
+       WHERE purpose = ${PURPOSE} AND to_address_hash = ${hashEmailForIndex(first)}`;
+    await unsafePrismaAdmin.$executeRaw`
+      UPDATE email_outbox SET next_attempt_at = now() - interval '1 minute'
+       WHERE purpose = ${PURPOSE} AND to_address_hash = ${hashEmailForIndex(second)}`;
+    // While the provider takes the first email, the second registrant resends.
+    faults.afterSendTo = {
+      to: first,
+      run: async () => {
+        await allowResendNow(second);
+        await resendPendingRegistration(second);
+      },
+    };
+
+    await runHousekeeping();
+
+    expect(faults.afterSendTo, 'the resend never ran').toBeNull();
+    expect((await rows(second)).find((r) => r.id === stale.id)).toMatchObject({
+      status: 'cancelled',
+      failureCategory: 'superseded',
+    });
+    // One email reached the second registrant: the resend's, with the live link.
+    expect(sendsTo(second)).toHaveLength(1);
+    expect(sha(tokenIn(sendsTo(second)[0].body))).toBe(await currentTokenHash(second));
+    // COMPLEMENT: the first registrant's email, still current, was delivered.
+    expect(sendsTo(first)).toHaveLength(1);
   });
 
   it('the claim itself refuses a stale link, even if the withdrawal step never ran', async () => {
