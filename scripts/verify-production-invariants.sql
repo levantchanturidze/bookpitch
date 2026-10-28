@@ -864,7 +864,11 @@ BEGIN
                        AND b.starts_at < a.ends_at AND b.ends_at > a.starts_at
     JOIN staff sb ON sb.id = b.staff_id AND sb.user_id = sa.user_id
    WHERE a.status <> 'cancelled'
-     AND (a.ends_at > now() OR b.ends_at > now());
+     -- Upcoming: the OVERLAP has not ended, so both bookings end in the future.
+     -- Either one alone counted a pair whose overlap was already past while
+     -- the longer booking ran on, against the policy that past overlaps are
+     -- not asserted (Codex review on #112).
+     AND a.ends_at > now() AND b.ends_at > now();
   IF overlap > 0 THEN
     RAISE EXCEPTION 'production-verify: % upcoming pair(s) of overlapping bookings for one practitioner across their staff records', overlap;
   END IF;

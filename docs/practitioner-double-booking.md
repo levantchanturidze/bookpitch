@@ -28,8 +28,9 @@ gap, and so did the certified release's non-blocking list.
 | What overlaps? | Half-open `[starts_at, ends_at)`, exactly like `tstzrange` in the existing constraint, so back-to-back bookings are fine. Instants are absolute, so time zones cannot cause a false clash. |
 | What blocks? | Any status except `cancelled`, the same rule as `no_staff_double_booking`. |
 | When is it decided? | On insert, and on an update that changes WHO (`staff_id`), WHEN (`starts_at`, `ends_at`), or reactivates a cancelled booking. A notes or payment edit never re-decides. |
-| Linking? | Linking a staff row is refused while one of its upcoming bookings overlaps one of the practitioner's. Past overlaps do not block a link: they cannot be repaired by refusing it, and refusing it forever would strand the bookings unowned. |
+| Linking? | Linking a staff row is refused while one of its bookings overlaps one of the practitioner's in an overlap that has not ended yet. Past overlaps do not block a link: they cannot be repaired by refusing it, and refusing it forever would strand the bookings unowned. |
 | Existing data? | Not rewritten and not validated retroactively. Invariant check 9 reports any **upcoming** overlap. |
+| Upcoming? | The OVERLAP has not ended: both bookings end after now. One booking running on past an overlap that is over does not count (Codex review on #112). Check 9c, the preflight and the link trigger use the same rule. |
 
 ## Why a trigger and not a constraint
 

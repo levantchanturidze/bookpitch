@@ -246,6 +246,29 @@ const INV9_CLEAN: string[] = [
   "DELETE FROM appointments WHERE service_name = 'inv9'",
   "DELETE FROM staff WHERE name LIKE 'inv9 %'",
 ];
+// The same two rows, but their overlap has ENDED while the second booking runs
+// on: 2 h ago to 1 h ago, and 90 min ago to 1 h from now. Past overlaps are not
+// asserted, so neither check 9c nor the preflight may count it (Codex review
+// on #112).
+const INV9_PAST_OVERLAP: string[] = [
+  INV9_OVERLAP[0],
+  INV9_OVERLAP[1],
+  `INSERT INTO appointments (organization_id, location_id, customer_id, staff_id,
+                             starts_at, ends_at, service_name, price)
+   SELECT s.organization_id, s.location_id,
+          (SELECT c.id FROM customers c WHERE c.organization_id = s.organization_id
+            ORDER BY c.id LIMIT 1),
+          s.id,
+          CASE WHEN s.id = first.id THEN now() - interval '2 hours'
+               ELSE now() - interval '90 minutes' END,
+          CASE WHEN s.id = first.id THEN now() - interval '1 hour'
+               ELSE now() + interval '1 hour' END,
+          'inv9', 0
+     FROM staff s
+    CROSS JOIN (SELECT id FROM staff WHERE name LIKE 'inv9 %' ORDER BY id LIMIT 1) first
+    WHERE s.name LIKE 'inv9 %'`,
+  INV9_OVERLAP[3],
+];
 
 describe.skipIf(!runnable)('production invariants fail against a broken database', () => {
   // Captured so a DROP can be undone exactly rather than approximately.
@@ -791,6 +814,17 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
       INV9_CLEAN,
     );
 
+    it('COMPLEMENT (Codex on #112): an overlap that has ENDED, one booking still running, passes', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        for (const s of INV9_PAST_OVERLAP) sql(s);
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        for (const s of INV9_CLEAN) sql(s);
+      }
+    });
+
     // 'R' fires only when session_replication_role = replica. The application
     // never sets it, so a replica-only guard never fires for it (Codex review).
     injects(
@@ -853,6 +887,15 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
         for (const s of INV9_CLEAN) sql(s);
       }
       expect(verdict(preflight())).toMatch(/^0\|0\|0\|PASS/);
+    });
+
+    it('an overlap that has ended is not counted, even while one booking runs on', () => {
+      try {
+        for (const s of INV9_PAST_OVERLAP) sql(s);
+        expect(verdict(preflight())).toBe('0|0|0|PASS: nobody is booked in two places');
+      } finally {
+        for (const s of INV9_CLEAN) sql(s);
+      }
     });
 
     it('cannot write, even if a write is appended to it', () => {

@@ -62,7 +62,8 @@ WITH pairs AS (
                        AND b.starts_at < a.ends_at AND b.ends_at > a.starts_at
     JOIN staff sb ON sb.id = b.staff_id AND sb.user_id = sa.user_id
    WHERE a.status <> 'cancelled'
-     AND (a.ends_at > now() OR b.ends_at > now())
+     -- Upcoming: the overlap itself has not ended (both bookings end later).
+     AND a.ends_at > now() AND b.ends_at > now()
 )
 SELECT count(*)                                    AS upcoming_overlapping_pairs,
        count(DISTINCT (organization_id, user_id))  AS practitioners_affected,

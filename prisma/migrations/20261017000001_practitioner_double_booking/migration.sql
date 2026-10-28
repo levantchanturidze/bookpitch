@@ -75,7 +75,7 @@
 --                        AND b.status <> 'cancelled'
 --                        AND b.starts_at < a.ends_at AND b.ends_at > a.starts_at
 --     JOIN staff sb ON sb.id = b.staff_id AND sb.user_id = sa.user_id
---    WHERE a.status <> 'cancelled' AND (a.ends_at > now() OR b.ends_at > now());
+--    WHERE a.status <> 'cancelled' AND a.ends_at > now() AND b.ends_at > now();
 --
 -- A non-zero count is a real practitioner booked in two places; resolve it with
 -- the organisation before applying. Invariant check 9 asserts the same count is
@@ -235,7 +235,11 @@ BEGIN
      WHERE mine.staff_id = NEW.id
        AND mine.organization_id = NEW.organization_id
        AND mine.status <> 'cancelled'
+       -- Upcoming: the overlap itself has not ended, so both bookings end
+       -- later. A booking still running past an overlap that is over does not
+       -- block the link (Codex review on #112).
        AND mine.ends_at > now()
+       AND theirs.ends_at > now()
      LIMIT 1;
 
     IF clash IS NOT NULL THEN

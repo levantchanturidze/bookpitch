@@ -602,6 +602,39 @@ describe('linking a staff row cannot create the double-booking', () => {
     }
   });
 
+  it('COMPLEMENT (Codex on #112): an overlap that has ENDED does not block the link, while one booking runs on', async () => {
+    // sL1's booking ended an hour ago. sL2's, made while sL2 was unlinked,
+    // started 90 minutes ago and runs for another hour. They overlapped, and
+    // no longer do: there is nothing left to refuse. On the database clock.
+    const insert = (staffId: string, locationId: string, from: string, to: string) =>
+      withOrg(fx.orgId, (tx) =>
+        tx.$executeRawUnsafe(
+          `INSERT INTO appointments (organization_id, location_id, customer_id, staff_id,
+                                     starts_at, ends_at, service_name, price)
+           VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid,
+                   now() + $5::interval, now() + $6::interval, 'PDB', 10)`,
+          fx.orgId,
+          locationId,
+          fx.customer,
+          staffId,
+          from,
+          to,
+        ),
+      );
+    await linkStaffToMember(session(), fx.sL1, fx.prov3.userId);
+    try {
+      await insert(fx.sL1, fx.locA, '-2 hours', '-1 hour');
+      await insert(fx.sL2, fx.locB, '-90 minutes', '1 hour');
+      await linkStaffToMember(session(), fx.sL2, fx.prov3.userId);
+      expect(
+        (await unsafePrismaAdmin.staff.findUniqueOrThrow({ where: { id: fx.sL2 } })).userId,
+      ).toBe(fx.prov3.userId);
+    } finally {
+      await unlinkStaff(session(), fx.sL1);
+      await unlinkStaff(session(), fx.sL2);
+    }
+  });
+
   it('after an unlink the rows are two calendars again', async () => {
     await linkStaffToMember(session(), fx.sL1, fx.prov3.userId);
     await linkStaffToMember(session(), fx.sL2, fx.prov3.userId);
