@@ -382,7 +382,7 @@ crafted allowed call.
 | Scheduler validation (#118) | **NOT RUN** | measurable only after the merge | runbook 5 | operator |
 | Sentry | **PASS** for the current deployment | `40581604800`, 2026-10-27 | re-verify at the soak start | automation |
 | Lead time under 10 hours | **NOT RUN** | production read | runbook 8 | operator |
-| Codex review, latest heads | **PARTIAL** | every PR reviewed at least once and every finding fixed (DEF-02–04, 24–35); re-reviews of the newest heads pending or failing on Codex's side (PR comments) | read the results before each merge | release owner |
+| Codex review | **PARTIAL** | 16 of 17 PRs reviewed at least once, and every finding fixed and answered in its thread (DEF-02–04, 24–35). Clean at the current code head: #111 (its one finding fixed in #121), #112, #113, #115, #116, #117, #119, #122, #123. Not re-reviewed at the newest code: #114 and #124 (Codex failed twice), #126 (in progress), #125 and #127 (reviewed when opened). **#118 has never been reviewed**: its 2026-10-17 run hit Codex's usage limit, and the 2026-10-24 and 10-28 requests stalled | read the results before each merge; get #118 reviewed | release owner |
 | Legal approval | **BLOCKED** | `docs/launch-human-decisions.md` §1 | the legal reviewer's decisions, including erasure (§7) | legal reviewer, operator |
 | Operator identity | **BLOCKED** | same, §2 | supply the five fields | operator |
 | Test mailbox | **BLOCKED** | same, §3 | nominate one | release owner |
