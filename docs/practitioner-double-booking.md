@@ -178,6 +178,8 @@ defect: a cross-row double-booking becomes possible again.
 | `tests/production-invariants.test.ts` (with check 9) | 52/52 on a fresh seeded database (2026-10-17); **58/58** with the 2026-10-18 additions below |
 | Check 9 and replica-only triggers (Codex review, 2026-10-18) | `ENABLE REPLICA TRIGGER` on either trigger fails check 9 ("enabled for replica sessions only"); `ENABLE ALWAYS` passes |
 | Preflight (2026-10-18), on the same database | clean: `0\|0\|0\|PASS`; with an injected overlap: `1\|1\|1\|RESOLVE FIRST`, with no UUID or fixture name in the output; an appended `DELETE` refused as read-only |
+| Upcoming means the overlap has not ended (Codex review, 2026-10-28) | an overlap that ended while one booking runs on (2 h ago to 1 h ago, and 90 min ago to 1 h from now): check 9c passes, the preflight reports `0\|0\|0\|PASS`, and the link is allowed. Against the original predicate (either booking ends later), exactly these 3 tests go red. The upcoming-overlap tests still fail as they should |
+| Re-verified 2026-10-28, with the fix | invariants **60/60** on a fresh seeded 74-migration database; full suite 149 files, 2299 passed; after apply and the documented rollback, `pg_dump -s -O -x` is byte-identical to the 74-migration baseline (apart from pg_dump's per-dump `\restrict` key). Combined with every open PR: see `docs/post-release-backlog.md` |
 
 Perturbations. Each control was switched off, and the count of tests that went red:
 
