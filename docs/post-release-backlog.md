@@ -60,7 +60,7 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | PR | Head | CI run | Code checks | Browser suite | Secret scan | PR body | Dependency audit |
 |---|---|---|---|---|---|---|---|
 | #111 | `afb7dd6` | `40104675087` | pass | pass | pass | pass | **pass** |
-| #112 | `45ae78d` | see the PR's CI comment | | | | | |
+| #112 | `45ae78d` | `40606473585` | pass | pass | pass | pass | fail |
 | #113 | `5846366` | `39152087416` | pass | pass | pass | pass | fail |
 | #114 | `3b2251a` | `40143187022` | pass | pass | pass | pass | fail |
 | #115 | `dce91e9` | `40604856132` | pass | pass | pass | pass | fail |
@@ -91,22 +91,21 @@ All seventeen heads were merged into a throwaway local branch built from
 `origin/main`, never pushed. **No textual conflict.** The one real conflict,
 #113 with #117, is resolved inside #117's branch.
 
-| Check, combined tree `8645b08` | Result |
+| Check, combined tree `8bec8f5` | Result |
 |---|---|
 | `npm ci` | exit 0 |
 | `format:check` / `lint` / `tsc --noEmit` | exit 0 / 0 (0 errors, `main`'s 11 warnings) / 0 |
-| `npm run test` (vitest, guards, orphan permissions, reachability) | **exit 0. 164 files, 2488 passed, 68 skipped.** The skips are the invariants suite's database cases, run separately below |
-| Invariants suite, fresh seeded UTC database, 75 migrations, `ALTER SYSTEM` case opted in | **69/69**. Afterwards the server's `session_replication_role` was `origin` from `default` |
+| `npm run test` (vitest, guards, orphan permissions, reachability) | **exit 0. 164 files, 2489 passed, 70 skipped.** The skips are the invariants suite's database cases, run separately below |
+| Invariants suite, fresh seeded UTC database, 75 migrations, `ALTER SYSTEM` case opted in | **71/71**. Afterwards the server's `session_replication_role` was `origin` from `default` |
 | `next build` | exit 0 |
 | Browser suite (all 9 projects, disposable database, CI's environment) | **266 passed, 3 skipped (269)**; `e2e:check`: all 9 required suites executed |
 | `npm audit`, every severity | **0** |
-| gitleaks over every commit the PRs add (redacted output) | **0 findings** (37 commits); full history 0 (474 commits, 2026-10-25) |
+| gitleaks over every commit the PRs add (redacted output) | **0 findings** (40 commits); full history 0 (474 commits, 2026-10-25) |
 | #112's rollback, run verbatim from its header | schema byte-identical to the 74-migration baseline (`pg_dump -s -O -x`, apart from its per-dump `\restrict` key); a later deploy re-applies cleanly |
 
-#112's head moved to `45ae78d` after this rehearsal (the predicate fix,
-DEF-35); its own suites and the invariants suite were re-run on it (§8). After
-each run, #112's migration was rolled back out of both local databases, ledger
-row included, and verified at 74 migrations.
+Every PR is at its final head, #112's predicate fix (DEF-35) and this
+document included. After each run, #112's migration was rolled back out of
+both local databases, ledger row included, and verified at 74 migrations.
 
 The combined diff was reviewed for accidental changes: no skipped, focused or
 deleted tests, every changed assertion in an existing test replaced by an equal
@@ -213,7 +212,7 @@ with the predicate fix (DEF-35):
 | Abort under `lock_timeout` | `P3018`/`55P03`, nothing left behind, re-deploy succeeds |
 | Written rollback, run verbatim | schema byte-identical to the predecessor; re-apply clean (re-proven 2026-10-25 and 2026-10-28) |
 | Strict drift check | exit 0; a perturbed schema exits 2 |
-| Invariants with check 9 | 60/60 on #112's branch; 69/69 with every PR |
+| Invariants with check 9 | 60/60 on #112's branch; 71/71 with every PR |
 | Replica-only triggers | caught by check 9 |
 | An upcoming overlap written while the trigger was off | caught by 9c and the preflight |
 | An ended overlap, one booking still running | not counted, and not blocking a link (DEF-35) |
