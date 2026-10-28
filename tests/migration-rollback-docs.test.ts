@@ -43,16 +43,18 @@ const SQL_STATEMENT =
  * A step that changes the schema or the data, which a reverse step has to do.
  * Any other statement used to count, so `SELECT 1;` beside the ledger delete
  * passed (Codex review on #124), and that rollback deletes the ledger row and
- * leaves every object in place. A DO block counts when its body changes state.
- * Whether a step reverses THIS migration is still for review, and for the
- * executable rollback proof on a disposable copy (see #112's doc).
+ * leaves every object in place.
+ *
+ * A DO block never counts, whatever its body says: this checker cannot read
+ * what a block executes. A token scan took `RAISE NOTICE 'DROP TABLE'` for a
+ * drop (Codex review on #124), and stripping strings would miss a real
+ * `EXECUTE 'DROP …'`. So the reverse is written as plain statements. Whether
+ * they reverse THIS migration is still for review, and for the executable
+ * rollback proof on a disposable copy (see #112's doc).
  */
 const CHANGES_STATE =
   /^(DROP|ALTER|CREATE|GRANT|REVOKE|TRUNCATE|COMMENT ON|DELETE FROM|INSERT INTO|UPDATE)\b/i;
-const reverses = (st: string) =>
-  CHANGES_STATE.test(st) ||
-  (/^DO\b/i.test(st) &&
-    /\b(DROP|ALTER|CREATE|GRANT|REVOKE|TRUNCATE|DELETE|INSERT|UPDATE)\b/i.test(st));
+const reverses = (st: string) => CHANGES_STATE.test(st);
 
 function rollbackProblems(name: string, sql: string): string[] {
   const lines = sql.split(/\r?\n/);
@@ -233,10 +235,24 @@ describe('new migrations document a rollback that a deploy will not silently und
     }
   });
 
-  it('COMPLEMENT: a DO block whose body changes state is a reverse step', () => {
+  it('COMPLEMENT (Codex on #124): a DO block is never the reverse step, whatever its body says', () => {
+    // The checker cannot read what a block executes, so neither a string that
+    // mentions DROP nor a real EXECUTE 'DROP …' is taken on trust.
+    for (const block of [
+      "DO $$ BEGIN RAISE NOTICE 'DROP TABLE'; END $$;",
+      "DO $$ BEGIN EXECUTE 'DROP TABLE IF EXISTS example'; END $$;",
+    ]) {
+      const sql = complete.replace('--   DROP TABLE IF EXISTS example;', `--   ${block}`);
+      expect(rollbackProblems(name, sql), block).toEqual([
+        'the rollback transaction reverses nothing but the ledger',
+      ]);
+    }
+  });
+
+  it('COMPLEMENT: a DO block beside a plain reverse statement is fine', () => {
     const sql = complete.replace(
       '--   DROP TABLE IF EXISTS example;',
-      "--   DO $$ BEGIN EXECUTE 'DROP TABLE IF EXISTS example'; END $$;",
+      "--   DO $$ BEGIN RAISE NOTICE 'rolling back'; END $$;\n--   DROP TABLE IF EXISTS example;",
     );
     expect(rollbackProblems(name, sql)).toEqual([]);
   });

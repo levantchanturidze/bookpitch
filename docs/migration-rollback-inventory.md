@@ -141,12 +141,14 @@ and the contiguous comment block under it, and requires:
 2. inside that transaction, the migration's **own** ledger delete
    (`DELETE FROM _prisma_migrations WHERE migration_name = '<its name>'`), so the
    objects and the ledger row go together or not at all;
-3. inside it too, at least one step that changes the schema or the data:
-   `DROP`, `ALTER`, `CREATE`, `GRANT`, `REVOKE`, `TRUNCATE`, `COMMENT ON`,
-   `DELETE`, `INSERT`, `UPDATE`, or a `DO` block whose body does. `SELECT 1;` is
-   not a reverse (Codex review on #124, 2026-10-28). Whether the step reverses
-   *this* migration is still for review, and for an executable rollback proof
-   on a disposable copy, as #112's doc records;
+3. inside it too, at least one plain statement that changes the schema or the
+   data: `DROP`, `ALTER`, `CREATE`, `GRANT`, `REVOKE`, `TRUNCATE`, `COMMENT ON`,
+   `DELETE`, `INSERT` or `UPDATE`. `SELECT 1;` is not a reverse, and neither is
+   any `DO` block, whatever its body says: the checker cannot read what a block
+   executes (Codex review on #124, 2026-10-28, twice). A `DO` block may sit
+   beside the plain statements. Whether they reverse *this* migration is still
+   for review, and for an executable rollback proof on a disposable copy, as
+   #112's doc records;
 4. no other SQL in the section: no second transaction, and no statement before
    the `BEGIN` or after the `COMMIT`. A step outside the transaction runs on its
    own, and if it fails after the ledger row is gone the rollback is partial.
@@ -162,7 +164,7 @@ The complements prove that each of these is reported:
 - a delete placed after the `COMMIT`;
 - a delete naming another migration;
 - a transaction that only deletes the ledger row, or adds a step that changes
-  nothing (`SELECT 1;`, `SET …`, a `DO` block that only reads);
+  nothing (`SELECT 1;`, `SET …`), or whose only other step is a `DO` block;
 - a second transaction after the first (Codex review on #124, 2026-10-24: the
   second version checked only the first transaction);
 - a reverse step before the `BEGIN`, and one after a line of prose;
