@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { ConflictError, InvalidInputError, NotFoundError, type ActiveSession } from '@/lib/auth';
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
+import { isExclusionViolation } from '@/lib/appointments';
 import { buildAuthContext, canManageRoleAssignment } from '@/lib/rbac';
 import type { AuthContext } from '@/lib/rbac';
 
@@ -29,7 +30,10 @@ import type { AuthContext } from '@/lib/rbac';
 // per (location, user), enforced by staff_location_user_unique. A practitioner
 // at two locations has two linked rows. The database also refuses a link to a
 // user with no membership in the staff row's organisation, and a branch scope
-// outside the membership's organisation (20260929000001).
+// outside the membership's organisation (20260929000001). Linking also makes
+// the rows ONE practitioner for double-booking purposes, so the database
+// refuses a link that would overlap two of their upcoming bookings
+// (20261017000001).
 // -----------------------------------------------------------------------------
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
@@ -135,6 +139,17 @@ export async function linkStaffToMember(
       if (isUniqueViolation(err)) {
         throw new ConflictError(
           'that member is already linked to another staff record at this location',
+        );
+      }
+      // staff_link_no_practitioner_overlap (20261017000001): linking would put
+      // the practitioner in two places at once — one of this row's upcoming
+      // bookings overlaps one of theirs at another location. Linking is what
+      // declares the two rows one person, so it is refused rather than letting
+      // the link create the double-booking the booking guard exists to prevent.
+      if (isExclusionViolation(err)) {
+        throw new ConflictError(
+          'linking would double-book this member: an upcoming appointment on this staff ' +
+            'record overlaps one of theirs at another location — move or cancel one first',
         );
       }
       throw err;
