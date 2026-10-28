@@ -75,6 +75,34 @@ text.
       reason, or keep the behaviour and disclose it accurately. Then make the
       code and the notice agree. The notice states that it "describes
       implemented behaviour", and here it does not.
+
+      **Engineering update, 2026-10-28 (#126, not yet merged).** The
+      policy-independent part is implemented, and `/privacy` draft-2
+      (`2026-10-25.draft-2`) describes it:
+      - the customer's waitlist entries are deleted, each audited without its
+        notes;
+      - their delivery records keep channel, state and times, and lose the
+        address and text;
+      - the erasure's audit row holds an HMAC pseudonym, never the name, and
+        its notification names no one;
+      - no new waitlist entry or booking can attach to a redacted customer;
+      - a reminder rendered before the erasure is re-rendered after it. One
+        already handed to the email or SMS provider cannot be recalled; its
+        record is still cleared.
+
+      **Still the reviewer's to decide**, and listed on draft-2 as surviving:
+      - appointment records with their free-text notes;
+      - treatment history (the item above);
+      - staff notifications (read ones deleted after 30 days, unread ones kept
+        until read, and nothing links one to its customer);
+      - audit rows written **before** #126, whose `previousName` holds the old
+        name and cannot be changed;
+      - public booking, which attaches to an existing customer by unverified
+        email or phone and records consent;
+      - the payment description, which carries the customer's name and the
+        service.
+
+      This box stays unticked until the reviewer decides each of these.
 - [ ] **Retention period justified.** `organizations.customer_retention_years`
       defaults to 7. Confirm 7 years is the right default for clinical records
       in the target jurisdiction, and that per-organisation override is

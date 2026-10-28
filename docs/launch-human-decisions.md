@@ -1,15 +1,16 @@
 # Launch: decisions only a person can make
 
-**Status on 2026-10-18: all three open.** Re-checked against `main` (`fdf6559`) on
+**Status on 2026-10-28: all three open.** Re-checked against `main` (`fdf6559`) on
 that date. Green CI is not evidence for any of these. No agent may guess,
 infer or fill in any of them. Each is a representation that a named person
 makes.
 
 This list is deliberately separate from the engineering PRs. The engineering
 backlog and its release plan are in `docs/post-release-backlog.md`. Owner
-decisions that do **not** block launch (the CI audit gate, branch protection,
-scheduler fallback, soak reminder-evidence policy, waitlist notifications from
-the UI, short lead times) are in its §7.
+decisions that do **not** block launch (releasing #111 as a security hotfix,
+branch protection, repository security settings, scheduler fallback, soak
+reminder-evidence policy, waitlist notifications from the UI, short lead times)
+are in its §11.
 
 No longer on this list: **Sentry**, resolved when #44 closed by evidence on
 2026-09-08 and verified again for soak #110. **Branch protection** is a
@@ -22,7 +23,7 @@ deferred configuration choice with owner acceptance (R-07 in
 |---|---|
 | **Decision** | Whether `/privacy` and `/terms` are approved for publication as they render. |
 | **Responsible role** | The operator, on the sign-off of a qualified legal reviewer named in the checklist. |
-| **Information needed** | Every blocking item in `docs/legal-review-checklist.md`: the sub-processor list confirmed (Vercel, the managed PostgreSQL provider, Resend, Cloudflare Turnstile, the error-monitoring service); the lawful basis for special-category health data (`customers.allergies`, `customers.clinical_notes`, `treatment_history`); the controller/processor split, and whether each pilot organisation needs a data-processing agreement; the Law of Georgia on Personal Data Protection assessed, and whether GDPR applies; P15-005 (`treatment_history` survives redaction: retention duty or incomplete erasure?); the 7-year default retention justified; the terms' omissions (availability, support, warranty, liability). **And, new on 2026-10-18, what erasure must cover:** redaction also leaves waitlist notes, reminder delivery records (recipient address, body with the name), and the erased name itself in the append-only audit log, none of which the notice mentions (checklist item "Erasure leaves more than the notice says"). Plus its verification items, including the backup-residency conflict between the notice and `ARCHITECTURE.md` §2. |
+| **Information needed** | Every blocking item in `docs/legal-review-checklist.md`: the sub-processor list confirmed (Vercel, the managed PostgreSQL provider, Resend, Cloudflare Turnstile, the error-monitoring service); the lawful basis for special-category health data (`customers.allergies`, `customers.clinical_notes`, `treatment_history`); the controller/processor split, and whether each pilot organisation needs a data-processing agreement; the Law of Georgia on Personal Data Protection assessed, and whether GDPR applies; P15-005 (`treatment_history` survives redaction: retention duty or incomplete erasure?); the 7-year default retention justified; the terms' omissions (availability, support, warranty, liability). **And what erasure must cover.** Found on 2026-10-18: redaction left waitlist notes, reminder delivery records (recipient address, a body with the name), and the erased name itself in the append-only audit log. **#126, once merged, removes or clears all of these, copies the name nowhere, and refuses new records for a redacted customer.** `/privacy` draft-2 says so. Still for the reviewer: appointment notes, treatment history (P15-005), staff notifications (unread ones kept until read, and nothing links one to its customer), audit rows written before #126 that hold the old name, and public-booking identity and consent (checklist item "Erasure leaves more than the notice says"). Plus its verification items, including the backup-residency conflict between the notice and `ARCHITECTURE.md` §2. |
 | **Where it is configured** | `lib/legal.ts`: `LEGAL_DOCUMENT_STATUS` (`'draft'` → `'approved'`) and `LEGAL_DOCUMENT_VERSION` (bump it). The text is in `app/(legal)/privacy/page.tsx` and `app/(legal)/terms/page.tsx`. The draft banner is in `components/legal/LegalPage.tsx`. The sign-off table is at the end of `docs/legal-review-checklist.md`. |
 | **How to verify** | One PR, whose diff: fills the sign-off table (reviewer, qualification or firm, date, version reviewed); flips the constant; bumps the version; and **deliberately updates** the assertion `is still marked draft` in `tests/phase15-legal-surface.test.ts`, which exists so this flip cannot happen by accident. After deploy, `/privacy` and `/terms` render with no draft banner and show the new version. A consent recorded after that carries the new version in `customers.consent_version`, shown in the patient list as "Consent v…". |
 
