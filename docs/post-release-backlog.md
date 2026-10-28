@@ -50,7 +50,7 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | #120 | `docs/post-release-backlog` | this PR | This record, the launch decisions, the legal checklist | — |
 | #122 | `fix/verify-trigger-states` | `c37298e` | The verifier refuses replica-only tenant-isolation triggers and an effective `session_replication_role = replica`, at every level including the server's | — |
 | #123 | `test/teardown-failures-visible` | `59324d2` | Test teardowns no longer swallow DB errors inside transactions; a static check keeps it that way | — |
-| #124 | `docs/migration-rollback-inventory` | `c90f20b` | Rollback rules and inventory for the 74 applied migrations, plus a test holding new migrations to one complete rollback transaction | — |
+| #124 | `docs/migration-rollback-inventory` | `029240a` | Rollback rules and inventory for the 74 applied migrations, plus a test holding new migrations to one complete rollback transaction | — |
 | #125 | `fix/auth-tenancy-hardening` | `130956d` | Constant-time bearer checks, push-unsubscribe ownership, send-now's explicit org filter | — |
 | #126 | `fix/erasure-minimisation` | `eceebc5` | Erasure removes waitlist entries and delivery contents, copies the name nowhere, and nothing new can attach to a redacted customer | **stacked on #114** |
 | #127 | `fix/db-clock-reset-atomicity` | `5e9f81f` | Password-reset expiry on the database clock, and a race-free single use | — |
@@ -71,7 +71,7 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | #121 | `87153fc` | `40142057430` | pass | pass | pass | pass | fail |
 | #122 | `c37298e` | `40142776360` | pass | pass | pass | pass | fail |
 | #123 | `59324d2` | `40112107258` | pass | pass | pass | pass | fail |
-| #124 | `c90f20b` | `40142458247` | pass | pass | pass | pass | fail |
+| #124 | `029240a` | see the PR's CI comment | | | | | |
 | #125 | `130956d` | `40139452758` | pass | pass | pass | pass | fail |
 | #126 | `eceebc5` | `40144054671` | pass | pass | pass | pass | fail |
 | #127 | `5e9f81f` | `40139752027` | pass | pass | pass | pass | fail |
@@ -104,7 +104,8 @@ All seventeen heads were merged into a throwaway local branch built from
 | #112's rollback, run verbatim from its header | schema byte-identical to the 74-migration baseline (`pg_dump -s -O -x`, apart from its per-dump `\restrict` key); a later deploy re-applies cleanly |
 
 Every PR is at its final head, #112's predicate fix (DEF-35) and this
-document included. After each run, #112's migration was rolled back out of
+document included. #124 moved to `029240a` afterwards (test-only, DEF-38):
+its suite passes on the combined tree, against #112's real migration. After each run, #112's migration was rolled back out of
 both local databases, ledger row included, and verified at 74 migrations.
 
 The combined diff was reviewed for accidental changes: no skipped, focused or
@@ -155,6 +156,7 @@ are the tests that fail when the fix is removed.
 | DEF-35 | P2 | Migration, verifier | Check 9c, the preflight and the link trigger treated an overlap as upcoming if either booking ended later, so an ended overlap failed the post-migration verifier and blocked links | #112 `2e8e524` | 3 tests; exactly 3 red on the original | — |
 | DEF-36 | P3 | Tests | A regression in #126's booking refusal would leak a redacted customer into the shared seed organisation (cleanup order). Found when this round's own perturbation run did exactly that | #126 `eceebc5`; the stray rows removed locally | full suite green afterwards | — |
 | DEF-37 | P3 | Docs | Seven PR bodies said the audit fails on `braces` | corrected in the bodies, 2026-10-28 | — | — |
+| DEF-38 | P2 | Migration safety | The rollback rule counted any statement as a reverse step, so `SELECT 1;` beside the ledger delete passed | #124 `029240a` | 3 no-op forms refused, a DO that drops accepted; 1 red with the rule off; #112 with `SELECT 1` in place of its steps fails | — |
 
 Earlier findings, 2026-10-17 and 10-18, final status: F-1 to F-4, F-6, F-8 to
 F-11 and F-13 to F-20 are fixed in their PRs (F-21 became DEF-09 and is fixed
@@ -382,7 +384,7 @@ crafted allowed call.
 | Scheduler validation (#118) | **NOT RUN** | measurable only after the merge | runbook 5 | operator |
 | Sentry | **PASS** for the current deployment | `40581604800`, 2026-10-27 | re-verify at the soak start | automation |
 | Lead time under 10 hours | **NOT RUN** | production read | runbook 8 | operator |
-| Codex review | **PARTIAL** | 16 of 17 PRs reviewed at least once, and every finding fixed and answered in its thread (DEF-02–04, 24–35). Clean at the current code head: #111 (its one finding fixed in #121), #112, #113, #115, #116, #117, #119, #122, #123. Not re-reviewed at the newest code: #114 and #124 (Codex failed twice), #126 (in progress), #125 and #127 (reviewed when opened). **#118 has never been reviewed**: its 2026-10-17 run hit Codex's usage limit, and the 2026-10-24 and 10-28 requests stalled | read the results before each merge; get #118 reviewed | release owner |
+| Codex review | **PARTIAL** | 16 of 17 PRs reviewed at least once, and every finding fixed and answered in its thread (DEF-02–04, 24–35, 38). Clean at the current code head: #111 (its one finding fixed in #121), #112, #113, #114, #115, #116, #117, #119, #122, #123. Not re-reviewed at the newest code: #124 (its 2026-10-28 review found DEF-38, now fixed in `029240a`), #126 (in progress), #125 and #127 (reviewed when opened). **#118 has never been reviewed**: its 2026-10-17 run hit Codex's usage limit, later requests stalled, and the last answered "Setup repeatedly failed" (Codex's environment setup, an owner setting) | read the results before each merge; get #118 reviewed | release owner |
 | Legal approval | **BLOCKED** | `docs/launch-human-decisions.md` §1 | the legal reviewer's decisions, including erasure (§7) | legal reviewer, operator |
 | Operator identity | **BLOCKED** | same, §2 | supply the five fields | operator |
 | Test mailbox | **BLOCKED** | same, §3 | nominate one | release owner |
