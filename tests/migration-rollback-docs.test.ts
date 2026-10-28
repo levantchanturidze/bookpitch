@@ -39,6 +39,21 @@ const ROLLBACK_RULE_FROM = '20261017000000';
 const SQL_STATEMENT =
   /^((BEGIN|COMMIT|END|ROLLBACK|START TRANSACTION|SAVEPOINT|TRUNCATE)\b|(DROP|ALTER|CREATE|GRANT|REVOKE) [A-Z]|(DELETE FROM|INSERT INTO|UPDATE|SELECT)\s|DO [$']|SET [a-z_]+\s*(=|TO\b))/;
 
+/**
+ * A step that changes the schema or the data, which a reverse step has to do.
+ * Any other statement used to count, so `SELECT 1;` beside the ledger delete
+ * passed (Codex review on #124), and that rollback deletes the ledger row and
+ * leaves every object in place. A DO block counts when its body changes state.
+ * Whether a step reverses THIS migration is still for review, and for the
+ * executable rollback proof on a disposable copy (see #112's doc).
+ */
+const CHANGES_STATE =
+  /^(DROP|ALTER|CREATE|GRANT|REVOKE|TRUNCATE|COMMENT ON|DELETE FROM|INSERT INTO|UPDATE)\b/i;
+const reverses = (st: string) =>
+  CHANGES_STATE.test(st) ||
+  (/^DO\b/i.test(st) &&
+    /\b(DROP|ALTER|CREATE|GRANT|REVOKE|TRUNCATE|DELETE|INSERT|UPDATE)\b/i.test(st));
+
 function rollbackProblems(name: string, sql: string): string[] {
   const lines = sql.split(/\r?\n/);
   const code = lines.map((l) => l.replace(/--.*$/, '')).join('\n');
@@ -71,7 +86,7 @@ function rollbackProblems(name: string, sql: string): string[] {
   if (!statements.some((st) => ownRow.test(st))) {
     problems.push('the rollback transaction does not delete its own ledger row');
   }
-  if (!statements.some((st) => !/_prisma_migrations/i.test(st))) {
+  if (!statements.some((st) => !/_prisma_migrations/i.test(st) && reverses(st))) {
     problems.push('the rollback transaction reverses nothing but the ledger');
   }
   // Line by line: split on `;` instead and a statement after a line of prose
@@ -201,6 +216,27 @@ describe('new migrations document a rollback that a deploy will not silently und
         '-- DO NOT split it, and do not run any of this by hand; use psql -f.',
         '-- Rolling back re-opens the old behaviour; nothing else depends on it.',
       ].join('\n'),
+    );
+    expect(rollbackProblems(name, sql)).toEqual([]);
+  });
+
+  it('COMPLEMENT (Codex on #124): a step that changes nothing does not count as a reverse', () => {
+    for (const noop of [
+      'SELECT 1;',
+      "SET lock_timeout = '5s';",
+      'DO $$ BEGIN PERFORM 1; END $$;',
+    ]) {
+      const sql = complete.replace('--   DROP TABLE IF EXISTS example;', `--   ${noop}`);
+      expect(rollbackProblems(name, sql), noop).toEqual([
+        'the rollback transaction reverses nothing but the ledger',
+      ]);
+    }
+  });
+
+  it('COMPLEMENT: a DO block whose body changes state is a reverse step', () => {
+    const sql = complete.replace(
+      '--   DROP TABLE IF EXISTS example;',
+      "--   DO $$ BEGIN EXECUTE 'DROP TABLE IF EXISTS example'; END $$;",
     );
     expect(rollbackProblems(name, sql)).toEqual([]);
   });
