@@ -71,7 +71,7 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | #121 | `87153fc` | `40142057430` | pass | pass | pass | pass | fail |
 | #122 | `c37298e` | `40142776360` | pass | pass | pass | pass | fail |
 | #123 | `59324d2` | `40112107258` | pass | pass | pass | pass | fail |
-| #124 | `8bdae89` | see the PR's CI comment | | | | | |
+| #124 | `8bdae89` | `40608888652` | pass | pass | pass | pass | fail |
 | #125 | `130956d` | `40139452758` | pass | pass | pass | pass | fail |
 | #126 | `eceebc5` | `40144054671` | pass | pass | pass | pass | fail |
 | #127 | `5e9f81f` | `40139752027` | pass | pass | pass | pass | fail |
