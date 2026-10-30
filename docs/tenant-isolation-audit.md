@@ -146,15 +146,15 @@ routes, without RLS.
 The change is behaviour-preserving while RLS holds: RLS already filters to the
 same organisation.
 
-## 6. Not defects, recorded
+## 6. Found during the review, outside tenancy
 
-- **Ownership transfer:** `declineTransfer` and `revokeTransfer` check
-  `status === 'pending'`, then update by id with no status predicate and a
-  Node-clock `decidedAt`. Racing an `acceptTransfer`, either can relabel an
-  accepted transfer as declined or revoked after ownership moved. That is a
-  record-integrity race, not tenancy: `acceptTransfer` itself is atomic. It is
-  the shape DEF-15 fixed for password resets. Not changed here, to keep this
-  pull request to one concern.
+- **Ownership transfer (DEF-43):** `declineTransfer` and `revokeTransfer`
+  checked `status === 'pending'`, then updated by id with no status predicate
+  and a Node-clock `decidedAt`. Racing an `acceptTransfer`, either could relabel
+  an accepted transfer as declined or revoked after ownership had moved. That is
+  record integrity, not tenancy: `acceptTransfer` itself is atomic, and it is
+  the shape DEF-15 fixed for password resets. Reproduced and fixed in **#131**,
+  kept out of this pull request so it stays one concern.
 
 ## 7. Proposal: name the organisation everywhere else (a separate pull request)
 
