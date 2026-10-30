@@ -734,6 +734,32 @@ mitigation — verify each required check against the exact head SHA before
 merging — and with its justification corrected: it is now a **deferred
 configuration choice**, not a plan limitation.
 
+**The rule to apply when it is enabled** (2026-10-25). Every check a pull
+request runs, by the exact name GitHub reports:
+
+```
+PUT /repos/levantchanturidze/bookpitch/branches/main/protection
+  required_status_checks.strict = true
+  contexts = ["Secret scanning",
+              "Dependency audit (high and critical)",
+              "Lint, type-check, test, and build",
+              "Browser, mobile, and accessibility suite",
+              "Pull request body"]
+  enforce_admins = false, allow_force_pushes = false, allow_deletions = false
+```
+
+The September ledger §11 lists three of these. The audit has been its own job
+since 2026-10-18 (#121), and a rule without its name lets a high or critical
+advisory merge with every required check green. `tests/workflow-safety.test.ts`
+fails if a pull-request check is missing from this list, if the list names a
+check no workflow runs, or if a listed check does not run on every pull request.
+
+**Enable it only once #111 is on `main`.** On 2026-10-25 the audit fails on
+`main`'s lockfile (next, @sentry/nextjs and others; #111 fixes them), so every
+pull request except #111 fails it, and requiring it earlier blocks them all.
+After #111 merges, re-run each pull request's CI: it audits the lockfile merged
+with `main`.
+
 
 ## Release verdict
 
