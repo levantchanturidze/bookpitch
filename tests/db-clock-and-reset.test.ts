@@ -118,6 +118,24 @@ describe('a password-reset link expires by the database clock', () => {
     expect(refused[0].reason).toBeInstanceOf(InvalidInputError);
     expect(await unsafePrismaAdmin.verificationToken.count({ where: { token: sha(raw) } })).toBe(0);
   });
+
+  it('a well-formed link that was never issued is refused, and consumes no real one', async () => {
+    // A live link exists for this user, so a lookup that stopped matching on
+    // the token would find it and spend it.
+    const real = `still-valid-${stamp}-xxxxxxxxxxxxxxx`;
+    await plantToken(email, real, 'future');
+    const before = await hashOf();
+    await expect(
+      consumeReset({
+        token: `never-issued-${stamp}-xxxxxxxxxxxxxx`,
+        newPassword: 'not-applied-789',
+      }),
+    ).rejects.toBeInstanceOf(InvalidInputError);
+    expect(await hashOf()).toBe(before);
+    expect(await unsafePrismaAdmin.verificationToken.count({ where: { token: sha(real) } })).toBe(
+      1,
+    );
+  });
 });
 
 describe("deleting a provider is judged by the database clock's 'future'", () => {
