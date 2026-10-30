@@ -293,19 +293,32 @@ export async function declineTransfer(
   if (transfer.status !== 'pending') {
     throw new InvalidInputError(`transfer is ${transfer.status}, not pending`);
   }
-  await unsafePrismaAdmin.ownershipTransfer.update({
-    where: { id: transferId },
-    data: { status: 'declined', decidedAt: new Date(), decidedReason: reason },
-  });
-  await unsafePrismaAdmin.auditLog.create({
-    data: {
-      organizationId: transfer.organizationId,
-      actorUserId: session.userId,
-      action: 'org.ownership.declined',
-      entity: 'staff',
-      reason,
-      meta: { transferId, fromUserId: transfer.fromUserId },
-    },
+  // Decided once (DEF-43). The read above is a plain one, so an accept can
+  // commit between it and this write. This claims the transfer the way
+  // acceptTransfer does, on `status = 'pending'`, so a decline that waited on
+  // an accept finds it decided and is refused instead of overwriting it. The
+  // audit row is written in the same transaction, so it records only a
+  // decline that happened. decided_at is the database's clock, as accept's is.
+  await unsafePrismaAdmin.$transaction(async (tx) => {
+    const declined = await tx.$executeRaw`
+      UPDATE ownership_transfers
+         SET status = 'declined', decided_at = transaction_timestamp(), decided_reason = ${reason}
+       WHERE id = ${transferId}::uuid
+         AND to_user_id = ${session.userId}::uuid
+         AND status = 'pending'`;
+    if (Number(declined) === 0) {
+      throw new InvalidInputError('transfer is no longer pending');
+    }
+    await tx.auditLog.create({
+      data: {
+        organizationId: transfer.organizationId,
+        actorUserId: session.userId,
+        action: 'org.ownership.declined',
+        entity: 'staff',
+        reason,
+        meta: { transferId, fromUserId: transfer.fromUserId },
+      },
+    });
   });
   // Optional: notify original owner.
   log.info('platform.ownership_transfer.declined', { transferId });
@@ -326,10 +339,16 @@ export async function revokeTransfer(
   if (transfer.status !== 'pending') {
     throw new InvalidInputError(`transfer is ${transfer.status}, not pending`);
   }
-  await unsafePrismaAdmin.ownershipTransfer.update({
-    where: { id: transferId },
-    data: { status: 'revoked', decidedAt: new Date() },
-  });
+  // Decided once (DEF-43): the same conditional claim as decline and accept.
+  const revoked = await unsafePrismaAdmin.$executeRaw`
+    UPDATE ownership_transfers
+       SET status = 'revoked', decided_at = transaction_timestamp()
+     WHERE id = ${transferId}::uuid
+       AND from_user_id = ${session.userId}::uuid
+       AND status = 'pending'`;
+  if (Number(revoked) === 0) {
+    throw new InvalidInputError('transfer is no longer pending');
+  }
   log.info('platform.ownership_transfer.revoked', { transferId });
   return { ok: true };
 }
