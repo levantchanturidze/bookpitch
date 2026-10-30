@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
+import { deleteUnlessReferenced } from './helpers/delete-unless-referenced';
 
 const { authMockRef } = vi.hoisted(() => ({ authMockRef: { fn: vi.fn() } }));
 vi.mock('@/auth', () => ({
@@ -124,10 +125,12 @@ afterAll(async () => {
       }
       if (mktUserId) {
         // Mark first, then try to remove. If this user performed an audited
-        // action the append-only audit_log holds the FK and the delete fails —
-        // by then it is already 'deleted', so no invariant is left violated.
+        // action the append-only audit_log holds the FK and the delete is
+        // refused. deleteUnlessReferenced confines that refusal to the delete
+        // (a SAVEPOINT): swallowing it here used to abort the transaction, and
+        // the commit then silently undid the 'deleted' mark as well.
         await tx.appUser.updateMany({ where: { id: mktUserId }, data: { status: 'deleted' } });
-        await tx.appUser.deleteMany({ where: { id: mktUserId } }).catch(() => undefined);
+        await deleteUnlessReferenced(tx, () => tx.appUser.deleteMany({ where: { id: mktUserId } }));
       }
     });
   }
