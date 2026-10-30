@@ -750,6 +750,69 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
       expect(runVerifier().ok, 'passes again once the server value is reset').toBe(true);
     });
 
+    // The two precedence levels that are not per-database: the role in EVERY
+    // database (2), and every role in every database (4). Both are
+    // cluster-wide, so while one is set, every new session on the server takes
+    // it, the test harness's included. Gated like the ALTER SYSTEM case: CI's
+    // disposable server, or an explicit opt-in with nothing else connected.
+    const forAppRole = (verb: string) => `ALTER ROLE bookpitch_app ${verb}`;
+    const forAllRoles = (verb: string) => `ALTER ROLE ALL ${verb}`;
+    const clusterCase = (name: string, body: () => void, restore: string[]) =>
+      it.runIf(clusterWide)(name, () => {
+        expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+        try {
+          body();
+        } finally {
+          for (const s of restore) sql(s);
+        }
+        expect(runVerifier().ok, 'passes again once restored').toBe(true);
+      });
+
+    clusterCase(
+      'a replica default for bookpitch_app in every database is caught',
+      () => {
+        sql(forAppRole('SET session_replication_role = replica'));
+        const r = runVerifier();
+        expect(r.ok).toBe(false);
+        expect(r.output).toMatch(/defaults to replica for bookpitch_app in every database/);
+      },
+      [forAppRole('RESET session_replication_role')],
+    );
+
+    clusterCase(
+      "the role's default in every database wins over an origin default for this database",
+      () => {
+        sql(forDb('SET session_replication_role = origin'));
+        sql(forAppRole('SET session_replication_role = replica'));
+        const r = runVerifier();
+        expect(r.ok).toBe(false);
+        expect(r.output).toMatch(/defaults to replica for bookpitch_app in every database/);
+      },
+      [forAppRole('RESET session_replication_role'), forDb('RESET session_replication_role')],
+    );
+
+    clusterCase(
+      'a replica default for every role in every database is caught',
+      () => {
+        sql(forAllRoles('SET session_replication_role = replica'));
+        const r = runVerifier();
+        expect(r.ok).toBe(false);
+        expect(r.output).toMatch(/defaults to replica for every role in every database/);
+      },
+      [forAllRoles('RESET session_replication_role')],
+    );
+
+    clusterCase(
+      'COMPLEMENT: an origin default for this database overrides a replica default everywhere',
+      () => {
+        sql(forAllRoles('SET session_replication_role = replica'));
+        sql(forDb('SET session_replication_role = origin'));
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      },
+      [forDb('RESET session_replication_role'), forAllRoles('RESET session_replication_role')],
+    );
+
     it('COMPLEMENT: an unrelated default on the role is not mistaken for one', () => {
       expect(runVerifier().ok, 'fixture must be clean').toBe(true);
       try {
