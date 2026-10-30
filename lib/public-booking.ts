@@ -21,6 +21,16 @@ import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 
 const CONSENT_VERSION = '1.0';
 
+// A suspended or archived organisation takes no public bookings, and its
+// widget page does not render. can() already refuses every org-plane action in
+// such an organisation (lib/rbac/can.ts, step 2a), so its staff could neither
+// see nor manage a booking taken here: the appointment could not be honoured,
+// and for an archived organisation the customer's details would be written into
+// a tenant scheduled for purge. CLAUDE.md invariant 2: a suspended
+// organisation is denied, never fallen through to allow. Exactly the statuses
+// can() refuses — tests/public-booking-org-status.test.ts holds the two equal.
+const NOT_BOOKABLE_ORG_STATUSES: ReadonlySet<string> = new Set(['suspended', 'archived']);
+
 export type PublicLocation = {
   organizationId: string;
   organizationName: string;
@@ -38,7 +48,7 @@ export async function getPublicLocation(slug: string): Promise<PublicLocation | 
     tx.location.findUnique({
       where: { publicSlug: slug },
       include: {
-        organization: { select: { name: true, id: true, currency: true } },
+        organization: { select: { name: true, id: true, currency: true, status: true } },
         staff: {
           select: { id: true, name: true, roleTitle: true },
           orderBy: { name: 'asc' },
@@ -51,7 +61,7 @@ export async function getPublicLocation(slug: string): Promise<PublicLocation | 
       },
     }),
   );
-  if (!row) return null;
+  if (!row || NOT_BOOKABLE_ORG_STATUSES.has(row.organization.status)) return null;
   return {
     organizationId: row.organizationId,
     organizationName: row.organization.name,
@@ -119,6 +129,19 @@ export async function submitPublicBooking(input: PublicBookInput): Promise<Publi
   const endsAt = new Date(startsAt.getTime() + service.durationMinutes * 60_000);
 
   const result = await withoutRls(async (tx) => {
+    // The status checked by getPublicLocation, again, under a share lock held
+    // to commit (Codex review on #129). A suspension committed after that check
+    // would otherwise not stop this booking. A status change takes a row lock
+    // that conflicts with this one, so the two serialise: either the booking
+    // commits first, or it waits, sees the new status and is refused.
+    const [org] = await tx.$queryRaw<Array<{ status: string }>>`
+      SELECT status FROM organizations
+       WHERE id = ${location.organizationId}::uuid
+         FOR SHARE`;
+    if (!org || NOT_BOOKABLE_ORG_STATUSES.has(org.status)) {
+      throw new InvalidInputError('booking widget not found');
+    }
+
     // Match on (org, email) OR (org, phone) so returning customers reuse
     // their row; never leak identity across orgs.
     const existing = email
