@@ -42,11 +42,13 @@ type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 //
 // The work is now four phases, and only the short ones are transactional:
 //
-//   1. prepare  — read-only. Load the appointment, check for an existing
-//                 reminder, render the body, resolve the destination address.
+//   1. prepare  — short transaction. Load the appointment and the customer
+//                 (share-locked), check for an existing reminder, render the
+//                 body, resolve the destination address.
 //   2. limit    — RateLimit.messaging(), outside any transaction.
 //   3. claim    — short write transaction. Locks the appointment row, RE-checks
-//                 for a duplicate under that lock, inserts the `queued` row.
+//                 for a duplicate under that lock, RE-reads the customer, and
+//                 inserts the `queued` row only if the payload is still theirs.
 //   4. deliver  — provider.send() with no transaction open.
 //   5. settle   — short write transaction. Marks sent/failed, writes the audit
 //                 row, raises the in-app notification.
@@ -182,93 +184,127 @@ type Prepared = {
 };
 
 /**
- * Phase 1 — read-only. Returns either a terminal report (nothing to send) or
- * the payload the later phases work from. Writes only in the
- * missing-contact case, and that write is its own short transaction.
+ * The appointment's customer as they are NOW, under a share lock.
+ *
+ * Every write in this file that copies the customer's name or address (the
+ * `skipped` and `queued` delivery records, and the "Reminder sent"
+ * notification) reads them through this, in the transaction that writes them.
+ * Both erasure paths (lib/gdpr.ts) take this row FOR UPDATE before clearing
+ * anything, so an erasure and such a write serialise. Either the erasure
+ * commits first and this read sees the cleared row, or the write commits first
+ * and the erasure, waiting on the lock, clears what it wrote. Before this, a
+ * payload rendered from a read taken before an erasure was written, and sent,
+ * after it.
+ *
+ * Lock order: the customer first, before the appointment row and before any
+ * message_log row. Erasure and customer deletion lock the customer and then
+ * reach those rows, so taking them the other way round here could deadlock.
  */
-async function prepare(
-  appointmentId: string,
-  channel: MessageChannel,
-): Promise<{ prepared: Prepared } | { report: ChannelReport }> {
-  const loaded = await withoutRls(async (tx) => {
+async function lockCustomer(tx: TxClient, appointmentId: string, organizationId: string) {
+  const rows = await tx.$queryRaw<
+    Array<{ name: string; email: string | null; phone: string | null }>
+  >`
+    SELECT c.name, c.email, c.phone
+      FROM customers c
+      JOIN appointments a ON a.customer_id = c.id
+     WHERE a.id = ${appointmentId}::uuid
+       AND a.organization_id = ${organizationId}::uuid
+       AND c.organization_id = ${organizationId}::uuid
+       FOR SHARE OF c`;
+  return rows[0] ?? null;
+}
+
+type CurrentCustomer = NonNullable<Awaited<ReturnType<typeof lockCustomer>>>;
+
+function addressFor(customer: CurrentCustomer, channel: MessageChannel): string | null {
+  return channel === 'sms' ? customer.phone : customer.email;
+}
+
+type PrepareResult = { prepared: Prepared } | { report: ChannelReport };
+
+/**
+ * Phase 1 — one short transaction. Returns either a terminal report (nothing
+ * to send) or the payload the later phases work from. Writes only in the
+ * missing-contact case, in the same transaction as the read it records, so
+ * the record cannot carry a name an erasure has already cleared.
+ */
+async function prepare(appointmentId: string, channel: MessageChannel): Promise<PrepareResult> {
+  return withoutRls(async (tx): Promise<PrepareResult> => {
     const appt = await tx.appointment.findUnique({
       where: { id: appointmentId },
       include: {
-        customer: { select: { name: true, email: true, phone: true } },
         staff: { select: { name: true } },
         location: { select: { timezone: true } },
       },
     });
-    if (!appt) return null;
-    if (await alreadyReminded(tx, appointmentId, channel))
-      return { appt, duplicate: true as const };
+    // Locked before alreadyReminded(), which can write message_log.
+    const customer = appt && (await lockCustomer(tx, appointmentId, appt.organizationId));
+    if (!appt || !customer) {
+      return { report: { channel, outcome: 'failed', error: 'appointment_not_found' } };
+    }
+    if (await alreadyReminded(tx, appointmentId, channel)) {
+      return { report: { channel, outcome: 'skipped_duplicate' } };
+    }
     const template = await tx.messageTemplate.findFirst({
       where: { organizationId: appt.organizationId, channel },
     });
-    return { appt, duplicate: false as const, template };
-  });
+    const rawBody =
+      template?.body ?? (channel === 'sms' ? DEFAULT_SMS_TEMPLATE : DEFAULT_EMAIL_TEMPLATE);
 
-  if (!loaded) return { report: { channel, outcome: 'failed', error: 'appointment_not_found' } };
-  if (loaded.duplicate) return { report: { channel, outcome: 'skipped_duplicate' } };
+    const { date, time } = toDateTimeParts(appt.startsAt, appt.location.timezone);
+    const vars: TemplateVars = {
+      PatientName: customer.name,
+      StaffName: appt.staff.name,
+      ServiceName: appt.serviceName,
+      Date: date,
+      Time: time,
+    };
+    const body = renderTemplate(rawBody, vars);
+    const toAddress = addressFor(customer, channel);
 
-  const { appt, template } = loaded;
-  const rawBody =
-    template?.body ?? (channel === 'sms' ? DEFAULT_SMS_TEMPLATE : DEFAULT_EMAIL_TEMPLATE);
-
-  const { date, time } = toDateTimeParts(appt.startsAt, appt.location.timezone);
-  const vars: TemplateVars = {
-    PatientName: appt.customer.name,
-    StaffName: appt.staff.name,
-    ServiceName: appt.serviceName,
-    Date: date,
-    Time: time,
-  };
-  const body = renderTemplate(rawBody, vars);
-  const toAddress = channel === 'sms' ? appt.customer.phone : appt.customer.email;
-
-  if (!toAddress) {
-    // Record WHY nothing went out — but as a skip, not as a failure.
-    //
-    // This used to write `state: 'failed'`, which was wrong twice over.
-    // It put "the gateway rejected us" and "this customer has no phone number"
-    // in one bucket, so the operator could not tell an outage from a blank
-    // field; and because `failed` is deliberately outside the dedup set, every
-    // subsequent tick wrote another identical row for the same appointment,
-    // without bound, for as long as the appointment stayed in the lead window.
-    //
-    // `skipped` is deduped HERE rather than in alreadyReminded(): one row per
-    // (appointment, channel) is enough to explain the silence, and keeping it
-    // out of alreadyReminded() is what still lets a real send happen the moment
-    // somebody fills the contact field in.
-    await withoutRls(async (tx) => {
+    if (!toAddress) {
+      // Record WHY nothing went out — but as a skip, not as a failure.
+      //
+      // This used to write `state: 'failed'`, which was wrong twice over.
+      // It put "the gateway rejected us" and "this customer has no phone number"
+      // in one bucket, so the operator could not tell an outage from a blank
+      // field; and because `failed` is deliberately outside the dedup set, every
+      // subsequent tick wrote another identical row for the same appointment,
+      // without bound, for as long as the appointment stayed in the lead window.
+      //
+      // `skipped` is deduped HERE rather than in alreadyReminded(): one row per
+      // (appointment, channel) is enough to explain the silence, and keeping it
+      // out of alreadyReminded() is what still lets a real send happen the moment
+      // somebody fills the contact field in.
       const existing = await tx.messageLog.findFirst({
         where: { appointmentId, channel, state: 'skipped' },
         select: { id: true },
       });
-      if (existing) return;
-      await tx.messageLog.create({
-        data: {
-          organizationId: appt.organizationId,
-          appointmentId,
-          channel,
-          toAddress: '',
-          body,
-          state: 'skipped',
-        },
-      });
-    });
-    return { report: { channel, outcome: 'skipped_missing_contact' } };
-  }
+      if (!existing) {
+        await tx.messageLog.create({
+          data: {
+            organizationId: appt.organizationId,
+            appointmentId,
+            channel,
+            toAddress: '',
+            body,
+            state: 'skipped',
+          },
+        });
+      }
+      return { report: { channel, outcome: 'skipped_missing_contact' } };
+    }
 
-  return {
-    prepared: {
-      organizationId: appt.organizationId,
-      toAddress,
-      body,
-      subject: renderTemplate(DEFAULT_EMAIL_SUBJECT, vars),
-      vars,
-    },
-  };
+    return {
+      prepared: {
+        organizationId: appt.organizationId,
+        toAddress,
+        body,
+        subject: renderTemplate(DEFAULT_EMAIL_SUBJECT, vars),
+        vars,
+      },
+    };
+  });
 }
 
 /**
@@ -276,18 +312,28 @@ async function prepare(
  * two concurrent callers cannot both claim the same (appointment, channel),
  * re-checks for a duplicate under that lock, and inserts the anchor row.
  *
- * Returns null when another caller won the race.
+ * Refuses with 'duplicate' when another caller won the race, and with 'stale'
+ * when the customer is no longer the one prepare() rendered the payload from:
+ * edited, or erased, in between (see lockCustomer).
  */
 async function claim(
   appointmentId: string,
   channel: MessageChannel,
   prepared: Prepared,
-): Promise<string | null> {
+): Promise<{ logId: string } | { refused: 'duplicate' | 'stale' }> {
   return withoutRls(async (tx) => {
+    const customer = await lockCustomer(tx, appointmentId, prepared.organizationId);
     // Serialises concurrent claims for this appointment. Held only for the
     // duration of this transaction, which contains no network call.
     await tx.$executeRaw`SELECT id FROM appointments WHERE id = ${appointmentId}::uuid FOR UPDATE`;
-    if (await alreadyReminded(tx, appointmentId, channel)) return null;
+    if (await alreadyReminded(tx, appointmentId, channel)) return { refused: 'duplicate' as const };
+    if (
+      !customer ||
+      customer.name !== prepared.vars.PatientName ||
+      addressFor(customer, channel) !== prepared.toAddress
+    ) {
+      return { refused: 'stale' as const };
+    }
     const queued = await tx.messageLog.create({
       data: {
         organizationId: prepared.organizationId,
@@ -298,7 +344,7 @@ async function claim(
         state: 'queued',
       },
     });
-    return queued.id;
+    return { logId: queued.id };
   });
 }
 
@@ -314,16 +360,15 @@ export async function sendForAppointment(
   appointmentId: string,
   channel: MessageChannel,
 ): Promise<ChannelReport> {
-  const step = await prepare(appointmentId, channel);
+  let step = await prepare(appointmentId, channel);
   if ('report' in step) return step.report;
-  const prepared = step.prepared;
 
   // Per-minute per-org cap. Prevents a runaway cron / bug from firing a burst
   // of SMS billable to the org. Outside the transaction: it opens its own on
   // the prismaApp pool, and nesting the two is what made three slow sends
   // enough to starve both pools.
   try {
-    await RateLimit.messaging(prepared.organizationId);
+    await RateLimit.messaging(step.prepared.organizationId);
   } catch {
     // Reported as its own outcome rather than thrown. Throwing here aborted
     // the whole organization's tick, so one rate-limited appointment took the
@@ -331,10 +376,31 @@ export async function sendForAppointment(
     return { channel, outcome: 'rate_limited' };
   }
 
-  const logId = await claim(appointmentId, channel, prepared);
-  if (logId === null) return { channel, outcome: 'skipped_duplicate' };
+  let claimed = await claim(appointmentId, channel, step.prepared);
+  if ('refused' in claimed && claimed.refused === 'stale') {
+    // The customer changed between prepare() and the claim: edited, or erased.
+    // Prepare once more from what is there now. After an erasure the address
+    // is gone, so this ends as skipped_missing_contact and nothing is sent. A
+    // second change within the same few milliseconds is reported as a
+    // failure, and the next tick tries again.
+    step = await prepare(appointmentId, channel);
+    if ('report' in step) return step.report;
+    claimed = await claim(appointmentId, channel, step.prepared);
+  }
+  if ('refused' in claimed) {
+    return claimed.refused === 'duplicate'
+      ? { channel, outcome: 'skipped_duplicate' }
+      : { channel, outcome: 'failed', error: 'customer_changed' };
+  }
+  const prepared = step.prepared;
+  const logId = claimed.logId;
 
   // ---- No transaction is open past this line. ----
+  //
+  // An erasure that commits from here on cannot recall this send: the
+  // provider call is outside any transaction by design (see the header), and
+  // the claim that authorised it committed first. The erasure clears the
+  // delivery record, and the settle below writes nothing back into it.
   let providerName: string;
   let result: { providerMsgId: string };
   try {
@@ -365,6 +431,10 @@ export async function sendForAppointment(
   }
 
   await withoutRls(async (tx) => {
+    // The name as it is now, read before the message_log write (lockCustomer's
+    // order). An erasure that committed while the provider call was in flight
+    // has replaced it, and the notification below must not write it back.
+    const customer = await lockCustomer(tx, appointmentId, prepared.organizationId);
     await tx.messageLog.update({
       where: { id: logId },
       data: { state: 'sent', providerMsgId: result.providerMsgId, sentAt: new Date() },
@@ -385,7 +455,7 @@ export async function sendForAppointment(
     await notifyEvent(tx, prepared.organizationId, {
       type: 'reminder',
       title: `Reminder sent (${channel})`,
-      body: `${prepared.vars.PatientName} · ${prepared.vars.ServiceName}`,
+      body: `${customer?.name ?? 'Customer'} · ${prepared.vars.ServiceName}`,
     });
   });
 

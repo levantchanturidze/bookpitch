@@ -30,7 +30,7 @@ export const LEGAL_DOCUMENT_STATUS: LegalDocumentStatus = 'draft';
  * consent in `customers.consent_version`, so it must be a stable, comparable
  * string rather than a rendered date.
  */
-export const LEGAL_DOCUMENT_VERSION = '2026-08-18.draft-1';
+export const LEGAL_DOCUMENT_VERSION = '2026-10-25.draft-2';
 
 /**
  * Operator identity. Deliberately null: publishing an invented company name,

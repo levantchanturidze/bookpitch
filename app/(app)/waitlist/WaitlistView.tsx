@@ -21,11 +21,15 @@ type Named = { id: string; name: string };
 export default function WaitlistView({
   rows,
   customers,
+  pickableCustomers,
   staff,
   services,
 }: {
   rows: Row[];
+  /** Every customer, to name the rows. */
   customers: Named[];
+  /** Who can be added: redacted customers are left out. */
+  pickableCustomers: Named[];
   staff: Named[];
   services: Named[];
 }) {
@@ -69,7 +73,7 @@ export default function WaitlistView({
             <span className="mb-1 block text-[11px] font-semibold text-slate-500">Customer</span>
             <select name="customerId" required className={inputCls}>
               <option value="">— pick —</option>
-              {customers.map((c) => (
+              {pickableCustomers.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>

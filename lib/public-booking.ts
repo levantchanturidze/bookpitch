@@ -4,6 +4,7 @@ import { consumeRateLimit } from '@/lib/rate-limit';
 import { InvalidInputError } from '@/lib/auth';
 import { log } from '@/lib/logger';
 import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
+import { lockLiveCustomerByContact } from '@/lib/redaction';
 
 // -----------------------------------------------------------------------------
 // Public booking widget. No session: the customer is anonymous. All entry
@@ -120,15 +121,13 @@ export async function submitPublicBooking(input: PublicBookInput): Promise<Publi
 
   const result = await withoutRls(async (tx) => {
     // Match on (org, email) OR (org, phone) so returning customers reuse
-    // their row; never leak identity across orgs.
+    // their row; never leak identity across orgs. Read under the lock an
+    // erasure serialises with, so a customer being erased right now is not
+    // matched (see lockLiveCustomerByContact).
     const existing = email
-      ? await tx.customer.findFirst({
-          where: { organizationId: location.organizationId, email },
-        })
+      ? await lockLiveCustomerByContact(tx, location.organizationId, { email })
       : phone
-        ? await tx.customer.findFirst({
-            where: { organizationId: location.organizationId, phone },
-          })
+        ? await lockLiveCustomerByContact(tx, location.organizationId, { phone })
         : null;
 
     const customer =

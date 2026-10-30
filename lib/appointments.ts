@@ -11,6 +11,7 @@ import { InvalidInputError, SlotTakenError } from '@/lib/auth';
 import { isValidIcd10 } from '@/lib/icd10';
 import { localDayRange, localDateWeekday, toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 import { availabilityRangeMinutes } from '@/lib/availability-basis';
+import { lockCustomerForNewRecords } from '@/lib/redaction';
 export { SlotTakenError };
 
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
@@ -193,11 +194,18 @@ export async function assertStaffAtLocation(
   if (!staff) throw new InvalidInputError('staff does not work at this location');
 }
 
-export async function assertCustomerInOrg(tx: TxClient, customerId: string): Promise<void> {
-  // RLS already scopes this — if it returns null, the customer isn't in
-  // the caller's org.
-  const c = await tx.customer.findUnique({ where: { id: customerId }, select: { id: true } });
-  if (!c) throw new InvalidInputError('customer not found');
+export async function assertCustomerInOrg(
+  tx: TxClient,
+  organizationId: string,
+  customerId: string,
+): Promise<void> {
+  // The organisation is named, not left to RLS (CLAUDE.md invariant 1). A
+  // redacted customer is refused, under a lock held until the booking is
+  // written: a new appointment would attach new personal data to an erased
+  // record (see lockCustomerForNewRecords).
+  const customer = await lockCustomerForNewRecords(tx, organizationId, customerId);
+  if (customer === 'missing') throw new InvalidInputError('customer not found');
+  if (customer === 'redacted') throw new InvalidInputError('this customer has been anonymized');
 }
 
 /**
