@@ -154,7 +154,15 @@ and the contiguous comment block under it, and requires:
    own, and if it fails after the ledger row is gone the rollback is partial.
    Statements are recognised line by line, by an SQL verb in capitals and its
    object, so prose around the transaction is free;
-5. no executable SQL in the migration that touches `_prisma_migrations`.
+5. nothing inside the transaction that ends or undoes it: no `END;` or
+   `COMMIT AND CHAIN;` (each commits early, so what follows runs as a second
+   transaction), no `ROLLBACK;` or `ABORT;` (each discards the reverse), no
+   `SAVEPOINT` or `ROLLBACK TO SAVEPOINT` (which silently undoes a step), and no
+   psql meta-command such as `\i other.sql` (which runs what the checker cannot
+   read). A `DO` block's own `BEGIN` and `END` are PL/pgSQL, not transaction
+   control: dollar-quoted bodies are skipped (DEF-44, 2026-10-31: every one of
+   these passed before);
+6. no executable SQL in the migration that touches `_prisma_migrations`.
 
 The complements prove that each of these is reported:
 - a missing section;
@@ -168,10 +176,19 @@ The complements prove that each of these is reported:
 - a second transaction after the first (Codex review on #124, 2026-10-24: the
   second version checked only the first transaction);
 - a reverse step before the `BEGIN`, and one after a line of prose;
+- `END;`, `COMMIT AND CHAIN;`, `ROLLBACK;`, `ABORT;` and `ROLLBACK TO SAVEPOINT`
+  inside the transaction, and a psql meta-command there (DEF-44);
 - an executable ledger write.
 
-A complete rollback whose ledger step spans two lines passes, and so does prose
-after the `COMMIT` that has semicolons and capitals in it.
+A complete rollback whose ledger step spans two lines passes, and so do:
+- prose after the `COMMIT` that has semicolons and capitals in it;
+- a multi-line `DO` block with its own `BEGIN` and `END` beside the reverse;
+- `SET LOCAL lock_timeout` inside the transaction.
+
+The `DO`-block fixtures are built with a function replacer, because in
+`String.prototype.replace` a `$$` in the replacement string is a literal `$`.
+Until 2026-10-31 these cases were testing `DO $ … $`, which is not
+dollar-quoted at all.
 
 The first migration it applies to is `20261017000001_practitioner_double_booking`
 (#112), whose header was written to this rule.

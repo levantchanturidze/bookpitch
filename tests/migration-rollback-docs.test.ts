@@ -56,6 +56,10 @@ const CHANGES_STATE =
   /^(DROP|ALTER|CREATE|GRANT|REVOKE|TRUNCATE|COMMENT ON|DELETE FROM|INSERT INTO|UPDATE)\b/i;
 const reverses = (st: string) => CHANGES_STATE.test(st);
 
+/** A line inside the transaction that ends it, abandons it, or opens a savepoint. */
+const TX_CONTROL =
+  /^(BEGIN|START TRANSACTION|COMMIT|END|ROLLBACK|ABORT|SAVEPOINT|RELEASE|PREPARE TRANSACTION)\b/;
+
 function rollbackProblems(name: string, sql: string): string[] {
   const lines = sql.split(/\r?\n/);
   const code = lines.map((l) => l.replace(/--.*$/, '')).join('\n');
@@ -90,6 +94,26 @@ function rollbackProblems(name: string, sql: string): string[] {
   }
   if (!statements.some((st) => !/_prisma_migrations/i.test(st) && reverses(st))) {
     problems.push('the rollback transaction reverses nothing but the ledger');
+  }
+  // Inside the one transaction, nothing may end, abandon or partly undo it.
+  // `END;` and `COMMIT AND CHAIN;` commit early, so what follows runs as a
+  // second transaction: if it fails, the ledger row is already gone (the
+  // partial rollback DEF-27 closed, by another spelling). `ROLLBACK;` and
+  // `ABORT;` discard the reverse with the ledger delete, and `ROLLBACK TO
+  // SAVEPOINT` silently undoes a step. Every one of these passed (DEF-44).
+  // A dollar-quoted body (a DO block's) is opaque: its BEGIN and END are
+  // PL/pgSQL, not transaction control.
+  const opaque = body.replace(/\$([A-Za-z_]\w*)?\$[\s\S]*?\$\1\$/g, () => '$$…$$');
+  const bodyLines = opaque.split('\n').map((line) => line.trim());
+  const control = bodyLines.find((line) => TX_CONTROL.test(line));
+  if (control) {
+    problems.push(`the rollback transaction ends or undoes itself inside: "${control}"`);
+  }
+  // A psql meta-command runs what this checker cannot read: `\i other.sql`
+  // executes a whole file, transaction control included.
+  const meta = bodyLines.find((line) => line.startsWith('\\'));
+  if (meta) {
+    problems.push(`the rollback transaction runs a psql meta-command: "${meta}"`);
   }
   // Line by line: split on `;` instead and a statement after a line of prose
   // merges into the prose and is missed.
@@ -228,7 +252,7 @@ describe('new migrations document a rollback that a deploy will not silently und
       "SET lock_timeout = '5s';",
       'DO $$ BEGIN PERFORM 1; END $$;',
     ]) {
-      const sql = complete.replace('--   DROP TABLE IF EXISTS example;', `--   ${noop}`);
+      const sql = complete.replace('--   DROP TABLE IF EXISTS example;', () => `--   ${noop}`);
       expect(rollbackProblems(name, sql), noop).toEqual([
         'the rollback transaction reverses nothing but the ledger',
       ]);
@@ -242,7 +266,7 @@ describe('new migrations document a rollback that a deploy will not silently und
       "DO $$ BEGIN RAISE NOTICE 'DROP TABLE'; END $$;",
       "DO $$ BEGIN EXECUTE 'DROP TABLE IF EXISTS example'; END $$;",
     ]) {
-      const sql = complete.replace('--   DROP TABLE IF EXISTS example;', `--   ${block}`);
+      const sql = complete.replace('--   DROP TABLE IF EXISTS example;', () => `--   ${block}`);
       expect(rollbackProblems(name, sql), block).toEqual([
         'the rollback transaction reverses nothing but the ledger',
       ]);
@@ -252,8 +276,71 @@ describe('new migrations document a rollback that a deploy will not silently und
   it('COMPLEMENT: a DO block beside a plain reverse statement is fine', () => {
     const sql = complete.replace(
       '--   DROP TABLE IF EXISTS example;',
-      "--   DO $$ BEGIN RAISE NOTICE 'rolling back'; END $$;\n--   DROP TABLE IF EXISTS example;",
+      () =>
+        "--   DO $$ BEGIN RAISE NOTICE 'rolling back'; END $$;\n--   DROP TABLE IF EXISTS example;",
     );
+    expect(rollbackProblems(name, sql)).toEqual([]);
+  });
+
+  it('DEF-44: a statement that ends or undoes the transaction inside it is reported', () => {
+    const ledger = `--   DELETE FROM _prisma_migrations`;
+    for (const [form, at] of [
+      // Commits the ledger delete, then drops in a second transaction.
+      ['END;', 'before-drop'],
+      ['COMMIT AND CHAIN;', 'before-drop'],
+      // Discards everything, ledger delete included, then COMMITs nothing.
+      ['ROLLBACK;', 'after-ledger'],
+      ['ABORT;', 'after-ledger'],
+      // Undoes the drop and keeps the ledger delete.
+      ['ROLLBACK TO SAVEPOINT s;', 'after-drop'],
+    ] as const) {
+      let sql = complete;
+      if (at === 'before-drop') {
+        // The ledger delete first, then the early commit, then the reverse.
+        sql = sql
+          .replace('--   DROP TABLE IF EXISTS example;\n', '')
+          .replace(
+            '--   COMMIT;',
+            `--   ${form}\n--   DROP TABLE IF EXISTS example;\n--   COMMIT;`,
+          );
+      } else if (at === 'after-ledger') {
+        sql = sql.replace('--   COMMIT;', `--   ${form}\n--   COMMIT;`);
+      } else {
+        sql = sql
+          .replace('--   BEGIN;', '--   BEGIN;\n--   SAVEPOINT s;')
+          .replace(ledger, `--   ${form}\n${ledger}`);
+      }
+      expect(rollbackProblems(name, sql).join('\n'), form).toMatch(
+        /the rollback transaction ends or undoes itself inside: "(END|COMMIT AND CHAIN|ROLLBACK|ABORT|SAVEPOINT)/,
+      );
+    }
+  });
+
+  it('DEF-44: a psql meta-command inside the transaction is reported', () => {
+    const sql = complete.replace(
+      '--   DROP TABLE IF EXISTS example;',
+      '--   DROP TABLE IF EXISTS example;\n--   \\i more-rollback.sql',
+    );
+    expect(rollbackProblems(name, sql)).toContain(
+      'the rollback transaction runs a psql meta-command: "\\i more-rollback.sql"',
+    );
+  });
+
+  it("COMPLEMENT: a DO block's own BEGIN and END, over several lines, are not transaction control", () => {
+    const sql = complete.replace('--   DROP TABLE IF EXISTS example;', () =>
+      [
+        '--   DO $$',
+        '--   BEGIN',
+        "--     RAISE NOTICE 'rolling back';",
+        '--   END $$;',
+        '--   DROP TABLE IF EXISTS example;',
+      ].join('\n'),
+    );
+    expect(rollbackProblems(name, sql)).toEqual([]);
+  });
+
+  it('COMPLEMENT: a lock timeout set inside the transaction is fine', () => {
+    const sql = complete.replace('--   BEGIN;', "--   BEGIN;\n--   SET LOCAL lock_timeout = '5s';");
     expect(rollbackProblems(name, sql)).toEqual([]);
   });
 
