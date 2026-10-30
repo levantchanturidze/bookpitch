@@ -12,7 +12,7 @@ import {
   parseUpdateInput,
   toAppointmentDto,
 } from '@/lib/appointments';
-import { notifyWaitlistForCancelled } from '@/lib/waitlist';
+import { notifyWaitlistAfterCancel } from '@/lib/waitlist';
 
 // PATCH /api/appointments/[id]
 // Reschedule (startsAt / staffId / serviceId), or status/paymentStatus changes.
@@ -105,23 +105,19 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         const changedFields = Object.keys(input);
         await writeAudit(tx, session, 'update', 'appointment', id, { fields: changedFields });
 
-        // SEC-007: inline the waitlist fan-out inside the same
-        // tenant-scoped tx so notifyWaitlistForCancelled runs against RLS.
-        // Previously called after the tx closed via withoutRls — worked,
-        // but was the "org-scoped WHERE on superuser client" shape.
+        // SEC-007: the waitlist fan-out runs inside this tenant-scoped tx.
+        // Best-effort under a savepoint, so a failure there cannot undo the
+        // cancellation — see notifyWaitlistAfterCancel, which the scheduler's
+        // updateAppointmentAction runs too.
         if (input.status === 'cancelled') {
-          try {
-            await notifyWaitlistForCancelled(tx, session.organizationId, {
-              id: row.id,
-              staffId: row.staffId,
-              serviceId: row.serviceId,
-              locationId: row.locationId,
-              startsAt: row.startsAt,
-              endsAt: row.endsAt,
-            });
-          } catch {
-            /* swallow — audit + retention are unaffected */
-          }
+          await notifyWaitlistAfterCancel(tx, session, {
+            id: row.id,
+            staffId: row.staffId,
+            serviceId: row.serviceId,
+            locationId: row.locationId,
+            startsAt: row.startsAt,
+            endsAt: row.endsAt,
+          });
         }
         return toAppointmentDto(row);
       });

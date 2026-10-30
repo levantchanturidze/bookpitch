@@ -14,6 +14,7 @@ import {
 import { withOrg } from '@/lib/db';
 import { writeAudit } from '@/lib/audit';
 import { notifyEvent } from '@/lib/notifications';
+import { notifyWaitlistAfterCancel } from '@/lib/waitlist';
 import {
   assertCustomerInOrg,
   assertStaffAtLocation,
@@ -212,6 +213,18 @@ export async function updateAppointmentAction(
           type: 'booking',
           title: `Appointment ${parsed.status}`,
           body: `${row.customer.name} · ${row.serviceName} with ${row.staff.name}`,
+        });
+      }
+      // F-5: a slot freed in the scheduler reaches the waitlist, as one freed
+      // through the API does. Same function, same savepoint, same audit rows.
+      if (parsed.status === 'cancelled') {
+        await notifyWaitlistAfterCancel(tx, session, {
+          id: row.id,
+          staffId: row.staffId,
+          serviceId: row.serviceId,
+          locationId: row.locationId,
+          startsAt: row.startsAt,
+          endsAt: row.endsAt,
         });
       }
       const loc = await tx.location.findUnique({
