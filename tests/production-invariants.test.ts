@@ -641,9 +641,222 @@ describe.skipIf(!runnable)('production invariants fail against a broken database
   // check cannot see them go missing. Each is removed or weakened here, and the
   // data check (8d) is proven on rows written while a guard was switched off.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Check 2b — no default puts the application's sessions in replica mode,
+  // where ordinary triggers and foreign keys do not fire. Scoped to THIS
+  // database (IN DATABASE / ALTER DATABASE), so nothing else is affected.
+  // ---------------------------------------------------------------------------
+  describe('no default switches triggers off for the application', () => {
+    const forRole = (verb: string) =>
+      `DO $$ BEGIN EXECUTE format('ALTER ROLE bookpitch_app IN DATABASE %I ${verb}', current_database()); END $$`;
+    const forDb = (verb: string) =>
+      `DO $$ BEGIN EXECUTE format('ALTER DATABASE %I ${verb}', current_database()); END $$`;
+
+    injects(
+      'a replica default for bookpitch_app in this database is caught',
+      [forRole('SET session_replication_role = replica')],
+      /session_replication_role defaults to replica for bookpitch_app in /,
+      [forRole('RESET session_replication_role')],
+    );
+
+    injects(
+      'a replica default for every role in this database is caught',
+      [forDb('SET session_replication_role = replica')],
+      /session_replication_role defaults to replica for every role in /,
+      [forDb('RESET session_replication_role')],
+    );
+
+    // Codex review on #122: precedence. The most specific entry wins.
+    it('COMPLEMENT: a database replica default overridden for the role in this database passes', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql(forDb('SET session_replication_role = replica'));
+        sql(forRole('SET session_replication_role = origin'));
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        sql(forRole('RESET session_replication_role'));
+        sql(forDb('RESET session_replication_role'));
+      }
+    });
+
+    injects(
+      'a replica default for the role in this database wins over an origin database default',
+      [
+        forDb('SET session_replication_role = origin'),
+        forRole('SET session_replication_role = replica'),
+      ],
+      /session_replication_role defaults to replica for bookpitch_app in /,
+      [forRole('RESET session_replication_role'), forDb('RESET session_replication_role')],
+    );
+
+    // Codex review on #122, 2026-10-24: with no role or database default, the
+    // application takes the SERVER's value, which was not read at all.
+    const forMe = (verb: string) =>
+      `DO $$ BEGIN EXECUTE format('ALTER ROLE %I IN DATABASE %I ${verb}', current_user, current_database()); END $$`;
+
+    injects(
+      "the server's value hidden by a default on the verifier's own role fails as unverified",
+      [forMe('SET session_replication_role = origin')],
+      /cannot verify session_replication_role for bookpitch_app .*source: database user/,
+      [forMe('RESET session_replication_role')],
+    );
+
+    it("COMPLEMENT: a hidden server value does not matter when the application role's default decides", () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql(forMe('SET session_replication_role = origin'));
+        sql(forRole('SET session_replication_role = origin'));
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        sql(forRole('RESET session_replication_role'));
+        sql(forMe('RESET session_replication_role'));
+      }
+    });
+
+    // ALTER SYSTEM is cluster-wide: while it is set, every session on this
+    // server runs with triggers and foreign keys off. So this runs where the
+    // server is disposable, CI's service container, and on a developer machine
+    // only when asked for, with nothing else using the server.
+    const clusterWide =
+      process.env.CI === 'true' || process.env.INVARIANT_TEST_ALTER_SYSTEM === '1';
+    const awaitServerValue = (want: string) => {
+      for (let i = 0; i < 50; i++) {
+        const now = sql(
+          "SELECT setting FROM pg_settings WHERE name = 'session_replication_role'",
+        ).trim();
+        if (now === want) return;
+        execFileSync('sleep', ['0.1']);
+      }
+      throw new Error(`the server never reported session_replication_role = ${want}`);
+    };
+    it.runIf(clusterWide)('a replica value in the server configuration is caught', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql('ALTER SYSTEM SET session_replication_role = replica');
+        sql('SELECT pg_reload_conf()');
+        awaitServerValue('replica');
+        const r = runVerifier();
+        expect(r.ok, 'a server-level replica default must fail').toBe(false);
+        expect(r.output).toMatch(
+          /defaults to replica for every session, from the server's configuration file/,
+        );
+      } finally {
+        sql('ALTER SYSTEM RESET session_replication_role');
+        sql('SELECT pg_reload_conf()');
+        awaitServerValue('origin');
+      }
+      expect(runVerifier().ok, 'passes again once the server value is reset').toBe(true);
+    });
+
+    // The two precedence levels that are not per-database: the role in EVERY
+    // database (2), and every role in every database (4). Both are
+    // cluster-wide, so while one is set, every new session on the server takes
+    // it, the test harness's included. Gated like the ALTER SYSTEM case: CI's
+    // disposable server, or an explicit opt-in with nothing else connected.
+    const forAppRole = (verb: string) => `ALTER ROLE bookpitch_app ${verb}`;
+    const forAllRoles = (verb: string) => `ALTER ROLE ALL ${verb}`;
+    const clusterCase = (name: string, body: () => void, restore: string[]) =>
+      it.runIf(clusterWide)(name, () => {
+        expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+        try {
+          body();
+        } finally {
+          for (const s of restore) sql(s);
+        }
+        expect(runVerifier().ok, 'passes again once restored').toBe(true);
+      });
+
+    clusterCase(
+      'a replica default for bookpitch_app in every database is caught',
+      () => {
+        sql(forAppRole('SET session_replication_role = replica'));
+        const r = runVerifier();
+        expect(r.ok).toBe(false);
+        expect(r.output).toMatch(/defaults to replica for bookpitch_app in every database/);
+      },
+      [forAppRole('RESET session_replication_role')],
+    );
+
+    clusterCase(
+      "the role's default in every database wins over an origin default for this database",
+      () => {
+        sql(forDb('SET session_replication_role = origin'));
+        sql(forAppRole('SET session_replication_role = replica'));
+        const r = runVerifier();
+        expect(r.ok).toBe(false);
+        expect(r.output).toMatch(/defaults to replica for bookpitch_app in every database/);
+      },
+      [forAppRole('RESET session_replication_role'), forDb('RESET session_replication_role')],
+    );
+
+    clusterCase(
+      'a replica default for every role in every database is caught',
+      () => {
+        sql(forAllRoles('SET session_replication_role = replica'));
+        const r = runVerifier();
+        expect(r.ok).toBe(false);
+        expect(r.output).toMatch(/defaults to replica for every role in every database/);
+      },
+      [forAllRoles('RESET session_replication_role')],
+    );
+
+    clusterCase(
+      'COMPLEMENT: an origin default for this database overrides a replica default everywhere',
+      () => {
+        sql(forAllRoles('SET session_replication_role = replica'));
+        sql(forDb('SET session_replication_role = origin'));
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      },
+      [forDb('RESET session_replication_role'), forAllRoles('RESET session_replication_role')],
+    );
+
+    it('COMPLEMENT: an unrelated default on the role is not mistaken for one', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql(forRole('SET statement_timeout = 120000'));
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        sql(forRole('RESET statement_timeout'));
+      }
+    });
+  });
+
   describe('scoped RBAC — staff link and branch scope stay single-organisation', () => {
     const CREATE_INDEX =
       'CREATE UNIQUE INDEX staff_location_user_unique ON staff (location_id, user_id) WHERE user_id IS NOT NULL';
+
+    // A trigger that exists and is not disabled can still never fire: 'R'
+    // (ENABLE REPLICA TRIGGER) fires only for replica-mode sessions.
+    injects(
+      'a replica-only staff_user_is_member is caught',
+      ['ALTER TABLE staff ENABLE REPLICA TRIGGER staff_user_is_member'],
+      /staff_user_is_member is enabled for replica sessions only/,
+      ['ALTER TABLE staff ENABLE TRIGGER staff_user_is_member'],
+    );
+
+    injects(
+      'a replica-only membership_branches_same_org is caught',
+      ['ALTER TABLE membership_branches ENABLE REPLICA TRIGGER membership_branches_same_org'],
+      /membership_branches_same_org is enabled for replica sessions only/,
+      ['ALTER TABLE membership_branches ENABLE TRIGGER membership_branches_same_org'],
+    );
+
+    it('COMPLEMENT: ALWAYS triggers fire for the application, and pass', () => {
+      expect(runVerifier().ok, 'fixture must be clean').toBe(true);
+      try {
+        sql('ALTER TABLE staff ENABLE ALWAYS TRIGGER staff_user_is_member');
+        sql('ALTER TABLE membership_branches ENABLE ALWAYS TRIGGER membership_branches_same_org');
+        const r = runVerifier();
+        expect(r.ok, r.output).toBe(true);
+      } finally {
+        sql('ALTER TABLE staff ENABLE TRIGGER staff_user_is_member');
+        sql('ALTER TABLE membership_branches ENABLE TRIGGER membership_branches_same_org');
+      }
+    });
 
     injects(
       'dropping staff_location_user_unique is caught',

@@ -70,6 +70,10 @@ DECLARE
   is_super bool;
   is_bypass bool;
   can_login bool;
+  replica_defaults text;
+  srr_value text;
+  srr_scope text;
+  server_source text;
 BEGIN
   SELECT rolsuper, rolbypassrls, rolcanlogin INTO is_super, is_bypass, can_login
     FROM pg_roles WHERE rolname = 'bookpitch_app';
@@ -87,7 +91,64 @@ BEGIN
     RAISE EXCEPTION 'production-verify: bookpitch_app cannot log in';
   END IF;
 
-  RAISE NOTICE 'ok: bookpitch_app is NOSUPERUSER NOBYPASSRLS and can log in';
+  -- 2b. Nothing switches its triggers off by default. session_replication_role
+  -- = replica, set as a default (ALTER ROLE … SET, ALTER DATABASE … SET, or
+  -- ALTER ROLE … IN DATABASE … SET), stops every ordinary trigger AND
+  -- foreign-key enforcement in each session it applies to. The guards that
+  -- checks 8 and 9 find enabled in pg_trigger would never fire.
+  --
+  -- What matters is the EFFECTIVE default for bookpitch_app here, by
+  -- PostgreSQL's precedence: role-in-this-database, then role, then this
+  -- database, then every role everywhere; the first entry found wins
+  -- (postinit.c, process_settings). A replica entry overridden by a more
+  -- specific origin or local one is not in effect, and must not block a
+  -- deploy (Codex review on #122). Only the value and its scope are
+  -- reported, never another setting.
+  SELECT x.val, x.scope INTO srr_value, srr_scope
+    FROM (SELECT lower(split_part(replace(cfg, ' ', ''), '=', 2)) AS val,
+                 coalesce(r.rolname, 'every role') || ' in '
+                   || coalesce(d.datname, 'every database') AS scope,
+                 CASE WHEN rs.setrole <> 0 AND rs.setdatabase <> 0 THEN 1
+                      WHEN rs.setrole <> 0 THEN 2
+                      WHEN rs.setdatabase <> 0 THEN 3
+                      ELSE 4 END AS precedence
+            FROM pg_db_role_setting rs
+            LEFT JOIN pg_roles r    ON r.oid = rs.setrole
+            LEFT JOIN pg_database d ON d.oid = rs.setdatabase
+           CROSS JOIN LATERAL unnest(rs.setconfig) AS cfg
+           WHERE (rs.setrole = 0 OR r.rolname = 'bookpitch_app')
+             AND (rs.setdatabase = 0 OR d.datname = current_database())
+             AND lower(split_part(replace(cfg, ' ', ''), '=', 1)) = 'session_replication_role'
+           ORDER BY precedence
+           LIMIT 1) x;
+
+  -- No role or database default applies, so the application's sessions take
+  -- the SERVER's value: postgresql.conf, postgresql.auto.conf (ALTER SYSTEM),
+  -- the server command line, or the built-in `origin` (Codex review on #122,
+  -- 2026-10-24: these were not read at all). This session holds that value
+  -- too, unless something more specific applies to this session alone (a
+  -- default on the verifier's own role, or a value set by this connection),
+  -- which masks it. Then it cannot be read here, and that fails as unverified
+  -- rather than passing.
+  IF srr_value IS NULL THEN
+    SELECT lower(setting), source INTO srr_value, server_source
+      FROM pg_settings WHERE name = 'session_replication_role';
+    IF server_source NOT IN ('default', 'configuration file', 'command line', 'environment variable') THEN
+      RAISE EXCEPTION 'production-verify: cannot verify session_replication_role for bookpitch_app — no role or database default applies, and this session''s own value (source: %) hides the server''s. Run the verifier as a role with no session_replication_role default',
+        server_source;
+    END IF;
+    srr_scope := 'every session, from the server''s ' || server_source;
+  END IF;
+
+  IF srr_value = 'replica' THEN
+    replica_defaults := srr_scope;
+  END IF;
+  IF replica_defaults IS NOT NULL THEN
+    RAISE EXCEPTION 'production-verify: session_replication_role defaults to replica for % — triggers and foreign keys do not fire for the application',
+      replica_defaults;
+  END IF;
+
+  RAISE NOTICE 'ok: bookpitch_app is NOSUPERUSER NOBYPASSRLS, can log in, and has no replica-mode default';
 END $$;
 
 -- 3. The audit log is append-only, enforced by privilege not by code. --------
@@ -774,13 +835,18 @@ BEGIN
       idx_unique, idx_cols, idx_pred;
   END IF;
 
-  -- 8b / 8c: present AND enabled. A disabled trigger ('D') is a missing one.
+  -- 8b / 8c: present AND firing. A disabled trigger ('D') is a missing one, and
+  -- so is a replica-only one ('R', ENABLE REPLICA TRIGGER): it fires only when
+  -- session_replication_role = replica, which the application never sets.
+  -- 'O' (the default) and 'A' (always) fire for the application.
   SELECT t.tgenabled INTO trg_enabled
     FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
    WHERE c.relname = 'staff' AND t.tgname = 'staff_user_is_member' AND NOT t.tgisinternal;
-  IF trg_enabled IS NULL OR trg_enabled = 'D' THEN
+  IF trg_enabled IS NULL OR trg_enabled NOT IN ('O', 'A') THEN
     RAISE EXCEPTION 'production-verify: trigger staff_user_is_member is % — a staff row can be linked to another organisation''s user',
-      CASE WHEN trg_enabled IS NULL THEN 'missing' ELSE 'disabled' END;
+      CASE WHEN trg_enabled IS NULL THEN 'missing'
+           WHEN trg_enabled = 'R' THEN 'enabled for replica sessions only, so it never fires for the application'
+           ELSE 'disabled' END;
   END IF;
   trg_enabled := NULL;
   SELECT t.tgenabled INTO trg_enabled
@@ -789,6 +855,9 @@ BEGIN
      AND NOT t.tgisinternal;
   IF trg_enabled IS NULL OR trg_enabled = 'D' THEN
     RAISE EXCEPTION 'production-verify: trigger membership_branches_same_org is missing or disabled — a membership can be scoped to another organisation''s branch';
+  END IF;
+  IF trg_enabled NOT IN ('O', 'A') THEN
+    RAISE EXCEPTION 'production-verify: trigger membership_branches_same_org is enabled for replica sessions only, so it never fires for the application — a membership can be scoped to another organisation''s branch';
   END IF;
 
   -- 8d. The data, whatever the guards say.
