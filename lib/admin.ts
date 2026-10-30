@@ -240,10 +240,13 @@ export async function deleteStaff(session: ActiveSession, id: string) {
     // Phase 6 spec §9 rule 5: provider deletion blocked while future
     // bookings exist. Cancelled + completed appointments don't count —
     // they're history that shouldn't block cleanup.
+    // "Future" by the database clock: with this process's clock ahead of it,
+    // a booking starting within the skew counted as past and stopped blocking.
+    const [{ now }] = await tx.$queryRaw<[{ now: Date }]>`SELECT transaction_timestamp() AS now`;
     const futureBookings = await tx.appointment.count({
       where: {
         staffId: id,
-        startsAt: { gt: new Date() },
+        startsAt: { gt: now },
         status: { notIn: ['cancelled', 'completed'] },
       },
     });
