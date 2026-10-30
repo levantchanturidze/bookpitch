@@ -12,8 +12,7 @@ import {
   parseUpdateInput,
   toAppointmentDto,
 } from '@/lib/appointments';
-import { notifyWaitlistForCancelled } from '@/lib/waitlist';
-import { log, sanitizeErrorMessage } from '@/lib/logger';
+import { notifyWaitlistAfterCancel } from '@/lib/waitlist';
 
 // PATCH /api/appointments/[id]
 // Reschedule (startsAt / staffId / serviceId), or status/paymentStatus changes.
@@ -106,42 +105,19 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         const changedFields = Object.keys(input);
         await writeAudit(tx, session, 'update', 'appointment', id, { fields: changedFields });
 
-        // SEC-007: inline the waitlist fan-out inside the same
-        // tenant-scoped tx so notifyWaitlistForCancelled runs against RLS.
-        // Previously called after the tx closed via withoutRls — worked,
-        // but was the "org-scoped WHERE on superuser client" shape.
-        //
-        // The fan-out is best-effort: a failure there must not undo the
-        // cancellation. That used to be a bare `catch {}`, which inside a
-        // transaction does the OPPOSITE. A failed statement aborts the whole
-        // transaction; the swallowed error let this callback return normally,
-        // COMMIT then rolled everything back — the cancellation and its audit
-        // row included — and the route still answered 200 with the cancelled
-        // appointment. Measured, not inferred
-        // (tests/waitlist-audit.test.ts, "a failing waitlist fan-out …").
-        //
-        // A SAVEPOINT scopes the failure to the fan-out: its status changes,
-        // their audit rows and the notification are undone together, the
-        // cancellation commits, and the failure is logged rather than silent.
+        // SEC-007: the waitlist fan-out runs inside this tenant-scoped tx.
+        // Best-effort under a savepoint, so a failure there cannot undo the
+        // cancellation — see notifyWaitlistAfterCancel, which the scheduler's
+        // updateAppointmentAction runs too.
         if (input.status === 'cancelled') {
-          await tx.$executeRawUnsafe('SAVEPOINT waitlist_notify');
-          try {
-            await notifyWaitlistForCancelled(tx, session, {
-              id: row.id,
-              staffId: row.staffId,
-              serviceId: row.serviceId,
-              locationId: row.locationId,
-              startsAt: row.startsAt,
-              endsAt: row.endsAt,
-            });
-            await tx.$executeRawUnsafe('RELEASE SAVEPOINT waitlist_notify');
-          } catch (err) {
-            await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT waitlist_notify');
-            log.error('appointments.cancel.waitlist_notify_failed', {
-              appointmentId: row.id,
-              error: sanitizeErrorMessage(err),
-            });
-          }
+          await notifyWaitlistAfterCancel(tx, session, {
+            id: row.id,
+            staffId: row.staffId,
+            serviceId: row.serviceId,
+            locationId: row.locationId,
+            startsAt: row.startsAt,
+            endsAt: row.endsAt,
+          });
         }
         return toAppointmentDto(row);
       });

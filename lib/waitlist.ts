@@ -4,7 +4,7 @@ import { InvalidInputError, type ActiveSession } from '@/lib/auth';
 import { scopedByOwn, scopedLocationIds, waitlistInLocations } from '@/lib/rbac/scope';
 import type { AuthContext } from '@/lib/rbac/types';
 import { notifyEvent } from '@/lib/notifications';
-import { log } from '@/lib/logger';
+import { log, sanitizeErrorMessage } from '@/lib/logger';
 import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 import { writeAudit } from '@/lib/audit';
 
@@ -302,4 +302,44 @@ export async function notifyWaitlistForCancelled(
     matched: rows.length,
   });
   return { matched: rows.length };
+}
+
+type CancelledAppointment = Parameters<typeof notifyWaitlistForCancelled>[2];
+
+/**
+ * The waitlist fan-out for a cancellation, run by EVERY path that cancels an
+ * appointment: PATCH /api/appointments/[id] and the scheduler's
+ * updateAppointmentAction. One function, so the two cannot disagree again. The
+ * scheduler, where staff actually cancel, never ran the fan-out at all (F-5),
+ * although docs/features-en.md documents it as running "on cancel transition".
+ *
+ * Best-effort: a failure must not undo the cancellation. A SAVEPOINT scopes
+ * it. The entries' status changes, their audit rows and the notification are
+ * undone together, the cancellation commits, and the failure is logged. It
+ * used to be a bare `catch {}` in the route, and inside a transaction that does
+ * the opposite: the failed statement aborted the transaction, and COMMIT then
+ * rolled back the cancellation itself (tests/waitlist-audit.test.ts).
+ *
+ * Repeating a cancellation notifies nobody twice: only `pending` entries match,
+ * and the statement that marks an entry `notified` is the one that returns it
+ * for its audit row. Returns null when the fan-out failed.
+ */
+export async function notifyWaitlistAfterCancel(
+  tx: TxClient,
+  session: ActiveSession,
+  cancelled: CancelledAppointment,
+): Promise<{ matched: number } | null> {
+  await tx.$executeRawUnsafe('SAVEPOINT waitlist_notify');
+  try {
+    const result = await notifyWaitlistForCancelled(tx, session, cancelled);
+    await tx.$executeRawUnsafe('RELEASE SAVEPOINT waitlist_notify');
+    return result;
+  } catch (err) {
+    await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT waitlist_notify');
+    log.error('appointments.cancel.waitlist_notify_failed', {
+      appointmentId: cancelled.id,
+      error: sanitizeErrorMessage(err),
+    });
+    return null;
+  }
 }
