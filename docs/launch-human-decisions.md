@@ -12,6 +12,11 @@ branch protection, repository security settings, scheduler fallback, soak
 reminder-evidence policy, waitlist notifications from the UI, short lead times)
 are in its §11.
 
+The privacy questions behind item 1 below are set out one by one, with
+options, consequences and a recommendation each, in `docs/privacy-decisions.md`
+(payment description, public-booking identity and consent, notification
+retention, appointment notes, and writes to a redacted customer).
+
 No longer on this list: **Sentry**, resolved when #44 closed by evidence on
 2026-09-08 and verified again for soak #110. **Branch protection** is a
 deferred configuration choice with owner acceptance (R-07 in

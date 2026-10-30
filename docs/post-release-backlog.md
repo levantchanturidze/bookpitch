@@ -1,13 +1,21 @@
 # Post-release backlog: round record and release plan
 
-**Status on 2026-10-28: 17 pull requests open (#111–#127), none merged. New
+**Status on 2026-10-31: 21 pull requests open (#111–#131), none merged. New
 release gate NOT STARTED.** Production is the certified release `fdf6559`,
 unchanged throughout this work.
 
 The decisions only a person can make before launch are in
-`docs/launch-human-decisions.md`. Current production state lives in
-`docs/release-state.md`. The legal review's open items are in
-`docs/legal-review-checklist.md`.
+`docs/launch-human-decisions.md`. The privacy decisions for the owner and the
+legal reviewer are in `docs/privacy-decisions.md`. Current production state
+lives in `docs/release-state.md`. The legal review's open items are in
+`docs/legal-review-checklist.md`. The tenant-isolation audit (DEF-08) is
+`docs/tenant-isolation-audit.md` on #128.
+
+**The 2026-10-31 round** (§0) re-verified every PR against the brief's defect
+list. It opened #128 to #131, and added fixes or tests to #122, #123, #124,
+#126 and #127. It found DEF-40 to DEF-52, and merged twenty heads together
+locally: unit, invariants, build, browser and audit. #131 was opened after
+that rehearsal.
 
 > **Merging any of these is a production change.** Vercel deploys every push to
 > `main`, so every merge gives production a new deployment id, moving it off the
@@ -15,20 +23,38 @@ The decisions only a person can make before launch are in
 > #112 applies its migration and changes the invariant verifier, and #122
 > changes the verifier. The next release gate decides when (§9).
 
-## 1. Baseline (re-observed 2026-10-28, read-only)
+## 0. The 2026-10-31 round
+
+| Change | PR | Head | Evidence |
+|---|---|---|---|
+| **DEF-40:** the authorisation resolvers (`lib/rbac/scope.ts`) loaded the row by id alone, and RLS alone made their `organizationId` assertion true. With RLS taken away, organisation A's owner cancelled B's appointment (200) and deleted B's waitlist entry (200). Now every resolver names the organisation. Plus the DEF-08 audit: inventory, review of all 56 bypass queries, ratchet test | **#128 (new)** | `4fb350c` | 4 red with the resolvers reverted; ratchet 3 ways; CI `41137370607` |
+| **DEF-41:** a suspended or archived organisation's public widget took bookings. Now it refuses exactly what `can()` refuses. **DEF-48** (Codex): the status is re-checked `FOR SHARE` in the write transaction | **#129 (new)** | `13df39b` | 5 statuses × 3 paths agree with `can()`; 3 red reverted; race red without the re-check; CI `41133255069` |
+| **F-5:** a scheduler cancellation now runs the waitlist fan-out the API runs (one function). **A behaviour change for the owner to accept** | **#130 (new, stacked on #114)** | `af6ee00` | 4 tests; perturbations 2/1/1; CI `41130954291` |
+| **DEF-42:** public booking raced an erasure and attached to the redacted customer | #126 | `e9baeb5` | 2 red on the original; 2 red without `FOR SHARE`; CI `41129436990` |
+| **DEF-44:** the rollback rule accepted `END;`, `COMMIT AND CHAIN;`, `ROLLBACK;`, `ABORT;`, `ROLLBACK TO SAVEPOINT` and psql meta-commands inside the transaction. Also, the `DO`-block fixtures never contained `$$` (a `String.replace` pitfall) | #124 | `bd2c35f` | 1 red per check removed; #112 with `END;` injected refused; CI `41132514531` |
+| **DEF-49:** check 2b's precedence levels 2 and 4 were untested | #122 | `433d9e6` | levels swapped: 1 red (the existing 59 all passed); CI `41131599030` |
+| **DEF-50:** a never-issued reset link was not tested against a live one | #127 | `08f747b` | token filter removed: 1 red; CI `41132971390` |
+| **DEF-43:** a decline or revoke racing an accept overwrote the accepted transfer. **DEF-52:** `nominateTransfer`'s notification sat in a plain catch inside the transaction, so a failure silently rolled back the nomination itself | **#131 (new)** | `91f6a88` | both reproduced on `main`'s code, then fixed; CI `41137046677` |
+| A production-code guard against swallowed DB errors in transactions (found DEF-52; its first version missed #114's own defect, fixed before commit) | #123 | `de7f9a4` | emptied allowlist reports exactly the 3 known instances; CI `41137186689` |
+
+Verified with no new defect (details in the PR threads): #111's audit is 0 (re-run 2026-10-28 and on the combined lockfile 2026-10-30); #125's constant-time and authorisation fixes are complete; #114, #115, #112 and #121 match their claims. Recorded, not changed: DEF-45, DEF-46, DEF-51 (§5), and the workflow hardening items (§6).
+
+**Codex:** every re-review requested on 2026-10-30T21:51–21:54Z was refused with "You have reached your Codex usage limits for code reviews" (§10).
+
+## 1. Baseline (re-observed 2026-10-30, read-only)
 
 | Fact | Observed |
 |---|---|
 | `origin/main` | `fdf6559891788a41b545ae5823de89b5f3a1689f`, unchanged since 2026-09-30 |
 | Production deployment | `6769046032`, sha `fdf6559`, created 2026-09-30T20:09:21Z |
 | Certification | soak #110, closed 2026-10-03, certifying `fdf6559` / `6769046032`. Untouched |
-| Production monitor | run `40598209604` (2026-10-27T22:53Z, scheduled): 26/29 checks passed. The one failure is `reminders-missed NOT VERIFIED`: no appointment was owed a reminder in 48 h. Same state as on 2026-10-18 |
+| Production monitor | run `41130853869` (2026-10-30T21:24Z, scheduled): 26/29 checks passed. The one failure is `reminders-missed NOT VERIFIED`: no appointment was owed a reminder in 48 h. Same state since 2026-10-18 |
 | Open `ops-incident` | #90 only (reopened 2026-10-05 by the empty window; see #119) |
-| Sentry re-verification | run `40581604800`, 2026-10-27T20:50Z, scheduled: success |
-| Backups | run `40463152970`, 2026-10-27T06:47Z, scheduled: success. Restore drill last green `37193588304`, 2026-10-04 |
+| Sentry re-verification | run `41127370297`, 2026-10-30T20:58Z, scheduled: success |
+| Backups | run `41021710277`, 2026-10-30T07:42Z, scheduled: success. Restore drill last green `37193588304`, 2026-10-04 |
 | Branch protection on `main` | none (`404 Branch not protected`) |
 | Repository security settings | Dependabot alerts **disabled**, Dependabot security updates disabled, secret scanning disabled, push protection disabled (DEF-20) |
-| `npm audit` on `main`'s lockfile | **2 critical, 5 high, 3 moderate**, across `next`, `@sentry/nextjs`, `sharp`, `undici`, `zod`, `fast-uri`, `source-map-js`, `vite`, `vitest`, `@vitest/mocker`. All have published fixes; #111 applies them (§6) |
+| `npm audit` on `main`'s lockfile (2026-10-28T16:41Z) | **2 critical, 5 high, 3 moderate**, across `next`, `@sentry/nextjs`, `sharp`, `undici`, `zod`, `fast-uri`, `source-map-js`, `vite`, `vitest`, `@vitest/mocker`. All have published fixes; #111 applies them (§6) |
 
 ## 2. The pull requests
 
@@ -48,12 +74,16 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | #118 | `fix/scheduler-resilience` | `30ae8cc` | More schedule lines (GitHub throttles each line), plus tests proving overlapping runs are safe | after #119 |
 | #119 | `fix/monitor-verification-semantics` | `9a60698` | An empty reminder window is `NOT VERIFIED`, not a failure. Does not end #90 | — |
 | #120 | `docs/post-release-backlog` | this PR | This record, the launch decisions, the legal checklist | — |
-| #122 | `fix/verify-trigger-states` | `c37298e` | The verifier refuses replica-only tenant-isolation triggers and an effective `session_replication_role = replica`, at every level including the server's | — |
-| #123 | `test/teardown-failures-visible` | `59324d2` | Test teardowns no longer swallow DB errors inside transactions; a static check keeps it that way | — |
-| #124 | `docs/migration-rollback-inventory` | `8bdae89` | Rollback rules and inventory for the 74 applied migrations, plus a test holding new migrations to one complete rollback transaction | — |
+| #122 | `fix/verify-trigger-states` | `433d9e6` | The verifier refuses replica-only tenant-isolation triggers and an effective `session_replication_role = replica`, at every level including the server's | — |
+| #123 | `test/teardown-failures-visible` | `de7f9a4` | Test teardowns no longer swallow DB errors inside transactions; a static check keeps it that way | — |
+| #124 | `docs/migration-rollback-inventory` | `bd2c35f` | Rollback rules and inventory for the 74 applied migrations, plus a test holding new migrations to one complete rollback transaction | — |
 | #125 | `fix/auth-tenancy-hardening` | `130956d` | Constant-time bearer checks, push-unsubscribe ownership, send-now's explicit org filter | — |
-| #126 | `fix/erasure-minimisation` | `eceebc5` | Erasure removes waitlist entries and delivery contents, copies the name nowhere, and nothing new can attach to a redacted customer | **stacked on #114** |
-| #127 | `fix/db-clock-reset-atomicity` | `5e9f81f` | Password-reset expiry on the database clock, and a race-free single use | — |
+| #126 | `fix/erasure-minimisation` | `e9baeb5` | Erasure removes waitlist entries and delivery contents, copies the name nowhere, and nothing new can attach to a redacted customer | **stacked on #114** |
+| #127 | `fix/db-clock-reset-atomicity` | `08f747b` | Password-reset expiry on the database clock, and a race-free single use | — |
+| #128 | `fix/tenant-isolation-audit` | `4fb350c` | The authorisation resolvers name the organisation (DEF-40); the DEF-08 audit, inventory and ratchet | — |
+| #129 | `fix/public-booking-org-status` | `13df39b` | A suspended or archived organisation's widget takes no bookings, re-checked under a lock (DEF-41, DEF-48) | — |
+| #130 | `feat/waitlist-on-ui-cancel` | `af6ee00` | F-5: a scheduler cancellation notifies the waitlist as the API does. **Behaviour change** | **stacked on #114** |
+| #131 | `fix/ownership-transfer-decided-once` | `91f6a88` | An ownership transfer is decided once (DEF-43); a failed nominee notification no longer undoes the nomination (DEF-52) | — |
 
 ## 3. CI status at each head
 
@@ -69,12 +99,16 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | #118 | `30ae8cc` | `39152102456` | pass | pass | pass | pass | fail |
 | #119 | `9a60698` | `39152106466` | pass | pass | pass | pass | fail |
 | #121 | `87153fc` | `40142057430` | pass | pass | pass | pass | fail |
-| #122 | `c37298e` | `40142776360` | pass | pass | pass | pass | fail |
-| #123 | `59324d2` | `40112107258` | pass | pass | pass | pass | fail |
-| #124 | `8bdae89` | `40608888652` | pass | pass | pass | pass | fail |
+| #122 | `433d9e6` | `41131599030` | pass | pass | pass | pass | fail |
+| #123 | `de7f9a4` | `41137186689` | pass | pass | pass | pass | fail |
+| #124 | `bd2c35f` | `41132514531` | pass | pass | pass | pass | fail |
 | #125 | `130956d` | `40139452758` | pass | pass | pass | pass | fail |
-| #126 | `eceebc5` | `40144054671` | pass | pass | pass | pass | fail |
-| #127 | `5e9f81f` | `40139752027` | pass | pass | pass | pass | fail |
+| #126 | `e9baeb5` | `41129436990` | pass | pass | pass | pass | fail |
+| #127 | `08f747b` | `41132971390` | pass | pass | pass | pass | fail |
+| #128 | `4fb350c` | `41137370607` | pass | pass | pass | pass | fail |
+| #129 | `13df39b` | `41133255069` | pass | pass | pass | pass | fail |
+| #130 | `af6ee00` | `41130954291` | pass | pass | pass | pass | fail |
+| #131 | `91f6a88` | `41137046677` | pass | pass | pass | pass | fail |
 
 The audit fails on `main`'s lockfile, which every branch but #111 carries, and
 on nothing any of these PRs change. It is red under its own name, and no
@@ -85,32 +119,50 @@ CI runs the invariants suite with nothing skipped, including the cluster-wide
 `ALTER SYSTEM` case of check 2b (59 tests in that file on #122's run). #120's
 own run is in its CI evidence comment.
 
-## 4. Every PR merged together (local rehearsal, 2026-10-28)
+## 4. Every PR merged together (local rehearsal, 2026-10-30)
 
-All seventeen heads were merged into a throwaway local branch built from
-`origin/main`, never pushed. **No textual conflict.** The one real conflict,
-#113 with #117, is resolved inside #117's branch.
+Every open head was merged into a throwaway local branch built from
+`origin/main` (`rehearsal/combined-2026-10-31`), never pushed. **No textual
+conflict.** The one real conflict, #113 with #117, is resolved inside #117's
+branch. The first pass had twenty heads (combined tree `7a2da31`); #131 and the
+newer #123 and #128 heads were merged in afterwards (`a0f2024`, all 21).
 
-| Check, combined tree `8bec8f5` | Result |
+| Check | Result |
 |---|---|
-| `npm ci` | exit 0 |
-| `format:check` / `lint` / `tsc --noEmit` | exit 0 / 0 (0 errors, `main`'s 11 warnings) / 0 |
-| `npm run test` (vitest, guards, orphan permissions, reachability) | **exit 0. 164 files, 2489 passed, 70 skipped.** The skips are the invariants suite's database cases, run separately below |
-| Invariants suite, fresh seeded UTC database, 75 migrations, `ALTER SYSTEM` case opted in | **71/71**. Afterwards the server's `session_replication_role` was `origin` from `default` |
-| `next build` | exit 0 |
-| Browser suite (all 9 projects, disposable database, CI's environment) | **266 passed, 3 skipped (269)**; `e2e:check`: all 9 required suites executed |
+| `npm ci` (real install, #111's lockfile) | exit 0; `next` 16.4.3, `@sentry/nextjs` 10.76.2, `sharp` 0.35.5, `undici` 7.30.1 |
 | `npm audit`, every severity | **0** |
-| gitleaks over every commit the PRs add (redacted output) | **0 findings** (40 commits); full history 0 (474 commits, 2026-10-25) |
-| #112's rollback, run verbatim from its header | schema byte-identical to the 74-migration baseline (`pg_dump -s -O -x`, apart from its per-dump `\restrict` key); a later deploy re-applies cleanly |
+| `format:check` / `lint` / `tsc --noEmit`, all 21 | exit 0 / 0 (0 errors, `main`'s 11 warnings) / 0 |
+| #112's preflight on both local databases, before the migration | `0` / `0` / `0\|0\|0\|PASS: nobody is booked in two places`, the documented output |
+| `npm run test`, 20 heads (`7a2da31`) | **exit 1: 2524 passed, 1 failed, 74 skipped.** The failure is environmental, not from any PR (see below) |
+| `npm run test`, all 21 heads, after 23:00 UTC (`a0f2024`) | **not run.** The clean re-run, due after 23:00 UTC, was cut off by a usage limit. Run `npm run test` on the combined tree before relying on it |
+| Invariants suite, 75 migrations, cluster-wide cases opted in, nothing else connected | **75/75** (71 before plus #122's 4 new). Afterwards the server read `origin` from `default`, with no role or database defaults left |
+| `next build` | exit 0 |
+| Browser suite, 20 heads, all 9 projects, disposable database, CI's environment | **266 passed, 3 skipped (269)**; `e2e:check`: all 9 required suites executed |
+| Browser suite, all 21 heads, fresh disposable database | **266 passed, 3 skipped (269)**; all 9 required suites executed. The 3 skips are the touch-height check on desktop projects, by design |
+| Production swallow scan (#123's new guard) over all 21 | **no instance**: the three known ones are each removed by their PR |
+| gitleaks over every commit this round added (redacted) | **0 findings** |
+| #112's rollback, run verbatim from its header, on the invariants database | 74 migrations, both triggers gone, schema **byte-identical** to a 74-migration predecessor (`pg_dump -s -O -x`, minus the per-dump `\restrict` key, 4299 lines each). Re-applied cleanly (both triggers back, enabled), then rolled back again: identical again |
 
-Every PR is at its final head, #112's predicate fix (DEF-35) and this
-document included. #124 moved to `8bdae89` afterwards (test-only, DEF-38 and DEF-39):
-its suite passes on the combined tree, against #112's real migration. After each run, #112's migration was rolled back out of
-both local databases, ledger row included, and verified at 74 migrations.
+**The one failure in the first run, and why it is not a code defect.**
+`tests/ops-metrics.test.ts` "reads audit_log partition state" expects the
+`audit_log` default partition to be empty. It held one row, written by
+`tests/reminder-gap-recovery.test.ts`, which fakes `Date` 25 hours ahead and
+runs a reminder tick (lines 378–379, unchanged on `main`). Prisma stamps
+`audit_log.at` from the application's clock (`@default(now())`), so the row was
+dated 2026-10-31T22:54Z. The **local** database's October partition was created
+with `+04` boundaries and ends at 2026-10-31T20:00Z, while November starts at
+00:00Z, so the row fell into the four-hour gap. It reproduced on `main`'s code.
+It can only happen between 19:00 and 23:00 UTC on 2026-10-30, and CI's fresh
+UTC database has no gap. Recorded as DEF-51 for the clock part.
+
+After the runs, #112's migration was rolled back out of both local databases,
+ledger row included, and both were verified at 74 migrations; the disposable
+browser-suite database was dropped.
 
 The combined diff was reviewed for accidental changes: no skipped, focused or
-deleted tests, every changed assertion in an existing test replaced by an equal
-or stronger one, no change to `.gitleaks*`, `AGENTS.md`, `CLAUDE.md` or `.env*`.
+deleted tests; every changed assertion in an existing test replaced by an
+equal or stronger one; no change to `.gitleaks*`, `AGENTS.md`, `CLAUDE.md` or
+`.env*`.
 
 ## 5. Defect ledger
 
@@ -158,12 +210,29 @@ are the tests that fail when the fix is removed.
 | DEF-37 | P3 | Docs | Seven PR bodies said the audit fails on `braces` | corrected in the bodies, 2026-10-28 | — | — |
 | DEF-38 | P2 | Migration safety | The rollback rule counted any statement as a reverse step, so `SELECT 1;` beside the ledger delete passed | #124 `029240a` | 3 no-op forms refused, a DO that drops accepted; 1 red with the rule off; #112 with `SELECT 1` in place of its steps fails | — |
 | DEF-39 | P2 | Migration safety | DEF-38's fix let a DO block count when its body mentioned a state-changing word, so `RAISE NOTICE 'DROP TABLE'` passed | #124 `8bdae89`: a DO block never counts; the reverse is plain statements | a notice and a real `EXECUTE 'DROP …'` each refused alone, a DO beside a DROP passes; red against DEF-38's rule | — |
+| DEF-40 | P2 | Tenancy | The authorisation resolvers loaded one row by id inside `withOrg` and returned a `Resource` asserting the caller's organisation, true only because RLS made it so. Without RLS: A's owner cancelled B's appointment and deleted B's waitlist entry (200 each) | #128 `7e386e0` | `tenant-scope-resolvers` 6; 4 red reverted, both complements pass | — |
+| DEF-41 | P2 | Booking, fail-closed | The public widget took bookings, and rendered, for a suspended or archived organisation, whose staff `can()` locks out (CLAUDE.md invariant 2) | #129 `eb1e25d` | 5 statuses × page, POST and `can()` agree; 3 red reverted | — |
+| DEF-42 | P2 | Privacy | Public booking matched a customer with a plain read; racing an erasure, it attached the booking and its notes to the redacted customer (DEF-31's gap; DEF-33's harm through the retention sweep) | #126 `e9baeb5` | real interleaving; 2 red original, 2 red without `FOR SHARE` | #114 |
+| DEF-43 | P3 | Admin, integrity | `declineTransfer`/`revokeTransfer` check `pending`, then update by id with no status predicate and a Node-clock `decidedAt`; racing an accept, either relabels an accepted ownership transfer (and decline audits a refusal that never happened) | #131 `3b89f07` | real interleaving; both red on `main` | — |
+| DEF-44 | P2 | Migration safety | The rollback rule accepted `END;`, `COMMIT AND CHAIN;`, `ROLLBACK;`, `ABORT;`, `ROLLBACK TO SAVEPOINT` and psql meta-commands inside the one transaction. The `DO` fixtures never held `$$` (`String.replace` pitfall) | #124 `bd2c35f` | 1 red per check removed; #112 with `END;` injected refused | — |
+| DEF-45 | — | Privacy | Staff can add treatment history to, and type PII back into, a redacted customer; a name restored un-erases the row | — | — | **owner and legal** (`docs/privacy-decisions.md`) |
+| DEF-46 | — | Operations | The reminders cron messages customers of suspended and archived organisations | — | — | **owner** (#129's description) |
+| DEF-47 | P2 | Tooling | (Codex on #128.) The inventory counted `organizationId` anywhere in a query's arguments, including `select` and SQL projections, as a tenant filter; 15 bypass queries were hidden | #128 `58c8384` | predicate-only; 15 rows reviewed; old classifier 3 red | — |
+| DEF-48 | P2 | Booking | (Codex on #129.) The status check ran before the write transaction; a suspension committing in between did not stop the booking | #129 `13df39b` | real interleaving; red without the re-check | — |
+| DEF-49 | P3 | Verifier tests | Check 2b's precedence levels 2 (role, every database) and 4 (every role) were implemented but untested | #122 `433d9e6` | levels swapped: 1 red (existing 59 passed); level 4 ignored: 1 red | — |
+| DEF-50 | P3 | Auth tests | No case presented a never-issued reset link while a real one was live | #127 `08f747b` | token filter removed: 1 red, nothing else | — |
+| DEF-51 | P3 | Audit clock | `audit_log.at` is Prisma's `@default(now())`, filled in by the application, not the database: a test that fakes `Date` +25 h wrote an audit row 25 h ahead. On the local database, whose October partition ends at a `+04` boundary, it fell into the default partition and failed `ops-metrics` between 19:00 and 23:00 UTC on 2026-10-30 (reproduced on `main`'s code). The same mechanism lets a skewed application clock misdate the audit log | **recorded, not changed**; proposal §11 | reproduced on `main` | — |
+| DEF-52 | P2 | Admin, integrity | `nominateTransfer` sent the nominee's notification in a plain `try/catch` inside its transaction. A failed statement aborted the transaction and the COMMIT silently rolled back the nomination, while the function returned its id and emailed the nominee. #114's shape, found by #123's new production scan | #131 `91f6a88` | real failing statement; red on `main` | — |
 
 Earlier findings, 2026-10-17 and 10-18, final status: F-1 to F-4, F-6, F-8 to
 F-11 and F-13 to F-20 are fixed in their PRs (F-21 became DEF-09 and is fixed
-in #126). Two stay open: **F-5**, a UI cancellation does not notify the
-waitlist (product decision), and **F-7**, lead times under 10 hours against the
-observed tick gaps (a production read and a decision, §9).
+in #126). **F-5**, a UI cancellation does not notify the waitlist: the
+documented behaviour (`docs/features-en.md`, "runs on cancel transition") is
+implemented in **#130**, a behaviour change for the owner to accept. **F-7**,
+lead times under 10 hours against the observed tick gaps: the implemented floor
+is `MIN_REMINDER_LEAD_HOURS = 8`, calibrated on a 4 h 40 m gap, and #118's
+measurement found 9.9 h. No written rule says 10 h, so nothing was hard-coded.
+It needs the production read (runbook 8) and a decision (§11).
 
 ## 6. Security posture
 
@@ -181,7 +250,22 @@ Also reviewed this round, with no defect found: payment webhooks (signature
 verified; the mock gateway refused in production), ownership transfer (scoped),
 and the workflows (no `pull_request_target`, no injection from event fields,
 pull-request workflows use only `GITHUB_TOKEN`, third-party actions pinned to
-a SHA). Secret scanning: CI's gitleaks passes on every PR, and a local gitleaks
+a SHA).
+
+Re-audited 2026-10-31, with no defect found:
+- Every untrusted value reaches a shell through `env:`, never interpolated: PR
+  title and body, and every `workflow_dispatch` input.
+- The repository's default token permission is `read`.
+
+Hardening, recommended and not changed (none is a defect today):
+1. Give `cron.yml` (`permissions: {}`) and `load-test.yml`
+   (`contents: read`) an explicit `permissions` block, so they do not depend on
+   the repository default.
+2. Pass `secrets.APP_URL` and `secrets.CRON_SECRET` to `curl` through `env:`
+   in `cron.yml`, not interpolated.
+3. Pin GitHub-owned actions by SHA (DEF-21).
+
+`#118` edits `cron.yml`, so 1 and 2 belong after it. Secret scanning: CI's gitleaks passes on every PR, and a local gitleaks
 run over the full history found nothing.
 
 ## 7. Privacy
@@ -262,7 +346,11 @@ context only.
 | 14 | #117 | Contains #113; after step 7 its diff is its own changes |
 | 15 | #123 | Test-only |
 | 16 | #124 | Its rule then applies to every new migration |
-| 17 | #120 | Docs |
+| 17 | #128 | Tenancy resolvers and the DEF-08 ratchet. Independent; any time after #121 |
+| 18 | #129 | Booking fail-closed. Independent |
+| 19 | #130 | Stacked on #114. **Only if the owner accepts F-5's behaviour change** |
+| 20 | #131 | Ownership transfer integrity. Independent |
+| 21 | #120 | Docs |
 
 Before each merge, update the branch, then read that head's own CI run on the
 then-current `main`. After each merge, read the push run on the merge commit
@@ -298,6 +386,10 @@ crafted allowed call.
 | #125 | Each cron route answers 401 to a wrong bearer; the scheduled runs keep succeeding |
 | #126 | Redact a UAT customer with a waitlist entry and a delivered reminder: entry gone and audited, record cleared, no name in `/audit` or the bell; adding them to the waitlist or booking them is refused |
 | #127 | A reset link works once; a second use is refused cleanly |
+| #128 | Unchanged behaviour: the scoped-RBAC UAT (owner, branch manager, provider, front desk) still allows and refuses as before. Cross-tenant behaviour without RLS is a test-only condition |
+| #129 | Suspend the UAT organisation: its `/book/<slug>` is 404, and a POST is 400 with nothing written. Reactivate: booking works |
+| #130 | Cancel a UAT appointment in the scheduler with a matching UAT waitlist entry: the entry is `notified`, audited once, with one "Slot opened" bell. Cancel again: nothing new |
+| #131 | Nominate a UAT member as owner, then accept: ownership moves, and a later revoke attempt is refused cleanly |
 
 ### Operator runbooks
 
@@ -356,6 +448,28 @@ crafted allowed call.
    `SELECT count(*) FROM organizations WHERE reminder_lead_hours < 10;`
    Record the count and the decision (§11).
 
+9. **Repository security settings (owner; not done by any agent).** Observed
+   2026-10-30 via `GET /repos/…` (read-only): Dependabot security updates,
+   secret scanning, push protection and validity checks all `disabled`;
+   Dependabot alerts disabled (`/vulnerability-alerts` 404); `main`
+   unprotected. The repository is public, so all of these are available at no
+   cost. In this order:
+   1. **Dependabot alerts:** `gh api -X PUT repos/levantchanturidze/bookpitch/vulnerability-alerts`.
+      Verify: the same path with `GET` answers 204.
+   2. **Dependabot security updates:** `gh api -X PUT repos/levantchanturidze/bookpitch/automated-security-fixes`.
+      Expect PRs for the advisories #111 already fixes; close them in favour of
+      #111, or let #111 merge first.
+   3. **Secret scanning and push protection:**
+      `gh api -X PATCH repos/levantchanturidze/bookpitch -f 'security_and_analysis[secret_scanning][status]=enabled' -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'`.
+      Verify: `gh api repos/levantchanturidze/bookpitch --jq .security_and_analysis`
+      shows both `enabled`. CI's gitleaks job stays; the two are complementary
+      (push protection blocks before the push, gitleaks reviews every PR).
+   4. **Branch protection, only once #111 is on `main`:** the five-check rule in
+      `docs/release-state.md` §4 (#121). Verify by watching it refuse: open a
+      throwaway PR whose `Pull request body` check fails (a closing keyword
+      before an issue number), and confirm the merge button is blocked. Then
+      close it.
+
 ### Before a soak can certify the new release
 
 - Every merge done; the final SHA served on both canonical hosts.
@@ -385,7 +499,7 @@ crafted allowed call.
 | Scheduler validation (#118) | **NOT RUN** | measurable only after the merge | runbook 5 | operator |
 | Sentry | **PASS** for the current deployment | `40581604800`, 2026-10-27 | re-verify at the soak start | automation |
 | Lead time under 10 hours | **NOT RUN** | production read | runbook 8 | operator |
-| Codex review | **PARTIAL** | 16 of 17 PRs reviewed at least once, and every finding fixed and answered in its thread (DEF-02–04, 24–35, 38–39). Clean at the current code head: #111 (its one finding fixed in #121), #112, #113, #114, #115, #116, #117, #119, #122, #123. Not re-reviewed at the newest code: #124 (its 2026-10-28 reviews found DEF-38 and DEF-39, fixed in `029240a` and `8bdae89`), #126 (in progress), #125 and #127 (reviewed when opened). **#118 has never been reviewed**: its 2026-10-17 run hit Codex's usage limit, later requests stalled, and the last answered "Setup repeatedly failed" (Codex's environment setup, an owner setting) | read the results before each merge; get #118 reviewed | release owner |
+| Codex review | **PARTIAL; blocked by Codex's usage limit** | On 2026-10-30, Codex reviewed #128 and #129 on opening; each finding was fixed and answered (DEF-47, DEF-48). Every re-review requested 21:51–21:54Z (#118, #122, #124, #125, #126, #127, #128, #129, #130) was refused: "You have reached your Codex usage limits for code reviews". **Not reviewed at their current heads:** #122, #124, #125, #126, #127, #128, #129. **Never reviewed:** #118, #130. Earlier: 16 of 17 PRs reviewed at least once, and every finding fixed and answered in its thread (DEF-02–04, 24–35, 38–39). Clean at the current code head: #111 (its one finding fixed in #121), #112, #113, #114, #115, #116, #117, #119, #122, #123. Not re-reviewed at the newest code: #124 (its 2026-10-28 reviews found DEF-38 and DEF-39, fixed in `029240a` and `8bdae89`), #126 (in progress), #125 and #127 (reviewed when opened). **#118 has never been reviewed**: its 2026-10-17 run hit Codex's usage limit, later requests stalled, and the last answered "Setup repeatedly failed" (Codex's environment setup, an owner setting) | read the results before each merge; get #118 reviewed | release owner |
 | Legal approval | **BLOCKED** | `docs/launch-human-decisions.md` §1 | the legal reviewer's decisions, including erasure (§7) | legal reviewer, operator |
 | Operator identity | **BLOCKED** | same, §2 | supply the five fields | operator |
 | Test mailbox | **BLOCKED** | same, §3 | nominate one | release owner |
@@ -413,7 +527,34 @@ crafted allowed call.
 8. **Positive reminder evidence in every soak window** (after #119): if wanted,
    add it as an explicit soak gate.
 9. **Waitlist notifications from UI cancellations** (F-5).
-10. **Short lead times** (F-7), if the gate query is non-zero.
+10. **Short lead times** (F-7). The floor is 8 h, calibrated on a 4 h 40 m
+    gap; #118's measurement found a 9.9 h gap. Options:
+    - keep 8 h, and rely on #118 meeting runbook 5's criteria;
+    - raise the floor (10 h or 12 h) in `lib/messaging/reminder-window.ts`,
+      which existing organisations below it keep until they next save;
+    - move the reminders tick to `pg_cron` (item 7).
+
+    First, run runbook 8's count.
+11. **Accept or decline F-5's behaviour change (#130).** Staff start getting
+    "Slot opened" notifications from scheduler cancellations, as the docs say
+    they should.
+12. **Privacy decisions DEF-10, DEF-11, DEF-12, DEF-13 and DEF-45**, with the
+    legal reviewer: options, consequences and a recommendation for each are
+    in `docs/privacy-decisions.md`.
+13. **Reminders for suspended or archived organisations** (DEF-46). Options are
+    in #129's description.
+14. **Schedule the DEF-08 sweep, or accept RLS as the enforcer** for the 98
+    RLS-only queries. RLS is verified on every migration run; the proposal is
+    `docs/tenant-isolation-audit.md` §7 (#128).
+15. **The audit log's clock** (DEF-51). Make `audit_log.at` a database
+    default (`@default(dbgenerated("now()"))`, no migration needed if the
+    column default is already `now()`; to be confirmed with
+    `prisma migrate diff`), so evidence timestamps come from one clock.
+    Also, once and read-only, check that production's `audit_log` partitions
+    are contiguous.
+16. **Codex's usage limit.** Every re-review this round was refused. Raise
+    the limit, or name another independent reviewer for #118, #130 and the
+    seven PRs whose heads moved (§10).
 
 ## 12. How the evidence was produced, and what it does not establish
 
