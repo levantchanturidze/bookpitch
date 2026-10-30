@@ -15,6 +15,7 @@ const { getPublicLocation } = await import('@/lib/public-booking');
 const route = await import('@/app/api/public/book/route');
 const { can, requireAuthContext } = await import('@/lib/rbac');
 const { mockJwt } = await import('./helpers/session');
+const { Client } = await import('pg');
 const { __clearAuthContextCache } = await import('@/lib/rbac/context');
 
 import type { NextRequest } from 'next/server';
@@ -174,5 +175,45 @@ describe('the public widget refuses exactly the organisations can() refuses', ()
       if ((await getPublicLocation(fx.slug)) === null) refused.push(status);
     }
     expect(refused).toEqual(['suspended', 'archived']);
+  });
+
+  it('a suspension that commits while a booking is in flight stops it (Codex review on #129)', async () => {
+    await setStatus('active');
+    const email = `visitor-race-${stamp}@bp.test`;
+    // Another connection suspends the organisation and holds the change open.
+    // The booking passes getPublicLocation's check (the change is not
+    // committed), then must wait for it in its own transaction, see it and
+    // refuse, instead of booking into an organisation that is now suspended.
+    const other = new Client({ connectionString: process.env.DATABASE_URL });
+    await other.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query(`SET LOCAL app.current_org_id = '${fx.org}'`);
+      await other.query(`UPDATE organizations SET status = 'suspended' WHERE id = $1`, [fx.org]);
+      const otherPid = (await other.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+        .rows[0].pid;
+      const booking = post(email);
+      booking.catch(() => undefined);
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i++) {
+        const rows = await unsafePrismaAdmin.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT count(*)::bigint AS n FROM pg_stat_activity WHERE ${otherPid} = ANY(pg_blocking_pids(pid))`,
+        );
+        waiting = Number(rows[0].n) > 0;
+        if (!waiting) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(waiting, 'the booking never waited for the status change').toBe(true);
+      await other.query('COMMIT');
+      const res = await booking;
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'booking widget not found' });
+    } finally {
+      await other.end();
+    }
+    expect(
+      await unsafePrismaAdmin.customer.count({ where: { organizationId: fx.org, email } }),
+      'nothing is written for the refused booking',
+    ).toBe(0);
+    await setStatus('active');
   });
 });

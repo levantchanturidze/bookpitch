@@ -129,6 +129,19 @@ export async function submitPublicBooking(input: PublicBookInput): Promise<Publi
   const endsAt = new Date(startsAt.getTime() + service.durationMinutes * 60_000);
 
   const result = await withoutRls(async (tx) => {
+    // The status checked by getPublicLocation, again, under a share lock held
+    // to commit (Codex review on #129). A suspension committed after that check
+    // would otherwise not stop this booking. A status change takes a row lock
+    // that conflicts with this one, so the two serialise: either the booking
+    // commits first, or it waits, sees the new status and is refused.
+    const [org] = await tx.$queryRaw<Array<{ status: string }>>`
+      SELECT status FROM organizations
+       WHERE id = ${location.organizationId}::uuid
+         FOR SHARE`;
+    if (!org || NOT_BOOKABLE_ORG_STATUSES.has(org.status)) {
+      throw new InvalidInputError('booking widget not found');
+    }
+
     // Match on (org, email) OR (org, phone) so returning customers reuse
     // their row; never leak identity across orgs.
     const existing = email
