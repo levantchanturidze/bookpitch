@@ -28,6 +28,8 @@ const VALIDATED =
 const CREATES_ORG = 'creates the organisation itself';
 const PLATFORM =
   'platform plane, behind a platform permission; operates across organisations by design';
+const PUBLIC_SLUG =
+  "keyed by the location's public booking slug; the organisation is the location's own";
 
 const REVIEWED_BYPASS: Record<string, { count: number; why: string }> = {
   'app/api/cron/reminders/route.ts :: POST :: organization.count': { count: 1, why: SYSTEM },
@@ -137,6 +139,55 @@ const REVIEWED_BYPASS: Record<string, { count: number; why: string }> = {
     count: 1,
     why: ACTOR,
   },
+  // Counted as naming the organisation until the classifier read only the
+  // predicate (Codex review on #128): each selects or includes an organisation
+  // field without filtering by it. Each was then read like the rest.
+  'app/api/cron/reminders/route.ts :: POST :: organization.findMany': { count: 1, why: SYSTEM },
+  'app/api/cron/retention/route.ts :: POST :: organization.findMany': { count: 1, why: SYSTEM },
+  'lib/audit-digest.ts :: runDigestForAllOrgs :: organization.findMany': { count: 1, why: SYSTEM },
+  'lib/ops-metrics.ts :: collectOpsMetrics :: appointments+customers+organizations.$queryRaw': {
+    count: 1,
+    why: `${SYSTEM}; counts only, no row leaves the query`,
+  },
+  'lib/ops-metrics.ts :: collectOpsMetrics :: appointments+message_log+organizations.$queryRaw': {
+    count: 1,
+    why: `${SYSTEM}; counts only, no row leaves the query`,
+  },
+  'lib/ops-metrics.ts :: collectOpsMetrics :: customers+memberships+organizations.$queryRaw': {
+    count: 1,
+    why: `${SYSTEM}; counts only, no row leaves the query`,
+  },
+  'lib/admin/ownership-transfer.ts :: pendingTransfersForNominee :: ownershipTransfer.findMany': {
+    count: 1,
+    why: ACTOR,
+  },
+  'lib/admin/ownership-transfer.ts :: pendingTransfersFromNominator :: ownershipTransfer.findMany':
+    { count: 1, why: ACTOR },
+  'lib/billing/service.ts :: lookupOrgByCustomer :: organization.findUnique': {
+    count: 1,
+    why: "keyed by the customer id from Stripe's signature-verified webhook event",
+  },
+  'lib/org-switch.ts :: listUserMemberships :: membership.findMany': {
+    count: 1,
+    why: `${ACTOR}: the session user's own memberships`,
+  },
+  'lib/platform/audit.ts :: queryPlatformAudit :: auditLog.findMany': { count: 1, why: PLATFORM },
+  'lib/platform/orgs.ts :: createOrganization :: organization.create': {
+    count: 1,
+    why: `${CREATES_ORG} (platform plane)`,
+  },
+  'lib/public-booking.ts :: getPublicLocation :: location.findUnique': {
+    count: 1,
+    why: PUBLIC_SLUG,
+  },
+  'lib/rbac/context.ts :: buildOrgContext :: membership.findUnique': {
+    count: 1,
+    why: "the session's own membership; refused unless its userId is the signed-in user",
+  },
+  'lib/rbac/context.ts :: loadActiveImpersonation :: impersonation_sessions.$queryRaw': {
+    count: 1,
+    why: ACTOR,
+  },
 };
 
 const keyOf = (s: QuerySite) => `${s.file} :: ${s.fn} :: ${s.target}.${s.op}`;
@@ -238,6 +289,36 @@ describe('the inventory classifier', () => {
       ['sql', 'customers', true],
       ['sql', 'customers', false],
     ]);
+  });
+
+  it('reads the organisation from the predicate, never from what is selected (Codex review on #128)', () => {
+    const sites = classify(`
+      export async function e(id: string, organizationId: string) {
+        await unsafePrismaAdmin.customer.findFirst({ where: { id }, select: { organizationId: true } });
+        await unsafePrismaAdmin.customer.findMany({ include: { organization: true } });
+        await unsafePrismaAdmin.customer.update({ where: { id }, data: { organizationId } });
+        await unsafePrismaAdmin.$queryRaw\`SELECT organization_id FROM customers WHERE id = \${id}\`;
+        await unsafePrismaAdmin.$executeRaw\`UPDATE customers SET organization_id = \${organizationId} WHERE id = \${id}\`;
+        await unsafePrismaAdmin.$queryRaw\`SELECT a.id FROM appointments a JOIN customers c ON c.organization_id = a.organization_id WHERE a.id = \${id}\`;
+        await unsafePrismaAdmin.$queryRaw\`DELETE FROM customers WHERE id = \${id} RETURNING organization_id\`;
+      }
+    `);
+    expect(sites.map((s) => s.orgNamed)).toEqual([false, false, false, false, false, false, false]);
+  });
+
+  it('COMPLEMENT: a predicate on the organisation is still seen, in every form', () => {
+    const sites = classify(`
+      export async function f(id: string, organizationId: string, userId: string) {
+        await unsafePrismaAdmin.customer.findFirst({ where: { id, organizationId } });
+        await unsafePrismaAdmin.membership.findUnique({ where: { organizationId_userId: { organizationId, userId } } });
+        await unsafePrismaAdmin.customer.create({ data: { organizationId, name: 'x' } });
+        await unsafePrismaAdmin.$queryRaw\`SELECT id FROM customers WHERE organization_id = \${organizationId}::uuid\`;
+        await unsafePrismaAdmin.$queryRaw\`SELECT a.id FROM appointments a WHERE a.organization_id = ANY(\${[organizationId]})\`;
+        await unsafePrismaAdmin.$executeRaw\`INSERT INTO customers (organization_id, name) VALUES (\${organizationId}, 'x')\`;
+        await unsafePrismaAdmin.$queryRaw\`SELECT status FROM organizations WHERE id = \${organizationId}::uuid FOR SHARE\`;
+      }
+    `);
+    expect(sites.map((s) => s.orgNamed)).toEqual([true, true, true, true, true, true, true]);
   });
 
   it('does not count a captured outer client inside withOrg as RLS-scoped', () => {

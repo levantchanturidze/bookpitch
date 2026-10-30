@@ -108,9 +108,10 @@ const APP_CLIENTS = new Set(['prismaApp', 'prismaReplica']);
 
 // Keys that name the organisation. `targetOrganizationId` is break-glass's.
 const ORG_KEY = /\b(organizationId|targetOrganizationId|organization_id)\b/;
-// A relation filter through a model that carries the org, e.g.
-// `staff: { organizationId }` on staff_availability.
-const ORG_RELATION = /\b(organization|organizationId_[A-Za-z_]+)\b/;
+// A compound unique selector containing the org, e.g. `organizationId_userId`.
+// (A relation filter through a model that carries the org, such as
+// `staff: { organizationId }`, already matches ORG_KEY.)
+const ORG_COMPOUND = /\borganizationId_[A-Za-z_]+\b/;
 
 function walk(dir: string, out: string[]): void {
   for (const name of readdirSync(dir)) {
@@ -184,11 +185,66 @@ function contextOf(node: ts.Node, receiver: string): Context {
   return 'unknown';
 }
 
-function prismaOrgNamed(model: string, argText: string): boolean {
-  if (ORG_KEY.test(argText) || ORG_RELATION.test(argText)) return true;
+/**
+ * The part of a Prisma call that decides WHICH rows it touches: the `where`,
+ * or a create's `data`. Never the `select`, `include` or an update's `data`:
+ * selecting organizationId does not filter by it (Codex review on #128). An
+ * argument that is not an object literal cannot be read here, and counts as
+ * naming nothing.
+ */
+function prismaPredicateText(
+  op: string,
+  args: readonly ts.Expression[],
+  sf: ts.SourceFile,
+): string {
+  const first = args[0];
+  if (!first || !ts.isObjectLiteralExpression(first)) return '';
+  const keys = /^create(Many(AndReturn)?)?$/.test(op) ? ['data'] : ['where'];
+  return first.properties
+    .filter(
+      (p) =>
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        keys.includes(p.name.getText(sf)),
+    )
+    .map((p) => p.getText(sf))
+    .join(',');
+}
+
+function prismaOrgNamed(model: string, predicate: string): boolean {
+  if (ORG_KEY.test(predicate) || ORG_COMPOUND.test(predicate)) return true;
   // On the organization model the row's own id IS the organisation.
-  if (model === 'organization' && /\bid\b/.test(argText)) return true;
+  if (model === 'organization' && /\bid\b/.test(predicate)) return true;
   return false;
+}
+
+// A value bound into the statement: a template `${…}`, a `$1` placeholder, or
+// the RLS session's organisation.
+const BOUND = String.raw`(?:\$\{[^}]*\}|\$\d+|current_org_id\(\))`;
+const ORG_COLUMN = String.raw`(?:\w+\.)?organization_id`;
+const ORG_PREDICATE = new RegExp(
+  `${ORG_COLUMN}\\s*(?:=|IN|=\\s*ANY)\\s*\\(?\\s*${BOUND}|${BOUND}(?:::\\w+)?\\s*=\\s*${ORG_COLUMN}`,
+  'i',
+);
+const ORG_OWN_ID = new RegExp(`(?:\\w+\\.)?\\bid\\s*=\\s*${BOUND}`, 'i');
+
+/**
+ * Does a SQL statement restrict its rows to one organisation? Only a
+ * PREDICATE counts: organization_id compared with a bound value. Not a
+ * projection (`SELECT organization_id …`), an assignment (`SET
+ * organization_id = …`), a RETURNING list, or a join that ties two rows'
+ * organisations together without naming which (Codex review on #128). An
+ * INSERT names the organisation by writing the column, as a Prisma create's
+ * `data` does.
+ */
+function sqlOrgNamed(sql: string, tables: string[]): boolean {
+  if (/^\W*INSERT\b/i.test(sql)) return /\borganization_id\b/i.test(sql);
+  const predicate = sql
+    .replace(/\bRETURNING\b[\s\S]*$/i, ' ')
+    .replace(/\bSELECT\b[\s\S]*?\bFROM\b/gi, ' FROM ')
+    .replace(/\bSET\b(?!\s+LOCAL)[\s\S]*?(?=\bWHERE\b|\bFROM\b|$)/gi, ' ');
+  if (ORG_PREDICATE.test(predicate)) return true;
+  // The organizations table's own id is the organisation.
+  return tables.includes('organizations') && ORG_OWN_ID.test(predicate);
 }
 
 function prismaById(argText: string): boolean {
@@ -289,7 +345,10 @@ export function inventory(repoRoot: string): QuerySite[] {
           op: node.expression.name.text,
           receiver,
           context: contextOf(node, receiver),
-          orgNamed: prismaOrgNamed(model, argText),
+          orgNamed: prismaOrgNamed(
+            model,
+            prismaPredicateText(node.expression.name.text, node.arguments, sf),
+          ),
           byId: prismaById(argText),
         });
       }
@@ -329,7 +388,7 @@ export function inventory(repoRoot: string): QuerySite[] {
             op,
             receiver,
             context: contextOf(node, receiver),
-            orgNamed: /\borganization_id\b/.test(sql) || /\bcurrent_org_id\(\)/.test(sql),
+            orgNamed: sqlOrgNamed(sql, tables),
             byId: /\bwhere\b[\s\S]*\bid\s*=/i.test(sql),
           });
         }

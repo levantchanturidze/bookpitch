@@ -24,7 +24,7 @@ Prisma call on a tenant model and each raw SQL statement naming a tenant table:
 | Field | Meaning |
 |---|---|
 | `context` | What enforces the boundary if the query names no organisation. `rls`: inside `withOrg()`/`withOrgReplica()`, using the client they hand in. `bypass`: `withoutRls()`, `unsafePrismaAdmin`, `prismaLogin`, or a `$transaction` on one of them, so **nothing** filters. `caller-tx`: a client passed in by the caller. `app-no-org`/`unknown`: none today, and a test keeps it that way |
-| `orgNamed` | The query names the organisation: an `organizationId` key, a compound unique key containing it, a relation through a model that carries it, `id` on the organization model, or `organization_id` in SQL, including inside a reused SQL fragment |
+| `orgNamed` | The query's **predicate** names the organisation: in Prisma, an `organizationId` key or a compound unique key containing it in the `where` (or in a create's `data`), or `id` on the organization model; in SQL, `organization_id` compared with a bound value, or the `organizations` row's own `id`, including inside a reused SQL fragment. What a query selects, includes, assigns or returns never counts, and neither does a join that ties two rows' organisations together without naming which (Codex review on #128) |
 | `byId` | The query is keyed by one record's id, the shape an IDOR uses |
 
 It is syntactic: it sees that a query names `organizationId: x`, not where `x`
@@ -66,14 +66,20 @@ so a broken classifier fails instead of passing everything.
 |---|---|---|---|
 | `rls` | 42 | 98 | 63 |
 | `caller-tx` | 5 | 29 | 11 |
-| `bypass` | 79 | 41 | 23 |
-| **Total: 294 sites** | 126 | 168 | |
+| `bypass` | 64 | 56 | 28 |
+| **Total: 294 sites** | 111 | 183 | |
 
 On `main` before this change, `rls` was 37 / 103. The difference is the five
 resolver queries in §5. The 2026-10-28 round's "135 of 150" used a narrower
 model set and no raw SQL, so the totals differ.
 
-## 4. The bypass rows: all 41 read by hand
+The first version of the classifier counted a query as naming the organisation
+if the text appeared anywhere in its arguments, so 15 bypass queries that only
+**select** or **include** an organisation field were counted as filtered by it
+(Codex review on #128). Reading only the predicate moved them to "names no
+organisation" (41 to 56). Each was then read like the rest (§4).
+
+## 4. The bypass rows: all 56 read by hand
 
 Nothing filters these, so each key's source was traced. **No cross-tenant path
 was found.** The list, with the reason for each, is `REVIEWED_BYPASS` in
@@ -85,13 +91,14 @@ merge order.
 
 | Reason | Rows | Examples |
 |---|---|---|
-| System job over every organisation | 7 | housekeeping sweeps (expired rate-limit windows, read notifications, expired break-glass and impersonation sessions); ops-metrics counts; the reminders cron's organisation count |
-| Keyed to the acting user | 11 | ownership transfer lookups pinned to `toUserId`/`fromUserId = session.userId`; break-glass and impersonation keyed by `actor_user_id` or the session id in the actor's own auth context |
+| System job over every organisation | 13 | housekeeping sweeps (expired rate-limit windows, read notifications, expired break-glass and impersonation sessions); ops-metrics counts; the reminders, retention and audit-digest crons listing organisations |
+| Keyed to the acting user | 16 | ownership-transfer lookups pinned to `toUserId`/`fromUserId = session.userId`; break-glass and impersonation keyed by `actor_user_id` or the session id in the actor's own auth context; the user's own memberships; `buildOrgContext`, which refuses a membership whose `userId` is not the signed-in user |
 | Keyed by a secret token | 3 | invitation acceptance by token hash; the organisation is the invitation row's |
-| Keyed by a signature-verified callback | 3 | `applyWebhook`: TBC/mock HMAC compared with `timingSafeEqual`, BOG RSA, Stripe `constructEvent` |
+| Keyed by a signature-verified callback | 4 | `applyWebhook` (TBC and mock HMAC compared with `timingSafeEqual`, BOG RSA); `lookupOrgByCustomer`, from Stripe's `constructEvent`-verified event |
 | Keyed by an id already proven to be the organisation's | 13 | the reminder send pipeline (send-now checks the organisation explicitly first, #125; the cron selects per organisation); ownership-transfer writes after the pinned read; retention writes after its org-filtered candidate read; public booking's consent stamp on a customer matched under the location's organisation |
-| Platform plane, behind a platform permission | 2 | `listOrganizations`, `changeOrganizationOwner` |
-| Creates the organisation | 2 | onboarding |
+| Platform plane, behind a platform permission | 3 | `listOrganizations`, `changeOrganizationOwner`, the platform audit viewer |
+| Creates the organisation | 3 | onboarding (twice); platform `createOrganization` |
+| Keyed by the public booking slug | 1 | `getPublicLocation`: one location's public page; the organisation is the location's own |
 
 The 29 `caller-tx` rows were traced to their callers. All run inside `withOrg`
 except `assignAllBranchesIfUnscoped`, which invitation acceptance calls on the
@@ -130,10 +137,11 @@ routes, without RLS.
 |---|---|
 | `tests/tenant-scope-resolvers.test.ts`, with the fix | 6 passed |
 | The same, resolvers reverted to `main` | **4 red** (both complements pass) |
-| `tests/tenant-query-inventory.test.ts` | 6 passed |
+| `tests/tenant-query-inventory.test.ts` | 8 passed |
 | A new unreviewed bypass query added | 1 red, naming it |
 | A resolver's filter removed | 1 red, naming the resolver |
 | The classifier broken (everything `rls`) | 3 red |
+| The classifier back to "named anywhere in the arguments" (before Codex's review) | 3 red |
 
 The change is behaviour-preserving while RLS holds: RLS already filters to the
 same organisation.
