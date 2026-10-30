@@ -47,3 +47,44 @@ export async function lockCustomerForNewRecords(
   if (rows.length === 0) return 'missing';
   return isRedactedCustomerName(rows[0].name) ? 'redacted' : 'live';
 }
+
+/**
+ * Public booking's match for a returning customer: the oldest live customer of
+ * this organisation with this email (case-insensitive) or phone, read FOR
+ * SHARE in the caller's transaction.
+ *
+ * The share lock is the same one lockCustomerForNewRecords takes, and it does
+ * the same job. An erasure in flight holds the row FOR UPDATE, so this read
+ * waits for it, and PostgreSQL then re-checks the WHERE against what the
+ * erasure committed. A redacted row has no email or phone left, so it no
+ * longer matches and the booking gets a new customer, the same outcome as
+ * booking after the erasure. A plain read returned the row as it was before
+ * the erasure, and the booking attached to the redacted customer once the
+ * erasure committed.
+ *
+ * Every match is locked, not just the first (there is no uniqueness on email
+ * or phone), so the choice cannot change under the caller.
+ */
+export async function lockLiveCustomerByContact(
+  tx: TxClient,
+  organizationId: string,
+  contact: { email: string } | { phone: string },
+): Promise<{ id: string; consentAt: Date | null } | null> {
+  type Row = { id: string; name: string; consent_at: Date | null };
+  const rows =
+    'email' in contact
+      ? await tx.$queryRaw<Row[]>`
+          SELECT id, name, consent_at FROM customers
+           WHERE organization_id = ${organizationId}::uuid
+             AND email = ${contact.email}::citext
+           ORDER BY created_at, id
+             FOR SHARE`
+      : await tx.$queryRaw<Row[]>`
+          SELECT id, name, consent_at FROM customers
+           WHERE organization_id = ${organizationId}::uuid
+             AND phone = ${contact.phone}
+           ORDER BY created_at, id
+             FOR SHARE`;
+  const live = rows.find((r) => !isRedactedCustomerName(r.name));
+  return live ? { id: live.id, consentAt: live.consent_at } : null;
+}
