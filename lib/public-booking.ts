@@ -21,6 +21,16 @@ import { toLocalDate, toLocalTimeHHMM } from '@/lib/tz';
 
 const CONSENT_VERSION = '1.0';
 
+// A suspended or archived organisation takes no public bookings, and its
+// widget page does not render. can() already refuses every org-plane action in
+// such an organisation (lib/rbac/can.ts, step 2a), so its staff could neither
+// see nor manage a booking taken here: the appointment could not be honoured,
+// and for an archived organisation the customer's details would be written into
+// a tenant scheduled for purge. CLAUDE.md invariant 2: a suspended
+// organisation is denied, never fallen through to allow. Exactly the statuses
+// can() refuses — tests/public-booking-org-status.test.ts holds the two equal.
+const NOT_BOOKABLE_ORG_STATUSES: ReadonlySet<string> = new Set(['suspended', 'archived']);
+
 export type PublicLocation = {
   organizationId: string;
   organizationName: string;
@@ -38,7 +48,7 @@ export async function getPublicLocation(slug: string): Promise<PublicLocation | 
     tx.location.findUnique({
       where: { publicSlug: slug },
       include: {
-        organization: { select: { name: true, id: true, currency: true } },
+        organization: { select: { name: true, id: true, currency: true, status: true } },
         staff: {
           select: { id: true, name: true, roleTitle: true },
           orderBy: { name: 'asc' },
@@ -51,7 +61,7 @@ export async function getPublicLocation(slug: string): Promise<PublicLocation | 
       },
     }),
   );
-  if (!row) return null;
+  if (!row || NOT_BOOKABLE_ORG_STATUSES.has(row.organization.status)) return null;
   return {
     organizationId: row.organizationId,
     organizationName: row.organization.name,
