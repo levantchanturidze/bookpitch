@@ -78,16 +78,23 @@ export async function nominateTransfer(
       },
     });
 
-    // In-app notification for the nominee. Best-effort: any failure
-    // here is logged but not fatal — the row exists and the endpoint
-    // can still be hit directly.
+    // In-app notification for the nominee. Best-effort: a failure here is
+    // logged, not fatal. It is scoped to a SAVEPOINT, because inside a
+    // transaction a plain catch does the opposite of best-effort: the failed
+    // statement aborts the transaction, and the COMMIT then silently rolled
+    // back the transfer itself while this function returned its id and the
+    // nominee was emailed about it (DEF-52; the shape #114 found in the
+    // cancellation's waitlist fan-out).
+    await tx.$executeRawUnsafe('SAVEPOINT nominee_notify');
     try {
       await notifyEvent(tx, session.organizationId, {
         type: 'system',
         title: `You've been nominated as owner of ${org.name}`,
         body: `Accept or decline in Settings → Ownership. Expires ${expiresAt.toISOString()}.`,
       });
+      await tx.$executeRawUnsafe('RELEASE SAVEPOINT nominee_notify');
     } catch (err) {
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT nominee_notify');
       log.warn('platform.ownership_transfer.notify_failed', { err: sanitizeErrorMessage(err) });
     }
 

@@ -7,9 +7,27 @@ vi.mock('@/auth', () => ({
   signOut: vi.fn(),
 }));
 
+// The nominee's notification can be made to fail with a real failing
+// STATEMENT, which is what aborts a PostgreSQL transaction (a thrown JS error
+// would not). Off unless a test arms it.
+const { faults } = vi.hoisted(() => ({ faults: { failNomineeNotification: false } }));
+vi.mock('@/lib/notifications', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/notifications')>('@/lib/notifications');
+  return {
+    ...actual,
+    notifyEvent: async (...args: Parameters<typeof actual.notifyEvent>) => {
+      if (faults.failNomineeNotification) {
+        await args[0].$executeRawUnsafe('SELECT * FROM injected_missing_table_for_transfer_test');
+      }
+      return actual.notifyEvent(...args);
+    },
+  };
+});
+
 const { unsafePrismaAdmin } = await import('@/lib/db');
 const { seedRbacFixtures } = await import('@/prisma/rbac-fixtures');
-const { declineTransfer, revokeTransfer } = await import('@/lib/admin/ownership-transfer');
+const { declineTransfer, nominateTransfer, revokeTransfer } =
+  await import('@/lib/admin/ownership-transfer');
 const { InvalidInputError } = await import('@/lib/auth');
 const { Client } = await import('pg');
 const { adminDbUrl } = await import('./helpers/admin-db-url');
@@ -110,6 +128,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  faults.failNomineeNotification = false;
   await unsafePrismaAdmin.ownershipTransfer.deleteMany({ where: { organizationId: orgId } });
 });
 
@@ -147,5 +166,31 @@ describe('DEF-43: an ownership transfer is decided once', () => {
     await expect(outcome).rejects.toBeInstanceOf(InvalidInputError);
     expect(await statusOf(id)).toBe('accepted');
     expect(await declineAudits(id)).toBe(0);
+  });
+});
+
+describe('DEF-52: a failed nominee notification does not undo the nomination', () => {
+  it('the transfer the function reports is the transfer that exists', async () => {
+    // The notification is best-effort. It sat in a plain catch inside the
+    // nomination's transaction: the failed statement aborted the transaction,
+    // the catch swallowed the error, and the COMMIT rolled back the transfer
+    // itself, while this function returned its id and emailed the nominee.
+    faults.failNomineeNotification = true;
+    const result = await nominateTransfer(session(fromUserId), toUserId);
+    expect(result.id).toBeTruthy();
+    const row = await unsafePrismaAdmin.ownershipTransfer.findUnique({ where: { id: result.id } });
+    expect(row?.status, 'the nomination it reported must exist').toBe('pending');
+  });
+
+  it('COMPLEMENT: with the notification working, the nomination and its notification both exist', async () => {
+    const before = await unsafePrismaAdmin.notification.count({ where: { organizationId: orgId } });
+    const result = await nominateTransfer(session(fromUserId), toUserId);
+    expect(
+      (await unsafePrismaAdmin.ownershipTransfer.findUniqueOrThrow({ where: { id: result.id } }))
+        .status,
+    ).toBe('pending');
+    expect(await unsafePrismaAdmin.notification.count({ where: { organizationId: orgId } })).toBe(
+      before + 1,
+    );
   });
 });
