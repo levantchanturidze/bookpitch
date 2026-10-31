@@ -13,9 +13,10 @@ lives in `docs/release-state.md`. The legal review's open items are in
 
 **The 2026-10-31 round** (§0) re-verified every PR against the brief's defect
 list. It opened #128 to #131, and added fixes or tests to #122, #123, #124,
-#126 and #127. It found DEF-40 to DEF-52, and merged twenty heads together
-locally: unit, invariants, build, browser and audit. #131 was opened after
-that rehearsal.
+#126 and #127. It found DEF-40 to DEF-53, and merged every open head together
+locally: unit, invariants, build, browser and audit. On all 21 the unit suite
+then found DEF-53, a failure only the combination had; it is fixed, and the
+final combined run is clean (§4).
 
 > **Merging any of these is a production change.** Vercel deploys every push to
 > `main`, so every merge gives production a new deployment id, moving it off the
@@ -27,14 +28,15 @@ that rehearsal.
 
 | Change | PR | Head | Evidence |
 |---|---|---|---|
-| **DEF-40:** the authorisation resolvers (`lib/rbac/scope.ts`) loaded the row by id alone, and RLS alone made their `organizationId` assertion true. With RLS taken away, organisation A's owner cancelled B's appointment (200) and deleted B's waitlist entry (200). Now every resolver names the organisation. Plus the DEF-08 audit: inventory, review of all 56 bypass queries, ratchet test | **#128 (new)** | `4fb350c` | 4 red with the resolvers reverted; ratchet 3 ways; CI `41137370607` |
+| **DEF-40:** the authorisation resolvers (`lib/rbac/scope.ts`) loaded the row by id alone, and RLS alone made their `organizationId` assertion true. With RLS taken away, organisation A's owner cancelled B's appointment (200) and deleted B's waitlist entry (200). Now every resolver names the organisation. Plus the DEF-08 audit: inventory, review of all 56 bypass queries, ratchet test | **#128 (new)** | `9592ee4` | 4 red with the resolvers reverted; ratchet 3 ways; CI `41242773485` |
 | **DEF-41:** a suspended or archived organisation's public widget took bookings. Now it refuses exactly what `can()` refuses. **DEF-48** (Codex): the status is re-checked `FOR SHARE` in the write transaction | **#129 (new)** | `13df39b` | 5 statuses × 3 paths agree with `can()`; 3 red reverted; race red without the re-check; CI `41133255069` |
 | **F-5:** a scheduler cancellation now runs the waitlist fan-out the API runs (one function). **A behaviour change for the owner to accept** | **#130 (new, stacked on #114)** | `af6ee00` | 4 tests; perturbations 2/1/1; CI `41130954291` |
 | **DEF-42:** public booking raced an erasure and attached to the redacted customer | #126 | `e9baeb5` | 2 red on the original; 2 red without `FOR SHARE`; CI `41129436990` |
 | **DEF-44:** the rollback rule accepted `END;`, `COMMIT AND CHAIN;`, `ROLLBACK;`, `ABORT;`, `ROLLBACK TO SAVEPOINT` and psql meta-commands inside the transaction. Also, the `DO`-block fixtures never contained `$$` (a `String.replace` pitfall) | #124 | `bd2c35f` | 1 red per check removed; #112 with `END;` injected refused; CI `41132514531` |
 | **DEF-49:** check 2b's precedence levels 2 and 4 were untested | #122 | `433d9e6` | levels swapped: 1 red (the existing 59 all passed); CI `41131599030` |
 | **DEF-50:** a never-issued reset link was not tested against a live one | #127 | `08f747b` | token filter removed: 1 red; CI `41132971390` |
-| **DEF-43:** a decline or revoke racing an accept overwrote the accepted transfer. **DEF-52:** `nominateTransfer`'s notification sat in a plain catch inside the transaction, so a failure silently rolled back the nomination itself | **#131 (new)** | `91f6a88` | both reproduced on `main`'s code, then fixed; CI `41137046677` |
+| **DEF-43:** a decline or revoke racing an accept overwrote the accepted transfer. **DEF-52:** `nominateTransfer`'s notification sat in a plain catch inside the transaction, so a failure silently rolled back the nomination itself | **#131 (new)** | `f90c44f` | both reproduced on `main`'s code, then fixed; CI `41242696797` |
+| **DEF-53:** #128's ratchet also failed when a reviewed entry disappeared. #131 removed two reviewed rows, so the two PRs each passed CI and failed together (found by the 21-PR unit run). The ratchet is now one-directional, and #131 names the organisation in its two new updates | #128, #131 | `9592ee4`, `f90c44f` | combined run exit 0 afterwards; a new unreviewed query is still caught |
 | A production-code guard against swallowed DB errors in transactions (found DEF-52; its first version missed #114's own defect, fixed before commit) | #123 | `de7f9a4` | emptied allowlist reports exactly the 3 known instances; CI `41137186689` |
 
 Verified with no new defect (details in the PR threads): #111's audit is 0 (re-run 2026-10-28 and on the combined lockfile 2026-10-30); #125's constant-time and authorisation fixes are complete; #114, #115, #112 and #121 match their claims. Recorded, not changed: DEF-45, DEF-46, DEF-51 (§5), and the workflow hardening items (§6).
@@ -80,10 +82,10 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | #125 | `fix/auth-tenancy-hardening` | `130956d` | Constant-time bearer checks, push-unsubscribe ownership, send-now's explicit org filter | — |
 | #126 | `fix/erasure-minimisation` | `e9baeb5` | Erasure removes waitlist entries and delivery contents, copies the name nowhere, and nothing new can attach to a redacted customer | **stacked on #114** |
 | #127 | `fix/db-clock-reset-atomicity` | `08f747b` | Password-reset expiry on the database clock, and a race-free single use | — |
-| #128 | `fix/tenant-isolation-audit` | `4fb350c` | The authorisation resolvers name the organisation (DEF-40); the DEF-08 audit, inventory and ratchet | — |
+| #128 | `fix/tenant-isolation-audit` | `9592ee4` | The authorisation resolvers name the organisation (DEF-40); the DEF-08 audit, inventory and ratchet | — |
 | #129 | `fix/public-booking-org-status` | `13df39b` | A suspended or archived organisation's widget takes no bookings, re-checked under a lock (DEF-41, DEF-48) | — |
 | #130 | `feat/waitlist-on-ui-cancel` | `af6ee00` | F-5: a scheduler cancellation notifies the waitlist as the API does. **Behaviour change** | **stacked on #114** |
-| #131 | `fix/ownership-transfer-decided-once` | `91f6a88` | An ownership transfer is decided once (DEF-43); a failed nominee notification no longer undoes the nomination (DEF-52) | — |
+| #131 | `fix/ownership-transfer-decided-once` | `f90c44f` | An ownership transfer is decided once (DEF-43); a failed nominee notification no longer undoes the nomination (DEF-52) | — |
 
 ## 3. CI status at each head
 
@@ -105,10 +107,10 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | #125 | `130956d` | `40139452758` | pass | pass | pass | pass | fail |
 | #126 | `e9baeb5` | `41129436990` | pass | pass | pass | pass | fail |
 | #127 | `08f747b` | `41132971390` | pass | pass | pass | pass | fail |
-| #128 | `4fb350c` | `41137370607` | pass | pass | pass | pass | fail |
+| #128 | `9592ee4` | `41242773485` | pass | pass | pass | pass | fail |
 | #129 | `13df39b` | `41133255069` | pass | pass | pass | pass | fail |
 | #130 | `af6ee00` | `41130954291` | pass | pass | pass | pass | fail |
-| #131 | `91f6a88` | `41137046677` | pass | pass | pass | pass | fail |
+| #131 | `f90c44f` | `41242696797` | pass | pass | pass | pass | fail |
 
 The audit fails on `main`'s lockfile, which every branch but #111 carries, and
 on nothing any of these PRs change. It is red under its own name, and no
@@ -124,8 +126,10 @@ own run is in its CI evidence comment.
 Every open head was merged into a throwaway local branch built from
 `origin/main` (`rehearsal/combined-2026-10-31`), never pushed. **No textual
 conflict.** The one real conflict, #113 with #117, is resolved inside #117's
-branch. The first pass had twenty heads (combined tree `7a2da31`); #131 and the
-newer #123 and #128 heads were merged in afterwards (`a0f2024`, all 21).
+branch. The first pass had twenty heads (`7a2da31`). #131 and the newer #123 and
+#128 heads were merged in afterwards (`a0f2024`). After DEF-53's fixes, and
+#120's own newest head, came the final tree, `b5f1110`, which contains every
+open head.
 
 | Check | Result |
 |---|---|
@@ -134,11 +138,12 @@ newer #123 and #128 heads were merged in afterwards (`a0f2024`, all 21).
 | `format:check` / `lint` / `tsc --noEmit`, all 21 | exit 0 / 0 (0 errors, `main`'s 11 warnings) / 0 |
 | #112's preflight on both local databases, before the migration | `0` / `0` / `0\|0\|0\|PASS: nobody is booked in two places`, the documented output |
 | `npm run test`, 20 heads (`7a2da31`) | **exit 1: 2524 passed, 1 failed, 74 skipped.** The failure is environmental, not from any PR (see below) |
-| `npm run test`, all 21 heads, after 23:00 UTC (`a0f2024`) | **not run.** The clean re-run, due after 23:00 UTC, was cut off by a usage limit. Run `npm run test` on the combined tree before relying on it |
+| `npm run test`, all 21 heads (`a0f2024`), on a fresh disposable UTC database built as CI's quality job builds it: migrate (75), strict drift check exit 0, seed, suite as `bookpitch_app` | **exit 1: 2601 passed, 1 failed.** The failure was **DEF-53**, a real cross-PR defect in this round's own ratchet (#128 with #131), not the environment |
+| `npm run test`, all 21 heads at their final heads (`b5f1110`), the same fresh UTC database, rebuilt | **exit 0. 171 files, 2602 passed, 5 skipped.** Guards OK, orphan permissions 0, all components reachable. The 5 skips are the cluster-wide verifier cases (`ALTER SYSTEM` and the four precedence levels), gated to CI or opt-in. They passed opted in (75/75, below), and every other invariant case ran here (70) |
 | Invariants suite, 75 migrations, cluster-wide cases opted in, nothing else connected | **75/75** (71 before plus #122's 4 new). Afterwards the server read `origin` from `default`, with no role or database defaults left |
 | `next build` | exit 0 |
 | Browser suite, 20 heads, all 9 projects, disposable database, CI's environment | **266 passed, 3 skipped (269)**; `e2e:check`: all 9 required suites executed |
-| Browser suite, all 21 heads, fresh disposable database | **266 passed, 3 skipped (269)**; all 9 required suites executed. The 3 skips are the touch-height check on desktop projects, by design |
+| Browser suite, all 21 heads (`a0f2024`, before DEF-53's two-predicate change), fresh disposable database | **266 passed, 3 skipped (269)**; all 9 required suites executed. The 3 skips are the touch-height check on desktop projects, by design |
 | Production swallow scan (#123's new guard) over all 21 | **no instance**: the three known ones are each removed by their PR |
 | gitleaks over every commit this round added (redacted) | **0 findings** |
 | #112's rollback, run verbatim from its header, on the invariants database | 74 migrations, both triggers gone, schema **byte-identical** to a 74-migration predecessor (`pg_dump -s -O -x`, minus the per-dump `\restrict` key, 4299 lines each). Re-applied cleanly (both triggers back, enabled), then rolled back again: identical again |
@@ -223,6 +228,7 @@ are the tests that fail when the fix is removed.
 | DEF-50 | P3 | Auth tests | No case presented a never-issued reset link while a real one was live | #127 `08f747b` | token filter removed: 1 red, nothing else | — |
 | DEF-51 | P3 | Audit clock | `audit_log.at` is Prisma's `@default(now())`, filled in by the application, not the database: a test that fakes `Date` +25 h wrote an audit row 25 h ahead. On the local database, whose October partition ends at a `+04` boundary, it fell into the default partition and failed `ops-metrics` between 19:00 and 23:00 UTC on 2026-10-30 (reproduced on `main`'s code). The same mechanism lets a skewed application clock misdate the audit log | **recorded, not changed**; proposal §11 | reproduced on `main` | — |
 | DEF-52 | P2 | Admin, integrity | `nominateTransfer` sent the nominee's notification in a plain `try/catch` inside its transaction. A failed statement aborted the transaction and the COMMIT silently rolled back the nomination, while the function returned its id and emailed the nominee. #114's shape, found by #123's new production scan | #131 `91f6a88` | real failing statement; red on `main` | — |
+| DEF-53 | P3 | Tooling, merge order | #128's ratchet failed when a reviewed bypass entry disappeared as well as when a new one appeared. #131 named the organisation in two transfer updates, removing two reviewed rows, so no allowlist passed both with and without #131: each PR was green alone, and the combination failed. Found by the 21-PR combined unit run | #128 `9592ee4` (one-directional); #131 `f90c44f` (organisation named) | combined `npm run test` exit 0; a new unreviewed query still fails | — |
 
 Earlier findings, 2026-10-17 and 10-18, final status: F-1 to F-4, F-6, F-8 to
 F-11 and F-13 to F-20 are fixed in their PRs (F-21 became DEF-09 and is fixed
