@@ -12,8 +12,13 @@ import { inventory, type QuerySite } from '@/scripts/tenant-query-inventory';
 // organisation, or add it below with the reason the audit doc records.
 //
 // Keyed by file, function and query, not line numbers, so unrelated edits do
-// not disturb it. The count is per key. A key that disappears also fails, so
-// the list cannot drift into describing code that no longer exists.
+// not disturb it. The count is per key, and the check is one-directional: a
+// new or more frequent query fails; one that disappears, or starts naming its
+// organisation, does not. A two-way check made unrelated PRs order-dependent:
+// #131 named the organisation in two transfer updates, which removed two
+// reviewed rows, and only the combination of #128 and #131 failed. A
+// disappeared entry is harmless except that it would admit an identical query
+// re-added later, so prune entries when convenient.
 // -----------------------------------------------------------------------------
 
 const ROOT = path.resolve(__dirname, '..');
@@ -215,10 +220,6 @@ describe('DEF-08: tenant query inventory', () => {
         'it. Name the organisation in the query, or review it and add it to REVIEWED_BYPASS ' +
         'with the reason (docs/tenant-isolation-audit.md §4).',
     ).toEqual([]);
-    const stale = Object.entries(REVIEWED_BYPASS)
-      .filter(([k, v]) => (actual[k] ?? 0) < v.count)
-      .map(([k, v]) => `${k} (reviewed ${v.count}, now ${actual[k] ?? 0})`);
-    expect(stale, 'Reviewed entries that no longer exist: remove them.').toEqual([]);
   });
 
   it('every query site gets a context the tool can name', () => {

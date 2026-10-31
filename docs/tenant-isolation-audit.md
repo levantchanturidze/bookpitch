@@ -84,10 +84,13 @@ organisation" (41 to 56). Each was then read like the rest (§4).
 Nothing filters these, so each key's source was traced. **No cross-tenant path
 was found.** The list, with the reason for each, is `REVIEWED_BYPASS` in
 `tests/tenant-query-inventory.test.ts`. A new bypass query naming no
-organisation fails that test until it is reviewed the same way, and a reviewed
-one that disappears fails it too. The inventory was also run over every open
-pull request (#111–#127): none adds or removes a row, so the list holds in any
-merge order.
+organisation fails that test until it is reviewed the same way. The check is
+one-directional: a reviewed query that disappears, or starts naming its
+organisation, does not fail it. The first version also failed on a disappeared
+entry, and the 21-PR rehearsal showed why that cannot work. #131 named the
+organisation in two transfer updates, removing two reviewed rows, so #128 and
+#131 each passed alone and failed together. The inventory was run over every
+open pull request (#111–#131): none adds a row, and #131 removes two.
 
 | Reason | Rows | Examples |
 |---|---|---|
