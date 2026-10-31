@@ -69,7 +69,9 @@ export function scopedByOwn(ctx: AuthContext, basePermKey: string): string | nul
  * restricted an `:org` caller who happened to hold branch rows.
  *
  * SEC-007: the branch lookup runs through withOrg, so RLS on `branches` is the
- * enforcer even if a JWT bug ever put an out-of-org branch id in the set.
+ * enforcer even if a JWT bug ever put an out-of-org branch id in the set. It
+ * also names the organisation itself (DEF-08), so an out-of-org id is dropped
+ * even if RLS is not there to drop it.
  */
 export async function scopedLocationIds(
   ctx: AuthContext,
@@ -84,11 +86,13 @@ export async function scopedLocationIds(
 }
 
 async function locationsOfBranches(ctx: AuthContext): Promise<string[]> {
-  if (ctx.branchIds.size === 0 || !ctx.activeOrganizationId) return [];
-  const rows = await withOrg(ctx.activeOrganizationId, (tx) =>
+  const organizationId = ctx.activeOrganizationId;
+  if (ctx.branchIds.size === 0 || !organizationId) return [];
+  const rows = await withOrg(organizationId, (tx) =>
     tx.branch.findMany({
       where: {
         id: { in: [...ctx.branchIds] },
+        organizationId,
         legacyLocationId: { not: null },
       },
       select: { legacyLocationId: true },
@@ -112,7 +116,7 @@ export async function resolveBookingOwner(
 ): Promise<string | null> {
   const row = await withOrg(activeOrganizationId, (tx) =>
     tx.appointment.findFirst({
-      where: { id: appointmentId },
+      where: { id: appointmentId, organizationId: activeOrganizationId },
       select: { staff: { select: { userId: true } } },
     }),
   );
@@ -156,8 +160,15 @@ const LOCATION_BRANCH = { select: { branch: { select: { id: true } } } } as cons
  * against — owner and branch together, from the same row.
  *
  * Returns `null` when the id does not resolve INSIDE the caller's organisation.
- * The read goes through withOrg, so a cross-tenant id is indistinguishable from
- * a non-existent one here — which is the correct answer to give the caller.
+ * A cross-tenant id is indistinguishable from a non-existent one here — which
+ * is the correct answer to give the caller.
+ *
+ * DEF-08: every resolver in this file names the organisation in its WHERE as
+ * well as running inside withOrg. The Resource it returns ASSERTS
+ * `organizationId: activeOrganizationId`, and can() authorises the mutation on
+ * that assertion, so the row must be proven to belong to that organisation by
+ * the query itself — not by RLS alone (CLAUDE.md invariant 1).
+ * tests/tenant-scope-resolvers.test.ts takes RLS away and checks each one.
  */
 export async function resolveAppointmentResource(
   appointmentId: string,
@@ -165,7 +176,7 @@ export async function resolveAppointmentResource(
 ): Promise<Resource | null> {
   const row = await withOrg(activeOrganizationId, (tx) =>
     tx.appointment.findFirst({
-      where: { id: appointmentId },
+      where: { id: appointmentId, organizationId: activeOrganizationId },
       select: { location: LOCATION_BRANCH, staff: { select: { userId: true } } },
     }),
   );
@@ -190,7 +201,7 @@ export async function resolveStaffResource(
 ): Promise<Resource | null> {
   const row = await withOrg(activeOrganizationId, (tx) =>
     tx.staff.findFirst({
-      where: { id: staffId },
+      where: { id: staffId, organizationId: activeOrganizationId },
       select: { userId: true, location: LOCATION_BRANCH },
     }),
   );
@@ -247,7 +258,7 @@ export async function resolveWaitlistResource(
 ): Promise<Resource | null> {
   const row = await withOrg(activeOrganizationId, (tx) =>
     tx.waitlist.findFirst({
-      where: { id: waitlistId },
+      where: { id: waitlistId, organizationId: activeOrganizationId },
       select: {
         location: LOCATION_BRANCH,
         staff: { select: { userId: true, location: LOCATION_BRANCH } },
