@@ -311,6 +311,7 @@ export async function declineTransfer(
       UPDATE ownership_transfers
          SET status = 'declined', decided_at = transaction_timestamp(), decided_reason = ${reason}
        WHERE id = ${transferId}::uuid
+         AND organization_id = ${transfer.organizationId}::uuid
          AND to_user_id = ${session.userId}::uuid
          AND status = 'pending'`;
     if (Number(declined) === 0) {
@@ -351,6 +352,7 @@ export async function revokeTransfer(
     UPDATE ownership_transfers
        SET status = 'revoked', decided_at = transaction_timestamp()
      WHERE id = ${transferId}::uuid
+       AND organization_id = ${transfer.organizationId}::uuid
        AND from_user_id = ${session.userId}::uuid
        AND status = 'pending'`;
   if (Number(revoked) === 0) {
