@@ -6,21 +6,25 @@
 //   const ctx = await requireAuthContext();
 //   requirePermission(ctx, 'booking.update', { organizationId, branchId }, 'appointments');
 //
-// The last argument is the module key. Post-Phase-4, every guarded route
-// passes one so the `RBAC_ENFORCE_MODULES` env var can toggle enforcement
-// per-module without a redeploy — set it empty to fall back to shadow mode.
+// The last argument is the module key. Every guarded route passes one, so the
+// `RBAC_ENFORCE_MODULES` env var can narrow enforcement per module without a
+// redeploy.
 //
 // Modes:
-//   • shadow — `can()` runs, denials get logged as `rbac.shadow_deny`, the
-//     request is allowed through. Use for a canary window against real
-//     traffic. Never throws.
 //   • enforcing — throws `ForbiddenError` on deny (mapped to 403 by
-//     withApi). Default in tests and prod at Phase 4 rollout time.
+//     withApi). The default: an unset or empty variable enforces.
+//   • shadow — `can()` runs, denials get logged as `rbac.shadow_deny`, the
+//     request is allowed through. Only on explicit request, for a canary
+//     window against real traffic. Never throws.
 //
 // `RBAC_ENFORCE_MODULES`:
-//   • unset or empty → shadow (all modules)
-//   • '*'            → enforcing (all modules) — the deploy default
-//   • 'admin,customers' → enforcing for these two, shadow for the rest
+//   • unset, empty or '*' → enforcing (all modules). Fails closed (CLAUDE.md
+//     invariant 2): a missing variable must never switch the guards off.
+//     Until 2026-11-03 it did, and with the variable unset MARKETING reached
+//     /scheduler (see e2e/journeys/forbidden-access.spec.ts).
+//   • 'shadow'            → shadow (all modules), deliberately
+//   • 'admin,customers'   → enforcing for these two, shadow for the other
+//     named modules; a caller that names no module is enforced
 // -----------------------------------------------------------------------------
 
 import { auth } from '@/auth';
@@ -57,12 +61,15 @@ export async function requireAuthContext(): Promise<AuthContext> {
 /**
  * Enforcement decision for a module key.
  * Exported for tests and for the shadow-mode instrumentation.
+ *
+ * Fails closed: only the explicit value `shadow`, or a module list that does
+ * not name `module`, turns enforcement off. Unset, empty and `*` enforce.
  */
 export function isEnforcing(module: string | null | undefined): boolean {
-  const raw = process.env.RBAC_ENFORCE_MODULES;
-  if (!raw) return false; // shadow
-  if (raw.trim() === '*') return true; // enforce all
-  if (!module) return false; // no module = play safe = shadow
+  const raw = (process.env.RBAC_ENFORCE_MODULES ?? '').trim();
+  if (raw === '' || raw === '*') return true; // the default: enforce all
+  if (raw === 'shadow') return false; // shadow everywhere, only on request
+  if (!module) return true; // a caller that names no module is never exempt
   const set = new Set(
     raw
       .split(',')
@@ -83,7 +90,8 @@ export function isEnforcing(module: string | null | undefined): boolean {
  * `module` is the audit-doc key ("admin", "customers", "appointments", …)
  * that the `RBAC_ENFORCE_MODULES` env var toggles. Pass `null` only for
  * ad-hoc probes (tests); production callers should always supply one so
- * the rollout can be sliced.
+ * the rollout can be sliced. A `null` module is enforced under a module
+ * list: it cannot be exempted by a name it never gave.
  */
 export function requirePermission(
   ctx: AuthContext,

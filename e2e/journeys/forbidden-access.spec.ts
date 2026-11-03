@@ -76,18 +76,20 @@ test.describe('enforcement is actually on', () => {
   test.use({ storageState: storageStatePath('MARKETING') });
 
   test('@journey the guard layer is enforcing, not shadowing', async ({ page }) => {
-    // lib/rbac/guard.ts::isEnforcing returns false when RBAC_ENFORCE_MODULES is
-    // unset, and requirePermission then only logs `rbac.shadow_deny` and lets
-    // the request through. Every denial below would pass through to a rendered
-    // page and this whole file would be measuring nothing.
+    // In shadow mode lib/rbac/guard.ts::requirePermission only logs
+    // `rbac.shadow_deny` and lets the request through. Every denial below would
+    // pass through to a rendered page and this whole file would measure nothing.
     //
     // This ran that way once, locally, and it is why the check exists: with the
-    // variable unset, MARKETING reached /scheduler and /audit and ORG_OWNER
-    // reached /platform/orgs. One clear failure here beats four confusing ones.
+    // variable unset (then the shadow default), MARKETING reached /scheduler
+    // and /audit and ORG_OWNER reached /platform/orgs. Since 2026-11-03 unset
+    // enforces; shadow needs RBAC_ENFORCE_MODULES=shadow or a module list that
+    // omits a module. One clear failure here beats four confusing ones.
     expect(
       await isReachable(page, '/scheduler'),
-      'MARKETING reached /scheduler — RBAC_ENFORCE_MODULES is unset, so the ' +
-        'guard layer is in shadow mode and no denial test in this file means anything.',
+      'MARKETING reached /scheduler — RBAC_ENFORCE_MODULES puts the guard layer ' +
+        'in shadow mode (`shadow`, or a module list without `appointments`), so ' +
+        'no denial test in this file means anything.',
     ).toBe(false);
   });
 });

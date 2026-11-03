@@ -162,12 +162,12 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 
 export { refuseUnsafeTarget as __assertSafeFetchTarget };
 
-// Phase 4: tests always run in enforcing mode. The env var is set here
-// (not in .env.local) so a developer can override it for a shadow-mode
-// dry-run: `RBAC_ENFORCE_MODULES= npm test` disables enforcement.
-if (!process.env.RBAC_ENFORCE_MODULES) {
-  process.env.RBAC_ENFORCE_MODULES = '*';
-}
+// RBAC enforcement: nothing is set here on purpose. An unset
+// RBAC_ENFORCE_MODULES enforces every module (lib/rbac/guard.ts fails closed),
+// so the suite runs on the same default production falls back to. Forcing '*'
+// here used to hide that default, which was then shadow mode. A shadow-mode
+// dry run is explicit: `RBAC_ENFORCE_MODULES=shadow npm test`, and the denial
+// tests then fail, as they should.
 
 // -----------------------------------------------------------------------------
 // Fixture cleanup guard — `where: { id: undefined }` is not a no-op.

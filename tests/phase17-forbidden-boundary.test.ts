@@ -126,7 +126,9 @@ describe('P17-013 the page guard emits Next authorization interrupts', () => {
 
   it('COMPLEMENT: shadow mode still lets the caller through', () => {
     const previousModules = process.env.RBAC_ENFORCE_MODULES;
-    process.env.RBAC_ENFORCE_MODULES = '';
+    // Shadow mode is only ever explicit: an empty variable enforces (fail
+    // closed, tests/rbac-enforce-default.test.ts).
+    process.env.RBAC_ENFORCE_MODULES = 'shadow';
     try {
       const ctx = ctxWith([]);
       // Shadow mode is a logging point, not a decision — the page must render.

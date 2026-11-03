@@ -217,14 +217,18 @@ Use the multi-tenant fixtures in `prisma/rbac-fixtures.ts`:
 
 ### Runtime toggle: `RBAC_ENFORCE_MODULES`
 
-`requirePermission()` picks its mode from the env var:
+`requirePermission()` picks its mode from the env var. It fails closed
+(CLAUDE.md invariant 2): only an explicit value turns enforcement off.
 
-- `RBAC_ENFORCE_MODULES=` (empty) — shadow mode across every module. Denies
-  are logged as `rbac.shadow_deny` and the request proceeds.
-- `RBAC_ENFORCE_MODULES=*` — enforcing across every module. **Default in
-  tests and production.**
-- `RBAC_ENFORCE_MODULES=admin,customers` — enforcing for the listed
-  modules only; the rest stay in shadow.
+- unset, `RBAC_ENFORCE_MODULES=` (empty) or `RBAC_ENFORCE_MODULES=*`:
+  enforcing across every module. **The default.** Until 2026-11-03 unset and
+  empty meant shadow mode, so a dropped variable would have silently switched
+  every check to log-only. `tests/rbac-enforce-default.test.ts` pins this.
+- `RBAC_ENFORCE_MODULES=shadow`: shadow mode across every module. Denies are
+  logged as `rbac.shadow_deny` and the request proceeds.
+- `RBAC_ENFORCE_MODULES=admin,customers`: enforcing for the listed modules;
+  other named modules stay in shadow. A caller that passes no module is
+  enforced.
 
 The module key is the fourth argument to `requirePermission(ctx, key,
 resource, module)`. Modules used today: `admin`, `customers`,
@@ -233,11 +237,13 @@ resource, module)`. Modules used today: `admin`, `customers`,
 `audit`, `dev`. New modules should be added consistently — pick the
 directory name under `app/api/`.
 
-Rollback lever: if a Phase 4 swap breaks something in prod, set
-`RBAC_ENFORCE_MODULES=` (empty) at the platform level. The runtime falls
-back to shadow immediately; no redeploy. Old routes stay authorized-by
-whatever the caller happens to have; new-guard denies get logged but
-don't 403 anyone. Investigate via `rbac.shadow_deny` log entries.
+Rollback lever: if a guard change breaks something in prod, set
+`RBAC_ENFORCE_MODULES=shadow` at the platform level. An empty value no longer
+does this; it enforces. Vercel applies environment changes to new
+deployments, so redeploy after changing it. Old routes stay
+authorized-by whatever the caller happens to have; new-guard denies get
+logged but don't 403 anyone. Investigate via `rbac.shadow_deny` log entries,
+then return the variable to `*` (or remove it).
 
 ### Shadow log format
 
