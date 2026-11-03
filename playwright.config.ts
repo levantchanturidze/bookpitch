@@ -124,13 +124,13 @@ export default defineConfig({
         // lib/auth/e2e-turnstile-bypass.ts.
         env: {
           APP_URL: BASE_URL,
-          // Without this the guard layer runs in SHADOW mode: requirePermission
-          // logs `rbac.shadow_deny` and lets the request through, so every
-          // forbidden-URL journey passes through to a rendered page and the
-          // denial tests measure nothing. Production sets this to '*'; the
-          // suite must test the production configuration, not a laxer one.
-          // Measured: with it unset, MARKETING reached /scheduler and /audit
-          // and ORG_OWNER reached /platform/orgs.
+          // Explicitly '*', as production sets it. Until 2026-11-03 an unset
+          // value meant SHADOW mode (requirePermission logged
+          // `rbac.shadow_deny` and let the request through), and with it unset
+          // MARKETING reached /scheduler and /audit and ORG_OWNER reached
+          // /platform/orgs. Unset now enforces too (lib/rbac/guard.ts); the
+          // explicit value keeps the suite on the production configuration
+          // either way.
           RBAC_ENFORCE_MODULES: process.env.RBAC_ENFORCE_MODULES ?? '*',
           // `next start` sets NODE_ENV=production, and two helpers refuse to
           // fall back to a development key there — lib/crypto.ts

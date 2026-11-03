@@ -6,21 +6,33 @@
 //   const ctx = await requireAuthContext();
 //   requirePermission(ctx, 'booking.update', { organizationId, branchId }, 'appointments');
 //
-// The last argument is the module key. Post-Phase-4, every guarded route
-// passes one so the `RBAC_ENFORCE_MODULES` env var can toggle enforcement
-// per-module without a redeploy — set it empty to fall back to shadow mode.
+// The last argument is the module key. Every guarded route passes one, so the
+// `RBAC_ENFORCE_MODULES` env var can narrow enforcement per module. A change
+// takes effect on the next deployment.
 //
 // Modes:
-//   • shadow — `can()` runs, denials get logged as `rbac.shadow_deny`, the
-//     request is allowed through. Use for a canary window against real
-//     traffic. Never throws.
 //   • enforcing — throws `ForbiddenError` on deny (mapped to 403 by
-//     withApi). Default in tests and prod at Phase 4 rollout time.
+//     withApi). The default, and the answer to anything unexpected.
+//   • shadow — `can()` runs, denials get logged as `rbac.shadow_deny`, the
+//     request is allowed through. Never throws. It removes authorization
+//     inside a tenant for every shadowed module (RLS still separates
+//     tenants), so it is a last resort, never a routine rollback.
 //
-// `RBAC_ENFORCE_MODULES`:
-//   • unset or empty → shadow (all modules)
-//   • '*'            → enforcing (all modules) — the deploy default
-//   • 'admin,customers' → enforcing for these two, shadow for the rest
+// `RBAC_ENFORCE_MODULES` fails closed (CLAUDE.md invariant 2):
+//   • unset, empty or '*' → enforcing (all modules). Until 2026-11-03 unset
+//     and empty meant shadow, and with the variable unset MARKETING reached
+//     /scheduler (e2e/journeys/forbidden-access.spec.ts).
+//   • 'shadow'            → shadow for every module except 'platform'
+//   • 'admin,customers'   → enforcing for the listed modules, shadow for the
+//     other known modules except 'platform'
+//   • anything else (an unknown module, '*' inside a list, quotes, other
+//     casing, an empty entry) → enforcing (all modules), and
+//     `rbac.enforce_modules_invalid` is logged
+// 'platform' is always enforced: platform routes have no authorization layer
+// but this one, so shadowing them would let any signed-in user assign
+// platform roles. A caller that names no module, or a module not in
+// RBAC_MODULES, is enforced whatever the list says. A reduced mode logs
+// `rbac.enforcement_reduced` (error level) once per value.
 // -----------------------------------------------------------------------------
 
 import { auth } from '@/auth';
@@ -55,21 +67,85 @@ export async function requireAuthContext(): Promise<AuthContext> {
 }
 
 /**
+ * The module keys guarded callers pass. tests/rbac-enforce-default.test.ts
+ * fails if a call site uses a key missing from this set.
+ */
+export const RBAC_MODULES: ReadonlySet<string> = new Set([
+  'admin',
+  'analytics',
+  'appointments',
+  'assistant',
+  'audit',
+  'billing',
+  'customers',
+  'dev',
+  'insurance',
+  'invitations',
+  'payments',
+  'platform',
+  'reminders',
+  'settings',
+  'waitlist',
+]);
+
+/** Never shadowed: platform routes have no authorization layer but this one. */
+const ALWAYS_ENFORCED: ReadonlySet<string> = new Set(['platform']);
+
+type EnforcementMode =
+  { kind: 'all' } | { kind: 'shadow' } | { kind: 'list'; modules: ReadonlySet<string> };
+
+let parsedMode: { raw: string; mode: EnforcementMode } | null = null;
+
+/** Reads RBAC_ENFORCE_MODULES, failing closed on anything unexpected. */
+function enforcementMode(): EnforcementMode {
+  const raw = (process.env.RBAC_ENFORCE_MODULES ?? '').trim();
+  if (parsedMode && parsedMode.raw === raw) return parsedMode.mode;
+  let mode: EnforcementMode;
+  if (raw === '' || raw === '*') {
+    mode = { kind: 'all' };
+  } else if (raw === 'shadow') {
+    mode = { kind: 'shadow' };
+    log.error('rbac.enforcement_reduced', { mode: 'shadow', alwaysEnforced: [...ALWAYS_ENFORCED] });
+  } else {
+    const entries = raw.split(',').map((s) => s.trim());
+    const unrecognised = entries.filter((s) => !RBAC_MODULES.has(s)).length;
+    if (unrecognised > 0) {
+      mode = { kind: 'all' };
+      log.error('rbac.enforce_modules_invalid', {
+        unrecognisedEntries: unrecognised,
+        enforcing: 'all',
+      });
+    } else {
+      mode = { kind: 'list', modules: new Set(entries) };
+      log.error('rbac.enforcement_reduced', {
+        mode: 'list',
+        enforced: [...new Set(entries)].sort(),
+      });
+    }
+  }
+  parsedMode = { raw, mode };
+  return mode;
+}
+
+/** Test hook: forget the parsed value, so its log line is emitted again. */
+export function __resetEnforcementMode(): void {
+  parsedMode = null;
+}
+
+/**
  * Enforcement decision for a module key.
  * Exported for tests and for the shadow-mode instrumentation.
+ *
+ * Fails closed: only `shadow`, or a module list that does not name `module`,
+ * turns enforcement off, and never for 'platform', for a caller that names no
+ * module, or for a module outside RBAC_MODULES.
  */
 export function isEnforcing(module: string | null | undefined): boolean {
-  const raw = process.env.RBAC_ENFORCE_MODULES;
-  if (!raw) return false; // shadow
-  if (raw.trim() === '*') return true; // enforce all
-  if (!module) return false; // no module = play safe = shadow
-  const set = new Set(
-    raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-  return set.has(module);
+  const mode = enforcementMode();
+  if (mode.kind === 'all') return true;
+  if (!module || ALWAYS_ENFORCED.has(module) || !RBAC_MODULES.has(module)) return true;
+  if (mode.kind === 'shadow') return false;
+  return mode.modules.has(module);
 }
 
 /**
@@ -83,7 +159,8 @@ export function isEnforcing(module: string | null | undefined): boolean {
  * `module` is the audit-doc key ("admin", "customers", "appointments", …)
  * that the `RBAC_ENFORCE_MODULES` env var toggles. Pass `null` only for
  * ad-hoc probes (tests); production callers should always supply one so
- * the rollout can be sliced.
+ * the rollout can be sliced. A `null` module is enforced under a module
+ * list: it cannot be exempted by a name it never gave.
  */
 export function requirePermission(
   ctx: AuthContext,

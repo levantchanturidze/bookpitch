@@ -620,6 +620,14 @@ has been correcting all phase.
 repository to an organisation on a plan that includes rulesets), then apply the
 `PUT` above verbatim. Do not make the repository public to obtain it.
 
+> **Superseded for application, 2026-10-25.** Do not apply the `PUT` above as
+> written. It predates two checks: `Dependency audit (high and critical)`,
+> its own job since 2026-10-18 (#121), and `Pull request body`
+> (`pr-body.yml`). A rule without the audit lets a high or critical advisory
+> merge with every required check green. The rule to apply, and when to apply
+> it, is in `docs/release-state.md` §4. The repository has been public since
+> 2026-09-09, so no plan upgrade is needed.
+
 Until then, the release path is: branch → PR → all three checks green → merge
 button. That was followed for this release; it is convention, not enforcement.
 

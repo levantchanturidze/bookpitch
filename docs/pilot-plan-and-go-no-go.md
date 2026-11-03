@@ -156,7 +156,7 @@ the caps can safely rise.
 | Treatment-history erasure | Undecided (R-13) | **owner + adviser** | **OPEN** | Conditional | Legal decision | Erasure may be incomplete |
 | Dependabot alerts | Disabled (R-06) | **owner** | **OPEN** | Conditional | Enable in settings; free | No CVE alerts between pushes |
 | DMARC `rua` reachable | Unreachable (R-03) | **owner** | **OPEN** | Hardening | Point at a real mailbox | No DMARC visibility |
-| Branch protection | Unavailable on plan (R-07). Re-attempted 2026-09-01: `PUT /branches/main/protection` → 403 "Upgrade to GitHub Pro or make this repository public". | **owner** | **ACCEPTED** | Accepted | Upgrade to GitHub Pro, then apply the rule in the September ledger §11. Do **not** make the repository public to obtain it. | Human error possible |
+| Branch protection | Unavailable on plan (R-07). Re-attempted 2026-09-01: `PUT /branches/main/protection` → 403 "Upgrade to GitHub Pro or make this repository public". Available since the repository went public on 2026-09-09, and not configured (`docs/release-state.md` §4). | **owner** | **ACCEPTED** | Accepted | Apply the five-check rule in `docs/release-state.md` §4 once #111 is on `main`. Not the three-check rule in the September ledger §11, which omits the dependency audit. | Human error possible |
 | PITR / 24h RPO | Supabase Free (R-09) | **owner** | **ACCEPTED** | Accepted | Disclosed in `/terms` | Up to ~24h loss |
 | Backup residency | Not EU-guaranteed (R-10) | **owner** | **ACCEPTED** | Conditional | Legal decision | Residency claim unsupportable |
 | Single operator | No second responder (R-11) | **owner** | **ACCEPTED** | Accepted | Caps + runbooks | Unattended incidents |

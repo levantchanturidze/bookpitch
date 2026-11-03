@@ -217,27 +217,44 @@ Use the multi-tenant fixtures in `prisma/rbac-fixtures.ts`:
 
 ### Runtime toggle: `RBAC_ENFORCE_MODULES`
 
-`requirePermission()` picks its mode from the env var:
+`requirePermission()` picks its mode from the env var. It fails closed
+(CLAUDE.md invariant 2): only an exact, known value reduces enforcement, and
+anything unexpected enforces everything. `tests/rbac-enforce-default.test.ts`
+pins every case below.
 
-- `RBAC_ENFORCE_MODULES=` (empty) — shadow mode across every module. Denies
-  are logged as `rbac.shadow_deny` and the request proceeds.
-- `RBAC_ENFORCE_MODULES=*` — enforcing across every module. **Default in
-  tests and production.**
-- `RBAC_ENFORCE_MODULES=admin,customers` — enforcing for the listed
-  modules only; the rest stay in shadow.
+- **unset, empty or `*`:** enforcing across every module. **The default.**
+  Until 2026-11-03, unset and empty meant shadow mode, so a dropped variable
+  would have switched every check to log-only without anything noticing.
+- **`shadow`:** shadow mode for every module except `platform`. Denies are
+  logged as `rbac.shadow_deny` and the request proceeds.
+- **`admin,customers`:** enforcing for the listed modules; the other known
+  modules, except `platform`, are in shadow mode.
+- **Anything else** (an unknown module, `*` inside a list, quotes, other
+  casing, an empty entry): enforcing across every module, and
+  `rbac.enforce_modules_invalid` is logged at error level.
+
+`platform` is **always enforced**. The platform routes have no authorization
+layer but this one: shadowing them would let any signed-in user assign
+themselves a platform role, impersonate, or suspend an organisation. A caller
+that passes no module, or a module not in `RBAC_MODULES`, is enforced whatever
+the variable says. Every reduced mode logs `rbac.enforcement_reduced` at error
+level, once per value, so it is never silent.
 
 The module key is the fourth argument to `requirePermission(ctx, key,
-resource, module)`. Modules used today: `admin`, `customers`,
-`appointments`, `waitlist`, `payments`, `billing`, `reminders`,
-`invitations`, `insurance`, `settings`, `assistant`, `analytics`,
-`audit`, `dev`. New modules should be added consistently — pick the
-directory name under `app/api/`.
+resource, module)`. The known keys are `RBAC_MODULES` in `lib/rbac/guard.ts`:
+`admin`, `analytics`, `appointments`, `assistant`, `audit`, `billing`,
+`customers`, `dev`, `insurance`, `invitations`, `payments`, `platform`,
+`reminders`, `settings`, `waitlist`. A test fails if a call site uses a key
+missing from that set. Pick new keys after the directory under `app/api/`.
 
-Rollback lever: if a Phase 4 swap breaks something in prod, set
-`RBAC_ENFORCE_MODULES=` (empty) at the platform level. The runtime falls
-back to shadow immediately; no redeploy. Old routes stay authorized-by
-whatever the caller happens to have; new-guard denies get logged but
-don't 403 anyone. Investigate via `rbac.shadow_deny` log entries.
+**Rollback** if a guard change breaks something in production: revert the
+change and redeploy. Shadow mode is **not** a routine rollback. It removes
+authorization inside a tenant for every shadowed module; RLS still separates
+tenants, and `platform` stays enforced. If it is used at all, scope it with a
+module list that leaves out only the broken module, and redeploy (Vercel
+applies environment changes to new deployments). Then investigate through
+`rbac.shadow_deny`, and return the variable to `*`, or remove it, as soon as
+possible.
 
 ### Shadow log format
 
