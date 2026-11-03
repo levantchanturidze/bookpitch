@@ -263,7 +263,11 @@ them**, which is guaranteed by the expand-only rule, not by ordering.
 
 1. Open a PR against `main`. CI must be green: format, lint, types, Prisma
    validate, strict drift detection, seeded test DB, full suite, guard scanner,
-   orphan-permission scanner, `npm audit --audit-level=high`, gitleaks, build.
+   orphan-permission scanner and build (`Lint, type-check, test, and build`);
+   `npm audit --audit-level=high` (`Dependency audit (high and critical)`, its
+   own job since 2026-10-18); gitleaks; and the browser suite. A red audit job
+   is a failed security gate even when every code check passed. It is not a
+   flaky check to re-run.
 2. **Before merging anything that touches `prisma/`**, confirm a recent green
    `production-backup.yml` run. If there is not one, run it manually and wait.
 3. Merge. Vercel builds the merge commit; `migrate.yml` runs
@@ -1077,10 +1081,41 @@ Rules that are not negotiable (CLAUDE.md, F-12 incident):
 ## 16. Dependency advisories and overrides
 
 CI runs `npm audit --audit-level=high` on the installed tree, after `npm ci`,
-and a high or critical finding fails the build. That gate is not optional and
+and a high or critical finding fails the workflow. That gate is not optional and
 must never be softened to `--audit-level=critical` or wrapped in `|| true`: a
 new advisory can land on an unchanged dependency tree at any time, which is
 precisely what it exists to catch.
+
+It runs as **its own job**, `Dependency audit (high and critical)`, and no other
+job depends on it (2026-10-18). It used to be a step inside the quality job, so
+an advisory with no published fix stopped format, lint, types, migrations,
+tests and build from running on every pull request: the code was never checked
+while the only visible fact was a red mark. Now each verdict has its own check.
+`tests/workflow-safety.test.ts` pins both halves: nothing may wait for the
+audit, and the audit may not be turned into a pass.
+
+### Open advisories with no published fix
+
+None on 2026-10-25.
+
+The one entry here was
+[GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
+(`braces` ≤ 3.0.3, high, reached only through `eslint-config-next` at lint
+time). GitHub **withdrew** it at 2026-10-23T12:53:02Z, and `npm audit` no
+longer reports it. Nothing was excepted while it was open: the audit job stayed
+red.
+
+The audit is still red on `main`, for a different reason: advisories published
+since 2026-10-18 against `next`, `@sentry/nextjs`, `sharp`, `zod`, `undici`,
+`fast-uri`, `source-map-js`, `vite` and `vitest`, **all with published fixes**.
+On 2026-10-25 `main`'s lockfile reports 2 critical, 5 high and 3 moderate. #111
+upgrades them, and its tree audits to 0 at every severity.
+
+To check whether an advisory with no fix reaches production: `npm audit --json`
+marks it `fixAvailable: false`, `npm ls <package> --all` gives its path, and
+after `npm run build`,
+`grep -l node_modules/<package>/ $(find .next -name '*.nft.json')` prints
+nothing if no deployed server file uses it.
 
 ### Active overrides
 

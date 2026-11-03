@@ -154,7 +154,13 @@ describe('the guard runs when the text it guards can change', () => {
     // reads as "nothing wrong" is exactly what this project keeps shipping.
     expect(ci.on.pull_request.types, 'ci.yml keeps the default event set').toBeUndefined();
     expect(ci.jobs['pr-body'], 'the guard must not also live in ci.yml').toBeUndefined();
-    for (const id of ['secret-scan', 'quality', 'e2e']) {
+    // Every job, not a list: a job added later (dependency-audit was, on
+    // 2026-10-18) is covered without anyone remembering to extend this.
+    const ids = Object.keys(ci.jobs);
+    expect(ids).toEqual(
+      expect.arrayContaining(['secret-scan', 'dependency-audit', 'quality', 'e2e']),
+    );
+    for (const id of ids) {
       expect(ci.jobs[id].if, `${id} must not be conditioned on the event action`).toBeUndefined();
     }
   });
