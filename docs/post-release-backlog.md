@@ -1,8 +1,14 @@
 # Post-release backlog: round record and release plan
 
-**Status on 2026-10-31: 21 pull requests open (#111–#131), none merged. New
+**Status on 2026-11-03: 22 pull requests open (#111–#132), none merged. New
 release gate NOT STARTED.** Production is the certified release `fdf6559`,
 unchanged throughout this work.
+
+**The 2026-11-03 round** (§00) re-observed the baseline and opened #132:
+the RBAC guard failed open by default (DEF-55). It also recorded DEF-54
+(embargoed, reported to the owner directly), DEF-56 to DEF-59, and a
+correction to the secret-scanning gate. Every open head plus #132 merged
+together locally is clean.
 
 The decisions only a person can make before launch are in
 `docs/launch-human-decisions.md`. The privacy decisions for the owner and the
@@ -23,6 +29,101 @@ final combined run is clean (§4).
 > certified deployment. Two merges also run `migrate.yml` against production:
 > #112 applies its migration and changes the invariant verifier, and #122
 > changes the verifier. The next release gate decides when (§9).
+
+## 00. The 2026-11-03 round
+
+Re-observed first, read-only. `origin/main` is still `fdf6559`, and production
+still runs deployment `6769046032` (`fdf6559`, since 2026-09-30). Every PR head
+is the one in §2, and nothing was merged or closed. Codex has not reviewed,
+annotated or commented on any of the 21 pull requests since 2026-10-31,
+checked on all three endpoints by bot login.
+
+| Change or finding | PR | Head | Evidence |
+|---|---|---|---|
+| **DEF-55 (P1):** the RBAC guard failed open. An unset or empty `RBAC_ENFORCE_MODULES`, or **any** value other than `*`, `shadow` or a list of real module keys (e.g. `"*"` with quotes, `SHADOW`, `all`), put `requirePermission()` in shadow mode: denials logged, requests let through. `requirePagePermission()` delegates to it, so pages were covered too. Shadow mode also reached the platform plane, which has no other authorization, so any signed-in user could have assigned themselves a platform role. Production was safe only because Vercel sets `*`. Tests and CI forced `*`, and `.env.example` shipped `""`. Now every unexpected value enforces everything and logs an error, `platform` is never shadowed, and a reduced mode is always logged | **#132 (new)** | `db6daf6` | 30 cases. Each control removed turns exactly its own cases red: platform 2, the key set 1, malformed 15. `RBAC_ENFORCE_MODULES=shadow` turns 13 existing denial tests red. `main` plus the fix, CI's chain locally with the variable unset: 149 files, 2346 passed, 0 skipped. The first version's two holes were found by the fresh-context review (§00.4) |
+| **DEF-54:** a security finding, embargoed | — | — | reported to the owner directly on 2026-11-03; details withheld from this public record until the owner confirms remediation (§11 item 17) |
+| **DEF-56:** `phase16-marketing-least-privilege.test.ts` needs a customer in "Split Practice", which the seed does not create. It passes only if `admin-guardrails.test.ts` ran first, because that file creates one and never deletes it | — | recorded | alone, on a fresh seeded UTC database: its setup throws and its 17 tests are skipped. In the full run: passes |
+| **DEF-57:** two moderate advisories published after 2026-10-30, GHSA-3g3m-2fjr-6pw4 (`glob`) and GHSA-g3hv-75wg-m249 (`minimatch`). They come through `@sentry/nextjs`, `eslint` and `eslint-config-next`: build and lint tooling, whose patterns come from configuration, not users | — | recorded | `npm audit`: combined tree 19 moderate, 0 high, 0 critical; `main` 2 critical, 5 high, 22 moderate. npm's suggested fixes are major downgrades, not fixes |
+| **DEF-58:** documentation drift (§00.3) | — | recorded | each item checked in source |
+| **DEF-59:** the legal sub-processor list does not name GitHub Actions, which stores the encrypted backups (R-10) | — | **legal reviewer** | `docs/legal-review-checklist.md` against `.github/workflows/production-backup.yml` |
+| Every open head plus #132, merged locally (`rehearsal/combined-2026-11-03`, never pushed) | all | `128398f` | `npm ci` 0, `tsc` 0, 75 migrations, strict drift 0. With #132's repair, `npm run test` exits 0: **172 files, 2632 passed, 5 skipped** (the cluster-wide verifier cases, run in CI). Guards, orphan permissions (0) and reachability OK. `next build` exit 0 on `128398f` (38/38 pages) |
+
+### 00.1 Re-observed on 2026-11-03 (read-only)
+
+| Fact | Observed |
+|---|---|
+| Production monitor | run `41686343903` (17:39Z, scheduled): 26/29. The one failure is `reminders-missed NOT VERIFIED`: no appointment was owed a reminder in 48 h. The last 12 scheduled runs failed for that alone |
+| Scheduled cadence on `main`, last 7 days | monitor: 31 runs (4.4/day), largest gap 10.3 h, 14 gaps over 6 h. `cron.yml`: 70 runs (10/day), largest gap **8.5 h**, 3 over 6 h. None cancelled. The reminder lead-time floor is 8 h (F-7, §11 item 10) |
+| Other scheduled runs | `cron.yml` `41679465415`, `sentry-reverify.yml` `41633753725` and `production-backup.yml` `41603917441`: success, all 2026-11-03. The last restore drill was `37193588304` on 2026-10-04 (it runs monthly) |
+| `ops-incident` | #90 only, open |
+| Repository settings | unchanged (DEF-20). Secret scanning's non-provider (generic) patterns are also disabled. `main` is unprotected with no rulesets; the default token is `read` |
+| Legal and operator | on `main`: `LEGAL_DOCUMENT_STATUS = 'draft'`, and `OPERATOR_IDENTITY` is all null |
+
+### 00.2 Correction to §6 and §10
+
+"Secret scanning: PASS" and "a local gitleaks run over the full history found
+nothing" established only that gitleaks' rules matched nothing. gitleaks
+matches machine-format secrets: keys, tokens, URLs with credentials. It does
+not see a credential written in prose. The gate is re-rated **NOT VERIFIED**
+(§10; DEF-54).
+
+### 00.3 Knowledge graph (Graphify), and DEF-58
+
+A Graphify knowledge graph of the repository was built: graphify 0.9.99, 694
+files (636 code files including the 105 SQL migrations, and 58 docs), 4815
+nodes, 12475 edges, 279 communities. It is local only, and `graphify-out/` is
+not committed. The owner's working tree also gained a Graphify-first policy in
+`CLAUDE.md` and a reusable prompt block, `docs/claude-prompt-template.md`. Both
+are **uncommitted local changes** for the owner to commit in a PR of their own
+(§11 item 20).
+
+DEF-58 is the drift the graph surfaced. Each item was checked in source:
+- `scrubPhi`, `scrubSensitive` and `sanitizeErrorMessage` are documented as being in
+  `lib/logger.ts` (`features-en.md`, `features-ka.md`,
+  `rbac-security-review.md`, `security-final-completion-ledger.md`). They are
+  in `lib/scrub.ts` (lines 159, 246, 270).
+- `rbac-guarding-endpoints.md` still says break-glass TOTP "is not enforced
+  yet". Round 4 F2 implemented it.
+- The security ledger's `verifyCaptcha`, `hashBucketKey` and `parseMultiKey`
+  exist only in the docs. The code has `verifyTurnstile`, `hashForBucket` and
+  `parseKeySpec`.
+- The ACCOUNTANT landing page is `/analytics` in code (`lib/rbac/landing.ts`)
+  and in `rbac-status.md`, but `/settings/billing` in `rbac-findings.md`.
+- `lib/messaging/reminder-window.ts` says the largest tick gap is 4 h 40 m
+  and that the 8 h floor "clears the measured worst case with margin". #118
+  measured 9.9 h, and the last 7 days show 8.5 h (§00.1; F-7). This came from
+  the #118 review.
+- `lib/admin/last-owner.ts` (line 6) and `features-en.md` (line 73) say
+  ownership-transfer accept calls `assertNotLastOwner`. It does not; the
+  deferred owner-invariant triggers hold the invariant. This came from the
+  #131 review.
+
+### 00.4 Fresh-context reviews
+
+These are four subagents with no access to this round's reasoning, each
+given one PR, the Graphify-first block (`docs/claude-prompt-template.md`),
+and a read-only brief. They are **not** Codex and **not** human reviewers.
+Their key claims were re-checked in source before anything was recorded.
+
+| PR | Reviewer | Result |
+|---|---|---|
+| #118 | Sonnet | No defect in the PR. Tests drive the real reminder `claim()` lock and the housekeeping advisory lock. The stale comment in `reminder-window.ts` (DEF-58). The #119-before-#118 order rests on the merge plan (§9). The `cron.yml` hardening items are already in §6 |
+| #130 | Sonnet | No P0–P2. Correct tenant scoping, exactly-once fan-out (`UPDATE … WHERE status = 'pending' … RETURNING`), and savepoint isolation (`lib/waitlist.ts` 270–276 and 332–338; spot-checked). **DEF-62** (P3): no test calls the scheduler's cancel action with a scope-restricted session. "Technically safe to accept if the owner wants the behaviour" |
+| #131 | Opus | #131's own fixes are correct, and its tests exercise real behaviour. Pre-existing gaps in the same code: **DEF-60** (P2) and **DEF-61** (P3) |
+| #132 | Opus | Found the platform-plane hole and the malformed-value hole in the first version, plus stale text. All fixed in `db6daf6` and verified by perturbation |
+
+### 00.5 Next technical work (no owner decision needed)
+
+1. **DEF-60:** lock the organisation row in accept and nominate. Re-check, in
+   a new statement, that the owner is still the nominator and the org is
+   active. Revoke pending transfers in `changeOrganizationOwner`. Add
+   real-interleaving tests.
+2. **DEF-61 and DEF-62:** the smaller ownership-transfer gaps, and the
+   restricted-session test for scheduler cancellation.
+3. **DEF-56:** let `phase16-marketing-least-privilege.test.ts` create its own
+   customer.
+4. A production probe that expects a 403 from a low-privilege UAT role (needs
+   a production test account; §11 item 19).
 
 ## 0. The 2026-10-31 round
 
@@ -86,6 +187,7 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | #129 | `fix/public-booking-org-status` | `13df39b` | A suspended or archived organisation's widget takes no bookings, re-checked under a lock (DEF-41, DEF-48) | — |
 | #130 | `feat/waitlist-on-ui-cancel` | `af6ee00` | F-5: a scheduler cancellation notifies the waitlist as the API does. **Behaviour change** | **stacked on #114** |
 | #131 | `fix/ownership-transfer-decided-once` | `f90c44f` | An ownership transfer is decided once (DEF-43); a failed nominee notification no longer undoes the nomination (DEF-52) | — |
+| #132 | `fix/rbac-fail-closed-default` | `db6daf6` | The RBAC guard fails closed: an unset, empty or malformed `RBAC_ENFORCE_MODULES` enforces everything, `platform` is never shadowed, and a reduced mode is logged (DEF-55). Rollback is revert-and-redeploy | — |
 
 ## 3. CI status at each head
 
@@ -111,6 +213,7 @@ merged in on 2026-10-18 so that its own CI runs the code checks.
 | #129 | `13df39b` | `41133255069` | pass | pass | pass | pass | fail |
 | #130 | `af6ee00` | `41130954291` | pass | pass | pass | pass | fail |
 | #131 | `f90c44f` | `41242696797` | pass | pass | pass | pass | fail |
+| #132 | `db6daf6` | `41690821287` | pass | pass | pass | pass | fail |
 
 The audit fails on `main`'s lockfile, which every branch but #111 carries, and
 on nothing any of these PRs change. It is red under its own name, and no
@@ -229,6 +332,15 @@ are the tests that fail when the fix is removed.
 | DEF-51 | P3 | Audit clock | `audit_log.at` is Prisma's `@default(now())`, filled in by the application, not the database: a test that fakes `Date` +25 h wrote an audit row 25 h ahead. On the local database, whose October partition ends at a `+04` boundary, it fell into the default partition and failed `ops-metrics` between 19:00 and 23:00 UTC on 2026-10-30 (reproduced on `main`'s code). The same mechanism lets a skewed application clock misdate the audit log | **recorded, not changed**; proposal §11 | reproduced on `main` | — |
 | DEF-52 | P2 | Admin, integrity | `nominateTransfer` sent the nominee's notification in a plain `try/catch` inside its transaction. A failed statement aborted the transaction and the COMMIT silently rolled back the nomination, while the function returned its id and emailed the nominee. #114's shape, found by #123's new production scan | #131 `91f6a88` | real failing statement; red on `main` | — |
 | DEF-53 | P3 | Tooling, merge order | #128's ratchet failed when a reviewed bypass entry disappeared as well as when a new one appeared. #131 named the organisation in two transfer updates, removing two reviewed rows, so no allowlist passed both with and without #131: each PR was green alone, and the combination failed. Found by the 21-PR combined unit run | #128 `9592ee4` (one-directional); #131 `f90c44f` (organisation named) | combined `npm run test` exit 0; a new unreviewed query still fails | — |
+| DEF-54 | embargoed | Security | Withheld from this public record until the owner confirms remediation. Reported to the owner directly on 2026-11-03 | — | — | **owner, operator** (§11 item 17) |
+| DEF-55 | P1 | Authorization, fail-closed | `isEnforcing()` returned false (shadow: log and allow) for an unset or empty `RBAC_ENFORCE_MODULES`, for any value that was not `*`, `shadow` or a list of real module keys, and under a list for a caller that named no module. Every guard decision ran through it, including the platform plane, which has no other authorization. Tests and CI forced `*`, so nothing tested the default; one local run with the variable unset let MARKETING into `/scheduler` (CLAUDE.md invariant 2) | #132 `ad8e04a`, `db6daf6` | 30 cases; each control removed turns exactly its own cases red | — |
+| DEF-60 | P2 | Admin, integrity | Pre-existing. `acceptTransfer` never re-checks that the nominator still owns the org, and `changeOrganizationOwner` leaves pending transfers alive. After a platform owner change, an old nomination can still be accepted: it silently overrides the platform's decision and leaves two ORG_OWNER memberships | — (§00.5) | code path verified at `f90c44f` | — |
+| DEF-61 | P3 | Admin, integrity | Pre-existing, found by the same review. Accept's writes do not name the organisation (invariant 1). Its claim ignores expiry. Revoke and expiry write no audit row. A suspended org's transfer can still be accepted. The nominee notification is visible to every member | — (§00.5) | review findings | — |
+| DEF-62 | P3 | Tests | No test calls the scheduler's cancel action (`updateAppointmentAction`) with a scope-restricted session, so the refusal on that path is not proven end to end ("verify behaviour, not wiring") | — (§00.5) | — | — |
+| DEF-56 | P3 | Tests | `phase16-marketing-least-privilege.test.ts` depends on a customer that `admin-guardrails.test.ts` creates in "Split Practice" and never deletes; run alone on a fresh seeded database, its setup throws | recorded | reproduced 2026-11-03 | — |
+| DEF-57 | P3 | Supply chain | GHSA-3g3m-2fjr-6pw4 (`glob`) and GHSA-g3hv-75wg-m249 (`minimatch`), moderate, published after 2026-10-30, in build and lint tooling | recorded; overrides once patched versions fit their consumers | `npm audit` on the combined tree: 19 moderate, 0 high/critical | — |
+| DEF-58 | P3 | Docs | Drift found by the knowledge-graph build (§00.3) | recorded | each checked in source | — |
+| DEF-59 | — | Legal, privacy | The sub-processor list omits GitHub Actions, which stores the encrypted backups (R-10) | — | — | **legal reviewer** |
 
 Earlier findings, 2026-10-17 and 10-18, final status: F-1 to F-4, F-6, F-8 to
 F-11 and F-13 to F-20 are fixed in their PRs (F-21 became DEF-09 and is fixed
@@ -340,6 +452,7 @@ context only.
 | 2 | #111 | **Security hotfix: its own release window.** Runtime upgrade of `next` and the Sentry SDK. Smoke tests after the deploy (runbook 3) |
 | 3 | #125 | Auth and tenancy hardening, no migration |
 | 4 | #127 | Reset reliability, no migration |
+| 4a | #132 | Fail-closed RBAC default, no migration. Runbook 10 first (read-only). With Production at `*`, no behaviour change |
 | 5 | #119 | Before or with #118 |
 | 6 | #118 | Changes live schedules; merge before any soak |
 | 7 | #113 | **Before #117** |
@@ -396,6 +509,7 @@ crafted allowed call.
 | #129 | Suspend the UAT organisation: its `/book/<slug>` is 404, and a POST is 400 with nothing written. Reactivate: booking works |
 | #130 | Cancel a UAT appointment in the scheduler with a matching UAT waitlist entry: the entry is `notified`, audited once, with one "Slot opened" bell. Cancel again: nothing new |
 | #131 | Nominate a UAT member as owner, then accept: ownership moves, and a later revoke attempt is refused cleanly |
+| #132 | Unchanged with Production at `*`. A UAT role without a permission is refused (403) on a crafted request, and the same role's allowed call works |
 
 ### Operator runbooks
 
@@ -475,6 +589,18 @@ crafted allowed call.
       throwaway PR whose `Pull request body` check fails (a closing keyword
       before an issue number), and confirm the merge button is blocked. Then
       close it.
+   5. **Secret scanning with non-provider (generic) patterns** as well as the
+      provider ones (2026-11-03, §00.2). gitleaks does not see a credential
+      written in prose.
+10. **RBAC enforcement value (before merging #132; read-only).** In Vercel,
+    Project → Settings → Environment Variables → Production, confirm that
+    `RBAC_ENFORCE_MODULES` is `*` (or absent). Record any other value. After
+    #132, unset, empty and malformed values all enforce, `platform` is never
+    shadowed, and any reduced mode logs `rbac.enforcement_reduced`. The
+    rollback for a guard problem is to revert and redeploy; shadow mode is a
+    last resort (`docs/rbac-guarding-endpoints.md`). Read only this variable.
+11. **DEF-54 remediation (embargoed).** The steps are in the owner's private
+    report of 2026-11-03. Record "done" here when it is done, with no detail.
 
 ### Before a soak can certify the new release
 
@@ -492,9 +618,9 @@ crafted allowed call.
 |---|---|---|---|---|
 | Code checks in CI, every PR head | **PASS** | §3 | re-read on the then-current `main` before each merge | release owner |
 | Browser suite in CI, every PR head | **PASS** | §3 | as above | release owner |
-| Secret scanning | **PASS** | CI gitleaks per PR; local gitleaks, full history, 0 | enable GitHub secret scanning and push protection (DEF-20) | owner |
-| Dependency audit on `main` | **FAIL** | 2 critical, 5 high, 3 moderate (§1) | merge #111 in its own window | owner |
-| Dependency audit, #111 and the combined tree | **PASS** | 0 at every severity | — | — |
+| Secret scanning | **NOT VERIFIED** (re-rated 2026-11-03, §00.2) | CI gitleaks per PR and local gitleaks over the full history found 0, but gitleaks does not see a credential written in prose (DEF-54) | enable GitHub secret scanning with non-provider patterns, and push protection (DEF-20; runbook 9.5) | owner |
+| Dependency audit on `main` | **FAIL** | 2026-11-03: 2 critical, 5 high, 22 moderate (was 3 moderate on 10-28; DEF-57) | merge #111 in its own window | owner |
+| Dependency audit, #111 and the combined tree | **PASS** for high and critical | 2026-11-03: 0 high, 0 critical, 19 moderate (DEF-57, published after 2026-10-30) | overrides once patched `glob`/`minimatch` fit their consumers | maintainer |
 | The `braces` advisory | **NOT APPLICABLE** | withdrawn 2026-10-23 | — | — |
 | Combined tree: unit, integration, invariants, build, browser | **PASS** (local) | §4 | — | — |
 | Migration #112, local validation | **PASS** | §8 | — | — |
@@ -511,7 +637,11 @@ crafted allowed call.
 | Test mailbox | **BLOCKED** | same, §3 | nominate one | release owner |
 | Branch protection | **BLOCKED** (owner setting) | rule documented in `docs/release-state.md` §4 (#121) | apply after #111 | owner |
 | Soak of the new release | **NOT RUN** | — | after every merge | automation, owner |
-| Production unchanged during this work | **PASS** | deployment `6769046032` / `fdf6559` since 2026-09-30 | — | — |
+| Production unchanged during this work | **PASS** | deployment `6769046032` / `fdf6559` since 2026-09-30; re-observed 2026-11-03 | — | — |
+| DEF-54 remediation | **BLOCKED** (owner, operator) | embargoed | runbook 11 | owner, operator |
+| RBAC enforcement value in production | **NOT VERIFIED** | not readable from the repository | runbook 10, before #132 merges | operator |
+| Combined unit run with #132 (all 22 heads) | **PASS** (local) | §00: 172 files, 2632 passed, 5 skipped (cluster-wide cases, CI-only); `next build` exit 0 | — | — |
+| Knowledge graph and persistent Graphify instructions | **PASS locally, uncommitted** | §00.3; the PreToolUse hook fired in-session; a simulated reinstall leaves `CLAUDE.md` byte-identical | commit `CLAUDE.md`, `docs/claude-prompt-template.md` and `.gitignore` in their own PR; install the git hooks (§11 items 20–21) | owner |
 
 ## 11. Owner decisions
 
@@ -540,7 +670,8 @@ crafted allowed call.
       which existing organisations below it keep until they next save;
     - move the reminders tick to `pg_cron` (item 7).
 
-    First, run runbook 8's count.
+    First, run runbook 8's count. On 2026-11-03 the last 7 days showed a
+    largest `cron.yml` gap of 8.5 h, above the 8 h floor (§00.1).
 11. **Accept or decline F-5's behaviour change (#130).** Staff start getting
     "Slot opened" notifications from scheduler cancellations, as the docs say
     they should.
@@ -561,6 +692,31 @@ crafted allowed call.
 16. **Codex's usage limit.** Every re-review this round was refused. Raise
     the limit, or name another independent reviewer for #118, #130 and the
     seven PRs whose heads moved (§10).
+17. **DEF-54 (embargoed, urgent).** The specifics and the recommended steps
+    are in the owner's private report of 2026-11-03. Nothing about it is
+    published until the owner confirms remediation (runbook 11).
+18. **Secret scanning with generic patterns** (extends item 3): enable GitHub
+    secret scanning including non-provider patterns, plus push protection
+    (runbook 9.5).
+19. **Accept #132's semantics** (DEF-55). An unset, empty or malformed
+    `RBAC_ENFORCE_MODULES` enforces everything, `platform` is never shadowed,
+    a reduced mode is logged at error level, and the rollback for a guard
+    problem is revert-and-redeploy. Confirm Production's value first
+    (runbook 10). Optionally add a production probe expecting a 403 (needs a
+    production UAT account).
+20. **Commit the Graphify integration.** Three files are uncommitted changes in
+    the owner's working tree: `CLAUDE.md` (the Graphify-first policy and
+    graphify's managed section), `docs/claude-prompt-template.md`, and
+    `.gitignore` (`/graphify-out/`). That tree is on #118's branch, so a
+    `commit -a` there would put them into #118. Commit them in a PR of their
+    own. `.claude/settings.json`, which holds the PreToolUse hooks, is
+    gitignored and stays local.
+21. **Graphify git hooks** (`graphify hook install`): they keep the graph
+    current after commits and checkouts, rebuilding code only, in the
+    background. The session's permission policy refused the agent's attempt
+    as unauthorised persistence, so the owner runs it if wanted.
+22. **Legal: sub-processors** (DEF-59): name GitHub Actions, which stores the
+    encrypted backups, as a sub-processor, or record why it is not one.
 
 ## 12. How the evidence was produced, and what it does not establish
 

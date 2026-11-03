@@ -1,7 +1,9 @@
 # Launch: decisions only a person can make
 
-**Status on 2026-10-28: all three open.** Re-checked against `main` (`fdf6559`) on
-that date. Green CI is not evidence for any of these. No agent may guess,
+**Status on 2026-11-03: all three open.** Re-checked against `main` (`fdf6559`) on
+2026-10-28 and again on 2026-11-03: `LEGAL_DOCUMENT_STATUS` is still `'draft'`,
+`OPERATOR_IDENTITY` is still all null, and no test mailbox has been nominated.
+Green CI is not evidence for any of these. No agent may guess,
 infer or fill in any of them. Each is a representation that a named person
 makes.
 
