@@ -164,10 +164,11 @@ export { refuseUnsafeTarget as __assertSafeFetchTarget };
 
 // RBAC enforcement: nothing is set here on purpose. An unset
 // RBAC_ENFORCE_MODULES enforces every module (lib/rbac/guard.ts fails closed),
-// so the suite runs on the same default production falls back to. Forcing '*'
-// here used to hide that default, which was then shadow mode. A shadow-mode
-// dry run is explicit: `RBAC_ENFORCE_MODULES=shadow npm test`, and the denial
-// tests then fail, as they should.
+// so a local run uses the default production would fall back to; CI sets '*',
+// which behaves identically. Forcing '*' here used to hide that default, which
+// was then shadow mode. A shadow-mode dry run is explicit,
+// `RBAC_ENFORCE_MODULES=shadow npm test`, and the denial tests then fail, as
+// they should.
 
 // -----------------------------------------------------------------------------
 // Fixture cleanup guard — `where: { id: undefined }` is not a no-op.
